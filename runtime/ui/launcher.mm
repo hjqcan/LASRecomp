@@ -951,7 +951,24 @@ extern "C" void launcher_run(const char *root) {
     if (const char *t = SDL_getenv("LARECOMP_LAUNCHER_EXTRACT")) {  // (test) <folder>: set the game files up, log, exit
         g_src = t;
         g_busy = true;
-        extract_thread(NULL);
+        pthread_t setup;
+        if (pthread_create(&setup, NULL, extract_thread, NULL)) {
+            fprintf(stderr, "[launcher] could not start setup thread\n");
+            exit(1);
+        }
+        // This test entry point can compile for several minutes too. Keep the
+        // native window responsive, just as the normal setup screen does.
+        for (;;) {
+            pthread_mutex_lock(&g_lock);
+            bool running = g_busy;
+            pthread_mutex_unlock(&g_lock);
+            if (!running) break;
+            SDL_Event event;
+            while (SDL_PollEvent(&event))
+                if (event.type == SDL_EVENT_QUIT) exit(1);
+            SDL_Delay(20);
+        }
+        pthread_join(setup, NULL);
         fprintf(stderr, "[launcher] setup: %s -> %s\n", g_job.c_str(), check_game_files(g_root).empty() ? "READY" : "NOT READY");
         exit(g_job_failed ? 1 : 0);
     }

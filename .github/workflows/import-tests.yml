@@ -1,10 +1,6 @@
 name: NSZ importer
 
-on:
-  push:
-    paths: ['tools/import_game.py', 'tools/game_versions.py', 'tools/test_import_game.py', '.github/workflows/import-tests.yml']
-  pull_request:
-    paths: ['tools/import_game.py', 'tools/game_versions.py', 'tools/test_import_game.py', '.github/workflows/import-tests.yml']
+on: [push, pull_request]
 
 permissions:
   contents: read
