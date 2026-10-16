@@ -77,11 +77,11 @@ int main(int argc, char **argv) {
     assert(build_cache_object(cache, "main_000", source.c_str(), hash) == 1);
     write(fs::u8path(game) / "lasgame.dll", "old library");
     write(fs::u8path(game) / "lasgame.dll.id", "old id");
-    assert(!build_cache_publish(cache, "lasgame.dll", "new-runtime", why, sizeof why));
+    assert(!build_cache_publish(cache, "lasgame.dll", "new-runtime", "new-main", why, sizeof why));
     assert(read(fs::u8path(game) / "lasgame.dll") == "old library");
     write(work / "lasgame.dll.tmp", "new library");
-    assert(build_cache_publish(cache, "lasgame.dll", "new-runtime", why, sizeof why));
-    assert(read(fs::u8path(game) / "lasgame.dll.id") == "new-runtime\n");
+    assert(build_cache_publish(cache, "lasgame.dll", "new-runtime", "new-main", why, sizeof why));
+    assert(read(fs::u8path(game) / "lasgame.dll.id") == "new-runtime\nnew-main\n");
     // Simulate a crash between installing the library and its metadata, then restart.
     write(work / "previous-library", "old library");
     write(work / "previous-id", "old id");

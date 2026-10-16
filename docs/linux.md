@@ -42,7 +42,7 @@ yourself: `make SHADERC=-lshaderc_shared` (or `-lshaderc`).
 
 Then from the repo root:
 
-    python3 -m venv tools/venv && tools/venv/bin/pip install lz4 capstone unicorn
+    python3 -m venv tools/venv && tools/venv/bin/pip install lz4 capstone unicorn zstandard==0.25.0 cryptography==50.0.2
     make -j         # the start screen only (no game code yet): set up the game files there, or put extracted/ here
     make gen        # once: recompile the game from your own game files
     make -j         # -> build/lasrecomp and the game code library build/lasgame.so

@@ -134,3 +134,8 @@
 #define GA_LANMOLA_CHANGE_STATE             UINT64_C(0x700047db50)
 #define GA_MASTER_STALFOS_VTABLE            UINT64_C(0x7001b8ea08)
 #define GA_MASTER_STALFOS_CHANGE_STATE      UINT64_C(0x70004b9be0)
+
+// Bounds of the validated updated-executable text relocation (canonical 1.0.0 coordinates).
+#define GA_VERSION_CHANGED_TAIL UINT64_C(0x7000dfaee0)
+#define GA_VERSION_TEXT_CUT UINT64_C(0x7000dfaf50)
+#define GA_VERSION_TEXT_END UINT64_C(0x7001433830)

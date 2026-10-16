@@ -75,9 +75,14 @@ fs::path mod_root(const char *data) {
     auto p = fs::absolute(fs::u8path(data)) / "mods";
     plain(p); return p;
 }
-std::set<std::string> enabled_ids(const fs::path &root) {
+fs::path config(const fs::path &root, int profile) {
+    need(profile >= 0 && profile <= 2, "Select a managed game installation first.");
+    const char *names[] = {"enabled-existing.txt", "enabled-1.0.0.txt", "enabled-1.1.0.txt"};
+    return root / names[profile];
+}
+std::set<std::string> enabled_ids(const fs::path &root, int profile) {
     std::set<std::string> ids;
-    auto p = root / "enabled.txt";
+    auto p = config(root, profile);
     plain(p);
     if (!fs::exists(p)) return ids;
     std::istringstream stream(read(p, 8192));
@@ -89,9 +94,9 @@ std::set<std::string> enabled_ids(const fs::path &root) {
     }
     return ids;
 }
-void save_ids(const fs::path &root, const std::set<std::string> &ids) {
+void save_ids(const fs::path &root, int profile, const std::set<std::string> &ids) {
     fs::create_directories(root);
-    auto target = root / "enabled.txt", tmp = target;
+    auto target = config(root, profile), tmp = target;
     tmp += ".writing"; plain(tmp); plain(target);
     std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
     for (const auto &id : ids) f << id << '\n';
@@ -117,7 +122,7 @@ bool safe_relative(const fs::path &p) {
     }
     return true;
 }
-Pack load_pack(const fs::path &directory, const fs::path &game) {
+Pack load_pack(const fs::path &directory, const fs::path &game, const char *version, bool check_files = true) {
     Pack pack; pack.directory = directory;
     plain(directory); plain(game);
     std::istringstream in(read(directory / "mod.ini", 8192));
@@ -127,7 +132,7 @@ Pack load_pack(const fs::path &directory, const fs::path &game) {
         line = trim(line); if (line.empty() || line[0] == '#' || line[0] == ';') continue;
         size_t at = line.find('='); need(at != std::string::npos, "Expected key=value in mod.ini.");
         auto key = trim(line.substr(0,at)), value = trim(line.substr(at+1));
-        static const std::set<std::string> allowed = {"format", "id", "name", "version", "author", "description"};
+        static const std::set<std::string> allowed = {"format", "id", "name", "version", "author", "description", "game_versions"};
         need(allowed.count(key) && fields.emplace(key, value).second, "Unknown or duplicate mod.ini field.");
         for (unsigned char c : value) need(c >= 32, "Invalid control character in mod.ini.");
     }
@@ -139,6 +144,13 @@ Pack load_pack(const fs::path &directory, const fs::path &game) {
     copy("id", pack.info.id, sizeof pack.info.id); copy("name", pack.info.name, sizeof pack.info.name);
     copy("version", pack.info.version, sizeof pack.info.version); copy("author", pack.info.author, sizeof pack.info.author);
     copy("description", pack.info.description, sizeof pack.info.description);
+    std::istringstream versions(fields["game_versions"]); bool any = false;
+    while (std::getline(versions, line, ',')) {
+        line = trim(line); need(line == "1.0.0" || line == "1.1.0", "Unsupported game version in mod.ini.");
+        any = true; pack.info.compatible |= line == version;
+    }
+    need(any, "mod.ini needs game_versions.");
+    if (!check_files) return pack;
     auto romfs = directory / "romfs"; plain(romfs);
     need(fs::is_directory(romfs), "Mod folder needs a romfs directory.");
     for (auto it = fs::recursive_directory_iterator(romfs); it != fs::recursive_directory_iterator(); ++it) {
@@ -159,12 +171,13 @@ Pack load_pack(const fs::path &directory, const fs::path &game) {
     need(pack.info.files > 0, "Mod has no replacement files.");
     return pack;
 }
-std::map<std::string, fs::path> resolve(const fs::path &root, const fs::path &game,
+std::map<std::string, fs::path> resolve(const fs::path &root, const fs::path &game, const char *version,
                                       const std::set<std::string> &ids) {
     std::map<std::string, fs::path> result;
     for (const auto &id : ids) {
-        auto pack = load_pack(root/id, game);
+        auto pack = load_pack(root/id, game, version);
         need(id == pack.info.id, "Mod folder and manifest ID differ.");
+        need(pack.info.compatible, "Enabled mod does not support the selected game version: " + id);
         for (const auto &file : pack.files)
             need(result.emplace(file).second, "Enabled mods replace the same resource: " + file.first);
     }
@@ -172,10 +185,10 @@ std::map<std::string, fs::path> resolve(const fs::path &root, const fs::path &ga
 }
 }
 
-extern "C" int mods_list(const char *data_root, const char *game_root,
+extern "C" int mods_list(const char *data_root, const char *game_root, int profile, const char *version,
                           ModInfo *out, int cap, char *why, size_t why_cap) {
     try {
-        auto root = mod_root(data_root); auto enabled = enabled_ids(root);
+        auto root = mod_root(data_root); auto enabled = enabled_ids(root, profile);
         if (!fs::exists(root)) return 0;
         std::vector<Pack> packs;
         for (const auto &e : fs::directory_iterator(root)) {
@@ -184,7 +197,7 @@ extern "C" int mods_list(const char *data_root, const char *game_root,
             need(packs.size() < MODS_MAX, "Too many installed mods.");
             Pack pack;
             try {
-                pack = load_pack(e.path(), fs::u8path(game_root));
+                pack = load_pack(e.path(), fs::u8path(game_root), version);
                 need(id == pack.info.id, "Mod folder and manifest ID differ.");
             } catch (const std::exception &ex) {
                 snprintf(pack.info.id, sizeof pack.info.id, "%s", id.c_str());
@@ -213,13 +226,14 @@ extern "C" int mods_list(const char *data_root, const char *game_root,
         return (int)packs.size();
     } catch (const std::exception &e) { error(why, why_cap, e); return -1; }
 }
-extern "C" bool mods_import(const char *data_root, const char *game_root, const char *source,
+extern "C" bool mods_import(const char *data_root, const char *game_root, const char *version, const char *source,
                              char *why, size_t cap) {
     fs::path stage;
     try {
         auto root = mod_root(data_root);
         auto source_path = fs::absolute(fs::u8path(source)); plain(source_path);
-        auto pack = load_pack(source_path, fs::u8path(game_root));
+        auto pack = load_pack(source_path, fs::u8path(game_root), version);
+        need(pack.info.compatible, "This mod does not support the selected game version.");
         fs::create_directories(root);
         auto target = root / pack.info.id; plain(target);
         need(!fs::exists(target), "A mod with this ID is already installed.");
@@ -234,7 +248,7 @@ extern "C" bool mods_import(const char *data_root, const char *game_root, const 
             auto to = stage/"romfs"/relative;
             fs::create_directories(to.parent_path()); fs::copy_file(file.second, to);
         }
-        auto checked = load_pack(stage, fs::u8path(game_root));
+        auto checked = load_pack(stage, fs::u8path(game_root), version);
         need(checked.info.files == pack.info.files && checked.info.bytes == pack.info.bytes &&
              !strcmp(checked.info.id, pack.info.id), "Mod changed while importing.");
         fs::rename(stage, target); stage.clear();
@@ -244,24 +258,26 @@ extern "C" bool mods_import(const char *data_root, const char *game_root, const 
         error(why, cap, e); return false;
     }
 }
-extern "C" bool mods_enable(const char *data_root, const char *game_root,
+extern "C" bool mods_enable(const char *data_root, const char *game_root, int profile, const char *version,
                              const char *id, bool enabled, char *why, size_t cap) {
     try {
         need(id && id_ok(id), "Invalid mod ID.");
-        auto root = mod_root(data_root); auto ids = enabled_ids(root);
-        if (enabled) { ids.insert(id); need(ids.size() <= MODS_MAX, "Too many enabled mods."); resolve(root, fs::u8path(game_root), ids); }
+        auto root = mod_root(data_root); auto ids = enabled_ids(root, profile);
+        if (enabled) { ids.insert(id); need(ids.size() <= MODS_MAX, "Too many enabled mods."); resolve(root, fs::u8path(game_root), version, ids); }
         else ids.erase(id);
-        save_ids(root, ids);
+        save_ids(root, profile, ids);
         return true;
     } catch (const std::exception &e) { error(why, cap, e); return false; }
 }
-extern "C" bool mods_load_active(const char *data_root, const char *game_root,
+extern "C" bool mods_load_active(const char *data_root, const char *game_root, int profile, const char *version,
                                   char *why, size_t cap) {
     active_files.clear();
     try {
+        // Explicit custom roots have no managed mod configuration.
+        if (profile < 0) return true;
         auto root = mod_root(data_root);
-        active_files = resolve(root, fs::u8path(game_root), enabled_ids(root));
-        fprintf(stderr, "[mods] %zu replacement resources active\n", active_files.size());
+        active_files = resolve(root, fs::u8path(game_root), version, enabled_ids(root,profile));
+        fprintf(stderr, "[mods] %zu replacement resources active for %s\n", active_files.size(), version);
         return true;
     } catch (const std::exception &e) { error(why, cap, e); return false; }
 }

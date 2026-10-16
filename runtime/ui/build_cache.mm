@@ -286,7 +286,7 @@ extern "C" bool build_cache_save_object(BuildCache *c, const char *stem, const c
         return false;
     }
 }
-extern "C" bool build_cache_publish(BuildCache *c, const char *name, const char *runtime_id,
+extern "C" bool build_cache_publish(BuildCache *c, const char *name, const char *runtime_id, const char *main_id,
                                     char *why, size_t cap) {
     try {
         need(library_name(name), "Invalid game library filename.");
@@ -297,7 +297,7 @@ extern "C" bool build_cache_publish(BuildCache *c, const char *name, const char 
         auto tmp = c->root / (std::string(name) + ".tmp");
         need(fs::file_size(tmp) > 0, "The linker did not produce a game library.");
         plain(tmp);
-        write(c->root / "next-id", std::string(runtime_id) + "\n");
+        write(c->root / "next-id", std::string(runtime_id) + "\n" + main_id + "\n");
         bool had_lib = fs::exists(lib), had_id = fs::exists(id);
         if (had_lib)
             fs::copy_file(lib, c->root / "previous-library", fs::copy_options::overwrite_existing);

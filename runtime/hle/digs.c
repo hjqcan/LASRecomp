@@ -30,6 +30,7 @@
 #include <unistd.h>
 
 #include "../hle.h"
+#include "../gameversion.h"
 #include "../rando.h"
 
 #define PLAYER_STATUS_PTR (GA_PLAYER_STATUS_PTR)  // PlayerStatus*: current level name at +0
@@ -41,7 +42,7 @@
 #define STR_POOL (GA_STR_POOL)           // std::vector<{std::string, u64 refs}>: type-5 parameters
 #define STR_POOL_INIT (GA_STR_POOL_INIT)        // its first-use init (clears the vector)
 #define SP_RELEASE (GA_SP_RELEASE)          // shared_ptr release (x0 = control block)
-#define WEAK_RELEASE (GA_WEAK_RELEASE)       // std::__shared_weak_count::__release_weak
+#define WEAK_RELEASE game_main_address(GA_WEAK_RELEASE)       // std::__shared_weak_count::__release_weak
 #define DIG_FLAG_BASE 4096
 #define NTILES (256 * 80)
 #define GOT_FLAG_BASE (DIG_FLAG_BASE + NTILES)

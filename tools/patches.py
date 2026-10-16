@@ -6,6 +6,7 @@ current output shape (or 16:9) per site, so only the 3D cameras widen.
 """
 import struct
 from game_addresses import ADDRESS as A, addr_text
+from game_versions import patch_word
 
 ASPECT_LITERAL = A.ASPECT_LITERAL
 
@@ -21,7 +22,7 @@ ASPECT_SITES = {
 
 
 def _aspect_load(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert (w & 0xffc00000) == 0xbd400000 and ((w >> 10) & 0xfff) * 4 == 0xba4, hex(w)
     rt = w & 31
     return (f'{{ extern float rt_aspect_site(int); float f = rt_aspect_site({ASPECT_SITES[a]}); '
@@ -38,7 +39,7 @@ CULL_ASPECT = A.CULL_ASPECT
 
 
 def _cull_aspect(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xbd457369, hex(w)  # ldr s9, [x27, #0x570]
     return ('{ extern float rt_cull_aspect(float); float o; memcpy(&o, (const void *)(uintptr_t)(c->x[27] + 0x570), 4); '
             'float f = rt_cull_aspect(o); c->v[9] = 0; memcpy(&c->v[9], &f, 4); }'
@@ -54,7 +55,7 @@ FOVY_SITES = {A.FOVY_SITES_0: (0xbd4566e0, 23), A.FOVY_SITES_1: (0xbd456768, 27)
 
 
 def _fovy_load(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     want, rn = FOVY_SITES[a]
     assert w == want, hex(w)
     rt = w & 31
@@ -73,7 +74,7 @@ INDOOR_SITE = A.INDOOR_SITE
 
 
 def _indoor(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert (w & 0xffc00000) == 0xbd400000 and ((w >> 10) & 0xfff) * 4 == 0xba4, hex(w)
     rt = w & 31
     return ('{ extern float rt_indoor_aspect(void); float f = rt_indoor_aspect(); '
@@ -90,7 +91,7 @@ WARP_REQUEST_SITES = {A.WARP_REQUEST_SITES_0: 20, A.WARP_REQUEST_SITES_1: 19}
 
 
 def _warp_request(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     rt = WARP_REQUEST_SITES[a]
     assert w == (0xf900e100 | rt), hex(w)  # str xRT, [x8, #0x1c0]
     return ('{ extern void rt_warp_request_obj(uint64_t); '
@@ -140,7 +141,7 @@ LEVEL_REQUEST_SITE = A.LEVEL_REQUEST_SITE
 
 
 def _level_request(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xd10203ff, hex(w)  # sub sp, sp, #0x80
     return ('{ extern void rt_level_request(Cpu *); rt_level_request(c); c->sp -= 0x80; }'
             f'  /* {a:#x}: sub sp, sp, #0x80 (level-jump request) */')
@@ -156,7 +157,7 @@ ADV_EXIT_DIALOG_SITE = A.ADV_EXIT_DIALOG_SITE
 
 
 def _adv_exit_dialog(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0x9402_5d28 or (w >> 26) == 0x25, hex(w)  # bl
     return addr_text('{ extern int rt_adv_exit_choice(void); extern void f_@ADV_EXIT_DIALOG_TARGET@(Cpu *); '
             'if (!rt_adv_exit_choice()) { c->x[30] = 0x@ADV_EXIT_DIALOG_RETURN@ull; f_@ADV_EXIT_DIALOG_TARGET@(c); } }'
@@ -175,7 +176,7 @@ DAMAGE_FIXED_SITE = A.DAMAGE_FIXED_SITE
 
 
 def _damage_lsl(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert (w & 0xffe0fc00) == 0x1ac02000, hex(w)  # lslv (32-bit)
     rd, rn, rm = w & 31, (w >> 5) & 31, (w >> 16) & 31
     return (f'{{ extern int32_t rt_damage(int32_t, int32_t); c->x[{rd}] = (uint32_t)rt_damage((int32_t)c->x[{rn}], '
@@ -183,7 +184,7 @@ def _damage_lsl(gen, a):
 
 
 def _damage_fixed(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert (w & 0xffe00c00) == 0x1a800000 and (w & 31) == 20, hex(w)  # csel w20, ...
     return ('{ extern int32_t rt_damage(int32_t, int32_t); extern int rt_hero_mode(void); '
             'c->x[20] = (uint32_t)(-rt_damage(2, rt_hero_mode())); }'
@@ -202,7 +203,7 @@ ITEM_EXPLANATION_SITE = A.ITEM_EXPLANATION_SITE
 
 
 def _item_explanation(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xf9407bf6, hex(w)  # ldr x22, [sp, #0xf0]
     return ('{ extern int rt_hide_item_explanation(void); '
             'c->x[22] = rt_hide_item_explanation() ? 0 : LD64(c->sp + 0xf0); }'
@@ -217,7 +218,7 @@ ITEM_NAME_SITE = A.ITEM_NAME_SITE
 
 
 def _item_name(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0x94035896, hex(w)  # bl 0x7000f8c8b0
     return addr_text('c->x[30] = 0x@ITEM_NAME_RETURN@ull; { extern int rt_hide_item_explanation(void); '
             'if (!rt_hide_item_explanation()) f_@ITEM_NAME_TARGET@(c); }'
@@ -233,7 +234,7 @@ ADD_ITEM_SITE = A.ADD_ITEM_SITE  # inner add (34 callers: events, chests, drops)
 
 
 def _add_item(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xd10143ff, hex(w)  # sub sp, sp, #0x50
     return ('{ extern int rt_add_item(Cpu *); if (rt_add_item(c)) return; c->sp -= 0x50; }'
             f'  /* {a:#x}: sub sp, sp, #0x50 (AddItem: keysanity) */')
@@ -248,7 +249,7 @@ PRIZE_ADD_SITE = A.PRIZE_ADD_SITE
 
 
 def _prize_add(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0x2a1403e2, hex(w)  # mov w2, w20
     return ('{ c->x[2] = (uint32_t)c->x[20]; extern void rt_add_prize(Cpu *); rt_add_prize(c); }'
             f'  /* {a:#x}: mov w2, w20 (AddPrize index; trendsanity) */')
@@ -263,7 +264,7 @@ ITEMS_PAGE_SITE = A.ITEMS_PAGE_SITE
 
 
 def _items_page(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xd10243ff, hex(w)  # sub sp, sp, #0x90
     return ('{ extern void rt_items_page_tick(void); rt_items_page_tick(); c->sp -= 0x90; }'
             f'  /* {a:#x}: sub sp, sp, #0x90 (items page shown) */')
@@ -278,7 +279,7 @@ MAP_PAGE_SITE = A.MAP_PAGE_SITE
 
 
 def _map_page(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xd10203ff, hex(w)  # sub sp, sp, #0x80
     return ('{ extern void rt_map_page_tick(Cpu *); rt_map_page_tick(c); c->sp -= 0x80; }'
             f'  /* {a:#x}: sub sp, sp, #0x80 (map page shown) */')
@@ -293,7 +294,7 @@ DGN_MAP_SITE = A.DGN_MAP_SITE
 
 
 def _dgn_map(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xd10243ff, hex(w)  # sub sp, sp, #0x90
     return ('{ extern void rt_dgnmap_tick(Cpu *); rt_dgnmap_tick(c); c->sp -= 0x90; }'
             f'  /* {a:#x}: sub sp, sp, #0x90 (dungeon map page shown) */')
@@ -308,7 +309,7 @@ RES_NAME_SITE = A.RES_NAME_SITE
 
 
 def _res_name(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xd10503ff, hex(w)  # sub sp, sp, #0x140
     return ('{ extern void rt_log_resname(uint64_t); rt_log_resname(c->x[2]); c->sp -= 0x140; }'
             f'  /* {a:#x}: sub sp, sp, #0x140 (resource-by-name debug log) */')
@@ -334,7 +335,7 @@ FRAME_STEPS_SITE = A.FRAME_STEPS_SITE
 
 
 def _frame_steps(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xb8696908, hex(w)  # ldr w8, [x8, x9]
     return ('{ extern uint32_t rt_frame_steps(uint32_t interval); '
             'c->x[8] = rt_frame_steps(LD32(c->x[8] + c->x[9])); }'
@@ -365,7 +366,7 @@ BOTTLE3_USE_SITE = A.BOTTLE3_USE_SITE
 
 
 def _bottle3_use(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0x1a9f17e0, hex(w)  # cset w0, eq
     return ('{ extern int rt_bottle3_use(void); c->x[0] = COND_NE(c) ? 0 : 1; if (c->x[0] && rt_bottle3_use()) c->x[0] = 0; }'
             f'  /* {a:#x}: cset w0, eq (third bottle used: Escape Bottle) */')
@@ -381,7 +382,7 @@ BOSS_SPAWN_SITE = A.BOSS_SPAWN_SITE
 
 
 def _boss_spawn(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xf9400118, hex(w)  # ldr x24, [x8]
     return ('{ extern uint64_t rt_actor_create_fn(uint64_t fn, uint32_t type, uint64_t info); '
             'c->x[24] = rt_actor_create_fn(LD64(c->x[8]), (uint32_t)c->x[23], c->x[2]); }'
@@ -397,7 +398,7 @@ HOOKSHOT_ATTR_SITE = A.HOOKSHOT_ATTR_SITE
 
 
 def _hookshot_attr(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xb9403bf7, hex(w)  # ldr w23, [sp, #0x38]
     return ('{ extern uint32_t rt_hookshot_attr(Cpu *, uint32_t); '
             'c->x[23] = rt_hookshot_attr(c, LD32(c->sp + 0x38)); }'
@@ -414,7 +415,7 @@ SNAP_DIR_SITE = A.SNAP_DIR_SITE
 
 
 def _snap_dir(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xd10103ff, hex(w)  # sub sp, sp, #0x40
     return ('{ extern int rt_snap_dir(Cpu *); if (rt_snap_dir(c)) return; c->sp -= 0x40; }'
             f'  /* {a:#x}: sub sp, sp, #0x40 (8-way stick snap: 360-degree movement) */')
@@ -430,7 +431,7 @@ BUFF_REPLACE_SITE = A.BUFF_REPLACE_SITE
 
 
 def _buff_replace(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0x3940e308, hex(w)  # ldrb w8, [x24, #0x38]
     return ('{ extern int rt_buff_replace(int); c->x[8] = (uint32_t)rt_buff_replace(LD8(c->x[24] + 0x38)); }'
             f'  /* {a:#x}: ldrb w8, [x24, #0x38] (mAllowBuffReplace: no-buff-drops) */')
@@ -446,7 +447,7 @@ TILT_INIT_SITE = A.TILT_INIT_SITE
 
 
 def _tilt_init(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xd10243ff, hex(w)  # sub sp, sp, #0x90
     return ('{ extern void rt_tilt_obj(uint64_t); rt_tilt_obj(c->x[0]); c->sp -= 0x90; }'
             f'  /* {a:#x}: sub sp, sp, #0x90 (tilt-shift set-up: blur removal) */')
@@ -464,7 +465,7 @@ MISSING_STRING_SITE = A.MISSING_STRING_SITE
 
 
 def _missing_string(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0x321c03e0, hex(w)  # mov w0, #0x10 (orr w0, wzr, #0x10: __cxa_allocate_exception size)
     # "" (the terminator of ".ptcl" right before the message; callers strlen() the result, so not NULL)
     return addr_text('{ ST64(c->sp + 0x18, 0x@EMPTY_STRING@ull); ST32(c->sp + 0x20, 0); goto L_@MISSING_STRING_RETURN@; }'
@@ -481,7 +482,7 @@ MISSING_FLOAT_SITE = A.MISSING_FLOAT_SITE
 
 
 def _missing_float(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0x321c03e0, hex(w)  # mov w0, #0x10 (__cxa_allocate_exception size)
     # s0 = 0.0 (q0 at Cpu+512), then the function's own epilogue
     return ('{ __builtin_memset((char *)c + 512, 0, 16);'
@@ -504,7 +505,7 @@ TUNIC_CLEAR_SITES = {
 
 def _tunic_clear(gen, a):
     word, mask, what = TUNIC_CLEAR_SITES[a]
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == word, hex(w)
     return ('{ extern int rt_tunic_upgrades(void); '
             f'if (!rt_tunic_upgrades()) c->x[9] = (uint32_t)((uint32_t)c->x[9] & {mask:#x}u); }}'
@@ -523,7 +524,7 @@ UNDERWATER_OWNED_SITE = A.UNDERWATER_OWNED_SITE
 
 
 def _underwater_owned(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0x9400351e, hex(w)  # bl 0x8d1a30 (HasItem)
     return addr_text('{ extern int rt_underwater_skip_owned(uint64_t); if (rt_underwater_skip_owned(c->x[20])) c->x[0] = 0; '
             'else { extern void f_@HAS_ITEM@(Cpu *); c->x[30] = 0x@UNDERWATER_OWNED_RETURN@ull; f_@HAS_ITEM@(c); } }'
@@ -541,7 +542,7 @@ UNDERWATER_VIEW_SITE = A.UNDERWATER_VIEW_SITE
 
 
 def _underwater_view(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0x1a9f07fb, hex(w)  # cset w27, ne (under_water != 0)
     return ('{ extern int rt_underwater_items(void); c->x[27] = (rt_underwater_items() || COND_NE(c)) ? 1u : 0u; }'
             f'  /* {a:#x}: cset w27, ne (under_water: forced on for sunken items) */')
@@ -555,7 +556,7 @@ UNDERWATER_PICKUP_SITE = A.UNDERWATER_PICKUP_SITE
 
 
 def _underwater_pickup(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0x9420589f, hex(w)  # bl 0x89b960
     return addr_text('{ extern int rt_underwater_skip_owned(uint64_t); if (!rt_underwater_skip_owned(c->x[19])) '
             '{ extern void f_@HEART_PIECE_ADD@(Cpu *); c->x[30] = 0x@UNDERWATER_PICKUP_RETURN@ull; f_@HEART_PIECE_ADD@(c); } }'
@@ -579,7 +580,7 @@ NO_HANDLER_SITES = {
 
 
 def _no_handler(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     want, code, what = NO_HANDLER_SITES[a]
     assert w == want, hex(w)
     return f'{{ {code} }}  /* {a:#x}: {what} */'
@@ -595,7 +596,7 @@ PROMPT_POS_SITE = A.PROMPT_POS_SITE
 
 
 def _prompt_pos(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0x2d060102, hex(w)  # stp s2, s0, [x8, #0x30]
     return ('{ extern float rt_prompt_x(uint64_t pane, float x); float px_, py_; memcpy(&px_, &c->v[2], 4); '
             'memcpy(&py_, &c->v[0], 4); px_ = rt_prompt_x(c->x[8], px_); '
@@ -617,7 +618,7 @@ DELEGATE_FORWARDER_SITES = [A.DELEGATE_FORWARDER_SITES_0, A.DELEGATE_FORWARDER_S
 
 
 def _delegate_forwarder(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0xaa0003e1, hex(w)  # mov x1, x0
     slot = 0x28 if a == A.DELEGATE_FORWARDER_SITES_0 else 0x30
     return ('{ extern int rt_delegate_null(Cpu *, int); if (rt_delegate_null(c, %#x)) return; c->x[1] = c->x[0]; }'

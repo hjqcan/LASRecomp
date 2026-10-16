@@ -14,3 +14,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: python tools/test_game_addresses.py
+      - run: python tools/test_version_hooks.py

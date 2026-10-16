@@ -16,7 +16,8 @@ RANDO = os.path.join(ROOT, 'tools', 'rando')
 LAS = os.path.join(ROOT, 'third_party', 'LAS-Randomizer')
 
 datas = [(f, '.') for e in ('json', 'yml', 'txt') for f in glob.glob(os.path.join(RANDO, '*.' + e))]
-datas += [(os.path.join(LAS, 'RandomizerCore', 'Data'), 'RandomizerCore/Data'),
+datas += [(os.path.join(ROOT, 'runtime', 'game_addresses', 'v1_0_0.h'), 'runtime/game_addresses'),
+          (os.path.join(LAS, 'RandomizerCore', 'Data'), 'RandomizerCore/Data'),
           (os.path.join(LAS, 'RandomizerCore', 'ASM', 'Patches'), 'RandomizerCore/ASM/Patches'),
           (os.path.join(LAS, 'Resources'), 'Resources')]
 
@@ -39,7 +40,7 @@ if not binaries:
 
 a = Analysis(
     [os.path.join(RANDO, 'las_headless.py')],
-    pathex=[RANDO, LAS],
+    pathex=[RANDO, LAS, os.path.join(ROOT, "tools")],
     binaries=binaries,
     datas=datas,
     hiddenimports=collect_submodules('RandomizerCore'),

@@ -17,6 +17,8 @@
 
 #include "hle.h"
 #include "settings.h"
+#include "gameversion.h"
+#include "rando_profile.h"
 
 #define MAIN_BASE 0x7000000000ull
 #define WORD_TAB 256
@@ -41,66 +43,40 @@ static void apply_data(uint64_t img_off, const uint8_t *bytes, size_t n) {
     memcpy(p, bytes, n);
 }
 
-static bool is_code(uint64_t off) { return off < 0x16a0000; }
-
-static void load_pchtxt(const char *path) {
-    FILE *f = fopen(path, "r");
-    if (!f) { LOG("[rando] no %s\n", path); return; }
-    char line[4096];
-    bool enabled = false;
-    int ndata = 0;
-    while (fgets(line, sizeof line, f)) {
-        if (!strncmp(line, "@enabled", 8)) { enabled = true; continue; }
-        if (!strncmp(line, "@stop", 5)) { enabled = false; continue; }
-        if (!enabled) continue;
-        unsigned off;
-        char hex[4000];
-        if (sscanf(line, "%8x %3999s", &off, hex) != 2) continue;
-        size_t n = 0;
-        uint8_t bytes[2000];
-        bool is_string = hex[0] == '"';
-        if (is_string) {  // "text" (string patch)
-            char *q = strchr(line, '"'), *e = q ? strrchr(q + 1, '"') : NULL;
-            if (!q || !e) continue;
-            n = (size_t)(e - q - 1);
-            memcpy(bytes, q + 1, n);
-            bytes[n++] = 0;
-        } else {
-            for (size_t i = 0; hex[2 * i] && hex[2 * i + 1] && n < sizeof bytes; i++) {
-                unsigned b;
-                sscanf(hex + 2 * i, "%2x", &b);
-                bytes[n++] = (uint8_t)b;
-            }
-        }
-        if (!is_code(off) || is_string) {
-            apply_data(off, bytes, n);
-            ndata++;
-            continue;
-        }
-        for (size_t i = 0; i + 4 <= n && nwords < WORD_TAB; i += 4) {
-            uint32_t w;
-            memcpy(&w, bytes + i, 4);
-            words[nwords].addr = MAIN_BASE + off + i;
-            words[nwords].word = w;
-            nwords++;
-        }
+static bool load_pchtxt(const char *path) {
+    RandoPatchSet patches;
+    char why[256];
+    if (!rando_patch_read(path, game_version_current(), &patches, why, sizeof why)) {
+        LOG("[rando] rejected seed: %s\n", why);
+        return false;
     }
-    fclose(f);
-    LOG("[rando] %d code words, %d data patches from %s\n", nwords, ndata, path);
+    for (int i = 0; i < patches.code_count; ++i) {
+        words[nwords].addr = game_main_address(MAIN_BASE + patches.code[i].offset);
+        words[nwords++].word = patches.code[i].word;
+    }
+    for (int i = 0; i < patches.data_count; ++i)
+        apply_data(patches.data[i].offset, patches.data[i].bytes, patches.data[i].size);
+    LOG("[rando] %d validated code words, %d data patches from %s\n", nwords, patches.data_count, path);
+    return true;
 }
 
-static void init(void) {
+static bool init(void) {
     settings_load();
     const char *seed = getenv("LARECOMP_RANDO_SEED") ? getenv("LARECOMP_RANDO_SEED") : g_settings.rando_seed;
-    if (!seed || !seed[0]) return;
+    if (!seed || !seed[0]) return true;
+    if (!rando_seed_name_valid(seed)) { LOG("[rando] invalid seed name\n"); return false; }
     snprintf(g_seed_dir, sizeof g_seed_dir, "rando/%s", seed);
     struct stat sb;
-    if (stat(g_seed_dir, &sb) || !S_ISDIR(sb.st_mode)) { LOG("[rando] seed folder %s missing; playing vanilla\n", g_seed_dir); return; }
-    g_active = true;
+    if (stat(g_seed_dir, &sb) || !S_ISDIR(sb.st_mode)) { LOG("[rando] seed folder %s missing\n", g_seed_dir); return false; }
+    if (!rando_seed_compatible(g_seed_dir, game_version_current())) {
+        LOG("[rando] seed belongs to another game version\n"); return false;
+    }
     char p[600];
-    snprintf(p, sizeof p, "%s/exefs/1.0.0.pchtxt", g_seed_dir);
-    load_pchtxt(p);
+    snprintf(p, sizeof p, "%s/exefs/%s", g_seed_dir, rando_patch_filename(game_version_current()));
+    if (!load_pchtxt(p)) return false;
+    g_active = true;
     LOG("[rando] seed \"%s\" active\n", seed);
+    return true;
 }
 
 void rando_init(void) {
@@ -112,14 +88,15 @@ void rando_init(void) {
 
 // Each boot, right after the modules are loaded (runtime/main.c): the chosen seed (it may have changed since the
 // last boot) and its data patches, into the freshly loaded module.
-void rando_boot(void) {
+bool rando_boot(void) {
     pthread_mutex_lock(&g_init_lock);
     nwords = 0;
     g_active = false;
     g_seed_dir[0] = 0;
-    init();
+    bool ok = init();
     __atomic_store_n(&g_inited, 1, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_init_lock);
+    return ok;
 }
 
 // Pick the seed for the next boot ("" = vanilla) and remember it (larecomp.ini); a choice made in the game wins over

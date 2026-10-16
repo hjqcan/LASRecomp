@@ -1,10 +1,10 @@
 # Resource mods
 
-The Mods tab imports a local folder of replacement resources for the already-extracted game. Game setup and supported game versions are unchanged. No game package/archive reader, downloader or executable patch loader is added.
+The Mods tab imports a local folder of replacement resources for the selected installation. Enhanced game setup supports folders and archives; see [import and versions](NSZ-and-v110.md). Resource packs themselves contain replacement files, not executable patches.
 
 ## Install and enable
 
-1. Set up your own game files through the existing folder-based setup and restart LAS Recomp.
+1. Set up your own game files through Game Files and restart LAS Recomp.
 2. Open **Settings → Mods → Import mod folder**. Choose a folder containing `mod.ini` and `romfs/`.
 3. Select a row to inspect the pack's metadata, file count and size. Enable its checkbox, then start the game.
 
@@ -21,6 +21,7 @@ name=Example resources
 version=1.0
 author=Your name
 description=Describe the resource changes here.
+game_versions=1.0.0,1.1.0
 ```
 
 `format`, `id` and `name` are required. IDs begin with a lowercase ASCII letter and contain only lowercase letters, digits, `-` and `_`, with at most 63 bytes. Metadata has bounded lengths; duplicate/unknown fields, invalid UTF-8 and control characters are rejected. Displayed metadata uses the existing UI font's glyph coverage.
@@ -31,11 +32,11 @@ Limits: 64 installed packs, 4,096 files per pack, 1 GiB per file, 8 GiB per pack
 
 ## Storage and conflicts
 
-Packs live under `<data root>/mods/<id>/`; `<data root>/mods/enabled.txt` contains enabled IDs. The same selection is used for the game's existing Vanilla and randomizer modes. Two enabled packs cannot replace the same path; comparisons fold ASCII case so a conflict is detected consistently across platforms.
+Packs live under `<data root>/mods/<id>/`; separate enable lists are maintained for the existing installation, v1.0.0 and v1.1.0. Each installation uses its selection for Vanilla and compatible randomizer seeds. Two enabled packs cannot replace the same path; comparisons fold ASCII case so a conflict is detected consistently across platforms.
 
 Read priority is **randomizer seed → enabled mod → installed game** for the guest RomFS and movies. Built-in texture identification uses mod-or-original references, retaining its existing seed-independent cache; mod selection stays fixed until restart. A seed's additional virtual files remain managed by the existing randomizer code.
 
-Missing or invalid enabled packs cause startup to fail with an error, instead of silently changing resources. Restart, open Mods and disable the invalid row. If `enabled.txt` itself is malformed, close LAS Recomp and remove that file to disable all packs; installed resources remain intact. The feature does not migrate saves, create installation/version slots or implement backup storage.
+Missing or invalid enabled packs cause startup to fail with an error, instead of silently changing resources. Restart, open Mods and disable the invalid row. If an enable list is malformed, close LAS Recomp and remove only the affected list to disable its packs; installed resources remain intact. Changing selection requires a successful backup when current saves exist.
 
 ## Validation
 

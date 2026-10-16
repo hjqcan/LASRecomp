@@ -21,7 +21,7 @@ int build_cache_object(BuildCache *cache, const char *stem, const char *source, 
 bool build_cache_save_object(BuildCache *cache, const char *stem, const char *source, const char *source_hash,
                              char *why, size_t cap);
 // Publishes <name>.tmp from the cache with the matching .id, preserving the previous pair on failure.
-bool build_cache_publish(BuildCache *cache, const char *name, const char *runtime_id, char *why,
+bool build_cache_publish(BuildCache *cache, const char *name, const char *runtime_id, const char *main_id, char *why,
                          size_t cap);
 #ifdef __cplusplus
 }

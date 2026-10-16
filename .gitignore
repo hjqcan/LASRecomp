@@ -1,6 +1,13 @@
 # your own game files and what's made from them (building from source puts them here)
 input/
 extracted/
+/games/
+*.nsz
+*.nsp
+*.xci
+*.xcz
+*.keys
+/lasrecomp.log
 generated/
 generated-*/
 /rando/

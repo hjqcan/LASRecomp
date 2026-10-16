@@ -5,8 +5,10 @@
 #include <string.h>
 
 #include "gamelib.h"
-#include "photo.h"
+#include "gameversion.h"
+#include "game_profiles.h"
 #include "mods.h"
+#include "photo.h"
 #include "paths.h"
 #include "settings.h"
 #include "hle.h"
@@ -126,8 +128,13 @@ static void teardown(void) {
 }
 
 static void boot(const char *root) {
-    photo_mode_exit();
+    game_profile_activate(root, rt_data_root());
+    extern void save_backups_set_game_root(const char *);
+    extern void rando_set_game_root(const char *);
+    save_backups_set_game_root(root);
+    rando_set_game_root(root);
     mods_set_game_root(root);
+    photo_mode_exit();
     char exefs[1024], romfs[1024], npdm_path[1024];
     snprintf(exefs, sizeof exefs, "%s/exefs", root);
     snprintf(romfs, sizeof romfs, "%s/romfs", root);
@@ -136,9 +143,15 @@ static void boot(const char *root) {
 
     char why[512];
     if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
-    if (!mods_load_active(rt_data_root(), root, why, sizeof why)) FATAL("%s\n", why);
+    char main_path[1100];
+    snprintf(main_path, sizeof main_path, "%s/main", exefs);
+    game_version_select(main_path);
+    if (game_version_current() == GAME_UNSUPPORTED) FATAL("unsupported game executable\n");
+    LOG("[game] version %s\n", game_version_name(game_version_current()));
+    if (!mods_load_active(rt_data_root(), root, game_profile_index(root, rt_data_root()),
+                          game_version_name(game_version_current()), why, sizeof why)) FATAL("%s\n", why);
     loader_load(exefs);
-    rando_boot();  // the chosen seed's data patches go into the freshly loaded module
+    if (!rando_boot()) FATAL("The selected randomizer seed could not be loaded. Choose Vanilla or a compatible seed on the start screen.\n");
     { extern void settings_load(void); settings_load(); }
     kernel_init();
     dispatch_init();
@@ -171,7 +184,7 @@ int main(int argc, char **argv) {
 #else
     setvbuf(stderr, NULL, _IOLBF, 0);
 #endif
-    const char *root = "extracted";  // (in the data root)
+    const char *root = NULL;  // no explicit CLI path: use the selected installation
     bool skip_launcher = getenv("LARECOMP_NO_LAUNCHER") || getenv("LARECOMP_INPUT");  // tests boot straight in
     static char arg_root[1024];
     for (int i = 1; i < argc; i++) {
@@ -180,10 +193,12 @@ int main(int argc, char **argv) {
         else if (argv[i][0] != '-') root = arg_root;
     }
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
+    settings_load();
+    if (!root) root = game_profile_dir(g_settings.game_profile);
     for (bool title = !skip_launcher;;) {
         if (title) {  // start screen (runtime/ui/launcher.mm): game files setup, seed choice, settings
-            extern void launcher_run(const char *root);
-            launcher_run(root);
+            extern const char *launcher_run(const char *root);
+            root = launcher_run(root);
         }
         boot(root);
         int kind = ui_run();  // window and input on the main thread; returns when a reboot is requested

@@ -6,6 +6,7 @@
 #include <stdio.h>
 
 #include "imgui.h"
+#include "localization.h"
 
 extern "C" {
 #include "../input_bind.h"
@@ -15,9 +16,9 @@ extern "C" {
 static void cell(int dev, int slot, int fam, int cap_dev, int cap_slot, int ms_left) {
     char lbl[96];
     bool waiting = cap_dev == dev && cap_slot == slot;
-    if (waiting) snprintf(lbl, sizeof lbl, "Press %s...  %d##%d_%d", dev == BIND_DEV_PAD ? "a button" : "a key",
+    if (waiting) snprintf(lbl, sizeof lbl, ui_tr("Press %s...  %d###%d_%d"), ui_tr(dev == BIND_DEV_PAD ? "a button" : "a key"),
                           (ms_left + 999) / 1000, dev, slot);
-    else snprintf(lbl, sizeof lbl, "%s##%d_%d", dev == BIND_DEV_PAD ? bind_pad_label(g_bind_pad[slot], fam) :
+    else snprintf(lbl, sizeof lbl, "%s###%d_%d", dev == BIND_DEV_PAD ? bind_pad_label(g_bind_pad[slot], fam) :
                                                  bind_key_label(g_bind_key[slot]), dev, slot);
     // changed from the default: gold text; the same button / key on two inputs (a hand-edited larecomp.ini): red
     const int16_t *t = dev == BIND_DEV_PAD ? g_bind_pad : g_bind_key;
@@ -27,7 +28,7 @@ static void cell(int dev, int slot, int fam, int cap_dev, int cap_slot, int ms_l
     if (waiting) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.42f, 0.12f, 1)); pushed++; }
     else if (dup) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.16f, 0.12f, 1)); pushed++; }
     if (!bind_is_default_slot(dev, slot)) { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.98f, 0.82f, 0.38f, 1)); pushed++; }
-    if (ImGui::Button(lbl, ImVec2(-FLT_MIN, 0))) {
+    if (ImGui::Button(ui_label(lbl).c_str(), ImVec2(-FLT_MIN, 0))) {
         if (waiting) bind_capture_cancel();
         else bind_capture_begin(dev, slot);
     }
@@ -42,42 +43,45 @@ extern "C" void controls_bindings_draw(float scale) {
     int n = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
     const char *pad_name = ids && n > 0 ? SDL_GetGamepadNameForID(ids[0]) : NULL;
-    char line[200];
-    if (n > 0) snprintf(line, sizeof line, "Controller: %s  (%s button names)", pad_name ? pad_name : "connected", fam_name[fam % 3]);
-    else snprintf(line, sizeof line, "No controller connected  (%s button names shown)", fam_name[fam % 3]);
+    char line[512];
+    if (n > 0) snprintf(line, sizeof line, ui_tr("Controller: %s  (%s button names)"), pad_name ? pad_name : "connected", fam_name[fam % 3]);
+    else snprintf(line, sizeof line, ui_tr("No controller connected  (%s button names shown)"), fam_name[fam % 3]);
     SDL_free(ids);
-    ImGui::TextUnformatted(line);
+    ImGui::TextUnformatted(ui_tr(line));
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("Select a binding, then press the new button or key. Esc (or 5 seconds) cancels. A button "
-                        "that's already in use swaps with the old one.");
+    ImGui::TextDisabled("%s", ui_tr("Select a binding, then press the new button or key. Esc (or 5 seconds) cancels. A button "
+                        "that's already in use swaps with the old one."));
     ImGui::PopTextWrapPos();
 
     int cd, cs, ms;
     bind_capture_active(&cd, &cs, &ms);
     // a finished capture: say what happened, keep larecomp.ini current
     static int seen_serial = -1;
-    static char msg[200];
+    static char msg[512];
     int rdev, rslot, rother, serial;
     int kind = bind_last_result(&rdev, &rslot, &rother, &serial);
     if (seen_serial < 0) seen_serial = serial;
-    if (serial != seen_serial) {
+    static std::string last_language;
+    bool changed = serial != seen_serial;
+    if (changed || last_language != settings_language()) {
+        last_language = settings_language();
         seen_serial = serial;
         const char *now = rslot < 0 ? "" : rdev == BIND_DEV_PAD ? bind_pad_label(g_bind_pad[rslot], fam) : bind_key_label(g_bind_key[rslot]);
-        if (kind == 5) snprintf(msg, sizeof msg, "%s bindings reset to the defaults.", rdev == BIND_DEV_PAD ? "Controller" : "Keyboard");
-        else if (kind == 1) snprintf(msg, sizeof msg, "%s is now %s.", bind_input_name(rslot), now);
+        if (kind == 5) snprintf(msg, sizeof msg, ui_tr("%s bindings reset to the defaults."), ui_tr(rdev == BIND_DEV_PAD ? "Controller" : "Keyboard"));
+        else if (kind == 1) snprintf(msg, sizeof msg, ui_tr("%s is now %s."), ui_tr(bind_input_name(rslot)), now);
         else if (kind == 2)
-            snprintf(msg, sizeof msg, "%s is now %s; %s moved to %s (swapped).", bind_input_name(rslot), now,
-                     bind_input_name(rother), rdev == BIND_DEV_PAD ? bind_pad_label(g_bind_pad[rother], fam) : bind_key_label(g_bind_key[rother]));
-        else if (kind == 3) snprintf(msg, sizeof msg, "Cancelled: %s unchanged.", bind_input_name(rslot));
-        else if (kind == 4) snprintf(msg, sizeof msg, "Nothing pressed: %s unchanged.", bind_input_name(rslot));
-        if (kind == 1 || kind == 2 || kind == 5) settings_save();
+            snprintf(msg, sizeof msg, ui_tr("%s is now %s; %s moved to %s (swapped)."), ui_tr(bind_input_name(rslot)), now,
+                     ui_tr(bind_input_name(rother)), rdev == BIND_DEV_PAD ? bind_pad_label(g_bind_pad[rother], fam) : bind_key_label(g_bind_key[rother]));
+        else if (kind == 3) snprintf(msg, sizeof msg, ui_tr("Cancelled: %s unchanged."), ui_tr(bind_input_name(rslot)));
+        else if (kind == 4) snprintf(msg, sizeof msg, ui_tr("Nothing pressed: %s unchanged."), ui_tr(bind_input_name(rslot)));
+        if (changed && (kind == 1 || kind == 2 || kind == 5)) settings_save();
     }
     if (msg[0]) ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", msg);
 
     if (ImGui::BeginTable("##binds", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
-        ImGui::TableSetupColumn("Switch", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn("Controller", ImGuiTableColumnFlags_WidthStretch, 1.3f);
-        ImGui::TableSetupColumn("Keyboard", ImGuiTableColumnFlags_WidthStretch, 1.3f);
+        ImGui::TableSetupColumn(ui_label("Switch").c_str(), ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn(ui_label("Controller").c_str(), ImGuiTableColumnFlags_WidthStretch, 1.3f);
+        ImGui::TableSetupColumn(ui_label("Keyboard").c_str(), ImGuiTableColumnFlags_WidthStretch, 1.3f);
         ImGui::TableHeadersRow();
         // in the order a player thinks of them: face buttons, shoulders, Plus / Minus, d-pad, sticks
         static const int order[] = {BIND_A, BIND_B, BIND_X, BIND_Y, BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_PLUS,
@@ -88,10 +92,10 @@ extern "C" void controls_bindings_draw(float scale) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(bind_input_name(slot));
+            ImGui::TextUnformatted(ui_tr(bind_input_name(slot)));
             ImGui::TableNextColumn();
             if (slot < BIND_PAD_COUNT) cell(BIND_DEV_PAD, slot, fam, cd, cs, ms);
-            else ImGui::TextDisabled(slot < BIND_RS_UP ? "Left stick" : "Right stick");
+            else ImGui::TextDisabled("%s", ui_tr(slot < BIND_RS_UP ? "Left stick" : "Right stick"));
             ImGui::TableNextColumn();
             cell(BIND_DEV_KEY, slot, fam, cd, cs, ms);
         }
@@ -99,16 +103,16 @@ extern "C" void controls_bindings_draw(float scale) {
     }
     ImGui::Spacing();
     ImGui::BeginDisabled(bind_is_default(BIND_DEV_PAD));
-    if (ImGui::Button("Reset controller to defaults")) { bind_capture_cancel(); bind_reset(BIND_DEV_PAD); }
+    if (ImGui::Button(ui_label("Reset controller to defaults").c_str())) { bind_capture_cancel(); bind_reset(BIND_DEV_PAD); }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(bind_is_default(BIND_DEV_KEY));
-    if (ImGui::Button("Reset keyboard to defaults")) { bind_capture_cancel(); bind_reset(BIND_DEV_KEY); }
+    if (ImGui::Button(ui_label("Reset keyboard to defaults").c_str())) { bind_capture_cancel(); bind_reset(BIND_DEV_KEY); }
     ImGui::EndDisabled();
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("Bindings apply to the game only. Menus keep the fixed layout (right face button / Enter "
+    ImGui::TextDisabled("%s", ui_tr("Bindings apply to the game only. Menus keep the fixed layout (right face button / Enter "
                         "select, bottom face button / Esc back), and the in-game menu always opens with F1 or Esc, or "
                         "the controller's Back + Start held together, or its Home / Guide button - so this page can't be "
-                        "locked out. The game's button icons follow the controller bindings.");
+                        "locked out. The game's button icons follow the controller bindings."));
     ImGui::PopTextWrapPos();
 }

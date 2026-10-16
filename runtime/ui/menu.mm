@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "imgui.h"
+#include "localization.h"
 #include "option_rows.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
@@ -67,6 +68,7 @@ static void push(const QEvent &e) {
 
 bool menu_is_open(void) { return g_open.load(); }
 static void set_open(bool open);
+extern "C" void menu_close(void) { set_open(false); }
 extern "C" void menu_test_open(void) {
     set_open(true);
     if (getenv("LARECOMP_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("LARECOMP_MENU_TAB")); }
@@ -150,7 +152,6 @@ static int g_kbd_max = 8;
 static bool capturing() { return g_open.load() || g_kbd.load() == 1 || photo_mode_active(); }
 // The game gets no input while this is true (runtime/hle/input.c): menu or name entry up.
 extern "C" bool menu_input_captured(void) { return capturing(); }
-extern "C" void menu_close(void) { set_open(false); }
 
 bool menu_handle_event(const SDL_Event *e) {
     static bool back_down, start_down;
@@ -366,6 +367,8 @@ static void init(void) {
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
+    for (ImFont *font : {g_font, g_font_big, g_menu_font, g_menu_font_big}) ui_merge_language_font(font);
+    ui_add_user_font();
     style_init();
 #ifdef __APPLE__
     ImGui_ImplMetal_Init(dev);
@@ -395,7 +398,7 @@ static void drain_events(ImGuiIO &io) {
 // Section header in the big font.
 static void header(const char *t) {
     ImGui::PushFont(g_font_big);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", t);
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", ui_tr(t));
     ImGui::PopFont();
     ImGui::Separator();
     ImGui::Spacing();
@@ -403,7 +406,7 @@ static void header(const char *t) {
 
 static void hint(const char *t) {
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", t);
+    ImGui::TextDisabled("%s", ui_tr(t));
     ImGui::PopTextWrapPos();
 }
 
@@ -412,13 +415,13 @@ static void hint(const char *t) {
 static bool choice(const char *label, int *value, const char *const *names, int n, float reserve = 0) {
     ImGui::PushID(label);
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(label);
+    ImGui::TextUnformatted(ui_tr(label));
     ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.45f);
     bool changed = false;
     ImGui::SetNextItemWidth(reserve > 0 ? -reserve : -1);
-    if (ImGui::BeginCombo("##c", names[*value])) {
+    if (ImGui::BeginCombo("##c", ui_tr(names[*value]))) {
         for (int i = 0; i < n; i++) {
-            if (ImGui::Selectable(names[i], i == *value)) { *value = i; changed = true; }
+            if (ImGui::Selectable(ui_label(names[i]).c_str(), i == *value)) { *value = i; changed = true; }
             if (i == *value) ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
@@ -475,13 +478,13 @@ static void tab_display(void) {
         for (int i = 0; i < NRES; i++) if (res_mode[i] == g_settings.res_mode) ri = i;
         float sx, sy;
         renderer_get_scale(&sx, &sy);
-        char d[400];
-        int n = snprintf(d, sizeof d, "How sharp the 3D image is. Match display: your screen's own resolution. Dynamic: "
+        char d[1600];
+        int n = snprintf(d, sizeof d, ui_tr("How sharp the 3D image is. Match display: your screen's own resolution. Dynamic: "
                                       "as sharp as your GPU keeps at full speed. 1x-4x: the Switch's 1080p times that. "
                                       "75%% / 50%% / 25%%: a share of the display, for slower machines.\n\nRendering at "
-                                      "%.0f x %.0f.", 1920.0 * sx, 1080.0 * sy);
+                                      "%.0f x %.0f."), 1920.0 * sx, 1080.0 * sy);
         if (g_settings.res_mode == RES_DYNAMIC)
-            snprintf(d + n, sizeof d - n, " Dynamic: %.0f%% of the display right now.", output_scale_dynamic_factor() * 100);
+            snprintf(d + n, sizeof d - n, ui_tr(" Dynamic: %.0f%% of the display right now."), output_scale_dynamic_factor() * 100);
         if (opt_choice("Internal resolution", &ri, res, NRES, RES_MATCH_AT, d, false)) g_settings.res_mode = res_mode[ri];
     }
     {   // each OS's own upscaler next to bilinear (UPSCALE_SHARP: MetalFX on macOS, AMD FSR 1 on Windows)
@@ -495,9 +498,9 @@ static void tab_display(void) {
                          "edge-aware upscaling and sharpening, sharper. Bilinear: plain and soft.";
 #endif
         int ui = g_settings.upscaler == UPSCALE_BILINEAR ? 0 : 1;
-        char udm[512];
+        char udm[1600];
         if (g_settings.res_mode == RES_MATCH) {  // (renders at the window's size: nothing to scale up)
-            snprintf(udm, sizeof udm, "%s\n\nNot used at Match display: the game already renders at your display's resolution.", ud);
+            snprintf(udm, sizeof udm, ui_tr("%s\n\nNot used at Match display: the game already renders at your display's resolution."), ui_tr(ud));
             ud = udm;
             opt_disable_next();
         }
@@ -552,10 +555,10 @@ static void tab_quit(float scale, bool in_game) {
     static int ask;  // 0: the two choices; 1: start screen?; 2: desktop?
     if (ask && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
         ask = 0;
-    const char *lost = in_game ? "\n\nProgress since your last save is lost." : "";
-    char d1[200], d2[200];
-    snprintf(d1, sizeof d1, "Leaves the game and goes back to the LAS Recomp start screen.%s", lost);
-    snprintf(d2, sizeof d2, "Closes LAS Recomp.%s", lost);
+    const char *lost = in_game ? ui_tr("\n\nProgress since your last save is lost.") : "";
+    char d1[600], d2[600];
+    snprintf(d1, sizeof d1, ui_tr("Leaves the game and goes back to the LAS Recomp start screen.%s"), lost);
+    snprintf(d2, sizeof d2, ui_tr("Closes LAS Recomp.%s"), lost);
     opt_begin("##quit", scale);
     opt_section("Quit");
     if (!ask) {
@@ -590,7 +593,7 @@ static void tab_about(void) {
     {
         static const char *const fam[] = {"Nintendo", "Xbox", "PlayStation"};
         char autol[64];
-        snprintf(autol, sizeof autol, "Auto (%s)", fam[input_pad_family() % 3]);
+        snprintf(autol, sizeof autol, ui_tr("Auto (%s)"), fam[input_pad_family() % 3]);
         const char *names[] = {autol, "Nintendo", "Xbox", "PlayStation"};
         choice("Button icons", &g_settings.prompts, names, 4);
     }
@@ -599,22 +602,21 @@ static void tab_about(void) {
     {
         // what the game is told the console's language is: its text follows this (runtime/settings.c)
         char autol[64];
-        snprintf(autol, sizeof autol, "Auto (%s)", settings_language_name());
+        snprintf(autol, sizeof autol, ui_tr("Auto (%s)"), ui_tr(settings_language_name()));
         const char *names[N_LANGUAGES];
         names[0] = autol;
         for (int i = 1; i < N_LANGUAGES; i++) names[i] = g_language_names[i];
         if (choice("Language", &g_settings.language, names, N_LANGUAGES)) settings_save();
     }
-    hint("The game's text language, as its own system setting. Applies when the game restarts: Quit -> Title "
-         "screen, then Play.");
+    hint("Menus change immediately. Game text changes after returning to the start screen and choosing Play again.");
     ImGui::Spacing();
     header("Controls");
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");
-    ImGui::TextUnformatted("Open / close this menu:  F1, Esc, the controller's Home / Xbox / PlayStation button, or Back + Start");
-    ImGui::TextUnformatted("Switch tabs:  L / R  (Q / E)        Back:  B  (Esc)");
-    ImGui::TextUnformatted("Fullscreen:  F11 / Alt+Enter");
+    ImGui::TextUnformatted(ui_tr("Open / close this menu:  F1, Esc, the controller's Home / Xbox / PlayStation button, or Back + Start"));
+    ImGui::TextUnformatted(ui_tr("Switch tabs:  L / R  (Q / E)        Back:  B  (Esc)"));
+    ImGui::TextUnformatted(ui_tr("Fullscreen:  F11 / Alt+Enter"));
 }
 
 extern "C" bool inventory_overlay_wanted(void);
@@ -642,7 +644,7 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
     ImGui::Begin("##kbd", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                                     ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::PushFont(g_font_big);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Enter your name");
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", ui_tr("Enter your name"));
     ImGui::PopFont();
     static bool was_open, was_pad;
     bool pad = g_last_pad.load(), appearing = !was_open || pad != was_pad;  // (switching device: focus the new one)
@@ -656,7 +658,7 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
                          [](ImGuiInputTextCallbackData *d) -> int { return d->EventChar < 0x20 ? 1 : 0; });
         ImGui::PopFont();
         if ((int)strlen(g_kbd_text) > g_kbd_max) g_kbd_text[g_kbd_max] = 0;
-        ImGui::TextDisabled("Enter  confirm      Esc  cancel      (%d / %d)", (int)strlen(g_kbd_text), g_kbd_max);
+        ImGui::TextDisabled(ui_tr("Enter  confirm      Esc  cancel      (%d / %d)"), (int)strlen(g_kbd_text), g_kbd_max);
     } else {  // controller: on-screen keyboard (osk.mm, shared with our menus' text fields)
         int r = osk_keys(g_kbd_text, sizeof g_kbd_text, g_kbd_max, appearing, scale, g_font_big);
         if (r) g_kbd = r > 0 ? 2 : 3;  // (Start / + confirms in menu_handle_event too)
@@ -731,8 +733,8 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
         for (int k = 0; k < ntabs; k++) {
             const Tab &t = tabs[k];
             ImGuiTabItemFlags f = g_tab_request == t.id && t.on ? ImGuiTabItemFlags_SetSelected : 0;
-            char lbl[64];
-            snprintf(lbl, sizeof lbl, prelaunch ? " %s " : "  %s  ", t.name);  // (ten tabs: tighter, so none is cut short)
+            char lbl[160];
+            snprintf(lbl, sizeof lbl, prelaunch ? " %s ###tab%d" : "  %s  ###tab%d", ui_tr(t.name), t.id);  // (ten tabs: tighter, so none is cut short)
             ImGui::BeginDisabled(!t.on);  // (out of the game: Save Editor, Warp, Cheats)
             // focus (controller / keyboard): the tab lights up a little with a gold bar along its bottom, instead of
             // ImGui's outline (it sits 4 px outside the tab and the tab bar's clipping could cut its top off on macOS)
@@ -827,6 +829,9 @@ void menu_render(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> targ
 void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     const double tw = target_w, th = target_h;
 #endif
+    if (photo_mode_suppress_overlay()) {
+        pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); return;
+    }
     bool open = g_open.load();
     bool inv = !open && inventory_overlay_wanted();
     bool trk = !open && tracker_overlay_wanted();
@@ -908,7 +913,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         // header as on the start screen's Settings: the title, and a close X in the corner (B / Esc too). ("Title
         // screen" - rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user 2026-10-11.)
         ImGui::PushFont(g_font_big);
-        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Settings");
+        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", ui_tr("Settings"));
         ImGui::PopFont();
         {
             float bx = 44 * scale;

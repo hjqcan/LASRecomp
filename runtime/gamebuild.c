@@ -1,5 +1,6 @@
 // Builds the game code library on the player's machine (runtime/gamebuild.h).
 #include "gamebuild.h"
+#include "gameversion.h"
 #include "build_cache.h"
 
 #include <pthread.h>
@@ -206,6 +207,70 @@ static void log_tail(const char *path, char *out, size_t n) {  // the last line 
     while (k && (buf[k - 1] == '\n' || buf[k - 1] == '\r')) buf[--k] = 0;
     char *nl = strrchr(buf, '\n');
     snprintf(out, n, "%s", nl ? nl + 1 : buf);
+}
+
+static bool import_helper(const char *base, const char *update, const char *keys, const char *title_keys,
+                          const char *game_dir, const char *expected_version, bool inspect, void (*progress)(const char *), char *why, size_t why_size) {
+    if (!g_registered) g_registered = true, atexit(end_all);
+    Tools t;
+    if (!find_tools(&t)) {
+        snprintf(why, why_size, "The game import helper is missing from this copy of LAS Recomp.");
+        return false;
+    }
+    Args a = {0};
+    add(&a, t.gen);
+    if (t.gen_script[0]) add(&a, t.gen_script);
+    add(&a, "--import-nsz");  // legacy helper dispatch name; importer accepts NSP and NSZ
+    add(&a, "--base"); add(&a, base);
+    if (update && *update) { add(&a, "--update"); add(&a, update); }
+    if (keys && *keys) { add(&a, "--keys"); add(&a, keys); }
+    if (title_keys && *title_keys) { add(&a, "--title-keys"); add(&a, title_keys); }
+    if (expected_version && *expected_version) { add(&a, "--expected-version"); add(&a, expected_version); }
+    if (inspect) { add(&a, "--inspect"); add(&a, "--gui-summary"); }
+    else { add(&a, "--output"); add(&a, game_dir); add(&a, "--replace"); }
+    char log[1200];
+    snprintf(log, sizeof log, "%s.%s.log", game_dir, inspect ? "inspect" : "import");
+    PlatProc p = spawn(a.v, log);
+    args_free(&a);
+    int result = 255;
+    char last[512] = "";
+    while (p && (result = finished(p)) < 0) {
+        char message[512];
+        log_tail(log, message, sizeof message);
+        if (progress && !strncmp(message, "import: ", 8) && strcmp(message, last)) {
+            snprintf(last, sizeof last, "%s", message);
+            progress(message + 8);
+        }
+        sleep_ms(200);
+    }
+    if (result != 0) {
+        log_tail(log, why, why_size);
+        if (!why[0]) snprintf(why, why_size, "Game import failed; see the import log.");
+        return false;
+    }
+    if (inspect) log_tail(log, why, why_size);
+    return true;
+}
+
+bool gameimport_run(const char *base, const char *update, const char *keys, const char *title_keys, const char *game_dir,
+                    const char *expected_version,
+                    void (*progress)(const char *), char *why, size_t why_size) {
+    return import_helper(base, update, keys, title_keys, game_dir, expected_version, false, progress, why, why_size);
+}
+
+bool gameimport_inspect(const char *base, const char *update, const char *keys, const char *title_keys,
+                        const char *game_dir, GameArchiveInfo info[2], char *why, size_t why_size) {
+    char result[512] = "";
+    if (!import_helper(base, update, keys, title_keys, game_dir, NULL, true, NULL, result, sizeof result)) {
+        snprintf(why, why_size, "%s", result);
+        return false;
+    }
+    if (sscanf(result, "LASMETA1\t%7s\t%15s\t%47s\t%7s\t%15s\t%47s", info[0].format, info[0].version,
+               info[0].metadata, info[1].format, info[1].version, info[1].metadata) != 6) {
+        snprintf(why, why_size, "The import helper returned an invalid metadata summary.");
+        return false;
+    }
+    return true;
 }
 
 // ------------------------------------------------------------------ compiling
@@ -507,7 +572,12 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
             ok = false;
         }
     }
-    if (ok) ok = build_cache_publish(cache, GAMELIB_NAME, GAMELIB_ID, why, why_size);
+    if (ok) {
+        char main_path[1100], build_id[41];
+        snprintf(main_path, sizeof main_path, "%s" SEP "exefs" SEP "main", game_dir);
+        if (!game_build_id(main_path, build_id)) { snprintf(why, why_size, "the game executable changed"); ok = false; }
+        else ok = build_cache_publish(cache, GAMELIB_NAME, GAMELIB_ID, build_id, why, why_size);
+    }
     free(units.u);
     build_cache_close(cache);
     LOG("[gamebuild] reused %d objects, compiled %d objects\n", reused, compiled);

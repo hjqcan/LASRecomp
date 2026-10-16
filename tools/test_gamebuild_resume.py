@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory() as temporary:
         (resources/'runtime'/name).write_text('/* fixture header */\n')
     (resources/'tools/gamelib_entry.c').write_text('int cache_entry(void) { return 0; }\n')
     (resources/'runtime/hle/hle_symbols.txt').write_text('fixture\n')
-    main = b'fixture main'
+    main = bytearray(0x60); main[:4] = b'NSO0'; main[0x40:0x54] = bytes.fromhex('ae16f71e002af8cb059a9a74c4d90f34ba984892')
     (game/'exefs/main').write_bytes(main)
     (game/'exefs/sdk').write_bytes(b'fixture sdk')
     generator = tmp/'generator.py'; generator.write_text(GENERATOR)
@@ -79,7 +79,7 @@ with tempfile.TemporaryDirectory() as temporary:
         subprocess.run(cc+[str(stub),'-shared','-Wl,--out-implib,'+str(resources/'build/lasrecomp.dll.a'),
                            '-o',str(tmp/'stub.dll')],check=True)
     objects=[]
-    for source in ('runtime/gamebuild.c',):
+    for source in ('runtime/gamebuild.c','runtime/gameversion.c'):
         obj=tmp/(Path(source).stem+'.o'); objects.append(str(obj))
         subprocess.run(cc+['-std=gnu11','-fPIC','-Iruntime','-DGAMELIB_ID="cache-fixture"',
                            '-DGAMELIB_CFLAGS="-O0 -fPIC"','-DGAMELIB_SHARED="-shared"',

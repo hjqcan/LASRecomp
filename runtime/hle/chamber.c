@@ -15,12 +15,13 @@
 #include <string.h>
 
 #include "../hle.h"
+#include "../gameversion.h"
 
 #define CHAMBER_MGR (GA_CHAMBER_MGR)
 #define CHAMBER_CTOR (GA_CHAMBER_CTOR)
 #define CHAMBER_PREPARE (GA_CHAMBER_PREPARE)
 #define CHAMBER_START_LOCATOR (GA_CHAMBER_START_LOCATOR)
-#define GUEST_NEW (GA_GUEST_NEW)
+#define GUEST_NEW game_main_address(GA_GUEST_NEW)
 #define PANEL_CATALOGUE (GA_PANEL_CATALOGUE)  // MapPieceList table object
 #define PANEL_LOOKUP (GA_PANEL_LOOKUP)      // (out cell, catalogue, id): out = {sheet, ref, row ptr}
 

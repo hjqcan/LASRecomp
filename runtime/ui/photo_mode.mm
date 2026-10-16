@@ -1,5 +1,6 @@
 #include "../photo.h"
 #include "menu.h"
+#include "localization.h"
 #include "imgui.h"
 #include <atomic>
 #include <cmath>
@@ -65,7 +66,7 @@ extern "C" void photo_mode_presented(uint64_t frame) {
     photo_state_presented(&state, frame);
     if (!before && state.frozen) {
         fprintf(stderr, "[photo] frozen at frame %llu\n", (unsigned long long)frame);
-        if (state.hide_hud && state.clean_frame != frame - 1) message = "Interface hiding is unavailable in this scene.";
+        if (state.hide_hud && state.clean_frame != frame - 1) message = ui_tr("Interface hiding is unavailable in this scene.");
     }
 }
 extern "C" bool photo_mode_hold(void) { return state.active && state.frozen; }
@@ -119,7 +120,7 @@ extern "C" const char *photo_mode_capture_path(void) {
 extern "C" void photo_mode_capture_done(void) {
     std::error_code ec;
     auto size = std::filesystem::file_size(std::filesystem::u8path(capture_path), ec);
-    message = !ec && size > 0 ? std::string("Photo saved:") + " " + capture_path : "Could not save photo.";
+    message = !ec && size > 0 ? std::string(ui_tr("Photo saved:")) + " " + capture_path : ui_tr("Could not save photo.");
     fprintf(stderr, "[photo] %s\n", message.c_str());
     capture_drawing = false;
 }
@@ -131,35 +132,35 @@ extern "C" void photo_mode_draw(float scale) {
     ImGui::SetNextWindowSize(ImVec2(fminf(520 * scale, io.DisplaySize.x - 40 * scale), 0));
     ImGui::SetNextWindowBgAlpha(0.9f);
     ImGui::Begin("##photo", NULL, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
-    ImGui::TextColored(ImVec4(.93f,.76f,.33f,1), "%s", "Photo mode");
-    ImGui::TextWrapped("%s", "F2 / Esc: resume   F12: save photo   Tab: hide controls");
-    ImGui::TextWrapped("%s", "The scene is frozen. Framing changes the captured view; photos use the window resolution.");
+    ImGui::TextColored(ImVec4(.93f,.76f,.33f,1), "%s", ui_tr("Photo mode"));
+    ImGui::TextWrapped("%s", ui_tr("F2 / Esc: resume   F12: save photo   Tab: hide controls"));
+    ImGui::TextWrapped("%s", ui_tr("The scene is frozen. Framing changes the captured view; photos use the window resolution."));
     if (focus) { ImGui::SetKeyboardFocusHere(); focus = false; }
     ImGui::BeginDisabled(!state.frozen);
-    if (ImGui::Button("Save photo")) photo_mode_capture();
+    if (ImGui::Button(ui_label("Save photo").c_str())) photo_mode_capture();
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Resume game")) photo_mode_exit();
+    if (ImGui::Button(ui_label("Resume game").c_str())) photo_mode_exit();
     ImGui::Separator();
     ImGui::PushItemWidth(220 * scale);
-    ImGui::SliderFloat("Zoom", &state.zoom, 1, 4, "%.2fx");
-    ImGui::SliderFloat("Horizontal framing", &state.pan_x, -1, 1, "%.2f");
-    ImGui::SliderFloat("Vertical framing", &state.pan_y, -1, 1, "%.2f");
-    ImGui::SliderFloat("Exposure", &state.exposure, -2, 2, "%+.1f EV");
-    ImGui::SliderFloat("Saturation", &state.saturation, 0, 2, "%.2f");
+    ImGui::SliderFloat(ui_label("Zoom").c_str(), &state.zoom, 1, 4, "%.2fx");
+    ImGui::SliderFloat(ui_label("Horizontal framing").c_str(), &state.pan_x, -1, 1, "%.2f");
+    ImGui::SliderFloat(ui_label("Vertical framing").c_str(), &state.pan_y, -1, 1, "%.2f");
+    ImGui::SliderFloat(ui_label("Exposure").c_str(), &state.exposure, -2, 2, "%+.1f EV");
+    ImGui::SliderFloat(ui_label("Saturation").c_str(), &state.saturation, 0, 2, "%.2f");
     ImGui::PopItemWidth();
-    if (ImGui::Checkbox("Hide game interface", &state.hide_hud))
+    if (ImGui::Checkbox(ui_label("Hide game interface").c_str(), &state.hide_hud))
         photo_state_refresh(&state, renderer_present_count());
-    if (ImGui::Button("Reset framing and color")) {
+    if (ImGui::Button(ui_label("Reset framing and color").c_str())) {
         state.zoom = state.saturation = 1; state.pan_x = state.pan_y = state.exposure = 0;
     }
     if (!message.empty()) ImGui::TextWrapped("%s", message.c_str());
     ImGui::End();
 }
 extern "C" void photo_mode_tab(float, bool in_game) {
-    ImGui::TextWrapped("%s", "Freeze a scene, hide the game interface, adjust framing and color, and save a PNG in the photos folder.");
-    ImGui::TextWrapped("%s", "Enter photo mode with F2 during gameplay. Saved photos exclude the photo controls and FPS counter.");
+    ImGui::TextWrapped("%s", ui_tr("Freeze a scene, hide the game interface, adjust framing and color, and save a PNG in the photos folder."));
+    ImGui::TextWrapped("%s", ui_tr("Enter photo mode with F2 during gameplay. Saved photos exclude the photo controls and FPS counter."));
     ImGui::BeginDisabled(!in_game || !photo_mode_available());
-    if (ImGui::Button("Enter photo mode")) { menu_close(); photo_mode_toggle(); }
+    if (ImGui::Button(ui_label("Enter photo mode").c_str())) { menu_close(); photo_mode_toggle(); }
     ImGui::EndDisabled();
 }
