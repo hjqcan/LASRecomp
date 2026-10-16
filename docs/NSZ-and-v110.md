@@ -36,6 +36,10 @@ The generated game library records its main Build ID. Both its metadata file and
 - Allow at least 20 GiB of free space for import. Initial game-code compilation is performed locally and takes several minutes.
 - NCZ images are limited to 16 GiB and Zstandard windows to 256 MiB. Block sizes from 16 KiB through 4 GiB are streamed. Plaintext sections are checked structurally; encrypted NCA signatures and integrity metadata are not verified.
 
+## Game language
+
+Open the overlay with **F1**, then **Controls → System language → Language**, and restart the application after selecting a language. Chinese selections use `zh-Hans` / `zh-Hant`, as required by the game; the legacy `zh-CN` / `zh-TW` codes fall back to Japanese. Existing settings files with those legacy codes are migrated when loaded. This changes the game's text; the host settings menu remains English.
+
 ## Build and test
 
 Follow the platform build instructions for the native runtime toolchain. The helper also requires `zstandard==0.25.0`; `make gen-helper`, Linux helper packaging, and the Windows setup script include it.

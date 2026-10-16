@@ -33,7 +33,7 @@ Settings g_settings = {
 // regionJP/JPja, regionKR/KRkr, regionTW/TWch, regionCN/CNch), and the game picks one from the system language it
 // reads back (runtime/services/am.c), exactly as it does on the console. Codes as the Switch reports them.
 const char *const g_language_codes[N_LANGUAGES] = {"auto", "ja", "en-US", "es", "fr", "de", "it", "nl", "ru", "ko",
-                                                   "zh-CN", "zh-TW"};
+                                                   "zh-Hans", "zh-Hant"};
 const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English", "Spanish", "French", "German",
                                                    "Italian", "Dutch", "Russian", "Korean", "Chinese (Simplified)",
                                                    "Chinese (Traditional)"};
@@ -50,12 +50,18 @@ static const char *host_language(void) {
     if (!e || !*e || !strcmp(e, "C") || !strcmp(e, "POSIX")) return "en-US";
     char l[8] = {0};
     size_t n = 0;
-    for (const char *p = e; *p && *p != '.' && *p != '@' && *p != '_' && n < sizeof l - 1; p++) l[n++] = *p;
+    for (const char *p = e; *p && *p != '.' && *p != '@' && *p != '_' && *p != '-' && n < sizeof l - 1; p++) l[n++] = *p;
     static const struct { const char *loc, *code; } map[] = {{"ja", "ja"}, {"ko", "ko"}, {"ru", "ru"}, {"nl", "nl"},
                                                              {"de", "de"}, {"it", "it"}, {"fr", "fr"}, {"es", "es"}};
     for (size_t i = 0; i < sizeof map / sizeof *map; i++)
         if (!strcmp(l, map[i].loc)) return map[i].code;
-    if (!strcmp(l, "zh")) return e[n] == '_' && e[n + 1] == 'T' ? "zh-TW" : "zh-CN";  // (TW / HK: traditional)
+    if (!strcmp(l, "zh")) {
+        const char *region = e + n;
+        if (*region == '_' || *region == '-') region++;
+        bool traditional = !strncmp(region, "Hant", 4) || !strncmp(region, "TW", 2) ||
+                           !strncmp(region, "HK", 2) || !strncmp(region, "MO", 2);
+        return traditional ? "zh-Hant" : "zh-Hans";
+    }
     return "en-US";
 }
 
@@ -112,8 +118,11 @@ void settings_load(void) {
                                                               PROMPTS_XBOX : !strcmp(val, "playstation") ? PROMPTS_PLAYSTATION : PROMPTS_AUTO;
         else if (!strcmp(key, "language")) {  // ("auto" or one of the game's codes; anything else: auto)
             g_settings.language = LANG_AUTO;
+            // Older LAS Recomp builds saved the legacy Chinese/Taiwanese codes.
+            // This game selects ChineseSimplified/Traditional (zh-Hans/Hant).
+            const char *code = !strcmp(val, "zh-CN") ? "zh-Hans" : !strcmp(val, "zh-TW") ? "zh-Hant" : val;
             for (int i = 1; i < N_LANGUAGES; i++)
-                if (!strcmp(val, g_language_codes[i])) g_settings.language = i;
+                if (!strcmp(code, g_language_codes[i])) g_settings.language = i;
         }
         else if (!strcmp(key, "tracker")) g_settings.tracker = atoi(val) != 0;
         else if (!strcmp(key, "menu_tip_seen")) g_settings.menu_tip_seen = atoi(val) != 0, tip_key = true;

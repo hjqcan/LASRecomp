@@ -1,4 +1,4 @@
-name: NSZ importer
+name: Import and settings tests
 
 on: [push, pull_request]
 
@@ -18,3 +18,5 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install zstandard==0.25.0
       - run: python tools/test_import_game.py -v
+      - if: runner.os != 'Windows'
+        run: python tools/test_settings_language.py

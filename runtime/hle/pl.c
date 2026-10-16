@@ -2,8 +2,8 @@
 //  1. LARECOMP_FONT=<file> (.ttf / .otf / .ttc face 0 / .bfttf)
 //  2. a dump from the user's own console in fonts/: nintendo_udsg-r_std_003.bfttf (Standard, Morisawa UD Shin Go)
 //     and nintendo_ext_003.bfttf (NintendoExt button glyphs); plain .ttf versions of those names also work
-//  3. a Japanese gothic like UD Shin Go (much closer to the game's look than Arial): Hiragino Sans W4 on macOS,
-//     Yu Gothic Regular / Medium on Windows
+//  3. a system gothic font: on Windows Chinese uses Microsoft YaHei / JhengHei,
+//     otherwise Hiragino Sans W4 on macOS or Yu Gothic Regular / Medium on Windows
 //  4. Arial
 // .bfttf is the console's obfuscated TTF: 8-byte header (magic, size) then every u32 XORed with a fixed key.
 // .ttc collections get face 0 copied out as a standalone font (the game's font engine wants one sfnt).
@@ -12,6 +12,7 @@
 #include <strings.h>
 
 #include "../hle.h"
+#include "../settings.h"
 
 typedef struct { uint64_t addr, size; } Font;
 static Font fonts[2];  // [0] Standard (every type), [1] NintendoExt when a dump provides it
@@ -110,8 +111,17 @@ static void load_fonts(void) {
     if (g_fonts_loaded) return;
     g_fonts_loaded = 1;
     const char *env = getenv("LARECOMP_FONT");
+    const char *lang = settings_language();
+    // Yu Gothic lacks many simplified Chinese characters. Use the matching
+    // Windows CJK font before the Japanese fallback, preserving explicit dumps
+    // and LARECOMP_FONT. These TTCs contain TrueType outlines, as the game needs.
+    const char *chinese = !strcmp(lang, "zh-Hans") ? "C:/Windows/Fonts/msyh.ttc" :
+                          !strcmp(lang, "zh-Hant") ? "C:/Windows/Fonts/msjh.ttc" : NULL;
+    const char *chinese_fallback = !strcmp(lang, "zh-Hans") ? "C:/Windows/Fonts/msjh.ttc" :
+                                   !strcmp(lang, "zh-Hant") ? "C:/Windows/Fonts/msyh.ttc" : NULL;
     const char *std[] = {env, "fonts/nintendo_udsg-r_std_003.bfttf", "fonts/nintendo_udsg-r_std_003.ttf",
                          "fonts/nintendo_udsgr_std_003.ttf", "fonts/nintendo_udsgr_std_003.bfttf",
+                         chinese, chinese_fallback,
                          "/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc", "C:/Windows/Fonts/YuGothR.ttc",
                          "C:/Windows/Fonts/YuGothM.ttc", "/System/Library/Fonts/Supplemental/Arial.ttf",
                          "C:/Windows/Fonts/arial.ttf",
