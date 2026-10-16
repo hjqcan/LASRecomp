@@ -9,6 +9,7 @@ import ctypes
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import zipfile
@@ -69,7 +70,8 @@ def main():
         copy(root/'third_party/fonts'/folder/license_name, folder+'-LICENSE.txt')
     for name in ('README.md', 'LICENSE', 'CONTRIBUTING.md'):
         copy(root/name, name)
-    for name in ('enhanced.md', 'NSZ-and-v110.md', 'photo-mods-randomizer.md', 'photo-mode.md', 'resource-mods.md'):
+    for name in ('enhanced.md', 'enhanced-beta5.1-validation.md', 'NSZ-and-v110.md',
+                 'photo-mods-randomizer.md', 'photo-mode.md', 'resource-mods.md'):
         copy(root/'docs'/name, 'docs/'+name)
     copy(root/'docs/enhanced.md', 'START-HERE-使用说明.md')
     copy(root/'examples/mods/template', 'examples/mods/template')
@@ -88,7 +90,8 @@ def main():
         records.append(dict(path=rel.as_posix(), bytes=path.stat().st_size, sha256=digest))
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     manifest = dict(version=version, commit=commit, ffmpeg_license=license_text,
-                    ffmpeg_configuration=configuration, files=records)
+                    ffmpeg_configuration_without_build_prefix=re.sub(r'--prefix=\S+\s*', '', configuration),
+                    files=records)
     (stage/'package-manifest.json').write_text(json.dumps(manifest, indent=2)+'\n', encoding='utf-8')
     archive = args.output/f'LAS-Recomp-{version}-windows-x64.zip'
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:

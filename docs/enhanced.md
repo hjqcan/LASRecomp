@@ -24,6 +24,8 @@ This is the independently maintained edition in [hjqcan/LASRecomp](https://githu
 
 See [import and versions](NSZ-and-v110.md), [photo/mod/randomizer details](photo-mods-randomizer.md) and [mod format](resource-mods.md).
 
+The [Enhanced Beta 5.1 validation record](enhanced-beta5.1-validation.md) lists actual checks and remaining limits, including the save-mount concurrency fix found during release testing.
+
 ## Windows quick start / Windows 使用说明
 
 1. Extract the entire ZIP into a writable folder. Run `lasrecomp.exe`. Windows 10+ x64, an AVX2 CPU and a Vulkan 1.3 graphics driver are required. No separate Python or compiler installation is needed.
