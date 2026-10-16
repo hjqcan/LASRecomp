@@ -21,6 +21,7 @@ extern "C" {
 #include "../paths.h"
 #include "../rando.h"
 #include "../settings.h"
+#include "../gameversion.h"
 extern const char *g_romfs_dir;
 extern int g_start_screen;  // hle/warp.c
 void launcher_play_seed(const char *seed);  // ui/launcher.mm
@@ -456,6 +457,10 @@ static std::string g_spoiler_seed;  // seed whose spoiler page is open
 
 extern "C" void rando_tab_draw(float scale) {
     (void)scale;
+    if (game_version_current() == GAME_110) {
+        ImGui::TextWrapped("v1.1.0 currently supports Vanilla mode. Randomizer seeds require v1.0.0 game files.");
+        return;
+    }
     if (!g_scanned) scan();
     static bool spoiler_test;  // LARECOMP_SPOILER_TEST=<seed>: open that seed's spoiler page (test hook)
     if (!spoiler_test && getenv("LARECOMP_SPOILER_TEST")) { spoiler_test = true; g_spoiler_seed = getenv("LARECOMP_SPOILER_TEST"); }

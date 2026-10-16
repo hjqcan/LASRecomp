@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "../hle.h"
+#include "../gameversion.h"
 #include "../rando.h"
 
 #define LIVE_SAVE 0x7001CBB220ull
@@ -119,7 +120,7 @@ void pets_call(int c) {
 #define COMPANION_LEAVE (MAIN_BASE + 0xd53ed0)  // (x0 = Player): companion byte 0, the follower sent away
 #define PLAYER_STATUS_PTR (MAIN_BASE + 0x1CC1368)  // PlayerStatus*: current level name at +0 (+0x9d = COMPANION)
 // (x0 = actor): actor vtable +0x58 (0); the base actor's vtable +0xa0 and a follower's own leave use it
-#define ACTOR_KILL (MAIN_BASE + 0xfabf70)
+#define ACTOR_KILL game_main_address(MAIN_BASE + 0xfabf70)
 // the level's placed actors by key (the actor factory looks them up): unordered_map, first node at +0x10; node +0 next,
 // +0x10 key, +0x18 shared_ptr<Actor>
 #define ACTOR_REGISTRY (MAIN_BASE + 0x1cb2d00)

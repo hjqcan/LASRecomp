@@ -1,6 +1,6 @@
 # One-time setup of a Windows machine for building LARecomp (see docs/BUILD-windows.md).
 # Installs MSYS2 (clang, lld, make, SDL3, FFmpeg, Vulkan loader/headers, shaderc) and Python 3.12, then creates
-# tools/venv (lifter: unicorn, capstone, lz4). Safe to re-run.
+# tools/venv (lifter: unicorn, capstone, lz4; NSZ importer: zstandard). Safe to re-run.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
@@ -25,7 +25,7 @@ if (-not (Test-Path $py)) {
     winget install --id Python.Python.3.12 -e --scope user --accept-source-agreements --accept-package-agreements --silent
 }
 if (-not (Test-Path "$root\tools\venv\Scripts\python.exe")) { & $py -m venv "$root\tools\venv" }
-& "$root\tools\venv\Scripts\python.exe" -m pip install -q lz4 capstone unicorn
+& "$root\tools\venv\Scripts\python.exe" -m pip install -q lz4 capstone unicorn zstandard==0.25.0
 
 # Randomizer (LAS-Randomizer's own venv, used by the Randomizer tab's seed generator)
 $las = "$root\third_party\LAS-Randomizer"

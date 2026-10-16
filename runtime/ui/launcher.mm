@@ -38,6 +38,7 @@ extern "C" {
 #include "platform.h"
 #include "paths.h"
 #include "gamebuild.h"
+#include "gameversion.h"
 #include "gamelib.h"
 #include "romfs_build.h"
 #include "settings.h"
@@ -82,7 +83,6 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 }
 #endif
 
-static const uint8_t BUILD_ID[8] = {0xae, 0x16, 0xf7, 0x1e, 0x00, 0x2a, 0xf8, 0xcb};  // Link's Awakening v1.0.0 main
 // The release tag this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read
 // it): beta_<n> until 1.0, then v<major>.<minor>.<patch>.
 #define LARECOMP_VERSION "beta_4"
@@ -170,13 +170,9 @@ static bool file_exists(const std::string &p) {
 
 // The copied game files alone ("" = there), without the game code built from them
 static std::string check_copied_files(const std::string &root) {
-    FILE *f = fopen((root + "/exefs/main").c_str(), "rb");
-    if (!f) return "No game files";
-    uint8_t id[8] = {0};
-    fseek(f, 0x40, SEEK_SET);
-    size_t n = fread(id, 1, 8, f);
-    fclose(f);
-    if (n != 8 || memcmp(id, BUILD_ID, 8)) return "Wrong game version (needs v1.0.0)";
+    if (!file_exists(root + "/exefs/main")) return "No game files";
+    if (game_version_file((root + "/exefs/main").c_str()) == GAME_UNSUPPORTED)
+        return "Unsupported game version (needs v1.0.0 or v1.1.0)";
     if (!file_exists(root + "/romfs/region_common") || !file_exists(root + "/romfs.bin")) return "Game data missing";
     return "";
 }
@@ -194,6 +190,7 @@ static std::string check_game_files(const std::string &root) {
 // (runtime/romfs_build.c).
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::string g_src;           // the picked folder
+static std::string g_update_nsz;    // optional update, used only with an NSZ base archive
 static std::string g_job;           // current setup step / result for the status line
 static std::string g_job_hint;      // a failure: what to do about it (shown under it)
 static bool g_busy, g_job_failed;
@@ -218,7 +215,7 @@ static void set_failure(int k) {
         "Choose the folder that holds the game files.",
         "Choose the folder that holds the game files.",
         "Make sure there's about 12 GB free and try again.",
-        "LAS Recomp needs version 1.0.0 of the game, without updates.",
+        "LAS Recomp supports the verified v1.0.0 and v1.1.0 executable builds.",
         "Some files are missing. Choose the folder again; if it happens again, dump the game again.",
         "Make sure there's about 2 GB free and try again. If it keeps happening, report it on Discord or GitHub."};
     if (k >= 1 && k <= 6) set_job(head[k], true, hint[k]);
@@ -252,13 +249,7 @@ static void find_game(const std::string &dir, int depth, std::string &exefs, std
 }
 
 static bool build_id_ok(const std::string &main_path) {
-    FILE *f = fopen(main_path.c_str(), "rb");
-    if (!f) return false;
-    uint8_t id[8] = {0};
-    fseek(f, 0x40, SEEK_SET);
-    size_t n = fread(id, 1, 8, f);
-    fclose(f);
-    return n == 8 && !memcmp(id, BUILD_ID, 8);
+    return game_version_file(main_path.c_str()) != GAME_UNSUPPORTED;
 }
 
 // progress (the overlay's bar): the romfs copy, then the image build - each about the size of romfs/
@@ -293,20 +284,38 @@ static bool build_game_code(void) {
     return ok;
 }
 
+static void import_progress(const char *message) { set_job(message); }
+
 static void *extract_thread(void *) {
-    std::string src;
+    std::string src, update;
     pthread_mutex_lock(&g_lock);
     src = g_src;
+    update = g_update_nsz;
     pthread_mutex_unlock(&g_lock);
     g_done = 0, g_total = 0, g_phase_base = 0, g_build_frac = -1, g_copy_skipped = false;
     std::string exefs, romfs;
     bool unusable = false;  // (game packages rather than its files)
+    if (!src.empty() && gamelib_tables()) {
+        set_job("Restart LAS Recomp before changing the game files.", true,
+                "The current game code is still loaded. Your files have not been changed.");
+        goto done;
+    }
     if (src.empty() && check_copied_files(g_root).empty()) {  // copied already (an update needs new game code)
         g_copy_skipped = true;
         if (!build_game_code()) goto done;
         goto check;
     }
     set_job("Looking for the game files...");
+    if (src.size() > 4 && SDL_strcasecmp(src.c_str() + src.size() - 4, ".nsz") == 0) {
+        char why[512] = "";
+        set_job(update.empty() ? "Importing the base NSZ..." : "Importing the base NSZ and update...");
+        if (!gameimport_run(src.c_str(), update.c_str(), g_root.c_str(), import_progress, why, sizeof why)) {
+            set_job("NSZ import failed.", true, why);
+            goto done;
+        }
+        if (!build_game_code()) goto done;
+        goto check;
+    }
     find_game(src, 0, exefs, romfs, unusable);
     if (exefs.empty() || romfs.empty()) { set_failure(unusable ? FAIL_UNUSABLE : FAIL_NOT_FOUND); goto done; }
     if (!build_id_ok(exefs + "/main")) { set_failure(FAIL_VERSION); goto done; }
@@ -357,6 +366,15 @@ static void SDLCALL picked(void *, const char *const *files, int) {
     if (!files || !files[0]) return;
     pthread_mutex_lock(&g_lock);
     g_src = files[0];
+    g_update_nsz.clear();
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void SDLCALL picked_nsz(void *update, const char *const *files, int) {
+    if (!files || !files[0]) return;
+    pthread_mutex_lock(&g_lock);
+    if (update) g_update_nsz = files[0];
+    else g_src = files[0];
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -479,6 +497,7 @@ static void load_background(GpuDevice dev) {
 
 // ------------------------------------------------------------------ seeds
 static std::vector<std::string> list_seeds() {
+    if (game_version_current() == GAME_110) return {};
     std::vector<std::string> out;
     if (DIR *d = opendir("rando")) {
         while (struct dirent *e = readdir(d)) {
@@ -898,6 +917,7 @@ extern "C" void launcher_run(const char *root) {
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
 
     std::string status = check_game_files(g_root);
+    game_version_select((g_root + "/exefs/main").c_str());
     if (status.empty()) load_background(dev);
     std::vector<std::string> seeds = list_seeds();
     std::vector<std::string> choices = {"Vanilla"};
@@ -927,14 +947,15 @@ extern "C" void launcher_run(const char *root) {
     const char *ap = getenv("LARECOMP_LAUNCHER_AUTOPLAY");
     if (ap && status.empty() && !(runs && !strcmp(ap, "once"))) play = true;  // (test: PLAY at once)
     runs++;
-    if (const char *t = getenv("LARECOMP_LAUNCHER_EXTRACT")) {  // (test) <folder>: set the game files up, log, exit
+    if (const char *t = SDL_getenv("LARECOMP_LAUNCHER_UPDATE_NSZ")) g_update_nsz = t;  // UTF-8, including on Windows
+    if (const char *t = SDL_getenv("LARECOMP_LAUNCHER_EXTRACT")) {  // (test) <folder>: set the game files up, log, exit
         g_src = t;
         g_busy = true;
         extract_thread(NULL);
         fprintf(stderr, "[launcher] setup: %s -> %s\n", g_job.c_str(), check_game_files(g_root).empty() ? "READY" : "NOT READY");
-        exit(0);
+        exit(g_job_failed ? 1 : 0);
     }
-    if (const char *t = getenv("LARECOMP_LAUNCHER_SETUP")) {  // (test) <folder>: Set up started on the start screen
+    if (const char *t = SDL_getenv("LARECOMP_LAUNCHER_SETUP")) {  // (test) <folder>: Set up started on the start screen
         g_src = t;
         g_busy = true;
         page = SETUP;
@@ -980,11 +1001,17 @@ extern "C" void launcher_run(const char *root) {
         // extraction finished: re-check, load the background
         pthread_mutex_lock(&g_lock);
         bool busy = g_busy;
+        bool setup_failed = g_job_failed;
         pthread_mutex_unlock(&g_lock);
         static bool was_busy;
         if (was_busy && !busy) {
             status = check_game_files(g_root);
-            if (status.empty()) { load_background(dev); page = MAIN; }
+            game_version_select((g_root + "/exefs/main").c_str());
+            seeds = list_seeds();
+            choices = {"Vanilla"};
+            choices.insert(choices.end(), seeds.begin(), seeds.end());
+            choice = 0;
+            if (status.empty() && !setup_failed) { load_background(dev); page = MAIN; }
         }
         was_busy = busy;
 
@@ -1265,14 +1292,15 @@ extern "C" void launcher_run(const char *root) {
                 ImGui::Spacing();
 
                 pthread_mutex_lock(&g_lock);
-                std::string src = g_src, job = g_job, job_hint = g_job_hint;
+                std::string src = g_src, update_nsz = g_update_nsz, job = g_job, job_hint = g_job_hint;
                 bool failed = g_job_failed;
                 pthread_mutex_unlock(&g_lock);
                 bool ready = status.empty() && !busy;  // (set up: the window offers to delete them)
                 static double files_gb = -1;
                 // chosen: "Selected" with a green check (long paths ran over the label); the path is in the
                 // explanation, and choosing again opens the picker again
-                std::string src_v = src.empty() ? "Choose..." : "Selected";
+                bool source_is_nsz = src.size() > 4 && SDL_strcasecmp(src.c_str() + src.size() - 4, ".nsz") == 0;
+                std::string src_v = src.empty() || source_is_nsz ? "Choose..." : "Selected";
                 auto check_left_of_value = [&](const std::string &v) {
                     if (v != "Selected") return;
                     ImVec2 rb = ImGui::GetItemRectMax(), ra = ImGui::GetItemRectMin();
@@ -1284,12 +1312,13 @@ extern "C" void launcher_run(const char *root) {
                     dl->AddLine(ImVec2(x + u * 0.35f, cy + u * 0.35f), ImVec2(x + u, cy - u * 0.4f), g, fs * 0.11f);
                 };
                 std::string src_d = "The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Link's "
-                                    "Awakening for Nintendo Switch, version 1.0.0. The game isn't included with LAS Recomp.";
+                                    "Awakening for Nintendo Switch, version 1.0.0 or 1.1.0. The game isn't included with LAS Recomp.";
                 if (!src.empty()) src_d += "\n\nChosen: " + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
                 std::string ex_d = "Copies the game files LAS Recomp needs and recompiles the game from them. This only "
                                    "needs to be done once and may take a while. Your own files aren't changed.";
+                if (gamelib_tables()) ex_d = "Restart LAS Recomp before changing the game files.";
                 if (!job.empty()) ex_d += "\n\n" + job + (job_hint.empty() ? "" : ".\n" + job_hint);
 
                 // the controller's cursor starts on the first row (not the X), a few frames while the window lays out
@@ -1300,16 +1329,38 @@ extern "C" void launcher_run(const char *root) {
                     if (focus_first > 0 && focus_first--) ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
                 };
                 opt_begin("##files", sc);
-                if (!ready) {
+                {
                     opt_section("Your copy of the game");
                     if (busy) opt_disable_next();
                     if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
                         SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
                     check_left_of_value(src_v);
                     first_row();
+                    static const SDL_DialogFileFilter nsz_filter[] = {{"NSZ game archive", "nsz"}};
+                    if (busy) opt_disable_next();
+                    if (opt_action("Base game NSZ", source_is_nsz ? "Selected" : "Choose...",
+                                   "Choose your base game NSZ. It is imported locally; the original archive is kept.", true))
+                        SDL_ShowOpenFileDialog(picked_nsz, NULL, win, nsz_filter, 1, NULL, false);
+                    if (source_is_nsz) {
+                        if (busy) opt_disable_next();
+                        std::string update_hint = "Optional: choose the v1.1.0 update NSZ to apply to the base game. "
+                                                  "Updated games currently support Vanilla mode.\n\n" + update_nsz;
+                        if (opt_action("Update NSZ (optional)", update_nsz.empty() ? "None" : "Selected",
+                                       update_hint.c_str(), true))
+                            SDL_ShowOpenFileDialog(picked_nsz, (void *)1, win, nsz_filter, 1, NULL, false);
+                        if (!update_nsz.empty()) {
+                            if (busy) opt_disable_next();
+                            if (opt_action("Use base game only", "", "Clear the update selection; keep both source archives.", true)) {
+                                pthread_mutex_lock(&g_lock);
+                                g_update_nsz.clear();
+                                pthread_mutex_unlock(&g_lock);
+                            }
+                        }
+                    }
                     opt_section("Set up");
-                    if (busy || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
+                    if (busy || gamelib_tables() || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
                     if (opt_action("Set up game files", busy ? "Working..." : "", ex_d.c_str(), true)) {
+                        files_gb = -1;  // (re-measured after a setup)
                         pthread_mutex_lock(&g_lock);
                         g_busy = true;
                         pthread_mutex_unlock(&g_lock);
@@ -1317,8 +1368,8 @@ extern "C" void launcher_run(const char *root) {
                         pthread_create(&t, NULL, extract_thread, NULL);
                         pthread_detach(t);
                     }
-                    files_gb = -1;  // (re-measured after a setup)
-                } else {
+                }
+                if (ready) {
                     // DELETE: frees LAS Recomp's copy (runtime/paths.c removes only what the setup made, only inside
                     // the data root). Saves, seeds, settings and the user's own files stay.
                     if (files_gb < 0) files_gb = rt_game_files_size(g_root.c_str()) / 1e9;
@@ -1421,7 +1472,8 @@ extern "C" void launcher_run(const char *root) {
                 }
                 ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), "Game files ready.");
                 ImGui::SetCursorPosX(x0);
-                ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), "Nintendo Switch  \xc2\xb7  v1.0.0");
+                ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), "Nintendo Switch  \xc2\xb7  v%s",
+                                   game_version_name(game_version_current()));
             } else {
                 ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "!  %s", busy ? "Setting up the game files..." : status.c_str());
                 ImGui::SetCursorPosX(x0);

@@ -14,12 +14,13 @@
 #include <string.h>
 
 #include "../hle.h"
+#include "../gameversion.h"
 
 #define CHAMBER_MGR (MAIN_BASE + 0x1cb9fb8)
 #define CHAMBER_CTOR (MAIN_BASE + 0xcdf1c0)
 #define CHAMBER_PREPARE (MAIN_BASE + 0xce34b0)
 #define CHAMBER_START_LOCATOR (MAIN_BASE + 0xcdbd80)
-#define GUEST_NEW (MAIN_BASE + 0x1431170)
+#define GUEST_NEW game_main_address(MAIN_BASE + 0x1431170)
 #define PANEL_CATALOGUE (MAIN_BASE + 0x1cb9e50)  // MapPieceList table object
 #define PANEL_LOOKUP (MAIN_BASE + 0xcd0970)      // (out cell, catalogue, id): out = {sheet, ref, row ptr}
 

@@ -108,7 +108,7 @@ endif
 
 # GAMELIB_ID: what the game code library is built from (the generator, the headers it is compiled against, the
 # flags). A library with another id is rebuilt by the start screen, never loaded.
-GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py \
+GAMELIB_SRCS := tools/gen.py tools/game_versions.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py \
                 tools/simd_c.py tools/rando/patch_variants.json tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
                 runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h
 GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
@@ -117,16 +117,16 @@ RT_OBJ   := $(patsubst runtime/%.c,$(B)/rt/%.o,$(RT_SRC))
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn $(DEPINC) $(OSFLAGS)
 CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn $(DEPINC)
 
-all: $(EXE) $(if $(GEN_SRC),$(GAMELIB))
+all: $(EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))
 
 $(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h
 	@mkdir -p $(dir $@)
 	@$(CC) $(GENFLAGS) -c $< -o $@
 
-$(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS)
+$(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS) Makefile
 	@mkdir -p $(dir $@)
 	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_ID)"' -c $< -o $@
-$(B)/rt/gamelib.o: $(GAMELIB_SRCS)
+$(B)/rt/gamelib.o: $(GAMELIB_SRCS) Makefile
 $(B)/rt/gamelib.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"'
 # the start screen's build of it (runtime/gamebuild.c) uses the same flags
 $(B)/rt/gamebuild.o: $(GAMELIB_SRCS) Makefile
@@ -167,6 +167,7 @@ $(GAMELIB): $(GEN_OBJ) | $(EXE)
 	$(CC) $(GAMELIB_LDFLAGS) -o $@.tmp $^
 	mv -f $@.tmp $@
 	echo $(GAMELIB_ID) > $@.id
+	sed -n 's/^const char main_build_id\[\] = "\([0-9a-f]*\)";.*/\1/p' $(GEN)/main/main_table.c >> $@.id
 
 $(B)/rt/ui/%.o: runtime/ui/%.mm $(RT_HDRS)
 	@mkdir -p $(dir $@)
@@ -290,8 +291,8 @@ gen-helper: build/rando-venv/.ok build/rando-venv/.gen-ok
 	$(if $(filter windows,$(PLATFORM)),$(RANDO_VPY) tools/pe_no_cfg.py build/helper/lasgen/lasgen.exe)
 	@du -sh build/helper/lasgen
 
-build/rando-venv/.gen-ok: build/rando-venv/.ok
-	$(RANDO_VPY) -m pip install -q capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5
+build/rando-venv/.gen-ok: build/rando-venv/.ok Makefile
+	$(RANDO_VPY) -m pip install -q capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5 zstandard==0.25.0
 	touch $@
 
 build/rando-venv/.ok: third_party/LAS-Randomizer/requirements.txt

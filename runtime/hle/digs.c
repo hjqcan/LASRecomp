@@ -29,6 +29,7 @@
 #include <unistd.h>
 
 #include "../hle.h"
+#include "../gameversion.h"
 #include "../rando.h"
 
 #define PLAYER_STATUS_PTR (MAIN_BASE + 0x1CC1368)  // PlayerStatus*: current level name at +0
@@ -40,7 +41,7 @@
 #define STR_POOL (MAIN_BASE + 0x1cab2d0)           // std::vector<{std::string, u64 refs}>: type-5 parameters
 #define STR_POOL_INIT (MAIN_BASE + 0x1d510)        // its first-use init (clears the vector)
 #define SP_RELEASE (MAIN_BASE + 0xbae080)          // shared_ptr release (x0 = control block)
-#define WEAK_RELEASE (MAIN_BASE + 0x14311f0)       // std::__shared_weak_count::__release_weak
+#define WEAK_RELEASE game_main_address(MAIN_BASE + 0x14311f0)       // std::__shared_weak_count::__release_weak
 #define DIG_FLAG_BASE 4096
 #define NTILES (256 * 80)
 #define GOT_FLAG_BASE (DIG_FLAG_BASE + NTILES)

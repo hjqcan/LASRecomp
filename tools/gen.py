@@ -14,6 +14,12 @@ import sys
 import time
 from collections import Counter
 
+# The bundled helper also imports NSZs. That path does not need to initialize
+# the recompiler or Unicorn (and reports importer arguments via its own parser).
+if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == '--import-nsz':
+    from import_game import main as import_main
+    sys.exit(import_main(sys.argv[2:]))
+
 import unicorn as uc
 from unicorn import arm64_const as A
 
@@ -467,6 +473,7 @@ class Module:
 
 
 from patches import PATCHES
+from game_versions import game_version, patch_table
 
 import json as _json
 import os as _os
@@ -490,6 +497,7 @@ def write_if_changed(path, text):
 
 
 def main():
+    global PATCHES, RANDO_CODE
     ap = argparse.ArgumentParser()
     ap.add_argument('name')
     ap.add_argument('nso')
@@ -506,6 +514,12 @@ def main():
 
     t0 = time.time()
     m = Module(args.name, args.nso, args.base, args.simd)
+    if args.name == "main":
+        m.game_version = game_version(m.nso.build_id)
+        PATCHES = patch_table(PATCHES, m.game_version)
+        if m.game_version != "1.0.0":
+            RANDO_CODE = {}  # Randomizer patches have only been validated on v1.0.0.
+        print(f"Game version: {m.game_version}", file=sys.stderr)
     starts = m.boundaries()
     hle = {}
     if args.hle and os.path.exists(args.hle):
@@ -622,6 +636,7 @@ def main():
         f.write(',\n'.join(fname(a) for a in order))
         f.write('};\n')
         f.write(f'const uint64_t {args.name}_fn_count = {len(order)};\n')
+        f.write(f'const char {args.name}_build_id[] = "{m.nso.build_id}";\n')
         write_if_changed(os.path.join(args.outdir, f'{args.name}_table.c'), f.getvalue())
     print(f'{args.name}: wrote {nchunks} chunks, {time.time() - t0:.0f}s total', file=sys.stderr)
 

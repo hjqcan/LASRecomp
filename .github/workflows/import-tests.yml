@@ -1,0 +1,24 @@
+name: NSZ importer
+
+on:
+  push:
+    paths: ['tools/import_game.py', 'tools/game_versions.py', 'tools/test_import_game.py', '.github/workflows/import-tests.yml']
+  pull_request:
+    paths: ['tools/import_game.py', 'tools/game_versions.py', 'tools/test_import_game.py', '.github/workflows/import-tests.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-archives:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install zstandard==0.25.0
+      - run: python tools/test_import_game.py -v

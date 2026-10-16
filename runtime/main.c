@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "gamelib.h"
+#include "gameversion.h"
 #include "paths.h"
 #include "settings.h"
 #include "hle.h"
@@ -132,6 +133,11 @@ static void boot(const char *root) {
 
     char why[512];
     if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
+    char main_path[1100];
+    snprintf(main_path, sizeof main_path, "%s/main", exefs);
+    game_version_select(main_path);
+    if (game_version_current() == GAME_UNSUPPORTED) FATAL("unsupported game executable\n");
+    LOG("[game] version %s\n", game_version_name(game_version_current()));
     loader_load(exefs);
     rando_boot();  // the chosen seed's data patches go into the freshly loaded module
     { extern void settings_load(void); settings_load(); }

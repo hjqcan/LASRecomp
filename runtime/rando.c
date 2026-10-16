@@ -17,6 +17,7 @@
 
 #include "hle.h"
 #include "settings.h"
+#include "gameversion.h"
 
 #define MAIN_BASE 0x7000000000ull
 #define WORD_TAB 256
@@ -91,6 +92,10 @@ static void load_pchtxt(const char *path) {
 
 static void init(void) {
     settings_load();
+    if (game_version_current() == GAME_110) {
+        LOG("[rando] v1.1.0: vanilla mode; randomizer patches require v1.0.0\n");
+        return;
+    }
     const char *seed = getenv("LARECOMP_RANDO_SEED") ? getenv("LARECOMP_RANDO_SEED") : g_settings.rando_seed;
     if (!seed || !seed[0]) return;
     snprintf(g_seed_dir, sizeof g_seed_dir, "rando/%s", seed);

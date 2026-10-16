@@ -1,5 +1,6 @@
 // Builds the game code library on the player's machine (runtime/gamebuild.h).
 #include "gamebuild.h"
+#include "gameversion.h"
 
 #include <pthread.h>
 #include <stdint.h>
@@ -34,6 +35,7 @@ static pthread_mutex_t g_plock = PTHREAD_MUTEX_INITIALIZER;
 static PlatProc g_procs[MAX_PROCS];
 static int g_nprocs;
 static bool g_quitting;
+static bool g_registered;
 
 static void end_all(void) {
     pthread_mutex_lock(&g_plock);
@@ -209,6 +211,45 @@ static void log_tail(const char *path, char *out, size_t n) {  // the last line 
     snprintf(out, n, "%s", nl ? nl + 1 : buf);
 }
 
+bool gameimport_run(const char *base_nsz, const char *update_nsz, const char *game_dir,
+                    void (*progress)(const char *), char *why, size_t why_size) {
+    if (!g_registered) g_registered = true, atexit(end_all);
+    Tools t;
+    if (!find_tools(&t)) {
+        snprintf(why, why_size, "The NSZ import helper is missing from this copy of LAS Recomp.");
+        return false;
+    }
+    Args a = {0};
+    add(&a, t.gen);
+    if (t.gen_script[0]) add(&a, t.gen_script);
+    add(&a, "--import-nsz");
+    add(&a, "--base"); add(&a, base_nsz);
+    if (update_nsz && *update_nsz) { add(&a, "--update"); add(&a, update_nsz); }
+    add(&a, "--output"); add(&a, game_dir);
+    add(&a, "--replace");
+    char log[1200];
+    snprintf(log, sizeof log, "%s.import.log", game_dir);
+    PlatProc p = spawn(a.v, log);
+    args_free(&a);
+    int result = 255;
+    char last[512] = "";
+    while (p && (result = finished(p)) < 0) {
+        char message[512];
+        log_tail(log, message, sizeof message);
+        if (progress && !strncmp(message, "import: ", 8) && strcmp(message, last)) {
+            snprintf(last, sizeof last, "%s", message);
+            progress(message + 8);
+        }
+        sleep_ms(200);
+    }
+    if (result != 0) {
+        log_tail(log, why, why_size);
+        if (!why[0]) snprintf(why, why_size, "NSZ import failed; see extracted.import.log.");
+        return false;
+    }
+    return true;
+}
+
 // ------------------------------------------------------------------ compiling
 typedef struct {
     char src[1100], obj[1100], log[1100];
@@ -270,8 +311,7 @@ static PlatProc start_compile(const Tools *t, const Unit *u) {
 // ------------------------------------------------------------------ the build
 bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size_t why_size) {
     uint64_t t0 = plat_now_ns();
-    static bool registered;
-    if (!registered) registered = true, atexit(end_all);
+    if (!g_registered) g_registered = true, atexit(end_all);
     Tools t;
     if (!find_tools(&t)) {
         snprintf(why, why_size, "the game code builder is missing from this copy of LAS Recomp");
@@ -475,14 +515,17 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         char idp[1100];
         snprintf(idp, sizeof idp, "%s.id", lib);
         FILE *f = NULL;
-        if (rename(tmp, lib) != 0 || !(f = fopen(idp, "wb")) || fprintf(f, "%s\n", GAMELIB_ID) < 0) {
+        char main_path[1100], build_id[41];
+        snprintf(main_path, sizeof main_path, "%s" SEP "exefs" SEP "main", game_dir);
+        if (!game_build_id(main_path, build_id) || rename(tmp, lib) != 0 || !(f = fopen(idp, "wb")) ||
+            fprintf(f, "%s\n%s\n", GAMELIB_ID, build_id) < 0) {
             snprintf(why, why_size, "the game code couldn't be saved");
             ok = false;
         }
         if (f) fclose(f);
     }
     free(units.u);
-    rt_remove_game_file(game_dir, ".gamebuild");  // the C, the objects, the logs
+    if (ok) rt_remove_game_file(game_dir, ".gamebuild");  // Keep failed build logs for diagnosis.
     LOG("[gamebuild] %s in %.0fs\n", ok ? "done" : "failed", (double)(plat_now_ns() - t0) / 1e9);
     if (ok && o->progress) o->progress(1, "Finishing...");
     return ok;

@@ -24,7 +24,7 @@
 #ifndef GAMELIB_ID
 #define GAMELIB_ID "dev"
 #endif
-#define GAMELIB_ABI 1
+#define GAMELIB_ABI 2
 
 typedef struct {
     uint32_t abi;    // GAMELIB_ABI
@@ -32,6 +32,7 @@ typedef struct {
     const uint64_t *main_addrs, *sdk_addrs;  // sorted guest addresses
     const GuestFn *main_fns, *sdk_fns;       // the functions at them
     const uint64_t *main_count, *sdk_count;
+    const char *main_build_id;  // Prevent loading v1.0.0 code against v1.1.0 files (or the reverse).
 } GameLibTables;
 
 // The library's one exported function (tools/gamelib_entry.c).

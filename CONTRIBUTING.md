@@ -34,7 +34,7 @@ Report bugs either on the [Discord](https://discord.gg/DhrgdYqdcY) or as a
 ## Building
 
 See the README's "Building from source" for macOS and [docs/BUILD-windows.md](docs/BUILD-windows.md) for Windows.
-In short: set up your own v1.0.0 game files on the start screen, `make gen` once to recompile the game code from
+In short: set up your own supported game files on the start screen, `make gen` once to recompile the game code from
 them, then `make -j10`. The randomizer needs its Python environment in
 `third_party/LAS-Randomizer/venv`.
 
@@ -57,6 +57,8 @@ them, then `make -j10`. The randomizer needs its Python environment in
 
 - Build cleanly on your platform (`make -j10`). If you touch shared rendering code, say which backend you tested -
   a Metal change usually needs a Vulkan counterpart and the other way round.
+- NSZ importer/version profiles: `python tools/test_import_game.py -v` uses only synthetic archives and needs
+  `zstandard==0.25.0`. It runs on Windows, Linux and macOS in CI; no game files or keys are needed.
 - Test in game, and look at the result: a fix isn't verified until you've seen it work.
 - Scripted test runs: `tools/shot.sh <frame> [seconds]` runs the game with `LARECOMP_*` environment hooks (scripted
   input, warps, seeds, scratch saves via `tools/fresh_save.sh`) and saves a screenshot. Many debug hooks are
