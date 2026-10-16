@@ -12,6 +12,7 @@
 #include "../hle.h"
 #include "../rando.h"
 #include "../mods.h"
+#include "../workshop.h"
 #include "../ipc.h"
 #include "../save_backup.h"
 #include "../romfs_build.h"
@@ -678,6 +679,7 @@ static Service *open_host_fs(const char *sub) {
         snprintf(seed_save, sizeof seed_save, "%s/save", rando_seed_dir());
         g_save_dir = seed_save;
     }
+    if (workshop_save_dir()) g_save_dir = workshop_save_dir();
     snprintf(fs->root, sizeof fs->root, "%s/%s", g_save_dir, sub);
     fs->is_save = !strncmp(sub, "save_", 5);
     char cmd[1200];

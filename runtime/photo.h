@@ -6,7 +6,8 @@ extern "C" {
 #endif
 typedef struct {
     bool active, frozen, hide_hud;
-    float zoom, pan_x, pan_y, exposure, saturation;
+    float zoom, pan_x, pan_y, exposure, saturation, contrast, vignette;
+    int aspect; // 0: original, 1: 16:9, 2: 4:3, 3: square, 4: portrait, 5: cinema
     uint64_t armed, clean_frame;
 } PhotoState;
 void photo_state_reset(PhotoState *s);
@@ -17,6 +18,8 @@ bool photo_state_skip_draw(PhotoState *s, uint64_t frame, bool screen_target, bo
 bool photo_scene_composite(unsigned target_w, unsigned target_h, unsigned source_w, unsigned source_h,
                            bool fullscreen, bool blended, int textures);
 void photo_state_crop(const PhotoState *s, float crop[4]);
+void photo_state_frame(const PhotoState *s, float crop[4], double rect[4]);
+void photo_state_color(const PhotoState *s, float color[4]);
 
 bool photo_mode_active(void);
 bool photo_mode_available(void);
@@ -29,7 +32,8 @@ void photo_mode_presented(uint64_t frame);
 bool photo_mode_hold(void);
 bool photo_mode_skip_draw(uint64_t frame, bool screen_target, bool composite);
 void photo_mode_compose(float crop[4], double width, double height, double *x, double *y, double *w, double *h);
-void photo_mode_color(float color[4]); // exposure multiplier, saturation, reserved, reserved
+void photo_mode_color(float color[4]); // exposure multiplier, saturation, contrast delta, vignette
+bool photo_mode_capture_rect(unsigned width, unsigned height, int rect[4]);
 const char *photo_mode_capture_path(void);
 void photo_mode_capture_done(void);
 bool photo_mode_suppress_overlay(void);

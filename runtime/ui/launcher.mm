@@ -43,6 +43,7 @@ extern "C" {
 #include "game_profiles.h"
 #include "rando_profile.h"
 #include "mods.h"
+#include "workshop.h"
 #include "build_cache.h"
 #include "gamelib.h"
 #include "romfs_build.h"
@@ -1175,6 +1176,7 @@ extern "C" const char *launcher_run(const char *root) {
         menu_apply_window_requests(win);  // (the Video tab's Fullscreen)
         // the seed PLAY would start, kept current (Settings > Gameplay greys out what that seed forces)
         snprintf(g_settings.rando_seed, sizeof g_settings.rando_seed, "%s", choice ? choices[choice].c_str() : "");
+        workshop_selection(g_root.c_str(),g_settings.rando_seed);
         if (g_files_deleted) {  // (Settings > Prelaunch deleted them)
             g_files_deleted = false;
             status = check_game_files(g_root);
@@ -1889,6 +1891,7 @@ extern "C" const char *launcher_run(const char *root) {
     }
     // play: remember the choice, hand the window to the game
     snprintf(g_settings.rando_seed, sizeof g_settings.rando_seed, "%s", choice ? choices[choice].c_str() : "");
+    workshop_selection(g_root.c_str(),g_settings.rando_seed);
     settings_save();
 #ifdef __APPLE__
     ImGui_ImplMetal_Shutdown();

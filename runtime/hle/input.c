@@ -318,6 +318,10 @@ static uint64_t g_pad_obj;
 volatile int g_inject_plus;  // frames to hold Plus for the game (movie.c: A/B skip the opening on rando seeds)
 RT_ON_RESET(input_reboot_reset) { g_pad_obj = 0; g_inject_plus = 0; }  // (reboot: the controller object was guest memory)
 void input_frame(uint64_t frame) {
+    extern void performance_frame(uint64_t frame);
+    performance_frame(frame);
+    extern void workshop_frame(uint64_t frame);
+    workshop_frame(frame);
     if (g_pad_obj && getenv("LARECOMP_DUMP_PAD") && frame % 600 == 0) {
         const uint8_t *m = (const uint8_t *)(uintptr_t)(g_pad_obj - 0x98);
         LOG("[pad] mgr %llx 4e0=%u 4e4=%u 4e8=%u 548=%#x 54c..=%02x %02x %02x 56c=%02x\n", g_pad_obj - 0x98,
@@ -466,6 +470,9 @@ static void fill_state(Cpu *c) {
         lx = st[0], ly = st[1], rx = st[2], ry = st[3];
     }
     *(uint64_t *)(s + 8) = b;
+    { extern void workshop_game_tick(uint64_t frame,uint64_t buttons,int lx,int ly,int rx,int ry);
+      extern uint64_t renderer_present_count(void);
+      workshop_game_tick(renderer_present_count(),b,lx,ly,rx,ry); }
     static uint64_t last_b;
     if (b != last_b && getenv("LARECOMP_INPUT")) LOG("[input] id %#x buttons %#llx (sampling %lld, lr %llx)\n", id, (unsigned long long)b, (long long)sampling, c->x[30]);
     last_b = b;

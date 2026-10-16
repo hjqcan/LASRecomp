@@ -9,6 +9,7 @@
 // main+0x80d718); tools/patches.py hooks those stores to tell us where R is. A warp then writes the same
 // fields main+0x81b950 writes, from the presenter's per-frame callback.
 #include "../game_addresses.h"
+#include "../workshop.h"
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -66,6 +67,7 @@ static const char *const kManboRemap[][3] = {
 };
 
 void warp_request(const char *level, const char *locator) {
+    workshop_mark_assisted();
     for (size_t i = 0; i < sizeof kManboRemap / sizeof kManboRemap[0]; i++)
         if (!strcmp(level, kManboRemap[i][0]) && !strcmp(locator, kManboRemap[i][1])) {
             LOG("[warp] %s / %s is a Manbo arrival point: using %s\n", level, locator, kManboRemap[i][2]);
@@ -240,6 +242,7 @@ void warp_game_tick(Cpu *c) {
 static int g_give_id, g_give_count, g_give_index;
 
 void give_item_request(int id, int count, int index) {
+    workshop_mark_assisted();
     g_give_id = id; g_give_count = count; g_give_index = index;
     g_give_pending = 1;
 }

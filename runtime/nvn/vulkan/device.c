@@ -462,9 +462,12 @@ void vk_frame_end(const char *shot_path) {
 }
 
 void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h) {
-    SDL_Surface *s = SDL_CreateSurfaceFrom((int)w, (int)h, SDL_PIXELFORMAT_ABGR8888, (void *)rgba, (int)w * 4);
+    int rect[4] = {0,0,(int)w,(int)h};
+    photo_mode_capture_rect(w, h, rect);
+    SDL_Surface *s = SDL_CreateSurfaceFrom(rect[2], rect[3], SDL_PIXELFORMAT_ABGR8888,
+        (void *)(rgba + ((size_t)rect[1]*w + rect[0])*4), (int)w * 4);
     if (!s || !SDL_SavePNG(s, path)) LOG("[vk] saving %s failed: %s\n", path, SDL_GetError());
-    else LOG("[vk] saved %s (%ux%u)\n", path, w, h);
+    else LOG("[vk] saved %s (%dx%d)\n", path, rect[2], rect[3]);
     SDL_DestroySurface(s);
 }
 

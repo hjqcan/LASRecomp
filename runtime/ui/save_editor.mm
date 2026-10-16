@@ -2,6 +2,7 @@
 // so changes apply immediately and are written out (with fresh checksums) the next time the game saves.
 // Layout: notes/save_format.md.
 #include "../game_addresses.h"
+#include "../workshop.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -131,6 +132,8 @@ static void max_out(void) {
 }
 
 extern "C" void save_editor_draw(float scale) {
+    // Opening the live editor marks a practice attempt as tool-assisted, even if no value is changed.
+    workshop_mark_assisted();
     if (!loaded()) {
         ImGui::TextDisabled("%s", ui_tr("Load a save file first: the editor changes the save that's currently being played."));
         return;

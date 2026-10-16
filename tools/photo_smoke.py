@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 
 
 def main():
@@ -18,6 +19,9 @@ def main():
     parser.add_argument('--game', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True, help='New directory for isolated settings, saves and images')
     parser.add_argument('--save-copy', type=Path, help='Optional version-compatible save mount; copied, never modified')
+    parser.add_argument('--library', type=Path, help='Compiled library for the selected game version')
+    parser.add_argument('--aspect', type=int, choices=range(6), default=0, help='0 original, 1 16:9, 2 4:3, 3 square, 4 4:5, 5 cinema')
+    parser.add_argument('--vignette', type=float, default=0)
     args = parser.parse_args()
     exe, game, output = args.exe.resolve(), args.game.resolve(), args.output.resolve()
     if not exe.is_file() or not (game/'exefs/main').is_file():
@@ -41,6 +45,10 @@ def main():
                LARECOMP_EXIT_AFTER_SHOT='1',
                LARECOMP_INPUT='200:A:8,600:L:12,600:R:12,700:A:8,900:L:12,900:R:12,1000:A:8,'
                               '1300:A:8,1450:DOWN:8,1600:A:8,1900:A:8,2200:A:8')
+    env['LARECOMP_PHOTO_ASPECT'] = str(args.aspect)
+    env['LARECOMP_PHOTO_VIGNETTE'] = str(args.vignette)
+    if args.library:
+        env['LARECOMP_GAME_LIB'] = str(args.library.resolve())
     options = {}
     if os.name == 'nt':
         startup = subprocess.STARTUPINFO()
@@ -54,11 +62,17 @@ def main():
     text = log.read_text(encoding='utf-8', errors='replace')
     photos = sorted((output/'photos').glob('*.png'))
     hashes = [hashlib.sha256(p.read_bytes()).hexdigest() for p in photos]
+    dimensions = [struct.unpack('>II',p.read_bytes()[16:24]) for p in photos]
+    ratio = [None,16/9,4/3,1,4/5,2.39][args.aspect]
+    framing_ok = all(abs(w/ratio-h) <= 1 for w,h in dimensions) if ratio else True
+    recipes_ok = all(Path(str(p)+'.ini').is_file() for p in photos)
     passed = (run.returncode == 0 and len(hashes) == 2 and len(set(hashes)) == 1 and
+              framing_ok and recipes_ok and
               '[photo] frozen at frame' in text and '[photo] resumed at frame 2599' in text and
               'level MarinTarinHouse' in text and (output/'resumed.png').is_file())
     report = {'passed': passed, 'exit_code': run.returncode,
               'photos': [p.name for p in photos], 'sha256': hashes,
+              'dimensions': dimensions, 'aspect': args.aspect, 'recipes_present': recipes_ok,
               'note': 'Inspect photos and resumed.png; opening-room smoke test only.'}
     (output/'result.json').write_text(json.dumps(report, indent=2)+'\n', encoding='utf-8')
     print(json.dumps(report, indent=2))

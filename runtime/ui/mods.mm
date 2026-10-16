@@ -16,15 +16,22 @@
 
 static std::string game_root = "extracted", selected;
 static std::mutex lock;
-static std::string pending, message;
+static std::string pending, pending_preset, message;
 static std::atomic<bool> busy, changed{true};
 static ModInfo mods[MODS_MAX];
 static int count;
+static ModPreset presets[64];
+static int preset_count;
+static std::string preset_selected;
+static char preset_name[64];
 extern "C" void mods_set_game_root(const char *root) {
     game_root = root; selected.clear(); changed = true;
 }
 static void SDLCALL picked_mod(void *, const char *const *files, int) {
     if (files && files[0]) { std::lock_guard<std::mutex> guard(lock); pending = files[0]; }
+}
+static void SDLCALL picked_preset(void *, const char *const *files, int) {
+    if (files && files[0]) { std::lock_guard<std::mutex> guard(lock); pending_preset = files[0]; }
 }
 static bool backup_before_change(int profile, const char *version, std::string &error) {
     namespace fs = std::filesystem;
@@ -41,8 +48,12 @@ extern "C" void mods_draw(float scale, bool in_game) {
     GameVersion game = game_version_file((game_root + "/exefs/main").c_str());
     const char *version = game_version_name(game);
     bool locked = in_game || gamelib_tables() || profile < 0 || game == GAME_UNSUPPORTED;
-    std::string source;
-    { std::lock_guard<std::mutex> guard(lock); if (!locked && !busy) source.swap(pending); }
+    std::string source, preset_source;
+    { std::lock_guard<std::mutex> guard(lock); if (!locked && !busy) { source.swap(pending); preset_source.swap(pending_preset); } }
+    if (!preset_source.empty()) {
+        char why[512] = ""; bool ok = mods_preset_import(rt_data_root(),preset_source.c_str(),why,sizeof why);
+        std::lock_guard<std::mutex> guard(lock); message = ok ? "Preset imported." : why; changed = true;
+    }
     if (!source.empty()) {
         busy = true;
         std::string data = rt_data_root(), root = game_root, v = version;
@@ -65,10 +76,47 @@ extern "C" void mods_draw(float scale, bool in_game) {
         char why[512] = "";
         count = profile < 0 ? 0 : mods_list(rt_data_root(), game_root.c_str(), profile, version, mods, MODS_MAX, why, sizeof why);
         if (count < 0) { count = 0; std::lock_guard<std::mutex> guard(lock); message = why; }
+        preset_count = mods_preset_list(rt_data_root(),presets,64,why,sizeof why);
+        if (preset_count < 0) { preset_count = 0; std::lock_guard<std::mutex> guard(lock); message = why; }
     }
     std::string shown;
     { std::lock_guard<std::mutex> guard(lock); shown = message; }
     if (!shown.empty()) ImGui::TextWrapped("%s", ui_tr(shown.c_str()));
+    if (ImGui::CollapsingHeader(ui_label("Mod presets").c_str())) {
+        ImGui::TextWrapped("%s",ui_tr("Save and share a .lasmods file from mod-presets. It contains mod IDs and versions, without resource files. Applying checks every mod before replacing the current selection."));
+        ImGui::BeginDisabled(locked || busy);
+        ImGui::SetNextItemWidth(240*scale);
+        ImGui::InputText(ui_label("Preset name").c_str(),preset_name,sizeof preset_name);
+        if (ImGui::Button(ui_label("Save current selection").c_str())) {
+            char why[512] = "";
+            bool ok = mods_preset_save(rt_data_root(),game_root.c_str(),profile,version,preset_name,why,sizeof why);
+            std::lock_guard<std::mutex> guard(lock); message = ok ? "Preset saved." : why; changed = true;
+            if (ok) preset_selected = preset_name;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(ui_label("Import preset").c_str())) {
+            static const SDL_DialogFileFilter filters[] = {{"Mod preset", "lasmods"}};
+            SDL_ShowOpenFileDialog(picked_preset,NULL,SDL_GetKeyboardFocus(),filters,1,NULL,false);
+        }
+        ImGui::SetNextItemWidth(340*scale);
+        if (ImGui::BeginCombo(ui_label("Saved presets").c_str(),preset_selected.c_str())) {
+            for (int i = 0; i < preset_count; ++i) {
+                std::string label = std::string(presets[i].name)+" ("+presets[i].game_version+")";
+                if (ui_user_selectable(label.c_str(),presets[i].name,preset_selected == presets[i].name)) preset_selected = presets[i].name;
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::BeginDisabled(preset_selected.empty());
+        if (ImGui::Button(ui_label("Apply preset").c_str())) {
+            char why[512] = ""; std::string error;
+            bool ok = backup_before_change(profile,version,error);
+            if (ok) ok = mods_preset_apply(rt_data_root(),game_root.c_str(),profile,version,preset_selected.c_str(),why,sizeof why);
+            std::lock_guard<std::mutex> guard(lock);
+            message = ok ? "Mod selection saved. Changes apply when you start the game." : error.empty() ? why : error;
+            changed = true;
+        }
+        ImGui::EndDisabled(); ImGui::EndDisabled();
+    }
     if (!count) ImGui::TextDisabled("%s", ui_tr("No mods installed. Choose a folder containing mod.ini and romfs."));
     if (ImGui::BeginTable("##mods", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
         ImGui::TableSetupColumn(ui_tr("Enabled"), ImGuiTableColumnFlags_WidthFixed, 100 * scale);
@@ -101,6 +149,7 @@ extern "C" void mods_draw(float scale, bool in_game) {
         ui_user_text(m.description, true);
         ImGui::Text(ui_tr("%d replacement files, %.1f MiB"), m.files, (double)m.bytes/(1024*1024));
         if (m.conflicts) ImGui::TextWrapped("%s", ui_tr("Another enabled mod replaces these resources. Disable it before enabling this mod."));
+        if (*m.conflict_detail) ui_user_text(m.conflict_detail,true);
         if (*m.problem) ImGui::TextWrapped("%s", ui_tr(m.problem));
     }
 }

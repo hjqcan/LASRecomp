@@ -2,6 +2,7 @@
 // tools/patches.py DAMAGE_*_SITES); rt_hero_mode() reads the game's own Hero Mode flag (PlayerStatus+0x120 = save
 // 0x55E0). Settings persist in larecomp.ini (g_settings.diff_*).
 #include "../game_addresses.h"
+#include "../workshop.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -36,6 +37,8 @@ extern "C" int32_t rt_damage(int32_t dmg, int32_t shift) {
     }
     int32_t base = dmg << (shift & 31);
     if (base <= 0) return base;  // healing / zero: untouched
+    int challenge = workshop_damage(base);
+    if (challenge >= 0) return challenge;
     if (g_settings.diff_ohko) return 999;
     float m = g_settings.diff_damage > 0 ? g_settings.diff_damage : 1.0f;
     int32_t r = (int32_t)lroundf((float)base * m);

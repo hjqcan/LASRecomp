@@ -183,6 +183,45 @@ std::map<std::string, fs::path> resolve(const fs::path &root, const fs::path &ga
     }
     return result;
 }
+struct Preset { std::string version; std::map<std::string,std::string> mods; };
+fs::path preset_root(const char *data) {
+    auto root = mod_root(data).parent_path()/"mod-presets"; plain(root); return root;
+}
+fs::path preset_path(const fs::path &root, const char *name) {
+    need(name && id_ok(name), "Preset names must start with a lowercase letter and use letters, numbers, - or _ (up to 63 characters).");
+    auto p = root/(std::string(name)+".lasmods"); plain(p); return p;
+}
+Preset read_preset(const fs::path &path) {
+    Preset p; std::istringstream in(read(path, 16384)); std::string line; bool format = false;
+    while (std::getline(in, line)) {
+        line = trim(line); if (line.empty()) continue;
+        auto at = line.find('='); need(at != std::string::npos, "Invalid mod preset field.");
+        auto key = line.substr(0,at), value = line.substr(at+1);
+        for (unsigned char c : value) need(c >= 32, "Invalid control character in mod preset.");
+        if (key == "format") { need(!format && value == "1", "Unsupported or duplicate mod preset format."); format = true; }
+        else if (key == "game_version") {
+            need(p.version.empty() && (value == "1.0.0" || value == "1.1.0"), "Invalid mod preset game version."); p.version = value;
+        } else {
+            need(key.compare(0,4,"mod.") == 0 && id_ok(key.substr(4)) && value.size() < 64 &&
+                 p.mods.emplace(key.substr(4),value).second && p.mods.size() <= MODS_MAX, "Invalid or duplicate mod in preset.");
+        }
+    }
+    need(format && !p.version.empty(), "Incomplete mod preset."); return p;
+}
+void write_preset(const fs::path &root, const char *name, const Preset &p) {
+    auto target = preset_path(root,name); need(!fs::exists(target), "A preset with this name already exists.");
+    unsigned count = 0;
+    if (fs::exists(root)) for (const auto &e : fs::directory_iterator(root)) if (e.path().extension() == ".lasmods") ++count;
+    need(count < 64, "Too many mod presets.");
+    fs::create_directories(root); auto tmp = target; tmp += ".writing"; plain(tmp);
+    try {
+        std::ofstream f(tmp,std::ios::binary|std::ios::trunc);
+        f << "format=1\ngame_version=" << p.version << '\n';
+        for (const auto &m : p.mods) f << "mod." << m.first << '=' << m.second << '\n';
+        f.close(); need(bool(f), "Cannot write mod preset."); read_preset(tmp);
+        fs::rename(tmp,target);
+    } catch (...) { std::error_code ec; fs::remove(tmp,ec); throw; }
+}
 }
 
 extern "C" int mods_list(const char *data_root, const char *game_root, int profile, const char *version,
@@ -219,7 +258,11 @@ extern "C" int mods_list(const char *data_root, const char *game_root, int profi
         }
         for (auto &a : packs) for (const auto &b : packs)
             if (b.info.enabled && strcmp(a.info.id, b.info.id))
-                for (const auto &f : a.files) a.info.conflicts += b.files.count(f.first) != 0;
+                for (const auto &f : a.files) if (b.files.count(f.first)) {
+                    ++a.info.conflicts;
+                    if (!*a.info.conflict_detail)
+                        snprintf(a.info.conflict_detail, sizeof a.info.conflict_detail, "%s: %s", b.info.id, f.first.c_str());
+                }
         std::sort(packs.begin(), packs.end(), [](const Pack &a, const Pack &b) { return strcmp(a.info.id,b.info.id)<0; });
         need((int)packs.size() <= cap, "Mod list buffer is too small.");
         for (size_t i = 0; i < packs.size(); ++i) out[i] = packs[i].info;
@@ -290,3 +333,48 @@ extern "C" bool mods_romfs_override(const char *relative, char *out, size_t cap)
     memcpy(out, name.c_str(), name.size()+1); return true;
 }
 extern "C" void mods_clear_active(void) { active_files.clear(); }
+
+extern "C" int mods_preset_list(const char *data, ModPreset *out, int cap, char *why, size_t why_cap) {
+    try {
+        auto root = preset_root(data); if (!fs::exists(root)) return 0;
+        std::vector<ModPreset> list;
+        for (const auto &e : fs::directory_iterator(root)) {
+            if (e.path().extension() != ".lasmods") continue;
+            auto name = e.path().stem().u8string(); if (!id_ok(name)) continue;
+            auto p = read_preset(e.path()); ModPreset info{};
+            snprintf(info.name,sizeof info.name,"%s",name.c_str());
+            snprintf(info.game_version,sizeof info.game_version,"%s",p.version.c_str()); info.mods = (int)p.mods.size();
+            need((int)list.size() < cap && list.size() < 64, "Too many mod presets."); list.push_back(info);
+        }
+        std::sort(list.begin(),list.end(),[](const ModPreset &a,const ModPreset &b) { return strcmp(a.name,b.name)<0; });
+        std::copy(list.begin(),list.end(),out); return (int)list.size();
+    } catch (const std::exception &e) { error(why,why_cap,e); return -1; }
+}
+extern "C" bool mods_preset_save(const char *data,const char *game,int profile,const char *version,const char *name,char *why,size_t cap) {
+    try {
+        auto root = mod_root(data); auto ids = enabled_ids(root,profile);
+        resolve(root,fs::u8path(game),version,ids); Preset p; p.version = version;
+        for (const auto &id : ids) p.mods[id] = load_pack(root/id,fs::u8path(game),version,false).info.version;
+        write_preset(preset_root(data),name,p); return true;
+    } catch (const std::exception &e) { error(why,cap,e); return false; }
+}
+extern "C" bool mods_preset_apply(const char *data,const char *game,int profile,const char *version,const char *name,char *why,size_t cap) {
+    try {
+        auto p = read_preset(preset_path(preset_root(data),name));
+        need(p.version == version, "Preset belongs to a different game version.");
+        auto root = mod_root(data); std::set<std::string> ids;
+        for (const auto &m : p.mods) {
+            auto pack = load_pack(root/m.first,fs::u8path(game),version,false);
+            need(m.second == pack.info.version, "Installed mod version differs from preset: " + m.first);
+            ids.insert(m.first);
+        }
+        resolve(root,fs::u8path(game),version,ids); // Validate the entire set before replacing any selection.
+        save_ids(root,profile,ids); return true;
+    } catch (const std::exception &e) { error(why,cap,e); return false; }
+}
+extern "C" bool mods_preset_import(const char *data,const char *source,char *why,size_t cap) {
+    try {
+        auto path = fs::u8path(source); need(path.extension() == ".lasmods", "Choose a .lasmods preset file.");
+        auto p = read_preset(path); write_preset(preset_root(data),path.stem().u8string().c_str(),p); return true;
+    } catch (const std::exception &e) { error(why,cap,e); return false; }
+}

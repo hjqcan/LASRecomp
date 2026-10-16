@@ -249,7 +249,10 @@ static const char *builtin_src(const char *name, int *stage) {
                "layout(location = 0) out vec4 o;\n"
                "layout(push_constant) uniform P { vec4 a; vec4 crop; vec4 color; } pc;\n"
                "void main() { vec3 c = texture(t, uv).rgb; float y = dot(c, vec3(0.2126,0.7152,0.0722));\n"
-               "  o = vec4(clamp(mix(vec3(y), c, pc.color.y) * pc.color.x, 0.0, 1.0), 1.0); }\n";
+               "  c = mix(vec3(y), c, pc.color.y) * pc.color.x; c += (c-0.5) * pc.color.z;\n"
+               "  vec2 q = (uv-pc.crop.xy)/pc.crop.zw * 2.0-1.0;\n"
+               "  c *= 1.0-pc.color.w * smoothstep(0.2,1.5,dot(q,q));\n"
+               "  o = vec4(clamp(c, 0.0, 1.0), 1.0); }\n";
     }
     // ---- post passes before the present (Video tab "Anti-aliasing" / "Upscaler"): exec.c vk_present_draw.
     // Each draws a fullscreen triangle into an image the size of its output; push constants: two vec4.

@@ -1,0 +1,8 @@
+format=1
+name=leave-house
+game_version=1.0.0
+goal_level=Field
+seconds=300
+damage=1
+no_hit=0
+ohko=0

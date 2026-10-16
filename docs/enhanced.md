@@ -17,12 +17,17 @@ This is the independently maintained edition in [hjqcan/LASRecomp](https://githu
 | UI | English, Simplified Chinese and Traditional Chinese settings; upstream language/font fixes; CRLF settings and HK/MO/Hant locale handling |
 | Compilation | Cancel/resume, SHA-256 source/object receipts, split compiler/generator identities, safe library publication, Windows per-helper job objects |
 | Saves | Automatic/manual snapshots, 20-snapshot retention, validated launcher restore, separation by installation and randomizer seed |
-| Photos | F2 freeze, framing/color controls, F12 PNG export, Vulkan and Metal implementations |
-| Resource mods | Local pack import, metadata, version-specific enable lists, resource conflict checks, save backup before selection changes |
+| Photos | F2 freeze, aspect-ratio crops, composition guides, color presets/contrast/vignette, F12 PNG plus settings recipe, Vulkan and Metal implementations |
+| Resource mods | Local pack import, metadata, version-specific enable lists, shareable version-checked presets, conflict paths, save backup before selection changes |
 | Randomizer | Existing upstream options plus experimental version-specific v1.1.0 generation and validated patches/event adaptation |
+| Challenge workshop | Shareable destination/time/damage rules, isolated save snapshots, result and observed-route recording |
+| Route viewer | Local CSV loading, playback/scrubbing, per-level X/Z map, health and controller samples |
+| Performance | Bounded gameplay frame-interval captures, CSV export, percentile and 1% low statistics |
 | Addresses | Canonical v1.0.0 address table, checked updated-executable relocation, instruction guards |
 
-See [import and versions](NSZ-and-v110.md), [photo/mod/randomizer details](photo-mods-randomizer.md) and [mod format](resource-mods.md).
+See [import and versions](NSZ-and-v110.md), [photo/mod/randomizer details](photo-mods-randomizer.md), [mod format](resource-mods.md) and [workshop/replay/performance](workshop.md).
+
+The workshop, extended photo controls, mod presets and frame captures are development additions after the published Beta 5.1 package. Their scope and checks are recorded in [third/fourth-round validation](enhanced-stage34-validation.md). High-refresh simulation, deterministic game replay and real-time co-op remain research work.
 
 The [Enhanced Beta 5.1 validation record](enhanced-beta5.1-validation.md) lists actual checks and remaining limits, including the save-mount concurrency fix found during release testing.
 

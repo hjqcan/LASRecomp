@@ -34,6 +34,21 @@ int main(void) {
     p.zoom=NAN;p.pan_x=INFINITY;float bounded[4]={0,0,1,1};photo_state_crop(&p,bounded);
     assert(isfinite(bounded[0])&&near(bounded[2],1));
     photo_state_reset(&p);assert(!p.active&&!p.frozen&&near(p.exposure,0)&&near(p.saturation,1));
+    photo_state_enter(&p,30);p.aspect=3;
+    double rect[4]={0,0,1920,1080};float square[4]={0,0,1,1};
+    photo_state_frame(&p,square,rect);
+    assert(rect[0]==420&&rect[1]==0&&rect[2]==1080&&rect[3]==1080);
+    assert(near(square[0],0.21875f)&&near(square[2],0.5625f)&&near(square[3],1));
+    p.pan_x=1;p.zoom=2;double portrait[4]={40,20,1600,900};float edge[4]={.1f,.2f,.8f,.6f};
+    p.aspect=4;photo_state_frame(&p,edge,portrait);
+    assert(fabs(portrait[2]/portrait[3]-.8)<.0001);
+    assert(near(edge[0]+edge[2],.9f)&&edge[1]>=.2f&&edge[1]+edge[3]<=.80001f);
+    p.aspect=-1;p.zoom=1;p.pan_x=0;double original[4]={0,0,1920,1080};float full[4]={0,0,1,1};
+    photo_state_frame(&p,full,original);assert(near(full[2],1)&&original[2]==1920);
+    float color[4];photo_state_color(&p,color);assert(near(color[0],1)&&near(color[1],1)&&near(color[2],0)&&near(color[3],0));
+    p.contrast=99;p.vignette=INFINITY;p.exposure=100;photo_state_color(&p,color);
+    assert(near(color[0],4)&&near(color[2],1)&&near(color[3],0));
+    p.active=false;photo_state_color(&p,color);assert(near(color[0],1)&&near(color[2],0));
     puts("Photo freeze, clean-frame delay, HUD isolation, crop bounds and reset passed");
 }
 '''

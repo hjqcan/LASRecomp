@@ -1,4 +1,5 @@
 #include "../photo.h"
+#include "../gameversion.h"
 #include "menu.h"
 #include "localization.h"
 #include "imgui.h"
@@ -10,6 +11,12 @@
 #include <stdexcept>
 #include <filesystem>
 #include <string>
+#include <algorithm>
+#include <fstream>
+#include <locale>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 extern "C" {
 #include "../rt.h"
 int game_in_play(void);
@@ -24,6 +31,9 @@ static bool controls = true, capture_pending, capture_drawing, focus;
 static std::string capture_path, message;
 static float base_crop[4];
 static double base_rect[4];
+static double frame_rect[4];
+static bool guides = true;
+static int captured_width, captured_height;
 
 extern "C" bool photo_mode_active(void) { return active.load(); }
 extern "C" bool photo_mode_available(void) {
@@ -56,6 +66,8 @@ extern "C" void photo_mode_frame(uint64_t frame) {
         photo_state_enter(&state, frame); active = true; controls = true; focus = true;
         message.clear(); capture_path.clear(); input_reset();
         if (const char *z = getenv("LARECOMP_PHOTO_ZOOM")) state.zoom = (float)atof(z);
+        if (const char *a = getenv("LARECOMP_PHOTO_ASPECT")) state.aspect = atoi(a);
+        if (const char *v = getenv("LARECOMP_PHOTO_VIGNETTE")) state.vignette = (float)atof(v);
         fprintf(stderr, "[photo] entered at frame %llu\n", (unsigned long long)frame);
     }
     if (state.active && (r & CAPTURE)) capture_pending = true;
@@ -85,12 +97,23 @@ extern "C" void photo_mode_compose(float crop[4], double width, double height,
         *x = base_rect[0] * width; *y = base_rect[1] * height;
         *w = base_rect[2] * width; *h = base_rect[3] * height;
     }
-    photo_state_crop(&state, crop);
+    double rect[4] = {*x, *y, *w, *h};
+    photo_state_frame(&state, crop, rect);
+    *x = rect[0]; *y = rect[1]; *w = rect[2]; *h = rect[3];
+    frame_rect[0] = *x/width; frame_rect[1] = *y/height;
+    frame_rect[2] = *w/width; frame_rect[3] = *h/height;
 }
 extern "C" void photo_mode_color(float color[4]) {
-    color[0] = state.active ? exp2f(state.exposure) : 1;
-    color[1] = state.active ? state.saturation : 1;
-    color[2] = color[3] = 0;
+    photo_state_color(&state, color);
+}
+extern "C" bool photo_mode_capture_rect(unsigned width, unsigned height, int rect[4]) {
+    if (!capture_drawing || !width || !height) return false;
+    rect[0] = std::clamp((int)lround(frame_rect[0]*width), 0, (int)width-1);
+    rect[1] = std::clamp((int)lround(frame_rect[1]*height), 0, (int)height-1);
+    rect[2] = std::clamp((int)lround(frame_rect[2]*width), 1, (int)width-rect[0]);
+    rect[3] = std::clamp((int)lround(frame_rect[3]*height), 1, (int)height-rect[1]);
+    captured_width = rect[2]; captured_height = rect[3];
+    return true;
 }
 extern "C" const char *photo_mode_capture_path(void) {
     capture_drawing = false;
@@ -99,7 +122,15 @@ extern "C" const char *photo_mode_capture_path(void) {
     try {
         namespace fs = std::filesystem;
         fs::path directory = "photos";
-        if (fs::is_symlink(fs::symlink_status(directory))) throw std::runtime_error("Photo directory cannot be a link.");
+        fs::path part;
+        for (const auto &c : fs::absolute(directory)) {
+            part /= c;
+            if (fs::is_symlink(fs::symlink_status(part))) throw std::runtime_error("Photo paths cannot contain links.");
+#ifdef _WIN32
+            auto attr = GetFileAttributesW(part.c_str());
+            if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_REPARSE_POINT)) throw std::runtime_error("Photo paths cannot contain reparse points.");
+#endif
+        }
         fs::create_directories(directory);
         std::time_t now = std::time(NULL); std::tm tm;
 #ifdef _WIN32
@@ -111,7 +142,9 @@ extern "C" const char *photo_mode_capture_path(void) {
         for (unsigned i = 0; i < 10000; ++i) {
             char name[80]; snprintf(name, sizeof name, "photo-%s-%04u.png", stamp, i);
             fs::path p = directory / name;
-            if (!fs::exists(p)) { capture_path = p.u8string(); capture_drawing = true; return capture_path.c_str(); }
+            if (!fs::exists(fs::symlink_status(p)) && !fs::exists(fs::symlink_status(fs::u8path(p.u8string()+".ini")))) {
+                capture_path = p.u8string(); capture_drawing = true; return capture_path.c_str();
+            }
         }
         throw std::runtime_error("Cannot choose a new photo filename.");
     } catch (const std::exception &e) { message = e.what(); }
@@ -121,6 +154,21 @@ extern "C" void photo_mode_capture_done(void) {
     std::error_code ec;
     auto size = std::filesystem::file_size(std::filesystem::u8path(capture_path), ec);
     message = !ec && size > 0 ? std::string(ui_tr("Photo saved:")) + " " + capture_path : ui_tr("Could not save photo.");
+    if (!ec && size > 0) {
+        // A small portable recipe accompanies each PNG; no game resources or save data.
+        auto recipe = std::filesystem::u8path(capture_path + ".ini");
+        if (!std::filesystem::exists(std::filesystem::symlink_status(recipe, ec))) {
+            std::ofstream out(recipe, std::ios::binary);
+            out.imbue(std::locale::classic());
+            out << "format=1\ngame_version=" << game_version_name(game_version_current())
+                << "\nwidth=" << captured_width << "\nheight=" << captured_height
+                << "\naspect=" << state.aspect << "\nzoom=" << state.zoom << "\npan_x=" << state.pan_x
+                << "\npan_y=" << state.pan_y << "\nexposure=" << state.exposure << "\nsaturation=" << state.saturation
+                << "\ncontrast=" << state.contrast << "\nvignette=" << state.vignette << "\nhide_hud=" << state.hide_hud << '\n';
+            out.close();
+            if (!out) message += std::string(" ") + ui_tr("The photo recipe could not be saved.");
+        }
+    }
     fprintf(stderr, "[photo] %s\n", message.c_str());
     capture_drawing = false;
 }
@@ -128,8 +176,20 @@ extern "C" bool photo_mode_suppress_overlay(void) { return capture_drawing || (s
 extern "C" void photo_mode_draw(float scale) {
     if (!state.active || photo_mode_suppress_overlay()) return;
     auto &io = ImGui::GetIO();
+    if (guides) {
+        auto *draw = ImGui::GetBackgroundDrawList();
+        ImVec2 a((float)frame_rect[0]*io.DisplaySize.x, (float)frame_rect[1]*io.DisplaySize.y);
+        ImVec2 b(a.x+(float)frame_rect[2]*io.DisplaySize.x, a.y+(float)frame_rect[3]*io.DisplaySize.y);
+        draw->AddRect(a, b, IM_COL32(255,255,255,150));
+        for (int i = 1; i <= 2; ++i) {
+            float x = a.x+(b.x-a.x)*i/3, y = a.y+(b.y-a.y)*i/3;
+            draw->AddLine(ImVec2(x,a.y), ImVec2(x,b.y), IM_COL32(255,255,255,110));
+            draw->AddLine(ImVec2(a.x,y), ImVec2(b.x,y), IM_COL32(255,255,255,110));
+        }
+    }
     ImGui::SetNextWindowPos(ImVec2(20 * scale, 20 * scale), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(fminf(520 * scale, io.DisplaySize.x - 40 * scale), 0));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0,0), ImVec2(FLT_MAX, io.DisplaySize.y-40*scale));
     ImGui::SetNextWindowBgAlpha(0.9f);
     ImGui::Begin("##photo", NULL, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
     ImGui::TextColored(ImVec4(.93f,.76f,.33f,1), "%s", ui_tr("Photo mode"));
@@ -143,16 +203,30 @@ extern "C" void photo_mode_draw(float scale) {
     if (ImGui::Button(ui_label("Resume game").c_str())) photo_mode_exit();
     ImGui::Separator();
     ImGui::PushItemWidth(220 * scale);
+    const char *aspects[] = {"Original", "16:9", "4:3", "1:1", "4:5", "2.39:1"};
+    state.aspect = std::clamp(state.aspect, 0, 5);
+    if (ImGui::BeginCombo(ui_label("Photo aspect ratio").c_str(), ui_tr(aspects[state.aspect]))) {
+        for (int i = 0; i < 6; ++i) if (ImGui::Selectable(ui_tr(aspects[i]), state.aspect == i)) state.aspect = i;
+        ImGui::EndCombo();
+    }
     ImGui::SliderFloat(ui_label("Zoom").c_str(), &state.zoom, 1, 4, "%.2fx");
     ImGui::SliderFloat(ui_label("Horizontal framing").c_str(), &state.pan_x, -1, 1, "%.2f");
     ImGui::SliderFloat(ui_label("Vertical framing").c_str(), &state.pan_y, -1, 1, "%.2f");
     ImGui::SliderFloat(ui_label("Exposure").c_str(), &state.exposure, -2, 2, "%+.1f EV");
     ImGui::SliderFloat(ui_label("Saturation").c_str(), &state.saturation, 0, 2, "%.2f");
+    ImGui::SliderFloat(ui_label("Contrast").c_str(), &state.contrast, -0.5f, 1, "%+.2f");
+    ImGui::SliderFloat(ui_label("Vignette").c_str(), &state.vignette, 0, 1, "%.2f");
     ImGui::PopItemWidth();
+    if (ImGui::Button(ui_label("Monochrome").c_str())) { state.saturation = 0; state.contrast = .2f; state.exposure = 0; state.vignette = .2f; }
+    ImGui::SameLine();
+    if (ImGui::Button(ui_label("Vivid").c_str())) { state.saturation = 1.3f; state.contrast = .15f; state.exposure = .1f; state.vignette = 0; }
+    ImGui::Checkbox(ui_label("Composition guides").c_str(), &guides);
+    ImGui::TextWrapped("%s", ui_tr("Photos are cropped to the selected frame. Guides are excluded; a settings recipe is saved beside each PNG."));
     if (ImGui::Checkbox(ui_label("Hide game interface").c_str(), &state.hide_hud))
         photo_state_refresh(&state, renderer_present_count());
     if (ImGui::Button(ui_label("Reset framing and color").c_str())) {
         state.zoom = state.saturation = 1; state.pan_x = state.pan_y = state.exposure = 0;
+        state.contrast = state.vignette = 0; state.aspect = 0;
     }
     if (!message.empty()) ImGui::TextWrapped("%s", message.c_str());
     ImGui::End();

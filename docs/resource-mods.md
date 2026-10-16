@@ -38,6 +38,18 @@ Read priority is **randomizer seed → enabled mod → installed game** for the 
 
 Missing or invalid enabled packs cause startup to fail with an error, instead of silently changing resources. Restart, open Mods and disable the invalid row. If an enable list is malformed, close LAS Recomp and remove only the affected list to disable its packs; installed resources remain intact. Changing selection requires a successful backup when current saves exist.
 
+## Shareable presets
+
+**Mods → Mod presets** saves and imports `.lasmods` selections. Files live in `<data root>/mod-presets/` and use the same lowercase naming rules as mod IDs. Up to 64 presets of at most 16 KiB are accepted; existing names are not overwritten.
+
+```ini
+format=1
+game_version=1.1.0
+mod.example-resources=1.0
+```
+
+Each `mod.<id>` value must match the installed pack's `version`. An empty set is valid and disables every pack. Import validates the preset syntax without installing resources. Apply checks the selected game version, all installed packs, versions, original paths and cross-pack conflicts before replacing the enabled list. Failure leaves the existing selection unchanged. Applying also uses the existing save-backup gate. Presets contain no resources, downloads or executable commands. Matching version labels are not content hashes; resource compatibility still depends on the packs themselves.
+
 ## Validation
 
 `python tools/test_mods.py` compiles the real store with `CXX` (Clang by default) and uses synthetic resources. It covers import/source preservation, conflict rejection without changing the saved selection, disable/reload, invalid manifests/configuration, UTF-8 and size bounds, linked paths where supported, independent data roots and missing-pack recovery. CI runs on Linux, macOS and Windows; the Windows runtime itself is built with MSYS2 Clang.

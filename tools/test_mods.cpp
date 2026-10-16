@@ -35,8 +35,31 @@ int main(int argc,char **argv) {
     assert(mods_list(d.c_str(),g.c_str(),2,"1.1.0",list,MODS_MAX,why,sizeof why)==2);
     assert(list[1].conflicts==1&&!list[1].enabled);
     assert(read(data/"mods/enabled-1.1.0.txt")=="one\n");
+    assert(std::string(list[1].conflict_detail)=="one: region_common/ui/example.bin");
+    auto savepreset=[&](const char *name) {return mods_preset_save(d.c_str(),g.c_str(),2,"1.1.0",name,why,sizeof why);};
+    auto applypreset=[&](const char *name,const char *v="1.1.0") {return mods_preset_apply(d.c_str(),g.c_str(),2,v,name,why,sizeof why);};
+    assert(savepreset("one-pack"));assert(!savepreset("one-pack"));assert(!savepreset("../escape"));
+    ModPreset presets[64];assert(mods_preset_list(d.c_str(),presets,64,why,sizeof why)==1);
+    assert(presets[0].mods==1&&std::string(presets[0].game_version)=="1.1.0");
+    assert(!applypreset("one-pack","1.0.0"));
+    assert(read(data/"mods/enabled-1.1.0.txt")=="one\n");
     assert(enable("one",false));assert(enable("two",true));assert(load());
     assert(mods_romfs_override("region_common/ui/example.bin",host,sizeof host));assert(read(fs::u8path(host))=="two resource");
+    assert(applypreset("one-pack"));assert(read(data/"mods/enabled-1.1.0.txt")=="one\n");
+    // Presets are all-or-nothing, including missing packs, mismatched pack versions and conflicting resources.
+    write(root/"conflict.lasmods","format=1\ngame_version=1.1.0\nmod.one=1\nmod.two=1\n");
+    assert(mods_preset_import(d.c_str(),(root/"conflict.lasmods").u8string().c_str(),why,sizeof why));
+    assert(!applypreset("conflict"));assert(read(data/"mods/enabled-1.1.0.txt")=="one\n");
+    for (const char *body : {"mod.absent=1\n","mod.one=2\n"}) {
+        write(data/"mod-presets/bad.lasmods",std::string("format=1\ngame_version=1.1.0\n")+body);
+        assert(!applypreset("bad"));assert(read(data/"mods/enabled-1.1.0.txt")=="one\n");
+    }
+    for (const char *body : {"format=1\n","mod.one=1\nmod.one=1\n","unknown=yes\n"}) {
+        write(root/"bad.lasmods",std::string("format=1\ngame_version=1.1.0\n")+body);
+        assert(!mods_preset_import(d.c_str(),(root/"bad.lasmods").u8string().c_str(),why,sizeof why));
+    }
+    assert(enable("one",false));assert(savepreset("empty"));assert(enable("two",true));
+    assert(applypreset("empty"));assert(read(data/"mods/enabled-1.1.0.txt").empty());assert(enable("two",true));
     assert(install("base","1.0.0"));assert(!enable("base",true));assert(enable("base",true,1,"1.0.0"));
     fixture(root/"invalid","../escape");assert(!install("invalid"));assert(!fs::exists(data/"escape"));
     fixture(root/"unknown","unknown");write(root/"unknown/romfs/region_common/ui/not-in-game.bin","unknown");assert(!install("unknown"));

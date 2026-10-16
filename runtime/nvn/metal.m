@@ -565,7 +565,10 @@ static const char *present_src =
     "  float2 uv = float2(p.x, pv[0].x > 0.5 ? p.y : 1.0 - p.y); o.uv = pv[1].xy + uv * pv[1].zw; return o; }\n"
     "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4 *pv [[buffer(0)]]) {\n"
     "  float3 c = t.sample(s, in.uv).rgb; float y = dot(c, float3(0.2126,0.7152,0.0722));\n"
-    "  return float4(clamp(mix(float3(y), c, pv[2].y) * pv[2].x, 0.0, 1.0), 1.0); }\n";
+    "  c = mix(float3(y), c, pv[2].y) * pv[2].x; c += (c-0.5) * pv[2].z;\n"
+    "  float2 q = (in.uv-pv[1].xy)/pv[1].zw * 2.0-1.0;\n"
+    "  c *= 1.0-pv[2].w * smoothstep(0.2,1.5,dot(q,q));\n"
+    "  return float4(clamp(c, 0.0, 1.0), 1.0); }\n";
 
 void backend_init(void) {
     while (!atomic_load(&ui_ready)) usleep(1000);
@@ -890,7 +893,12 @@ static bool g_save_upright;  // (set around saves of the window image: test shot
 void renderer_save_texture(id<MTLTexture> tex, const char *path) {
     NSUInteger w = tex.width, h = tex.height;
     float shot_crop[4] = {0, 0, 1, 1};
-    if (strstr(path, "frame_")) {
+    int photo_rect[4];
+    if (g_save_upright && photo_mode_capture_rect((unsigned)w, (unsigned)h, photo_rect)) {
+        shot_crop[0] = (float)photo_rect[0]/w; shot_crop[1] = (float)photo_rect[1]/h;
+        shot_crop[2] = (float)photo_rect[2]/w; shot_crop[3] = (float)photo_rect[3]/h;
+        w = photo_rect[2]; h = photo_rect[3];
+    } else if (strstr(path, "frame_")) {
         memcpy(shot_crop, g_shot_crop, sizeof shot_crop);
         w = (NSUInteger)(w * shot_crop[2]); h = (NSUInteger)(h * shot_crop[3]);
     }

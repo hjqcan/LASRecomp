@@ -45,3 +45,23 @@ void photo_state_crop(const PhotoState *s, float crop[4]) {
     crop[1] += (crop[3] - height) * (bounded(s->pan_y, -1, 1) + 1) * 0.5f;
     crop[2] = width; crop[3] = height;
 }
+void photo_state_frame(const PhotoState *s, float crop[4], double rect[4]) {
+    if (!s->active || !isfinite(rect[2]) || !isfinite(rect[3]) || rect[2] <= 0 || rect[3] <= 0) return;
+    static const double ratios[] = {0, 16.0/9, 4.0/3, 1, 4.0/5, 2.39};
+    double ratio = s->aspect > 0 && s->aspect < 6 ? ratios[s->aspect] : rect[2]/rect[3];
+    double w = rect[2], h = rect[3];
+    if (w/h > ratio) w = h * ratio; else h = w / ratio;
+    float zoom = bounded(s->zoom, 1, 4);
+    float cw = crop[2] * (float)(w/rect[2]) / zoom, ch = crop[3] * (float)(h/rect[3]) / zoom;
+    crop[0] += (crop[2]-cw) * (bounded(s->pan_x,-1,1)+1) * 0.5f;
+    crop[1] += (crop[3]-ch) * (bounded(s->pan_y,-1,1)+1) * 0.5f;
+    crop[2] = cw; crop[3] = ch;
+    rect[0] += (rect[2]-w)*0.5; rect[1] += (rect[3]-h)*0.5;
+    rect[2] = w; rect[3] = h;
+}
+void photo_state_color(const PhotoState *s, float color[4]) {
+    color[0] = s->active ? exp2f(bounded(s->exposure,-2,2)) : 1;
+    color[1] = s->active ? bounded(s->saturation,0,2) : 1;
+    color[2] = s->active ? bounded(s->contrast,-0.5f,1) : 0;
+    color[3] = s->active ? bounded(s->vignette,0,1) : 0;
+}
