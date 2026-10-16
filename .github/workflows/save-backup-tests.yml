@@ -14,3 +14,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: python tools/test_save_backups.py
+      - run: python tools/test_save_mount.py

@@ -730,6 +730,14 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     }
     case 0x26:  // Break
         if (x[0] & 0x80000000u) { LOG("[kernel] Break notification %llx\n", x[0]); x[0] = R_OK; break; }
+        // SDK aborts often place a Result on the current stack. Preserve it in
+        // the report so intermittent filesystem failures can be diagnosed.
+        if (x[2] == 4 && x[1] >= c->sp && x[1] - c->sp < 0x1000 &&
+            x[1] >= GUEST_LO && x[1] <= GUEST_HI - 4) {
+            uint32_t result;
+            memcpy(&result, (const void *)(uintptr_t)x[1], sizeof result);
+            LOG("[kernel] Break result 0x%08x (module %u, description %u)\n", result, result & 511, result >> 9);
+        }
         FATAL("svcBreak(reason=%llx, info=%llx, size=%llx) at %llx\n", x[0], x[1], x[2], pc);
     case 0x27: debug_string(x[0], x[1]); x[0] = R_OK; break;
     case 0x29: {  // GetInfo(_, id0, handle, id1)

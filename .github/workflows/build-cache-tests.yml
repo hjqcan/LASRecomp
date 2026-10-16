@@ -30,3 +30,4 @@ jobs:
       - run: python tools/test_build_cache.py
       - run: python tools/test_gamebuild_resume.py
       - run: python tools/test_windows_processes.py
+      - run: python tools/test_save_mount.py
