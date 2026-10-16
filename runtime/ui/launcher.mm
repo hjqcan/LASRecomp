@@ -39,6 +39,7 @@ extern "C" {
 #include "paths.h"
 #include "gamebuild.h"
 #include "gamelib.h"
+#include "mods.h"
 #include "romfs_build.h"
 #include "settings.h"
 #include "input_bind.h"
@@ -900,6 +901,7 @@ static void prelaunch_tab(float sc) {
 }
 
 extern "C" void launcher_run(const char *root) {
+    mods_set_game_root(root);
     g_root = root;
     g_start_screen = 1;
     static bool update_checked;  // (once per launch, not again after a "Title screen" reboot)

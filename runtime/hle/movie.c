@@ -19,6 +19,8 @@
 #include <string.h>
 
 #include "../hle.h"
+#include "../mods.h"
+#include "../rando.h"
 #include "../settings.h"
 
 #define MOVIE_EOS 4u
@@ -216,7 +218,8 @@ static void ex_set_data_source(Cpu *c) {
     // "rom:/region_common/movie/title.webm" -> extracted/romfs/region_common/movie/title.webm
     const char *rel = path && strstr(path, ":/") ? strstr(path, ":/") + 2 : path;
     char host[1024];
-    snprintf(host, sizeof host, "%s/%s", g_romfs_dir, rel ? rel : "");
+    if (!rando_romfs_override(rel, host, sizeof host) && !mods_romfs_override(rel, host, sizeof host))
+        snprintf(host, sizeof host, "%s/%s", g_romfs_dir, rel ? rel : "");
     LOG("[movie] open %s -> %s\n", path ? path : "(null)", host);
     if (avformat_open_input(&e->fmt, host, NULL, NULL) < 0 || avformat_find_stream_info(e->fmt, NULL) < 0) {
         LOG("[movie] cannot open %s\n", host);

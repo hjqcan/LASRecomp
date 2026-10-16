@@ -4,6 +4,7 @@ extracted/
 generated/
 generated-*/
 /rando/
+/mods/
 # Nintendo fonts (users import their own; only the README ships)
 /fonts/*
 !/fonts/README.md

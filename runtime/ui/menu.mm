@@ -26,6 +26,7 @@ extern "C" {
 #include "../hle.h"
 #include "../settings.h"
 #include "menu.h"
+#include "../mods.h"
 void input_reset(void);
 void save_editor_draw(float scale);  // save_editor.mm
 extern "C" int game_in_play(void);  // hle/warp.c
@@ -680,12 +681,12 @@ extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, in
 static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     // (id: the page; -1 = Prelaunch)
     struct Tab { const char *name; int id; bool on; };
-    Tab tabs[11];
+    Tab tabs[12];
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     static const char *names[] = {"Video", "Audio", "Save Editor", "Randomizer", "Warp", "Cheats", "Gameplay",
-                                  "Cosmetics", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 6, 7, 3, 5, 4, 2, 9};  // Controls, Video, Audio, Gameplay, Cosmetics, Randomizer,
+                                  "Cosmetics", "Controls", "Quit", "Mods"};
+    static const int order[] = {8, 0, 1, 6, 7, 10, 3, 5, 4, 2, 9};  // Controls, Video, Audio, Gameplay, Cosmetics, Randomizer,
                                                                 // Cheats, Warp, Save Editor, Quit (ids stay: test hooks)
     for (int i : order)  // (Quit: in game only - the start screen has its own QUIT, and an eleventh tab cut names short)
         if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, in_game || (i != 2 && i != 4 && i != 5)};
@@ -713,7 +714,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                          (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown) || ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown) ||
                           ImGui::IsKeyPressed(ImGuiKey_DownArrow));
     opt_focus_first(down_from_tab);
-    if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_NoTabListScrollingButtons)) {
+    if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_FittingPolicyScroll | ImGuiTabBarFlags_TabListPopupButton)) {
         for (int k = 0; k < ntabs; k++) {
             const Tab &t = tabs[k];
             ImGuiTabItemFlags f = g_tab_request == t.id && t.on ? ImGuiTabItemFlags_SetSelected : 0;
@@ -783,6 +784,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 7: tab_cosmetics(); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
+                case 10: mods_draw(scale, in_game); break;
                 }
                 static const char *scroll_test = getenv("LARECOMP_MENU_SCROLL");  // test hook: page scroll, 0..1
                 if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));

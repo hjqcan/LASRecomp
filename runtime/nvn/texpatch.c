@@ -28,6 +28,7 @@
 #include "../input_bind.h"
 #include "../rando.h"
 #include "../settings.h"
+#include "../mods.h"
 #include "astc.h"
 #include "tegra.h"
 
@@ -67,9 +68,10 @@ static uint8_t *read_file(const char *p, size_t *len) {
     return d;
 }
 
-static uint8_t *read_all(const char *rel, size_t *len) {  // (the game's own files, never a seed's)
+static uint8_t *read_all(const char *rel, size_t *len) {  // seed-independent references; mods stay fixed until restart
     char p[1200];
-    snprintf(p, sizeof p, "%s/%s", g_romfs_dir ? g_romfs_dir : "extracted/romfs", rel);
+    if (!mods_romfs_override(rel, p, sizeof p))
+        snprintf(p, sizeof p, "%s/%s", g_romfs_dir ? g_romfs_dir : "extracted/romfs", rel);
     return read_file(p, len);
 }
 

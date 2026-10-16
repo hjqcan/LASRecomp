@@ -55,6 +55,8 @@ them, then `make -j10`. The randomizer needs its Python environment in
 
 ## Testing your change
 
+- Resource mods: `python tools/test_mods.py` compiles the real store against synthetic files. Use a local compatible replacement to check folder import, enable/disable, conflicts and randomizer priority in game; see [the mod test guide](docs/resource-mods.md#validation).
+
 - Build cleanly on your platform (`make -j10`). If you touch shared rendering code, say which backend you tested -
   a Metal change usually needs a Vulkan counterpart and the other way round.
 - Test in game, and look at the result: a fix isn't verified until you've seen it work.
