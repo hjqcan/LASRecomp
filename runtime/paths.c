@@ -15,6 +15,7 @@
 #include "gamelib.h"
 #include "paths.h"
 #include "platform.h"
+#include "game_profiles.h"
 
 static char g_root[1024], g_start[1024], g_exe_dir[1024];
 
@@ -142,12 +143,9 @@ static const char *const GAME_FILES[] = {"exefs", "romfs", "romfs.bin", GAMELIB_
                                          ".extract", "extract.log", "xci_secure", "nso_raw", "update_pfs", ".DS_Store",
                                          "import-manifest.json"};
 
-// game_dir must be <data root>/extracted, a real folder (a dev worktree's symlinked extracted/ is refused)
+// Only fixed installation slots under the data root; symlinked/junction paths are refused.
 static bool game_dir_ok(const char *game_dir) {
-    char want[1100], got[1100];
-    snprintf(want, sizeof want, "%s" SEP "extracted", g_root);
-    if (!g_root[0] || is_link(game_dir) || !resolve(game_dir, got, sizeof got)) return false;
-    return path_eq(want, got);
+    return g_root[0] && game_profile_index(game_dir, g_root) >= 0;
 }
 
 bool rt_remove_game_file(const char *game_dir, const char *name) {
@@ -169,7 +167,7 @@ bool rt_remove_game_file(const char *game_dir, const char *name) {
 
 bool rt_remove_game_files(const char *game_dir) {
     if (!game_dir_ok(game_dir)) {
-        fprintf(stderr, "[paths] refusing to delete game files in %s (not <data root>/extracted)\n", game_dir);
+        fprintf(stderr, "[paths] refusing to delete game files in %s (not a managed installation)\n", game_dir);
         return false;
     }
     bool ok = true;

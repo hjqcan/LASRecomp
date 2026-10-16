@@ -3,6 +3,7 @@
 #include "../save_backup.h"
 #include "../gameversion.h"
 #include "../gamelib.h"
+#include "../game_profiles.h"
 #include <filesystem>
 #include <algorithm>
 #include <string>
@@ -15,8 +16,10 @@ int game_in_play(void);
 
 static std::string game_main = "extracted/exefs/main";
 extern "C" void save_backups_set_game_root(const char *root) { game_main = std::string(root) + "/exefs/main"; }
-static const char *backup_version() {
-    GameVersion v = game_version_file(game_main.c_str());
+static const char *backup_version(int installation) {
+    std::string main = installation == GAME_PROFILE_EXISTING ? "extracted/exefs/main" : std::string(game_profile_dir(installation)) + "/exefs/main";
+    if (installation == game_profile_active()) main = game_main;
+    GameVersion v = game_version_file(main.c_str());
     return v == GAME_UNSUPPORTED ? "Unknown" : game_version_name(v);
 }
 
@@ -39,16 +42,30 @@ extern "C" void save_backups_draw(float scale, bool in_game) {
     static SaveBackupInfo items[SAVE_BACKUP_KEEP];
     static int count;
     static std::vector<std::string> profiles;
-    if (seen != ImGui::GetFrameCount() - 1) { profile = g_settings.rando_seed; selected.clear(); confirmed = false; refresh_at = 0; }
+    static int installation;
+    if (seen != ImGui::GetFrameCount() - 1) {
+        installation = game_profile_active();
+        profile = g_settings.rando_seed; selected.clear(); confirmed = false; refresh_at = 0;
+    }
+    if (!getenv("LARECOMP_SAVE_DIR")) {
+        ImGui::SetNextItemWidth(480 * scale);
+        if (ImGui::BeginCombo(ui_label("Game version").c_str(), ui_tr(game_profile_name(installation)))) {
+            for (int i = 0; i < GAME_PROFILE_COUNT; ++i)
+                if (ImGui::Selectable(ui_tr(game_profile_name(i)), installation == i)) {
+                    installation = i; profile.clear(); selected.clear(); confirmed = false; refresh_at = 0; message.clear();
+                }
+            ImGui::EndCombo();
+        }
+    }
     if (refresh_at == 0) {
         profiles = {""};
         std::error_code ec;
-        if (!getenv("LARECOMP_SAVE_DIR"))
+        if (!getenv("LARECOMP_SAVE_DIR") && installation != GAME_PROFILE_UPDATED)
             for (auto &e : std::filesystem::directory_iterator("rando", ec))
                 if (e.is_directory(ec) && !e.is_symlink(ec)) profiles.push_back(e.path().filename().u8string());
     }
     seen = ImGui::GetFrameCount();
-    if (getenv("LARECOMP_SAVE_DIR")) profile.clear();
+    if (getenv("LARECOMP_SAVE_DIR") || installation == GAME_PROFILE_UPDATED) profile.clear();
     ImGui::SetNextItemWidth(320 * scale);
     if (ImGui::BeginCombo(ui_label("Save profile").c_str(), profile.empty() ? ui_tr("Vanilla") : profile.c_str())) {
         for (auto &p : profiles)
@@ -58,7 +75,7 @@ extern "C" void save_backups_draw(float scale, bool in_game) {
         ImGui::EndCombo();
     }
     std::string base = getenv("LARECOMP_SAVE_DIR") ? getenv("LARECOMP_SAVE_DIR") :
-                       profile.empty() ? "save" : "rando/" + profile + "/save";
+                       profile.empty() ? game_profile_save_dir(installation) : "rando/" + profile + "/save";
     static int area;
     static std::vector<int> areas;
     if (refresh_at == 0) {
@@ -87,7 +104,7 @@ extern "C" void save_backups_draw(float scale, bool in_game) {
     ImGui::BeginDisabled(locked);
     if (ImGui::Button(ui_label("Create backup").c_str())) {
         char why[512];
-        bool ok = save_backup_create(root.c_str(), "Manual", backup_version(), false, why, sizeof why);
+        bool ok = save_backup_create(root.c_str(), "Manual", backup_version(installation), false, why, sizeof why);
         message = ok ? "Backup created." : why; refresh_at = 0;
     }
     ImGui::EndDisabled();
@@ -113,7 +130,7 @@ extern "C" void save_backups_draw(float scale, bool in_game) {
         ImGui::TextWrapped("%s", ui_tr("Restore all slots in this save area? The current files will be backed up first."));
         if (ImGui::Button(ui_label("Confirm restore").c_str())) {
             char why[512];
-            bool ok = save_backup_restore(root.c_str(), selected.c_str(), backup_version(), why, sizeof why);
+            bool ok = save_backup_restore(root.c_str(), selected.c_str(), backup_version(installation), why, sizeof why);
             message = ok ? "Backup restored. You can now start the game." : why;
             confirmed = false; refresh_at = 0;
         }

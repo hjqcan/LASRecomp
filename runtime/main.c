@@ -6,6 +6,7 @@
 
 #include "gamelib.h"
 #include "gameversion.h"
+#include "game_profiles.h"
 #include "paths.h"
 #include "settings.h"
 #include "hle.h"
@@ -125,6 +126,7 @@ static void teardown(void) {
 }
 
 static void boot(const char *root) {
+    game_profile_activate(root, rt_data_root());
     char exefs[1024], romfs[1024], npdm_path[1024];
     snprintf(exefs, sizeof exefs, "%s/exefs", root);
     snprintf(romfs, sizeof romfs, "%s/romfs", root);
@@ -172,7 +174,7 @@ int main(int argc, char **argv) {
 #else
     setvbuf(stderr, NULL, _IOLBF, 0);
 #endif
-    const char *root = "extracted";  // (in the data root)
+    const char *root = NULL;  // no explicit CLI path: use the selected installation
     bool skip_launcher = getenv("LARECOMP_NO_LAUNCHER") || getenv("LARECOMP_INPUT");  // tests boot straight in
     static char arg_root[1024];
     for (int i = 1; i < argc; i++) {
@@ -181,10 +183,12 @@ int main(int argc, char **argv) {
         else if (argv[i][0] != '-') root = arg_root;
     }
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
+    settings_load();
+    if (!root) root = game_profile_dir(g_settings.game_profile);
     for (bool title = !skip_launcher;;) {
         if (title) {  // start screen (runtime/ui/launcher.mm): game files setup, seed choice, settings
-            extern void launcher_run(const char *root);
-            launcher_run(root);
+            extern const char *launcher_run(const char *root);
+            root = launcher_run(root);
         }
         boot(root);
         int kind = ui_run();  // window and input on the main thread; returns when a reboot is requested

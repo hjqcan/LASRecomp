@@ -23,7 +23,7 @@ native Windows, macOS and Linux application.
 
 > [!NOTE]
 > **No game files are included.** LAS Recomp needs your own legally obtained copy of *Link's Awakening*:
-> extracted **v1.0.0 / v1.1.0** game files, or a base **NSP / NSZ** with an optional **v1.1.0 update**. Encrypted NSP imports use your own local keys.
+> extracted **v1.0.0 / v1.1.0** game files, or a base **NSP / NSZ / XCI / XCZ** with an optional **v1.1.0 update**. Encrypted content uses your own local keys.
 > v1.1.0 currently supports **Vanilla mode**; Randomizer mode requires v1.0.0.
 > See [archive import, saves and v1.1.0 support](docs/NSZ-and-v110.md) for accepted builds and input limitations.
 > Instructions on how to obtain game files will **NOT** be provided.
@@ -58,6 +58,8 @@ This is a beta release. That means bugs are likely, crashes could occur, randomi
 - Start screen: play vanilla or any randomizer seed, set up game files from your own dump, import fonts.
   - Switch games use fonts built into the Switch operating system for some text. Sensible replacements are used by default, but you may optionally set up the Switch fonts for an authentic look. Switch fonts are Nintendo IP; you must provide them from your own hardware.
 - In-game overlay menu (F1, or Minus + Plus on a controller).
+- Keep v1.0.0 and v1.1.0 installed together, with separate Vanilla saves. Choose **Game version** before playing.
+- Cancel game-code compilation and resume later; completed, verified files are reused.
 - Switch between vanilla and any randomizer seed without restarting the app.
 - Keyboard and controller support, with every button and key remappable (Controls tab / start screen Settings >
   Controls; menus keep a fixed layout, so a remap can never lock you out).
@@ -119,7 +121,8 @@ This is a beta release. That means bugs are likely, crashes could occur, randomi
 
 Every platform needs your own supported game files: build first, then use the start screen's game-file setup.
 Choose **Game files folder**, or **Base game archive** and optionally **Update archive**, then **Set up game files**.
-For an encrypted NSP, select your own **Decryption keys** (`prod.keys`); **Check selection** reads metadata before import.
+For encrypted content, select your own **Decryption keys** (`prod.keys`); **Check selection** reads metadata before import.
+Choose the desired **Game version** slot before setup. The existing installation and its saves stay available.
 **Settings → Saves → Backups** lists automatic snapshots and lets you restore them before starting a game.
 `make gen` then recompiles the game code from your own game files into `generated/`, and `make` builds it into its own
 library next to the app (`build/lasgame.*`); without it the start screen builds that library itself, as it does for

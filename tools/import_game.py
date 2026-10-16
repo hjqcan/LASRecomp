@@ -22,6 +22,7 @@ import xml.etree.ElementTree as ET
 import zstandard
 from game_versions import BASE_ID, UPDATE_ID, game_version
 from nca import Keyset, Nca, parse_cnmt, ticket_key
+from containers import View, safe_name, pfs_entries, open_container
 
 CHUNK = 8 << 20
 MAX_IMAGE = 16 << 30
@@ -32,67 +33,6 @@ EMPTY = 0xffffffff
 def require(condition, message):
     if not condition:
         raise ValueError(message)
-
-
-def safe_name(raw):
-    name = raw.decode('utf-8')
-    require(name and name not in ('.', '..') and len(raw) <= 255,
-            'Invalid archive filename')
-    require(not any(c in name for c in '/\\:\0<>"|?*') and
-            not any(ord(c) < 32 for c in name) and name[-1] not in ' .',
-            'Unsafe archive filename')
-    stem = name.split('.')[0].upper()
-    require(stem not in {'CON', 'PRN', 'AUX', 'NUL'} and
-            not (len(stem) == 4 and stem[:3] in ('COM', 'LPT') and stem[3].isdigit()),
-            'Reserved archive filename')
-    return name
-
-
-class View:
-    def __init__(self, file, start=0, size=None):
-        self.file, self.start = file, start
-        if size is None:
-            file.seek(0, 2)
-            size = file.tell() - start
-        self.size = size
-
-    def read(self, offset, size):
-        require(0 <= offset <= self.size and 0 <= size <= self.size - offset,
-                'Archive range exceeds its container')
-        self.file.seek(self.start + offset)
-        result = self.file.read(size)
-        require(len(result) == size, 'Truncated archive')
-        return result
-
-    def sub(self, start, size):
-        require(0 <= start <= self.size and 0 <= size <= self.size - start,
-                'Invalid archive section')
-        return View(self.file, self.start + start, size)
-
-
-def pfs_entries(view, offset=0):
-    magic, count, size, _ = struct.unpack('<4sIII', view.read(offset, 16))
-    require(magic == b'PFS0' and 0 < count <= 4096 and size <= 1 << 20,
-            'Not a supported NSP/NSZ archive (expected PFS0)')
-    table = view.read(offset + 16, count * 24)
-    strings = view.read(offset + 16 + count * 24, size)
-    data_start = offset + 16 + count * 24 + size
-    entries, names, ranges = [], set(), []
-    for i in range(count):
-        start, length, n, _ = struct.unpack_from('<QQII', table, i * 24)
-        require(n < len(strings) and b'\0' in strings[n:], 'Invalid string table')
-        name = safe_name(strings[n:].split(b'\0', 1)[0])
-        require(name.casefold() not in names, 'Duplicate archive filename')
-        names.add(name.casefold())
-        absolute = data_start + start
-        require(absolute <= view.size and length <= view.size - absolute,
-                'PFS0 file exceeds its container')
-        entries.append((name, absolute, length))
-        if length:
-            ranges.append((absolute, absolute + length))
-    ranges.sort()
-    require(all(a[1] <= b[0] for a, b in zip(ranges, ranges[1:])), 'Overlapping PFS0 files')
-    return entries
 
 
 def decompress_frame(view, expected, write):
@@ -185,7 +125,7 @@ def find_exefs(view, sections):
                     found.append((entries, build_id))
             except (ValueError, UnicodeError, struct.error):
                 continue
-    require(len(found) == 1, 'No unique supported game executable found in the NSZ payload')
+    require(len(found) == 1, 'No unique supported game executable found in the archive payload')
     return found[0]
 
 
@@ -267,9 +207,8 @@ def package_info(package, entries, keys):
 
 def inspect_package(path, keys=None):
     with path.open('rb') as file:
-        view = View(file)
-        entries = pfs_entries(view)
-        metadata, _, fmt = package_info(view, entries, keys or Keyset())
+        view, entries, fmt = open_container(View(file))
+        metadata, _, _ = package_info(view, entries, keys or Keyset())
         return dict(format=fmt, **({k: v for k, v in metadata.items() if k != 'contents'} if metadata else
                                   dict(role='unknown', content_version=None, metadata_source='unavailable')))
 
@@ -284,9 +223,8 @@ def verify_content(view, content):
 
 def open_program(source, scratch, stack, label, keys=None):
     source_file = stack.enter_context(source.open('rb'))
-    package = View(source_file)
-    entries = pfs_entries(package)
-    metadata, ncas, fmt = package_info(package, entries, keys or Keyset())
+    package, entries, fmt = open_container(View(source_file))
+    metadata, ncas, _ = package_info(package, entries, keys or Keyset())
     validate_metadata(metadata, label)
     content = None
     if metadata and metadata['metadata_source'] == 'CNMT':
@@ -491,7 +429,7 @@ def extract_romfs(view, offset, header, destination):
     return len(seen_files), total
 
 
-def import_game(base_path, update_path, output, replace=False, keys_path=None, title_keys_path=None):
+def import_game(base_path, update_path, output, replace=False, keys_path=None, title_keys_path=None, expected_version=None):
     base_path = base_path.resolve(strict=True)
     update_path = update_path.resolve(strict=True) if update_path else None
     require(not output.is_symlink(), 'Output cannot be a symbolic link')
@@ -528,6 +466,8 @@ def import_game(base_path, update_path, output, replace=False, keys_path=None, t
                 romfs = update_view(base.sub(section_start, section_size), update, update_sections)
                 offset, header, _, _ = find_romfs(romfs, [(0, romfs.size)])
                 executable = update
+            require(expected_version is None or game_version(build_id) == expected_version,
+                    'The imported game does not match the selected installation slot')
             for name, start, size in exefs:
                 copy_range(executable, start, size, ready / 'exefs' / name)
             count, size = extract_romfs(romfs, offset, header, ready / 'romfs')
@@ -573,6 +513,7 @@ def main(argv=None):
     parser.add_argument('--inspect', action='store_true', help='Read package metadata without installing')
     parser.add_argument('--gui-summary', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--replace', action='store_true')
+    parser.add_argument('--expected-version', choices=['1.0.0', '1.1.0'], help='Require this installation slot version')
     args = parser.parse_args(argv)
     try:
         if args.inspect:
@@ -593,7 +534,7 @@ def main(argv=None):
                 print(json.dumps(info, ensure_ascii=False))
         else:
             require(args.output is not None, '--output is required for installation')
-            import_game(args.base, args.update, args.output, args.replace, args.keys, args.title_keys)
+            import_game(args.base, args.update, args.output, args.replace, args.keys, args.title_keys, args.expected_version)
     except (ValueError, OSError, zstandard.ZstdError) as error:
         print(f'Import failed: {error}', file=sys.stderr, flush=True)
         return 1

@@ -38,3 +38,10 @@ with tempfile.TemporaryDirectory() as directory:
             expected = 'auto' if setting in ('auto', 'unknown') else code
             assert f'language = {expected}\n' in saved, (setting, saved)
     print(f'{len(cases) * 2} language settings cases passed (LF and CRLF)')
+    for newline in ('\n', '\r\n'):
+        for profile, expected in [('existing', 0), ('1.0.0', 1), ('1.1.0', 2), ('../outside', 0)]:
+            ini.write_bytes(f'language = en-US{newline}game_profile = {profile}{newline}'.encode())
+            subprocess.run([str(exe), 'en-US', 'English', str(expected)], env=env, check=True)
+            saved_profile = ('existing', '1.0.0', '1.1.0')[expected]
+            assert f'game_profile = {saved_profile}\n' in ini.read_text()
+    print('8 installation selection load/save cases passed (LF and CRLF)')

@@ -60,6 +60,9 @@ them, then `make -j10`. The randomizer needs its Python environment in
 - NSZ importer/version profiles: `python tools/test_import_game.py -v` uses only synthetic archives and needs
   `zstandard==0.25.0` and `cryptography==50.0.2`. It runs on Windows, Linux and macOS in CI; no game files or keys are needed.
 - Encrypted NSP/NCA: `python tools/test_nsp_import.py -v` checks synthetic AES-XTS/CTR/BKTR content, CNMT hashes, key errors and metadata selection. Fixture keys are arbitrary bytes, never console keys.
+- Gamecards: `python tools/test_xci_import.py -v` checks secure HFS0 selection, XCI/XCZ inputs, hashes, bounds and version-slot rejection using synthetic archives.
+- Compilation: `python tools/test_build_cache.py` checks cache receipts, isolation and atomic library recovery. `python tools/test_gamebuild_resume.py` compiles the actual scheduler and runs a small compiler workload through cancellation, reuse, corruption repair and failure recovery. On Windows, `python tools/test_windows_processes.py` checks that cancellation kills one compiler's descendants without affecting a separate process tree.
+- Two-version gameplay: `python tools/compatibility_smoke.py --exe PATH --base-root PATH --updated-root PATH --output NEW_DIRECTORY` uses isolated saves/settings and captures images plus JSON. Both game roots need compiled libraries. Review the images and report the tested scenes; a smoke test is not full compatibility coverage.
 - Save backups: `python tools/test_save_backups.py` compiles the real store and checks retention, corruption rejection, restore safety, links, limits and empty-save recovery. `--save-copy PATH` roundtrips a temporary copy of a real save and checks source preservation.
 - Language settings: `python tools/test_settings_language.py` compiles a small harness against the actual settings
   implementation using `CC` (default `clang`; Windows needs the MSYS2 toolchain). It checks language resolution,
