@@ -31,6 +31,11 @@ The workshop, extended photo controls, mod presets and frame captures are develo
 
 The [Enhanced Beta 5.1 validation record](enhanced-beta5.1-validation.md) lists actual checks and remaining limits, including the save-mount concurrency fix found during release testing.
 
+[Multi-game development](multi-game.md) records the shared-core/adapters direction.
+The importer now uses a title catalog with full module Build-ID checks. ACNH is
+registered for development inspection only; its runtime integration, a game
+library screen and automatic desktop shortcuts are not released features.
+
 ## Windows quick start / Windows 使用说明
 
 1. Extract the entire ZIP into a writable folder. Run `lasrecomp.exe`. Windows 10+ x64, an AVX2 CPU and a Vulkan 1.3 graphics driver are required. No separate Python or compiler installation is needed.

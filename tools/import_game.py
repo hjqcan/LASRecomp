@@ -1,4 +1,4 @@
-"""Inspect/import the player's NSP or NSZ base game and optional v1.1.0 update.
+"""Inspect/import a supported game's NSP/NSZ/XCI/XCZ and optional update.
 
 NCZ uses its plaintext Zstandard payload. Encrypted NCA content requires the
 player's own local key files; common tickets can supply wrapped title keys.
@@ -20,7 +20,7 @@ import uuid
 import xml.etree.ElementTree as ET
 
 import zstandard
-from game_versions import BASE_ID, UPDATE_ID, game_version
+from game_catalog import GAMES, catalog, get_game
 from nca import Keyset, Nca, parse_cnmt, ticket_key
 from containers import View, safe_name, pfs_entries, open_container
 
@@ -105,7 +105,8 @@ def decompress_ncz(view, destination):
     return sections
 
 
-def find_exefs(view, sections):
+def find_exefs(view, sections, game=None):
+    game = game or get_game()
     found = []
     for start, length in sections:
         data = view.read(start, min(length, 32 << 20))
@@ -120,8 +121,15 @@ def find_exefs(view, sections):
                     main = next(e for e in entries if e[0] == 'main')
                     header = view.read(main[1], 0x60)
                     require(header[:4] == b'NSO0', 'Invalid main executable')
-                    build_id = header[0x40:0x54].hex()
-                    game_version(build_id)
+                    build_id = header[0x40:0x60].hex()
+                    release = game.release(build_id)
+                    require({m.name for m in release.modules} <= names, 'Missing game module')
+                    for module in release.modules:
+                        _, offset, size = next(e for e in entries if e[0] == module.name)
+                        require(size >= 0x60, 'Truncated game module')
+                        module_header = view.read(offset, 0x60)
+                        require(module_header[:4] == b'NSO0' and module_header[0x40:0x60].hex() == module.build_id,
+                                f'{module.name} Build ID does not match the game adapter')
                     found.append((entries, build_id))
             except (ValueError, UnicodeError, struct.error):
                 continue
@@ -129,24 +137,25 @@ def find_exefs(view, sections):
     return found[0]
 
 
-APP_ID = '01006bb00c6f0000'
-UPDATE_TITLE_ID = '01006bb00c6f0800'
+APP_ID = get_game().application_id  # compatibility for existing importer callers
+UPDATE_TITLE_ID = get_game().update_id
 
 
-def validate_metadata(metadata, role=None):
+def validate_metadata(metadata, role=None, game=None):
+    game = game or get_game()
     if metadata is None:
         return
     check_role = metadata['role']
-    require(metadata['application_id'] == APP_ID and metadata['title_id'] ==
-            (APP_ID if check_role == 'base' else UPDATE_TITLE_ID),
-            'The selected archive is not Link\'s Awakening')
+    require(check_role in ('base', 'update'), 'Unsupported content role')
+    require(metadata['application_id'] == game.application_id and metadata['title_id'] ==
+            (game.application_id if check_role == 'base' else game.update_id),
+            'The selected archive is not ' + ("Link's Awakening" if game.id == 'las' else game.name))
     if role:
         require(check_role == role, f'Selected {role} archive contains an {check_role}; choose the correct file')
-    require(metadata['content_version'] == (0 if check_role == 'base' else 131072),
-            'Unsupported content version; use the v1.0.0 base and optional v1.1.0 update')
+    game.metadata_release(check_role, metadata['content_version'])
 
 
-def package_info(package, entries, keys):
+def package_info(package, entries, keys, game=None):
     """Inspect metadata without decompressing the multi-gigabyte NCZ program."""
     has_ncz = any(name.lower().endswith('.ncz') for name, _, _ in entries)
     tickets = {}
@@ -201,15 +210,18 @@ def package_info(package, entries, keys):
     require(len(records) <= 1, 'Archive contains multiple applications/updates; select a single-game package')
     metadata = records[0] if records else None
     require(has_ncz or metadata is not None, 'NSP has no readable application metadata; check the archive and prod.keys')
-    validate_metadata(metadata)
+    validate_metadata(metadata, game=game)
     return metadata, ncas, 'NSZ' if has_ncz else 'NSP'
 
 
-def inspect_package(path, keys=None):
+def inspect_package(path, keys=None, game=None):
+    game = game or get_game()
     with path.open('rb') as file:
         view, entries, fmt = open_container(View(file))
-        metadata, _, _ = package_info(view, entries, keys or Keyset())
-        return dict(format=fmt, **({k: v for k, v in metadata.items() if k != 'contents'} if metadata else
+        metadata, _, _ = package_info(view, entries, keys or Keyset(), game)
+        return dict(format=fmt, game_id=game.id, adapter_status=game.status, installable=game.installable,
+                    game_version=game.metadata_release(metadata['role'], metadata['content_version']).version if metadata else None,
+                    **({k: v for k, v in metadata.items() if k != 'contents'} if metadata else
                                   dict(role='unknown', content_version=None, metadata_source='unavailable')))
 
 
@@ -221,11 +233,12 @@ def verify_content(view, content):
     require(digest.hexdigest() == content['sha256'], 'Program NCA SHA-256 mismatch; archive is damaged')
 
 
-def open_program(source, scratch, stack, label, keys=None):
+def open_program(source, scratch, stack, label, keys=None, game=None):
+    game = game or get_game()
     source_file = stack.enter_context(source.open('rb'))
     package, entries, fmt = open_container(View(source_file))
-    metadata, ncas, _ = package_info(package, entries, keys or Keyset())
-    validate_metadata(metadata, label)
+    metadata, ncas, _ = package_info(package, entries, keys or Keyset(), game)
+    validate_metadata(metadata, label, game)
     content = None
     if metadata and metadata['metadata_source'] == 'CNMT':
         programs = [c for c in metadata['contents'] if c['type'] == 1]
@@ -248,7 +261,7 @@ def open_program(source, scratch, stack, label, keys=None):
             view = ncas[name.casefold()]
             if view.content_type != 0:
                 continue
-            require(view.title_id & ~0x800 == int(APP_ID, 16), 'Program NCA belongs to a different game')
+            require(view.title_id & ~0x800 == int(game.application_id, 16), 'Program NCA belongs to a different game')
             if content:
                 print('import: verifying program content', flush=True)
                 verify_content(view.raw, content)
@@ -257,7 +270,12 @@ def open_program(source, scratch, stack, label, keys=None):
                     section.pfs()  # verify decrypted ExeFS before searching executable headers
             sections = view.regions
         try:
-            files, build_id = find_exefs(view, sections)
+            files, build_id = find_exefs(view, sections, game)
+            release = game.release(build_id)
+            require(release.role == label, 'Executable role does not match selected archive')
+            if metadata:
+                require(release == game.metadata_release(metadata['role'], metadata['content_version']),
+                        'Executable version does not match content metadata')
             programs.append((view, sections, files, build_id, metadata))
         except ValueError:
             continue
@@ -265,7 +283,8 @@ def open_program(source, scratch, stack, label, keys=None):
     return programs[0]
 
 
-def romfs_header(view, offset):
+def romfs_header(view, offset, game=None):
+    game = game or get_game()
     h = struct.unpack('<10Q', view.read(offset, 80))
     require(h[0] == 0x50 and 0x50 <= h[9] <= 1 << 20, 'Invalid RomFS header')
     for i in (1, 3, 5, 7):
@@ -281,11 +300,11 @@ def romfs_header(view, offset):
         require(child + 24 + entry[5] <= h[4], 'Invalid RomFS name length')
         names.add(safe_name(view.read(offset + h[3] + child + 24, entry[5])))
         child = entry[1]
-    require('region_common' in names, 'Not the game RomFS')
+    require(set(game.romfs_roots) <= names, 'Not the game RomFS')
     return h
 
 
-def find_romfs(view, regions):
+def find_romfs(view, regions, game=None):
     found = []
     for start, size in regions:
         data = view.read(start, min(size, 32 << 20))
@@ -294,7 +313,7 @@ def find_romfs(view, regions):
             offset = start + pos
             pos += 8
             try:
-                h = romfs_header(view, offset)
+                h = romfs_header(view, offset, game)
                 found.append((offset, h, start, size))
             except (ValueError, UnicodeError, struct.error):
                 continue
@@ -429,7 +448,12 @@ def extract_romfs(view, offset, header, destination):
     return len(seen_files), total
 
 
-def import_game(base_path, update_path, output, replace=False, keys_path=None, title_keys_path=None, expected_version=None):
+def import_game(base_path, update_path, output, replace=False, keys_path=None, title_keys_path=None, expected_version=None,
+                game_id='las'):
+    game = get_game(game_id)
+    require(game.installable, f'{game.name} adaptation is in development; installation is not enabled')
+    require(expected_version is None or any(r.version == expected_version for r in game.releases),
+            'Unsupported installation slot version for the selected game')
     base_path = base_path.resolve(strict=True)
     update_path = update_path.resolve(strict=True) if update_path else None
     require(not output.is_symlink(), 'Output cannot be a symbolic link')
@@ -454,24 +478,25 @@ def import_game(base_path, update_path, output, replace=False, keys_path=None, t
         (ready / 'exefs').mkdir(parents=True)
         (ready / 'romfs').mkdir()
         with ExitStack() as stack:
-            base, sections, exefs, build_id, metadata = open_program(base_path, scratch, stack, 'base', keys)
-            require(build_id == BASE_ID, 'The base archive must contain game v1.0.0')
-            offset, header, section_start, section_size = find_romfs(base, sections)
+            base, sections, exefs, build_id, metadata = open_program(base_path, scratch, stack, 'base', keys, game)
+            require(game.release(build_id).role == 'base', 'The base archive must contain a supported base game')
+            offset, header, section_start, section_size = find_romfs(base, sections, game)
             romfs = base
             executable = base
             if update_path:
-                update, update_sections, exefs, build_id, metadata = open_program(update_path, scratch, stack, 'update', keys)
-                require(build_id == UPDATE_ID, 'Only the verified v1.1.0 update is supported')
+                update, update_sections, exefs, build_id, metadata = open_program(update_path, scratch, stack, 'update', keys, game)
+                require(game.release(build_id).role == 'update', 'Only a verified update is supported')
                 print('import: applying update extents', flush=True)
                 romfs = update_view(base.sub(section_start, section_size), update, update_sections)
-                offset, header, _, _ = find_romfs(romfs, [(0, romfs.size)])
+                offset, header, _, _ = find_romfs(romfs, [(0, romfs.size)], game)
                 executable = update
-            require(expected_version is None or game_version(build_id) == expected_version,
+            require(expected_version is None or game.release(build_id).version == expected_version,
                     'The imported game does not match the selected installation slot')
             for name, start, size in exefs:
                 copy_range(executable, start, size, ready / 'exefs' / name)
             count, size = extract_romfs(romfs, offset, header, ready / 'romfs')
-        manifest = dict(game_version=game_version(build_id), main_build_id=build_id,
+        manifest = dict(game_id=game.id, application_id=game.application_id, adapter_revision=game.adapter_revision,
+                        game_version=game.release(build_id).version, main_build_id=build_id[:40], main_build_id_full=build_id,
                         source_base=base_path.name, source_update=update_path.name if update_path else None,
                         romfs_files=count, romfs_bytes=size)
         if metadata:
@@ -505,7 +530,9 @@ def main(argv=None):
         if stream is not None and hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8', errors='replace')
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--base', required=True, type=Path)
+    parser.add_argument('--base', type=Path)
+    parser.add_argument('--catalog', action='store_true', help='List reviewed adapters and their installation status')
+    parser.add_argument('--game', choices=[g.id for g in GAMES], default='las', help='Selected game adapter (default: las)')
     parser.add_argument('--update', type=Path)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--keys', type=Path, help='Local prod.keys containing derived NCA keys')
@@ -513,28 +540,34 @@ def main(argv=None):
     parser.add_argument('--inspect', action='store_true', help='Read package metadata without installing')
     parser.add_argument('--gui-summary', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--replace', action='store_true')
-    parser.add_argument('--expected-version', choices=['1.0.0', '1.1.0'], help='Require this installation slot version')
+    parser.add_argument('--expected-version', help='Require this installation slot version')
     args = parser.parse_args(argv)
     try:
+        if args.catalog:
+            print(json.dumps(catalog(), ensure_ascii=False))
+            return 0
+        require(args.base is not None, '--base is required')
+        game = get_game(args.game)
         if args.inspect:
             keys = Keyset(args.keys, args.title_keys)
-            info = {'base': inspect_package(args.base, keys)}
+            info = {'base': inspect_package(args.base, keys, game)}
             require(info['base']['role'] in ('base', 'unknown'), 'Choose a base game archive, not an update')
             if args.update:
-                info['update'] = inspect_package(args.update, keys)
+                info['update'] = inspect_package(args.update, keys, game)
                 require(info['update']['role'] in ('update', 'unknown'), 'Choose an update archive, not a base game')
             if args.gui_summary:
                 fields = ['LASMETA1']
                 for role in ('base', 'update'):
                     item = info.get(role, {})
-                    version = {0: '1.0.0', 131072: '1.1.0'}.get(item.get('content_version'), '?')
+                    version = item.get('game_version') or '?'
                     fields += [item.get('format', '-'), version, {'CNMT': 'CNMT', 'XML (unverified)': 'XML'}.get(item.get('metadata_source'), 'none')]
                 print('\t'.join(fields))
             else:
                 print(json.dumps(info, ensure_ascii=False))
         else:
             require(args.output is not None, '--output is required for installation')
-            import_game(args.base, args.update, args.output, args.replace, args.keys, args.title_keys, args.expected_version)
+            import_game(args.base, args.update, args.output, args.replace, args.keys, args.title_keys, args.expected_version,
+                        args.game)
     except (ValueError, OSError, zstandard.ZstdError) as error:
         print(f'Import failed: {error}', file=sys.stderr, flush=True)
         return 1

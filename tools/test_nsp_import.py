@@ -13,7 +13,8 @@ from unittest.mock import patch
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from import_game import View, import_game, inspect_package, pfs_entries
 from nca import Keyset, Nca, ticket_key
-from test_import_game import pfs_files, synthetic_romfs, synthetic_package
+from test_import_game import pfs_files, synthetic_romfs, synthetic_package, synthetic_nso
+from game_catalog import get_game
 from game_versions import BASE_ID, UPDATE_ID
 
 # Arbitrary test bytes, deliberately unrelated to any real system's keys.
@@ -60,7 +61,8 @@ def program_sections(updated=False, crypto=3, build=None):
     main = bytearray(0x60)
     main[:4] = b'NSO0'
     main[0x40:0x54] = bytes.fromhex(build or (UPDATE_ID if updated else BASE_ID))
-    code = pfs_section({'main': main, 'main.npdm': b'fixture', 'sdk': b'fixture sdk', 'rtld': b'fixture rtld'}, crypto)
+    sdk = synthetic_nso(get_game().releases[0].modules[1].build_id)
+    code = pfs_section({'main': main, 'main.npdm': b'fixture', 'sdk': sdk, 'rtld': b'fixture rtld'}, crypto)
     fs = bytearray(512)
     fs[2:5] = bytes((0, 3, 4 if updated else crypto))
     if not updated:

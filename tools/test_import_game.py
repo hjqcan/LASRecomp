@@ -12,6 +12,7 @@ from unittest.mock import patch
 import zstandard
 from import_game import View, PatchView, pfs_entries, decompress_ncz, import_game, extract_romfs, romfs_header
 from game_versions import BASE, BASE_ID, UPDATE_ID, address, game_version, patch_word, patch_table
+from game_catalog import get_game
 
 
 def pfs(names):
@@ -66,11 +67,17 @@ def synthetic_romfs():
     return image
 
 
-def synthetic_package(updated=False, blocked=False):
+def synthetic_nso(build_id):
     main = bytearray(0x60)
     main[:4] = b'NSO0'
-    main[0x40:0x54] = bytes.fromhex(UPDATE_ID if updated else BASE_ID)
-    exefs = pfs_files({'main': main, 'main.npdm': b'synthetic metadata', 'sdk': b'synthetic sdk',
+    main[0x40:0x60] = bytes.fromhex(build_id.ljust(64, '0'))
+    return main
+
+
+def synthetic_package(updated=False, blocked=False):
+    main = synthetic_nso(UPDATE_ID if updated else BASE_ID)
+    sdk = synthetic_nso(get_game().releases[0].modules[1].build_id)
+    exefs = pfs_files({'main': main, 'main.npdm': b'synthetic metadata', 'sdk': sdk,
                        'rtld': b'synthetic loader'})
     section = synthetic_romfs()
     if updated:
