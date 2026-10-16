@@ -54,7 +54,7 @@ bool safe_relative(const std::string &s) {
     if (s.empty() || s.size() > 512 || s.find_first_of("\\:\r\n\t") != std::string::npos) return false;
     auto p = fs::u8path(s);
     if (p.is_absolute() || p.has_root_name()) return false;
-    for (auto &c : p) if (c == ".." || c == "." || c.empty()) return false;
+    for (const auto &c : p) if (c == ".." || c == "." || c.empty()) return false;
     return true;
 }
 uint32_t checksum(const fs::path &p, uint64_t expected) {

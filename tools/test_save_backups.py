@@ -17,7 +17,7 @@ parser.add_argument('--save-copy', type=Path)
 args = parser.parse_args()
 root = Path(__file__).resolve().parent.parent
 with tempfile.TemporaryDirectory() as tmp:
-    tmp = Path(tmp)
+    tmp = Path(tmp).resolve()  # macOS /var is a symlink; exercise a real directory under /private/var
     exe = tmp / ('save-test.exe' if os.name == 'nt' else 'save-test')
     cxx = shlex.split(os.environ.get('CXX', 'clang++'))
     subprocess.run(cxx + ['-x', 'c++', '-std=c++17', '-pthread', '-Iruntime',
