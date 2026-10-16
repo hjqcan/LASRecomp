@@ -1,23 +1,21 @@
-// Frame pacing: the game's speed doesn't depend on the frame rate.
-// The game advances its world each frame by its frame period (16.67 ms) times the swap interval its frame timer
-// (f_700000c910) reads from the system object - normally 1. When a frame takes longer than a vsync (GPU-bound at
-// 32:9, a hitch), the next frame starts a vsync later but still advanced only 16.67 ms: slow motion (30 fps = half
-// speed). tools/patches.py FRAME_STEPS_SITE routes that read here: we return how many vsyncs really passed since
-// the last frame, so the world advances by the time that passed. The game's own waiting is unaffected (it reads
-// the interval nowhere else). Shared by the macOS and Windows builds.
-// FINDING (2026-10-09): forcing 2 steps did NOT change Link's walking speed - gameplay is a true fixed step per
-// frame; this timer feeds something else. Kept for research, off by default.
+// Experimental frame-timer hook, off by default. FRAME_STEPS_SITE observes the swap-interval load in
+// f_700000c910. This is NOT a verified simulation-delta boundary: forcing 2 here did not change Link's walking
+// speed (2026-10-09). The original compensation hypothesis is not established. The research capture counts
+// calls/original intervals independently of HID polls, presented frames and emulated vsyncs; see
+// docs/research-capture.md. Normal play always returns the game's original interval.
 //   LARECOMP_FRAMEPACE=1     hand the timer the vsyncs elapsed (default: the game's own value)
 //   LARECOMP_FRAME_STEPS_MAX maximum steps per frame (default 4: after a long stall the game doesn't jump ahead)
 //   LARECOMP_FORCE_STEPS=<n> (test) always n
 #include <stdlib.h>
 
 #include "../hle.h"
+#include "../research.h"
 
 extern volatile uint64_t g_vsync_count;  // runtime/hle/vi.c
 uint64_t g_frame_steps_late;             // (stats) frames that advanced more than one step
 
 uint32_t rt_frame_steps(uint32_t interval) {
+    research_timer(interval);
     static int on = -1, max_steps, forced;
     if (on < 0) {
         const char *e = ENV("LARECOMP_FRAMEPACE");

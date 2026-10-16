@@ -11,6 +11,7 @@
 #include "photo.h"
 #include "workshop.h"
 #include "performance.h"
+#include "research.h"
 #include "paths.h"
 #include "settings.h"
 #include "hle.h"
@@ -114,6 +115,7 @@ static void reboot_idle(void) {  // (main thread, while guest threads stop) keep
 static void teardown(void) {
     uint64_t t0 = plat_now_ns();
     kernel_stop_threads(reboot_idle);
+    research_finish();
     workshop_reset();
     performance_reset();
     backend_clear_window();
@@ -157,6 +159,7 @@ static void boot(const char *root) {
     loader_load(exefs);
     if (!rando_boot()) FATAL("The selected randomizer seed could not be loaded. Choose Vanilla or a compatible seed on the start screen.\n");
     if (!workshop_boot(root, why, sizeof why)) FATAL("%s\n", why);
+    if (!research_boot(root, workshop_save_dir(), why, sizeof why)) FATAL("%s\n", why);
     { extern void settings_load(void); settings_load(); }
     kernel_init();
     dispatch_init();

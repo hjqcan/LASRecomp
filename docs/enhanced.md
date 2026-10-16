@@ -23,11 +23,14 @@ This is the independently maintained edition in [hjqcan/LASRecomp](https://githu
 | Challenge workshop | Shareable destination/time/damage rules, isolated save snapshots, result and observed-route recording |
 | Route viewer | Local CSV loading, playback/scrubbing, per-level X/Z map, health and controller samples |
 | Performance | Bounded gameplay frame-interval captures, CSV export, percentile and 1% low statistics |
+| Research tools | Isolated final-HID input capture/replay, clock observations, camera-matrix validation and explicit divergence reports; disabled in ordinary play |
 | Addresses | Canonical v1.0.0 address table, checked updated-executable relocation, instruction guards |
 
 See [import and versions](NSZ-and-v110.md), [photo/mod/randomizer details](photo-mods-randomizer.md), [mod format](resource-mods.md) and [workshop/replay/performance](workshop.md).
 
 The workshop, extended photo controls, mod presets and frame captures are development additions after the published Beta 5.1 package. Their scope and checks are recorded in [third/fourth-round validation](enhanced-stage34-validation.md). High-refresh simulation, deterministic game replay and real-time co-op remain research work.
+
+The subsequent [research probes](research-capture.md) now measure final HID input, clock behavior and scene camera matrices in isolated saves. See the [2026-10-17 findings](research-findings-2026-10-17.md) for actual dual-version replay divergence and presentation-mode controls.
 
 The [Enhanced Beta 5.1 validation record](enhanced-beta5.1-validation.md) lists actual checks and remaining limits, including the save-mount concurrency fix found during release testing.
 

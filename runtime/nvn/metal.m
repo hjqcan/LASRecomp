@@ -1088,7 +1088,7 @@ void backend_present(NvnTexture *t) {
                 g_window_shot_request[0] = 0;
             } else {
                 renderer_save_texture(shot_tex, getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/window.png");
-                if (getenv("LARECOMP_EXIT_AFTER_SHOT")) { fflush(stderr); _exit(0); }
+                if (getenv("LARECOMP_EXIT_AFTER_SHOT")) { extern void research_finish(void); research_finish(); fflush(stderr); _exit(0); }
             }
             g_save_upright = false;
         }
@@ -1126,7 +1126,7 @@ void backend_present(NvnTexture *t) {
         if (shot_from) mkdir("build/frames", 0755);
         snprintf(path, sizeof path, shot_from ? "build/frames/frame_%05llu.png" : "build/frame_%05llu.png", total_frames);
         save_png(b->tex, path);
-        if (getenv("LARECOMP_EXIT_AFTER_SHOT")) { fflush(stderr); _exit(0); }
+        if (getenv("LARECOMP_EXIT_AFTER_SHOT")) { extern void research_finish(void); research_finish(); fflush(stderr); _exit(0); }
     }
     double now = SDL_GetTicks() / 1000.0;
     static double fps_iv = -1, prev_present, max_gap;  // LARECOMP_FPS_INTERVAL=<s>: fps line period (default 2)
