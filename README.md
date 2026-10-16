@@ -186,6 +186,21 @@ Manual backups and restores are available before the game library is loaded.
 These local snapshots protect against accidental save changes; copy the save and
 backup folders elsewhere if you also need protection against disk failure.
 
+### Resuming game-code builds
+
+The game-code build keeps completed pieces in the game folder's `.gamebuild/`
+directory. **Cancel (B / Esc)** stops the compiler helpers; **Resume game code**
+continues from verified completed pieces. An interrupted build also resumes when
+LAS Recomp starts again. Generated source and object contents are checked before
+reuse. A generator update recompiles only changed pieces; changes to compiler
+inputs or flags require a full rebuild.
+
+**Game Files → Clear build cache** removes these temporary files when space is
+needed or to restart a build from scratch. It keeps the installed game library,
+game files and saves. A cache created by an older LAS Recomp build may need this
+one-time cleanup before it can use the new receipts. Failed or cancelled builds
+keep the previous installed library until a replacement is ready.
+
 ## Credits
 
 **LAS-Randomizer** - the randomizer at the heart of this project's randomizer features, vendored (with local

@@ -1,0 +1,32 @@
+name: Resumable build tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  cache-and-scheduler:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tools/test_build_cache.py
+      - run: python tools/test_gamebuild_resume.py
+  windows-processes:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-python
+      - run: python tools/test_build_cache.py
+      - run: python tools/test_gamebuild_resume.py
+      - run: python tools/test_windows_processes.py

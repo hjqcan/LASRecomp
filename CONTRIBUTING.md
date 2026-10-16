@@ -69,6 +69,14 @@ them, then `make -j10`. The randomizer needs its Python environment in
 
 ## Code style
 
+Build-cache regression tests use synthetic inputs and the production scheduler:
+`python tools/test_build_cache.py` and `python tools/test_gamebuild_resume.py`.
+On Windows, also run `python tools/test_windows_processes.py` to check independent
+helper process trees, descendant cleanup and crash exit codes. `CC` / `CXX` select
+the native compiler (defaults: `clang` / `clang++`). For a release smoke test,
+cancel a real game-code build after some objects finish, resume it, inspect the
+reused/compiled counts in the log, and launch the resulting game library.
+
 - Match the surrounding code: its naming, structure and comment density. Comments explain *why* (what the game does,
   what an address is, which seed or bug showed the problem), not what the next line does.
 - Keep randomizer and game-facing text in the game's own style: pickup messages go through the game's message box,

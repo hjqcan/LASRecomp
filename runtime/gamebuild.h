@@ -14,6 +14,7 @@ typedef struct {
     // now and then, from the calling thread: how far the whole build is (0..1) and what it's doing
     void (*progress)(double fraction, const char *step);
     int jobs;  // compiler processes at once (>= 1)
+    bool (*cancelled)(void);  // optional, polled on this thread; completed objects stay reusable
 } GameBuildOpts;
 
 // Builds it (a few minutes). false: why says what went wrong (details in the log).

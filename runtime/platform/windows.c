@@ -317,6 +317,8 @@ ssize_t pread(int fd, void *buf, size_t n, off_t off) { return prw(fd, buf, n, o
 ssize_t pwrite(int fd, const void *buf, size_t n, off_t off) { return prw(fd, (void *)buf, n, off, true); }
 
 // ---- child processes
+typedef struct { HANDLE process, job; } WinProcess;
+
 PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_log) {
     static __thread char cmd[32768];
     cmd[0] = 0;
@@ -341,33 +343,43 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     if (!ok) fprintf(stderr, "[plat] could not start %s (error %lu)\n", argv[0], GetLastError());
     CloseHandle(log);
     if (!ok) return 0;
-    // every child in one job that ends with this process (a compiler's own children too: no leftovers on quit)
-    static HANDLE job;
-    if (!job && (job = CreateJobObjectW(NULL, NULL))) {
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {0};
-        li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li);
+    // A separate job per helper: cancelling one compiler also stops its children immediately,
+    // without killing the other compilation jobs. Handles close on app exit as well.
+    WinProcess *child = calloc(1, sizeof *child);
+    HANDLE job = CreateJobObjectW(NULL, NULL);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {0};
+    li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!child || !job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li) ||
+        !AssignProcessToJobObject(job, pi.hProcess)) {
+        fprintf(stderr, "[plat] could not supervise %s (error %lu)\n", argv[0], GetLastError());
+        TerminateProcess(pi.hProcess, 255);
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        if (job) CloseHandle(job);
+        free(child);
+        return 0;
     }
-    if (job) AssignProcessToJobObject(job, pi.hProcess);
+    child->process = pi.hProcess, child->job = job;
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
-    return (PlatProc)pi.hProcess;
+    return (PlatProc)child;
 }
 
-void plat_proc_kill(PlatProc p) {  // (what it started ends with this process: the job above)
-    TerminateProcess((HANDLE)p, 255);
-    WaitForSingleObject((HANDLE)p, INFINITE);
-    CloseHandle((HANDLE)p);
+void plat_proc_kill(PlatProc p) {
+    WinProcess *child = (WinProcess *)p;
+    TerminateJobObject(child->job, 255);
+    WaitForSingleObject(child->process, INFINITE);
+    CloseHandle(child->process); CloseHandle(child->job);
+    free(child);
 }
 
 int plat_proc_wait(PlatProc p, bool block) {
-    HANDLE h = (HANDLE)p;
-    DWORD w = WaitForSingleObject(h, block ? INFINITE : 0);
+    WinProcess *child = (WinProcess *)p;
+    DWORD w = WaitForSingleObject(child->process, block ? INFINITE : 0);
     if (w == WAIT_TIMEOUT) return -1;
-    if (w != WAIT_OBJECT_0) return 255;  // (not a process we can wait for: ended as far as the caller is concerned)
     DWORD code = 255;
-    GetExitCodeProcess(h, &code);
-    CloseHandle(h);
+    if (w == WAIT_OBJECT_0) GetExitCodeProcess(child->process, &code);
+    CloseHandle(child->process); CloseHandle(child->job);
+    free(child);
     return code > 255 ? 255 : (int)code;  // (a crash's NTSTATUS, e.g. 0xC0000409, is not "still running" (-1))
 }
 
