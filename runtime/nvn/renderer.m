@@ -13,6 +13,7 @@
 
 #include "maxwell/shader.h"
 #include "nvn.h"
+#include "render_control.h"
 #include "renderer.h"
 
 static id<MTLDevice> dev;
@@ -52,7 +53,7 @@ typedef struct { uint64_t addr, size; } Range;
 
 static struct {
     RtState rt;
-    bool rt_dirty;
+    bool rt_dirty, render_enabled;
     NvnProgram *program;
     uint8_t blend[8][8];
     uint32_t channel_mask;
@@ -110,6 +111,7 @@ const char *renderer_stats(void) {
 
 static void st_defaults(void) {
     memset(&st, 0, sizeof st);
+    st.render_enabled = true;
     for (int i = 0; i < 16; i++) {
         st.viewport[i][2] = 1280; st.viewport[i][3] = 720;
         st.scissor[i][2] = 16384; st.scissor[i][3] = 16384;
@@ -2442,6 +2444,7 @@ static void exec_list(uint64_t handle, int depth) {
         uint32_t stride = r->size;
         void *x = r->extra;
         if (r->op < CMD_COUNT) op_counts[r->op]++;
+        if (!st.render_enabled && nvn_command_needs_render(r->op)) { p += stride; continue; }
         switch (r->op) {
         case CMD_END: return;
         case CMD_JUMP: p = r->x[0]; continue;
@@ -2663,6 +2666,18 @@ static void exec_list(uint64_t handle, int depth) {
         }
         case CMD_COPY_BUFFER_TO_TEXTURE: copy_buffer_to_texture(r->x[0], x); break;
         case CMD_COPY_TEXTURE_TO_BUFFER: copy_texture_to_buffer(x, r->x[3]); break;
+        case CMD_SET_RENDER_ENABLE:
+            if (r->x[6]) {
+                if (r->x[0] > 1 || !r->x[1]) FATAL("nvn: invalid conditional rendering arguments\n");
+                renderer_flush();
+                st.render_enabled = nvn_render_condition((uint32_t)r->x[0], (void *)(uintptr_t)r->x[1]);
+            } else st.render_enabled = r->x[0] != 0;
+            break;
+        case CMD_REPORT_VALUE:
+            if (!r->x[1]) FATAL("nvn: null report-value buffer\n");
+            nvn_report_value((void *)(uintptr_t)r->x[1], (uint32_t)r->x[0],
+                (uint64_t)((unsigned __int128)plat_now_ns() * 384 / 625));
+            break;
         case CMD_COPY_BUFFER_TO_BUFFER:
             renderer_flush();
             memmove((void *)(uintptr_t)r->x[1], (void *)(uintptr_t)r->x[0], r->x[2]);

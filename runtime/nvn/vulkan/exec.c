@@ -14,10 +14,12 @@
 #include "shaders.h"
 #include "vk.h"
 #include "../renderer.h"
+#include "../render_control.h"
 #include "../../settings.h"
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes;
+static bool guest_gpu_writes_pending;
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
@@ -403,6 +405,7 @@ void renderer_flush(void) {
     renderer_submit();
     if (!wait_why) wait_why = "flush";
     vk_wait_seq(submit_seq);
+    guest_gpu_writes_pending = false;
 }
 
 void renderer_sync(void) {
@@ -684,7 +687,7 @@ typedef struct { uint64_t addr, size; } Range;
 
 static struct {
     RtState rt;
-    bool rt_dirty;
+    bool rt_dirty, render_enabled;
     NvnProgram *program;
     uint8_t blend[8][8];
     uint32_t channel_mask;
@@ -795,6 +798,7 @@ const char *renderer_stats(void) {
 
 static void st_defaults(void) {
     memset(&st, 0, sizeof st);
+    st.render_enabled = true;
     for (int i = 0; i < 16; i++) {
         st.viewport[i][2] = 1280; st.viewport[i][3] = 720;
         st.scissor[i][2] = 16384; st.scissor[i][3] = 16384;
@@ -932,7 +936,10 @@ static void begin_pass(void) {
         ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         bool fresh = (int)renderer_texture_level_fresh(t) | (int)renderer_texture_frame_fresh(t);  // both: each marks its state
-        if (renderer_texture_first_write(t) || fresh) {
+        bool first_write = renderer_texture_first_write(t);
+        if (g_debug_frame) LOG("[pass] color %p %ux%u load %s frame %llu\n", (void *)t,t->width,t->height,
+            first_write || fresh ? "clear" : "load",(unsigned long long)renderer_present_count());
+        if (first_write || fresh) {
             ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             ca[i].clearValue.color.float32[3] = fresh ? 0.0f : 1.0f;
         }
@@ -2532,6 +2539,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     vkCmdDispatch(cb, gx, gy, gz);
     if (cp->si->uses_gmem_map && cp->si->uses_gmem_store) gfast_finish(cb);
     if (cp->si->uses_gmem_store) vc_mark_sbufs(5);
+    if (cp->si->uses_gmem_store) guest_gpu_writes_pending = true;
     stat_dispatches++;
 }
 
@@ -2881,6 +2889,7 @@ static void draw_(CmdRec *r, bool indexed) {
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, 0, NULL);  // (always new sets)
     if (pr->vi->uses_gmem_store) vc_mark_sbufs(0);
     if (pr->fi->uses_gmem_store) vc_mark_sbufs(1);
+    if (pr->vi->uses_gmem_store || pr->fi->uses_gmem_store) guest_gpu_writes_pending = true;
 
     uint64_t prof_t2_ = prof ? SDL_GetTicksNS() : 0;
     // ---- indices (copied; the largest index bounds the vertex data copied below)
@@ -3038,6 +3047,11 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         st.viewport[0][2], st.viewport[0][3], pr->vi->attr_mask, st.color_state[0], st.ds[0], st.ds[1], st.ds[2], st.poly[0], st.poly[1],
         st.channel_mask);
     if (getenv("LARECOMP_DEBUG_DATA")) {  // vertex streams 0-1 and fragment cbufs: the first floats
+        LOG("[draw]   output mask %08x attrs", pr->fi->out_mask);
+        for (int i = 0; i < st.nattrib; i++) LOG(" %08x", st.attrib[i]);
+        LOG(" streams");
+        for (int i = 0; i < st.nstream; i++) LOG(" %u/%u", st.stream[i][0], st.stream[i][1]);
+        LOG("\n");
         for (int s = 0; s < 2; s++) {
             if (!st.vbuf[s].addr) continue;
             const float *v = (const float *)(uintptr_t)st.vbuf[s].addr;
@@ -3045,12 +3059,13 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             for (int k = 0; k < 16; k++) LOG(" %.4g", v[k]);
             LOG("\n");
         }
-        for (int stage = 0; stage < 2; stage++) for (int c = 0; c < 18; c++) {
+        for (int stage = 0; stage < 2; stage++) for (int c = 3; c < 18; c++) {
             uint32_t mask = stage ? pr->fi->cbuf_mask : pr->vi->cbuf_mask;
-            if (!((mask >> c) & 1) || !st.ubuf[stage][c].addr) continue;
-            const float *u = (const float *)(uintptr_t)st.ubuf[stage][c].addr;
-            LOG("[draw]   %ccb%d %llx size %u:", stage ? 'f' : 'v', c, (unsigned long long)st.ubuf[stage][c].addr, (unsigned)st.ubuf[stage][c].size);
-            for (int k = 0; k < 96 && k * 4 < (int)st.ubuf[stage][c].size; k++) LOG(" %.6g", u[k]);
+            Range range = st.ubuf[stage][c - 3];  // shader CB3 is NVN binding zero
+            if (!((mask >> c) & 1) || !range.addr) continue;
+            const float *u = (const float *)(uintptr_t)range.addr;
+            LOG("[draw]   %ccb%d %llx size %u:", stage ? 'f' : 'v', c, (unsigned long long)range.addr, (unsigned)range.size);
+            for (int k = 0; k < 96 && k * 4 < (int)range.size; k++) LOG(" %.6g", u[k]);
             LOG("\n");
         }
     }
@@ -3060,6 +3075,30 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         if (!t) { LOG("[draw]   tex%d: none\n", i); continue; }
         LOG("[draw]   tex%d: %p %ux%u f%#x lv %u -> %ux%u scale %.4f %.4f%s\n", i, (void *)t, t->width, t->height, t->format,
             b ? b->levels : 0, b ? b->width : 0, b ? b->height : 0, b ? b->sx : 0, b ? b->sy : 0, b && b->scalable ? " scalable" : "");
+        if (getenv("LARECOMP_DEBUG_DATA")) {
+            int slot = ((int)pr->fi->tex[i].handle_offset - 0x20) / 8;
+            uint64_t h = slot >= 0 && slot < 32 ? st.tex[1][slot] : 0;
+            uint32_t tic = h & 0xfffff, tsc = (h >> 20) & 0xfff;
+            if (st.tpool && tic < (uint32_t)st.tpool->count) {
+                NvnTexEntry *e = &((NvnTexEntry *)st.tpool->entries)[tic];
+                LOG("[draw]   view %u mask %#x format %#x levels %u/%u layers %u/%u sw %u%u%u%u base sw %u%u%u%u\n",
+                    tic, e->has_view ? e->view.setmask : 0, e->view.format, e->view.base_level, e->view.num_levels,
+                    e->view.min_layer, e->view.num_layers, e->view.swizzle[0], e->view.swizzle[1], e->view.swizzle[2], e->view.swizzle[3],
+                    t->swizzle[0], t->swizzle[1], t->swizzle[2], t->swizzle[3]);
+            }
+            if (st.spool && tsc < (uint32_t)st.spool->count) {
+                NvnSamplerDesc *s = &((NvnSamplerDesc *)st.spool->entries)[tsc];
+                LOG("[draw]   sampler %u filter %u/%u wrap %u/%u/%u compare %u/%u lod %g..%g bias %g\n", tsc,
+                    s->min_filter,s->mag_filter,s->wrap[0],s->wrap[1],s->wrap[2],s->compare_mode,s->compare_func,s->lod_min,s->lod_max,s->lod_bias);
+            }
+        }
+        static const char *dump_hash = (const char *)1;
+        static unsigned input_no;
+        if (dump_hash == (const char *)1) dump_hash = getenv("LARECOMP_DEBUG_TEXTURE_INPUTS");
+        if (dump_hash && strtoull(dump_hash, NULL, 16) == g_cur_fs_hash && b && b->base_type == VK_IMAGE_VIEW_TYPE_2D) {
+            char path[128]; snprintf(path, sizeof path, "build/input_%03u_%d.png", input_no++, i);
+            renderer_save_texture_tex((TexBackend *)b, path);
+        }
     }
 }
 
@@ -3581,6 +3620,7 @@ static void exec_list(uint64_t handle, int depth) {
         uint32_t stride = r->size;
         void *x = r->extra;
         if (r->op < CMD_COUNT) op_counts[r->op]++;
+        if (!st.render_enabled && nvn_command_needs_render(r->op)) { p += stride; continue; }
         switch (r->op) {
         case CMD_END: return;
         case CMD_JUMP: p = r->x[0]; continue;
@@ -3670,6 +3710,10 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_CLEAR_COLOR: {
             snap_reason = "clear-color"; snapshots_invalidate(NULL);
             int index = (int)r->x[0];
+            if (g_debug_frame) LOG("[clear] color idx %d target %p value %g %g %g %g mask %#x sc %d %d %d %d\n", index,
+                index >= 0 && index < st.rt.ncolor ? (void *)st.rt.color[index] : NULL,
+                ((float *)x)[0],((float *)x)[1],((float *)x)[2],((float *)x)[3],(uint32_t)r->x[2],
+                st.scissor[0][0],st.scissor[0][1],st.scissor[0][2],st.scissor[0][3]);
             if (getenv("LARECOMP_LOG_CLEARS") && index < st.rt.ncolor && st.rt.color[index])
                 LOG("[cclear] frame %llu idx %d %ux%u f%#x mask %#x\n", (unsigned long long)renderer_present_count(), index,
                     st.rt.color[index]->width, st.rt.color[index]->height, st.rt.color[index]->format, (uint32_t)r->x[2]);
@@ -3795,6 +3839,21 @@ static void exec_list(uint64_t handle, int depth) {
             wait_why = "buffer -> buffer copy";
             renderer_flush();
             memmove((void *)(uintptr_t)r->x[1], (void *)(uintptr_t)r->x[0], r->x[2]);
+            break;
+        case CMD_SET_RENDER_ENABLE:
+            if (r->x[6]) {
+                if (r->x[0] > 1 || !r->x[1]) FATAL("nvn: invalid conditional rendering arguments\n");
+                // ReportValue and counter payloads are already applied in CPU
+                // command order. Wait only if shaders may have changed memory.
+                if (guest_gpu_writes_pending) renderer_flush();
+                st.render_enabled = nvn_render_condition((uint32_t)r->x[0], (void *)(uintptr_t)r->x[1]);
+            } else st.render_enabled = r->x[0] != 0;
+            if (g_debug_frame) LOG("[render-enable] conditional %llu mode %llu => %u\n",r->x[6],r->x[0],st.render_enabled);
+            break;
+        case CMD_REPORT_VALUE:
+            if (!r->x[1]) FATAL("nvn: null report-value buffer\n");
+            nvn_report_value((void *)(uintptr_t)r->x[1], (uint32_t)r->x[0], ns_to_gpu_ticks(plat_now_ns()));
+            guest_copy_flush();
             break;
         default: break;
         }

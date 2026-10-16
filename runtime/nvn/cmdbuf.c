@@ -358,8 +358,16 @@ PLAIN(nvnCommandBufferSetPolygonOffsetClamp, CMD_SET_POLYGON_OFFSET)
 PLAIN(nvnCommandBufferSetLineWidth, CMD_SET_LINE_WIDTH)
 PLAIN(nvnCommandBufferSetPointSize, CMD_SET_POINT_SIZE)
 PLAIN(nvnCommandBufferSetSampleMask, CMD_SET_SAMPLE_MASK)
-PLAIN(nvnCommandBufferSetRenderEnable, CMD_SET_RENDER_ENABLE)
-NVN(nvnCommandBufferSetRenderEnableConditional) { (void)c; }
+NVN(nvnCommandBufferSetRenderEnable) {
+    Snap s = snap(c);
+    CmdRec *r = record(c, CMD_SET_RENDER_ENABLE, 0, &s);
+    r->x[6] = 0;
+}
+NVN(nvnCommandBufferSetRenderEnableConditional) {
+    Snap s = snap(c);
+    CmdRec *r = record(c, CMD_SET_RENDER_ENABLE, 0, &s);
+    r->x[6] = 1;
+}
 NVN(nvnCommandBufferSetDepthClamp) { (void)c; }
 NVN(nvnCommandBufferSetRasterizerDiscard) { (void)c; }
 NVN(nvnCommandBufferSetConservativeRasterEnable) { (void)c; }
@@ -545,7 +553,7 @@ PLAIN(nvnCommandBufferBarrier, CMD_BARRIER)
 PLAIN(nvnCommandBufferSignalEvent, CMD_SIGNAL_EVENT)
 PLAIN(nvnCommandBufferWaitEvent, CMD_WAIT_EVENT)
 PLAIN(nvnCommandBufferReportCounter, CMD_REPORT_COUNTER)
-NVN(nvnCommandBufferReportValue) { (void)c; }
+PLAIN(nvnCommandBufferReportValue, CMD_REPORT_VALUE)
 NVN(nvnCommandBufferResetCounter) { (void)c; }
 NVN(nvnCommandBufferCallCommands) {
     Snap s = snap(c);

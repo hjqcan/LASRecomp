@@ -83,11 +83,13 @@ ABI, UTF-16, masking, count-bound, and destruction checks.
 
 The current boot passes three-module initialization, window/input setup,
 font loading, friends/BCAT/NFC setup, and the initial graphics-resource recording.
-It has submitted more than 4,000 frames in a one-minute run. Offscreen captures
-contain scene geometry and loading artwork, but final captured output is black.
-This is startup progress only; it is not evidence of playable graphics or audio.
+It has submitted more than 4,000 frames in a one-minute run. Deferred conditional
+rendering and counter writes now preserve visible dialogue; a keyboard press
+advances that dialogue. Offscreen captures contain airport scene geometry and
+loading artwork. Final scene composition and characters are still incomplete.
+This is startup progress only; it is not evidence of stable gameplay or audio.
 
-Still required: first real game frame, intro and island controls, graphics and
+Still required: complete scene output, intro and island controls, graphics and
 audio correctness, game-managed saving and reopening, day rollover, repeated
 starts, and an extended gameplay run. Update and DLC compatibility remain
 separate follow-up work after the base game passes these checks.

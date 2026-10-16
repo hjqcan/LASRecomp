@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <stdarg.h>
 #include "../runtime/nvn/cmdbuf.c"
+#include "../runtime/nvn/render_control.h"
 
 static uint64_t pool_guest;
 static unsigned callbacks;
@@ -133,5 +134,28 @@ int main(void) {
     nvn_command_list_release(executing);
     nvn_command_pool_destroy(&copy_pool); assert(!copy_pool.command_storage);
     for (unsigned i = 0; i < LIST_BUCKETS; i++) assert(!command_lists[i]);
+    // Counter timestamps are not part of the comparison. Neither half of the
+    // 64-bit value may be truncated, and ReportValue must zero its upper half.
+    uint64_t values[4] = {0,123,0,456};
+    assert(nvn_render_condition(0,values) && !nvn_render_condition(1,values));
+    values[2]=UINT64_C(1)<<32;
+    assert(!nvn_render_condition(0,values) && nvn_render_condition(1,values));
+    nvn_report_value(values,7,789); nvn_report_value(values+2,7,987);
+    assert(values[0]==7 && values[1]==789 && values[2]==7 && values[3]==987);
+    assert(nvn_render_condition(0,values));
+    setup(&cpu,&guest,control,0,512);
+    cpu.x[1]=1; cpu.x[2]=(uint64_t)(uintptr_t)values; cpu.x[7]=99;
+    hle_nvnCommandBufferSetRenderEnableConditional(&cpu);
+    cpu.x[1]=0; hle_nvnCommandBufferSetRenderEnable(&cpu);
+    cpu.x[1]=42; cpu.x[2]=(uint64_t)(uintptr_t)values;
+    hle_nvnCommandBufferReportValue(&cpu);
+    hle_nvnCommandBufferEndRecording(&cpu); uint64_t predicate_handle=cpu.x[0];
+    assert(command_at(predicate_handle,1)->x[6]==1);
+    assert(command_at(predicate_handle,2)->x[6]==0);
+    assert(command_at(predicate_handle,3)->op==CMD_REPORT_VALUE && values[0]==7);
+    assert(nvn_command_needs_render(CMD_CLEAR_COLOR) && nvn_command_needs_render(CMD_DRAW_ELEMENTS));
+    assert(!nvn_command_needs_render(CMD_REPORT_VALUE) && !nvn_command_needs_render(CMD_CALL));
+    nvn_command_handle_destroy(predicate_handle);
+    cpu.x[0]=(uint64_t)(uintptr_t)&guest; hle_nvnCommandBufferFinalize(&cpu);
     puts("PASS: independent recording, 1000 reuse cycles, callbacks, deep copies and retained nested lists");
 }

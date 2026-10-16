@@ -820,6 +820,40 @@ static void emit_tex(Ctx *c, uint64_t w, bool bindless) {
     write_tex_result(c, slot, call, mask, d, RZ, false, false);
 }
 
+// Scalar and swizzled gathers return one component from four neighboring texels.
+static void emit_gather(Ctx *c, uint64_t w, bool swizzled) {
+    int a = (int)bits(w,8,8), b = (int)bits(w,20,8), d = (int)bits(w,0,8);
+    bool shadow = bits(w,50,1);
+    int offset_mode = swizzled ? (int)bits(w,51,1) : (int)bits(w,54,2);
+    int component = (int)bits(w,swizzled ? 52 : 56,2);
+    if ((!swizzled && bits(w,28,3) != 2) || offset_mode) {
+        fail(c,"gather target/offset mode not supported"); return;
+    }
+    int slot = tex_slot(c,(uint32_t)bits(w,36,13),TEXTYPE_2D,shadow,false);
+    char ra[16], ry[16], rb[16], call[512];
+    const char *x = reg(c,a,ra);
+    const char *y = reg(c,swizzled && !shadow ? b : (a == RZ ? RZ : a+1),ry);
+    const char *compare = shadow ? reg(c,b,rb) : NULL;
+    if (c->glsl) {
+        if (shadow) snprintf(call,sizeof call,"textureGather(t%d, vec2(as_f(%s),as_f(%s)),as_f(%s))",slot,x,y,compare);
+        else snprintf(call,sizeof call,"textureGather(t%d, vec2(as_f(%s),as_f(%s)),%d)",slot,x,y,component);
+    } else {
+        if (shadow) snprintf(call,sizeof call,"t%d.gather_compare(s%d,float2(as_type<float>(%s),as_type<float>(%s)),as_type<float>(%s))",slot,slot,x,y,compare);
+        else snprintf(call,sizeof call,"t%d.gather(s%d,float2(as_type<float>(%s),as_type<float>(%s)),int2(0),component::%c)",slot,slot,x,y,"xyzw"[component]);
+    }
+    write_tex_result(c,slot,call,swizzled ? 15 : (uint32_t)bits(w,31,4),d,
+        swizzled ? (int)bits(w,28,8) : RZ,swizzled,swizzled && bits(w,55,1));
+}
+
+static void video_operand(char *out, const char *reg, int width, int select, bool sign) {
+    if (width == 3) snprintf(out,128,"%s",reg);
+    else {
+        int n = width == 2 ? 16 : 8, shift = select * n;
+        if (sign) snprintf(out,128,"uint(int(%s << %d) >> %d)",reg,32-shift-n,32-n);
+        else snprintf(out,128,"((%s >> %d) & %uu)",reg,shift,(1u<<n)-1);
+    }
+}
+
 // ------------------------------------------------------------------ instruction translation
 static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
     char t[2048], u[2048];
@@ -902,6 +936,10 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         int n = sz == 5 ? 2 : 1;
         char rb[16];
         const char *dyn = a == RZ ? NULL : reg(c, a, rb);
+        // A vector load reads its address before writing any destination.
+        // LDC.64 R0,c[3][R0+off] must not use the newly loaded R0 for R1.
+        bool snapshot = dyn && n > 1;
+        if (snapshot) { sp(&c->body, "    { uint ldc_addr = %s;\n", dyn); dyn = "ldc_addr"; }
         for (int i = 0; i < n; i++) {
             char cb[256];
             cbuf_ref(c, idx, off + 4 * i, dyn, cb);
@@ -909,6 +947,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             if (dyn) c->info->cbuf_size[idx] = 0x10000;
             set_reg(c, d + i, cb);
         }
+        if (snapshot) sp(&c->body, "    }\n");
     } else if (OPM(0xd000000000000000ull, 0xf600000000000000ull)) {  // TEXS
         emit_texs(c, w, false);
     } else if (OPM(0xd200000000000000ull, 0xf600000000000000ull)) {  // TLDS
@@ -917,6 +956,10 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         emit_tex(c, w, false);
     } else if (OPM(0xdeb8000000000000ull, 0xfff8000000000000ull)) {  // TEX.B (bindless)
         emit_tex(c, w, true);
+    } else if (OPM(0xc800000000000000ull, 0xfc00000000000000ull)) {
+        emit_gather(c,w,false);
+    } else if (OPM(0xdf00000000000000ull, 0xff40000000000000ull)) {
+        emit_gather(c,w,true);
     } else if (OPM(0xdf48000000000000ull, 0xfff8000000000000ull)) {  // TXQ
         uint32_t index = (uint32_t)bits(w, 36, 13);
         int qt = (int)bits(w, 22, 6);
@@ -926,11 +969,11 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             if (c->stage != STAGE_VERTEX) {
                 c->uses_rscale = true;
                 sp(&c->body, "    { uint lv = %s; uvec4 q = uvec4(uint(floor(float(tsize%d(int(lv)).x) / rscale[%d].x + 0.5f)), "
-                   "uint(floor(float(tsize%d(int(lv)).y) / rscale[%d].y + 0.5f)), 1u, uint(textureQueryLevels(t%d)));\n",
-                   R(a), slot, slot + 1, slot, slot + 1, slot);
+                   "uint(floor(float(tsize%d(int(lv)).y) / rscale[%d].y + 0.5f)), uint(tsize%d(int(lv)).z), uint(textureQueryLevels(t%d)));\n",
+                   R(a), slot, slot + 1, slot, slot + 1, slot, slot);
             } else {
-                sp(&c->body, "    { uint lv = %s; uvec4 q = uvec4(uint(tsize%d(int(lv)).x), uint(tsize%d(int(lv)).y), 1u, uint(textureQueryLevels(t%d)));\n",
-                   R(a), slot, slot, slot);
+                sp(&c->body, "    { uint lv = %s; uvec4 q = uvec4(uvec3(tsize%d(int(lv))), uint(textureQueryLevels(t%d)));\n",
+                   R(a), slot, slot);
             }
             int n = 0;
             for (int i = 0; i < 4; i++)
@@ -953,6 +996,27 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         } else {
             fail(c, "txq type %d", qt);
         }
+    } else if (OPM(0x3a00000000000000ull, 0xfe00000000000000ull)) {  // VMNMX
+        if (bits(w,47,1) || bits(w,55,1)) { fail(c,"vmnmx flags/saturate"); }
+        char aa[128],bb[128],imm[32];
+        video_operand(aa,R(a),(int)bits(w,37,2),(int)bits(w,36,2),bits(w,48,1));
+        if (bits(w,50,1)) video_operand(bb,R((int)bits(w,20,8)),(int)bits(w,29,2),(int)bits(w,28,2),bits(w,49,1));
+        else {
+            snprintf(imm,sizeof imm,"%uu",(uint32_t)bits(w,20,16));
+            video_operand(bb,imm,2,0,bits(w,49,1));
+        }
+        const char *cast = bits(w,49,1) ? "int" : "uint";
+        snprintf(t,sizeof t,"uint(%s(%s(%s),%s(%s)))",bits(w,56,1)?"max":"min",cast,aa,cast,bb);
+        int op = (int)bits(w,51,3), rc = (int)bits(w,39,8);
+        cast = bits(w,54,1) ? "int" : "uint";
+        if (op == 5 || op == 6) snprintf(u,sizeof u,"uint(%s(%s(%s),%s(%s)))",op==5?"min":"max",cast,t,cast,R(rc));
+        else if (op == 4) snprintf(u,sizeof u,"(%s + %s)",t,R(rc));
+        else if (op < 4) {
+            unsigned n = op < 2 ? 16 : 8, shift = op == 0 || op == 3 ? 16 : 0;
+            unsigned mask = ((1u<<n)-1) << shift;
+            snprintf(u,sizeof u,"((%s & 0x%xu) | ((%s << %u) & 0x%xu))",R(rc),~mask,t,shift,mask);
+        } else { fail(c,"vmnmx operation %d",op); u[0]='0';u[1]='u';u[2]=0; }
+        set_reg(c,d,u);
     } else if (OPM(0x5080000000000000ull, 0xfff8000000000000ull)) {  // MUFU
         int fn = (int)bits(w, 20, 4);
         const char *x = NA(F(R(a)), bits(w, 48, 1), bits(w, 46, 1));
