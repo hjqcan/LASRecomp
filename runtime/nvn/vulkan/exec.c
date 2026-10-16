@@ -426,7 +426,18 @@ void renderer_wait_seq(uint64_t seq) {
     uint64_t s = submit_seq;
     pthread_mutex_unlock(&seq_lock);
     wait_why = seq > s ? "SyncWait (fence not submitted yet)" : "SyncWait";
-    vk_wait_seq(seq > s ? s : seq);  // not submitted yet (other thread): everything submitted so far
+    vk_wait_seq(seq);  // future submissions must complete too; never clamp the fence backwards
+}
+
+int renderer_wait_seq_timeout(uint64_t seq, uint64_t timeout) {
+    if (!seq || vk_completed_seq() >= seq) return 0;
+    VkSemaphoreWaitInfo wi = {.sType=VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount=1,
+        .pSemaphores=&g_vk.timeline, .pValues=&seq};
+    VkResult r = vkWaitSemaphores(g_vk.dev, &wi, timeout);
+    if (r == VK_TIMEOUT) return 2;
+    if (r != VK_SUCCESS) FATAL("nvn: fence wait failed (%d)\n", r);
+    cq_resolve_done(seq);
+    return 1;
 }
 
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
@@ -3021,7 +3032,7 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         (unsigned long long)(indexed ? r->x[6] : r->x[4]), (unsigned long long)r->x[0], (unsigned long long)r->x[2],
         (unsigned long long)st.program->stages[0].code_addr, (unsigned long long)st.program->stages[1].code_addr,
         pr->vi->cbuf_mask, pr->fi->cbuf_mask, st.rt.ncolor);
-    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) LOG(" %ux%u/f%#x", st.rt.color[i]->width, st.rt.color[i]->height, st.rt.color[i]->format);
+    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) LOG(" %ux%u/f%#x/%p", st.rt.color[i]->width, st.rt.color[i]->height, st.rt.color[i]->format, (void *)st.rt.color[i]);
     if (st.rt.depth) LOG(" d%#x %p", st.rt.depth->format, (void *)st.rt.depth);
     LOG(" | vp %.0f %.0f %.0f %.0f | attrs %#x blend %#x ds %02x%02x%02x poly %02x%02x chmask %08x\n", st.viewport[0][0], st.viewport[0][1],
         st.viewport[0][2], st.viewport[0][3], pr->vi->attr_mask, st.color_state[0], st.ds[0], st.ds[1], st.ds[2], st.poly[0], st.poly[1],
@@ -3034,11 +3045,12 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             for (int k = 0; k < 16; k++) LOG(" %.4g", v[k]);
             LOG("\n");
         }
-        for (int c = 0; c < 18; c++) {
-            if (!((pr->fi->cbuf_mask >> c) & 1) || !st.ubuf[1][c].addr) continue;
-            const float *u = (const float *)(uintptr_t)st.ubuf[1][c].addr;
-            LOG("[draw]   fcb%d %llx size %u:", c, (unsigned long long)st.ubuf[1][c].addr, (unsigned)st.ubuf[1][c].size);
-            for (int k = 0; k < 96 && k * 4 < (int)st.ubuf[1][c].size; k++) LOG(" %.6g", u[k]);
+        for (int stage = 0; stage < 2; stage++) for (int c = 0; c < 18; c++) {
+            uint32_t mask = stage ? pr->fi->cbuf_mask : pr->vi->cbuf_mask;
+            if (!((mask >> c) & 1) || !st.ubuf[stage][c].addr) continue;
+            const float *u = (const float *)(uintptr_t)st.ubuf[stage][c].addr;
+            LOG("[draw]   %ccb%d %llx size %u:", stage ? 'f' : 'v', c, (unsigned long long)st.ubuf[stage][c].addr, (unsigned)st.ubuf[stage][c].size);
+            for (int k = 0; k < 96 && k * 4 < (int)st.ubuf[stage][c].size; k++) LOG(" %.6g", u[k]);
             LOG("\n");
         }
     }
@@ -3566,6 +3578,7 @@ static void exec_list(uint64_t handle, int depth) {
     uint64_t p = handle;
     for (int guard = 0; guard < 10000000; guard++) {
         CmdRec *r = (CmdRec *)(uintptr_t)p;
+        uint32_t stride = r->size;
         void *x = r->extra;
         if (r->op < CMD_COUNT) op_counts[r->op]++;
         switch (r->op) {
@@ -3733,7 +3746,7 @@ static void exec_list(uint64_t handle, int depth) {
             if (fence_flush < 0) fence_flush = getenv("LARECOMP_FENCE_FLUSH") ? 1 : 0;
             if (fence_flush) renderer_flush();
             extern void nvn_sync_set_seq(uint64_t guest, uint64_t seq);
-            if (r->x[1]) nvn_sync_set_seq(r->x[1], renderer_fence_seq());
+            if (r->x[0]) nvn_sync_set_seq(r->x[0], renderer_fence_seq());
             break;
         }
         case CMD_REPORT_COUNTER: {
@@ -3785,7 +3798,7 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         default: break;
         }
-        p += r->size;
+        p += stride;
     }
 }
 

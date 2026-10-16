@@ -9,6 +9,7 @@ generated-*/
 !/fonts/README.md
 # build output, caches, saves and settings
 build/
+/build-probe/
 /cache/
 save/
 /larecomp.ini

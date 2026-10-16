@@ -305,6 +305,22 @@ void renderer_wait_seq(uint64_t seq) {
 }
 
 // ------------------------------------------------------------------ textures with views
+int renderer_wait_seq_timeout(uint64_t seq, uint64_t timeout) {
+    uint64_t begin = plat_now_ns();
+    bool waited = false;
+    for (;;) {
+        pthread_mutex_lock(&cb_lock);
+        bool submitted = seq <= submit_seq;
+        id<MTLCommandBuffer> c = submitted && submit_seq - seq < CB_HIST ? cb_hist[seq % CB_HIST] : nil;
+        bool done = !seq || (submitted && (!c || c.status >= MTLCommandBufferStatusCompleted));
+        pthread_mutex_unlock(&cb_lock);
+        if (done) return waited ? 1 : 0;
+        if (plat_now_ns() - begin >= timeout) return 2;
+        waited = true;
+        plat_sleep_until_ns(plat_now_ns() + 1000000);
+    }
+}
+
 // Texture view cache: views are made per bind otherwise (an allocation per draw). Keyed by the base texture and
 // the view parameters; a cached view retains its base, so a key's base pointer can't be reused while cached.
 #define VIEW_TAB 16384
@@ -2423,6 +2439,7 @@ static void exec_list(uint64_t handle, int depth) {
     uint64_t p = handle;
     for (int guard = 0; guard < 10000000; guard++) {
         CmdRec *r = (CmdRec *)(uintptr_t)p;
+        uint32_t stride = r->size;
         void *x = r->extra;
         if (r->op < CMD_COUNT) op_counts[r->op]++;
         switch (r->op) {
@@ -2622,7 +2639,7 @@ static void exec_list(uint64_t handle, int depth) {
             if (fence_flush < 0) fence_flush = getenv("LARECOMP_FENCE_FLUSH") ? 1 : 0;
             if (fence_flush) renderer_flush();
             extern void nvn_sync_set_seq(uint64_t guest, uint64_t seq);
-            if (r->x[1]) nvn_sync_set_seq(r->x[1], renderer_fence_seq());
+            if (r->x[0]) nvn_sync_set_seq(r->x[0], renderer_fence_seq());
             break;
         }
         case CMD_REPORT_COUNTER: {
@@ -2652,7 +2669,7 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         default: break;
         }
-        p += r->size;
+        p += stride;
     }
 }
 

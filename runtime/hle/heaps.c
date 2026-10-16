@@ -60,7 +60,7 @@ RT_ON_RESET(heaps_reset) {
 
 static int unit_scale(void) {
     static int s = -1;
-    if (s < 0) { const char *e = ENV("LARECOMP_UNIT_HEAP_SCALE"); s = e ? atoi(e) : 4; if (s < 1) s = 1; }
+    if (s < 0) { const char *e = ENV("LARECOMP_UNIT_HEAP_SCALE"); s = e ? atoi(e) : 1; if (s < 1) s = 1; }
     return s;
 }
 

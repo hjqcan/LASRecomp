@@ -19,6 +19,7 @@
 typedef struct NvnPool {
     uint64_t storage, size;
     uint32_t flags;
+    void *command_storage;
 } NvnPool;
 
 typedef struct NvnTexture {
@@ -81,18 +82,28 @@ typedef struct NvnWindow {
 } NvnWindow;
 
 typedef struct NvnSync {
-    volatile int signaled;
-    volatile uint64_t seq;  // GPU submission this fence belongs to (renderer_fence_seq), 0 = none
+    bool armed, signaled;
+    uint64_t seq;  // GPU submission this fence belongs to (renderer_fence_seq), 0 = none
+    pthread_cond_t submitted;
 } NvnSync;
+void nvn_sync_arm(uint64_t guest);
+void nvn_sync_set_seq(uint64_t guest, uint64_t seq);
+int renderer_wait_seq_timeout(uint64_t seq, uint64_t timeout);
 
-// ---- command recording (stored in guest command memory)
+// ---- host command recording, with guest allocation accounting
 typedef struct {
+    NvnPool *pool;
     uint64_t mem;    // current command memory chunk (guest address)
     uint64_t size;   // chunk size
     uint64_t used;   // bytes used in chunk
-    uint64_t start;  // first record of the list being recorded
     uint64_t callback, callback_data;
-    bool recording;
+    uint64_t control_mem, control_size, control_used;
+    uint64_t control_start;
+    uint8_t *records;
+    size_t records_used, records_capacity;
+    void **record_refs;
+    size_t record_ref_count, record_ref_capacity;
+    bool recording, callback_enabled;
     uint64_t guest;  // the guest NVNcommandBuffer*
 } NvnCmdBuf;
 
@@ -103,6 +114,14 @@ typedef struct {
     float f[4];         // s0..s3 of the call
     uint8_t extra[];
 } CmdRec;
+
+// Expanded records are frozen per control-memory handle and survive destruction
+// of the recorder. Pool destruction and control-handle reuse retire them.
+void nvn_command_pool_destroy(NvnPool *pool);
+void nvn_command_handle_destroy(uint64_t handle);
+void *nvn_command_list_acquire(uint64_t handle);
+uint64_t nvn_command_list_records(void *list);
+void nvn_command_list_release(void *list);
 
 enum {
     CMD_END = 0, CMD_JUMP, CMD_CALL,

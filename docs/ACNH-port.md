@@ -39,13 +39,53 @@ request/event objects. Its IPC layouts follow the
 [libnx NIFM client](https://github.com/switchbrew/libnx/blob/master/nx/source/services/nifm.c)
 and [public definitions](https://github.com/switchbrew/libnx/blob/master/nx/include/switch/services/nifm.h).
 
+The friends adapter exposes an empty local list and local completion events.
+BCAT reports unavailable networking for delivery requests. NFC discovery reports
+no attached reader. Their command layouts follow the public
+[friends](https://switchbrew.org/wiki/Friend_services),
+[BCAT](https://switchbrew.org/wiki/BCAT_services), and
+[NFC](https://switchbrew.org/wiki/NFC_services) protocol descriptions.
+
+Shared-font calls use installed Windows fonts, with the configured language's
+font first. The local `ngc` fallback handles UTF-8/UTF-16 input and basic text
+checks; it does not include Nintendo's system dictionary or claim matching
+online filtering. Network play and amiibo functionality are not implemented.
+
+NVN recorders use private host arenas and compact allocation budgets, avoiding
+inflated guest heap requirements and shared scratch-memory races. Completed
+control-memory handles own immutable lists. Referenced lists are retained through
+parent recording and execution; `CopyCommands` makes independent copies. Pool
+destruction, explicit finalization and handle reuse retire unused lists.
+Allocation accounting and callbacks remain visible to the game. Fence commands
+use the sync-object argument and wait for their actual GPU submission, including
+submissions that have not yet reached the queue.
+
+Thread affinity records both the preferred core and allowed mask. Reported guest
+cores follow that mask independently of Windows scheduling; ACNH uses these
+identities to index progress slots in its three-worker barriers.
+
 ## Verification gate
 
-Completed: extraction and module inventory; generation of 223,103 functions;
+Completed: extraction and module inventory; generation of 242,778 functions;
 sorted, aligned, nonoverlapping function tables; strong import resolution;
 host save-file write/flush/close/reopen cycles (128 iterations), descriptor
 reuse, and buffer/path bounds. `tools/test_acnh_save.c` invokes the production
 filesystem handlers and native Windows positional I/O with scratch files.
+
+Eight synthetic jump-table tests cover cross-fragment targets and guards, hoisted
+table bases, unrelated object reads, index copies surviving function calls,
+conditional compares, and shared flags across separate control-flow paths.
+Command-storage tests exercise independent recorders, 1,000 reuse cycles,
+allocation callbacks, deep copies, and retained nested lists. Sync tests cover
+polling, delayed publication, GPU completion, timeout and reuse. Affinity tests
+cover distinct worker slots and supported mask modes. The local text filter has
+ABI, UTF-16, masking, count-bound, and destruction checks.
+
+The current boot passes three-module initialization, window/input setup,
+font loading, friends/BCAT/NFC setup, and the initial graphics-resource recording.
+It has submitted more than 4,000 frames in a one-minute run. Offscreen captures
+contain scene geometry and loading artwork, but final captured output is black.
+This is startup progress only; it is not evidence of playable graphics or audio.
 
 Still required: first real game frame, intro and island controls, graphics and
 audio correctness, game-managed saving and reopening, day rollover, repeated

@@ -262,8 +262,8 @@ void plat_print_backtrace(void) {
     uint64_t exe = (uint64_t)(uintptr_t)GetModuleHandleA(NULL);
     for (int i = 0; i < n; i++) {
         uint64_t pc = (uint64_t)(uintptr_t)bt[i], off = 0;
-        const char *s = plat_symbol(pc, &off);
-        if (!s) s = rt_host_fn_name(pc, &off);
+        const char *s = rt_host_fn_name(pc, &off);
+        if (!s) s = plat_symbol(pc, &off);
         if (s) fprintf(stderr, "  #%-2d %016llx %s+%llx\n", i, (unsigned long long)pc, s, (unsigned long long)off);
         else fprintf(stderr, "  #%-2d %016llx lasrecomp+%llx\n", i, (unsigned long long)pc,
                      (unsigned long long)(pc - exe));

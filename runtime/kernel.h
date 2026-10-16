@@ -25,6 +25,8 @@ struct KThread {
     uint64_t entry, tlr, id;
     uint32_t handle;
     int prio, core;
+    int preferred_core;
+    uint64_t core_mask;
     bool cancel, in_sync_wait;
     // wait state (protected by g_klock)
     WaitKind wait_kind;
