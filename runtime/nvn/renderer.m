@@ -1,3 +1,4 @@
+#include "../photo.h"
 // Executes recorded NVN command lists with Metal.
 #include <pthread.h>
 #include <dirent.h>
@@ -1627,6 +1628,18 @@ static void draw(CmdRec *r, bool indexed) {
             st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height && pr->fi->ntex) {
             NvnTexture *t0 = shader_texture_object(1, &pr->fi->tex[0]);
             composite = t0 && t0->width == st.rt.color[0]->width && t0->height == st.rt.color[0]->height;
+        }
+        if (photo_mode_active()) {
+            bool photo_composite = composite;
+            if (st.rt.ncolor && st.rt.color[0] && pr->fi->ntex) {
+                NvnTexture *source = shader_texture_object(1, &pr->fi->tex[0]);
+                bool full = r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
+                            st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height;
+                photo_composite |= source && photo_scene_composite(st.rt.color[0]->width, st.rt.color[0]->height,
+                    source->width, source->height, full, st.color_state[0] & 1, pr->fi->ntex);
+            }
+            if (photo_mode_skip_draw(renderer_present_count(), st.rt.ncolor && st.rt.color[0] &&
+                                     renderer_texture_presented(st.rt.color[0]), photo_composite)) { stat_skipped++; return; }
         }
         if (mirror_draw(composite)) {  // (the vertex flip mirrors a composite drawn with uvs, the fragment one a
             vkey.flip_x = fkey.flip_x = true;  // composite reading pixel positions; get_program keys on vkey)
