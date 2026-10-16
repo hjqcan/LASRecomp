@@ -172,6 +172,20 @@ Where files live (game files, saves, seeds, settings, caches, imported fonts):
 - Dev / portable mode: if the folder you start from has `extracted/` (a source checkout), that folder is used, as above.
 - `LARECOMP_DATA_ROOT=<dir>` overrides all of these.
 
+### Save backups
+
+The **Saves → Backups** tab on the start screen lists snapshots of each save area
+(all slots together). Existing saves are backed up before play and after completed
+game saves. Unchanged saves are skipped; the latest 20 snapshots are retained.
+Vanilla and each randomizer seed keep separate histories beside their save folders,
+for example `save/save_0.backups` and `rando/<seed>/save/save_0.backups`.
+
+To restore, restart LAS Recomp, select the profile and snapshot, then confirm
+**Restore selected backup**. The current files are backed up before replacement.
+Manual backups and restores are available before the game library is loaded.
+These local snapshots protect against accidental save changes; copy the save and
+backup folders elsewhere if you also need protection against disk failure.
+
 ## Credits
 
 **LAS-Randomizer** - the randomizer at the heart of this project's randomizer features, vendored (with local
