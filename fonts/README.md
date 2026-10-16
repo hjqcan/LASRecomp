@@ -13,3 +13,14 @@ For the exact look, put a dump from your own console here (Switch system archive
 - `nintendo_ext_003.bfttf`: button glyphs (optional)
 
 `LARECOMP_FONT=<file>` overrides everything (.ttf / .otf / .ttc / .bfttf).
+
+## Settings menu
+
+The menu also supports English, Simplified Chinese and Traditional Chinese. Its Chinese glyphs are merged into
+the shipped Latin font before rendering, so changing languages takes effect immediately without rebuilding the
+font atlas. Windows uses Microsoft YaHei / JhengHei, macOS uses PingFang / STHeiti, and Linux uses Noto Sans CJK
+or WenQuanYi Micro Hei. Install a CJK font on Linux if none is present.
+
+`LARECOMP_UI_FONT=<file>` selects a `.ttf` or `.ttc` for menu glyphs; alternatively, put `ui-cjk.ttf` or `ui-cjk.ttc`
+in the data folder's `fonts/` directory. This is independent of the game's `LARECOMP_FONT` setting. System fonts
+are read locally, never copied into the distribution.

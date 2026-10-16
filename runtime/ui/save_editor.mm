@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "imgui.h"
+#include "localization.h"
 #include "osk.h"
 #include "item_names.h"
 #include "option_rows.h"
@@ -130,7 +131,7 @@ static void max_out(void) {
 
 extern "C" void save_editor_draw(float scale) {
     if (!loaded()) {
-        ImGui::TextDisabled("Load a save file first: the editor changes the save that's currently being played.");
+        ImGui::TextDisabled("%s", ui_tr("Load a save file first: the editor changes the save that's currently being played."));
         return;
     }
     opt_begin("##save", scale);

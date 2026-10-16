@@ -38,7 +38,9 @@ The generated game library records its main Build ID. Both its metadata file and
 
 ## Game language
 
-Open the overlay with **F1**, then **Controls → System language → Language**, and restart the application after selecting a language. Chinese selections use `zh-Hans` / `zh-Hant`, as required by the game; the legacy `zh-CN` / `zh-TW` codes fall back to Japanese. Existing settings files with those legacy codes are migrated when loaded. This changes the game's text; the host settings menu remains English.
+Open the overlay with **F1**, then **Controls → System language → Language**. Settings immediately follows English, Simplified Chinese or Traditional Chinese; other game languages currently use the English settings UI. Game text changes after returning to the start screen and choosing Play again. Chinese selections use `zh-Hans` / `zh-Hant`, as required by the game. Legacy `zh-CN` / `zh-TW` settings are migrated when loaded. Both LF and CRLF configuration files are accepted.
+
+The translated settings include tabs, options, descriptions, control remapping and confirmation dialogs. User-entered names, file paths, technical game identifiers and generator logs retain their original spelling. The UI uses installed CJK fonts; see [font configuration](../fonts/README.md). No proprietary font files are distributed.
 
 ## Build and test
 

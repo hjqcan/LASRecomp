@@ -61,7 +61,11 @@ them, then `make -j10`. The randomizer needs its Python environment in
   `zstandard==0.25.0`. It runs on Windows, Linux and macOS in CI; no game files or keys are needed.
 - Language settings: `python tools/test_settings_language.py` compiles a small harness against the actual settings
   implementation using `CC` (default `clang`; Windows needs the MSYS2 toolchain). It checks language resolution,
-  legacy Chinese settings and saved values; on Linux it also checks automatic locale selection.
+  legacy Chinese settings and saved values with LF/CRLF files; on Linux it also checks automatic locale selection.
+- UI translations: `python tools/test_ui_localization.py` uses `CXX` (default `clang++`) to check live language
+  changes, English fallback, printf formats and stable ImGui IDs. Add `--font` to check every translated glyph
+  against an installed CJK font. Keep English keys and both Chinese translations in `runtime/ui/localization_strings.h`;
+  translate at display time, preserving user-entered text and serialized values.
 - Test in game, and look at the result: a fix isn't verified until you've seen it work.
 - Scripted test runs: `tools/shot.sh <frame> [seconds]` runs the game with `LARECOMP_*` environment hooks (scripted
   input, warps, seeds, scratch saves via `tools/fresh_save.sh`) and saves a screenshot. Many debug hooks are

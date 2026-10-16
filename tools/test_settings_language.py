@@ -28,12 +28,13 @@ with tempfile.TemporaryDirectory() as directory:
             cases.append(('auto', locale, 'zh-Hans', 'Chinese (Simplified)'))
         for locale in ('zh_TW.UTF-8', 'zh_HK.UTF-8', 'zh_MO.UTF-8', 'zh-Hant-TW'):
             cases.append(('auto', locale, 'zh-Hant', 'Chinese (Traditional)'))
-    for setting, locale, code, name in cases:
-        ini = directory / 'test.ini'
-        ini.write_text(f'language = {setting}\n', encoding='utf-8')
-        env = dict(os.environ, LARECOMP_SETTINGS=str(ini), LC_ALL=locale, LC_MESSAGES='', LANG='C')
-        subprocess.run([str(exe), code, name], env=env, check=True)
-        saved = ini.read_text(encoding='utf-8')
-        expected = 'auto' if setting in ('auto', 'unknown') else code
-        assert f'language = {expected}\n' in saved, (setting, saved)
-    print(f'{len(cases)} language settings cases passed')
+    for newline in ('\n', '\r\n'):
+        for setting, locale, code, name in cases:
+            ini = directory / 'test.ini'
+            ini.write_bytes(f'language = {setting}{newline}'.encode('utf-8'))
+            env = dict(os.environ, LARECOMP_SETTINGS=str(ini), LC_ALL=locale, LC_MESSAGES='', LANG='C')
+            subprocess.run([str(exe), code, name], env=env, check=True)
+            saved = ini.read_text(encoding='utf-8')
+            expected = 'auto' if setting in ('auto', 'unknown') else code
+            assert f'language = {expected}\n' in saved, (setting, saved)
+    print(f'{len(cases) * 2} language settings cases passed (LF and CRLF)')

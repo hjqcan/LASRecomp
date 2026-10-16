@@ -20,3 +20,5 @@ jobs:
       - run: python tools/test_import_game.py -v
       - if: runner.os != 'Windows'
         run: python tools/test_settings_language.py
+      - if: runner.os != 'Windows'
+        run: python tools/test_ui_localization.py

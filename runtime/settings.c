@@ -86,8 +86,9 @@ void settings_load(void) {
     char line[256];
     bool tip_key = false, aspect_key = false;
     while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;  // accept Windows-edited files on every host CRT
         char key[64];
-        char val[128];
+        char val[128] = "";
         if (sscanf(line, " %63[^= ] = %127[^\n]", key, val) < 1) continue;
         if (!strcmp(key, "rando_seed")) {
             if (sscanf(line, " %63[^= ] = %127[^\n]", key, val) != 2) val[0] = 0;
