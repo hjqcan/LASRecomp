@@ -24,7 +24,8 @@ parser.add_argument('--exe', type=Path, required=True)
 parser.add_argument('--base-root', type=Path)
 parser.add_argument('--updated-root', type=Path)
 parser.add_argument('--output', type=Path, required=True, help='New, empty results directory')
-parser.add_argument('--save-copy', type=Path, help='Optional save mount copied into each isolated test, never modified')
+parser.add_argument('--base-save-copy', type=Path, help='Optional compatible v1.0.0 save mount; its source is never modified')
+parser.add_argument('--updated-save-copy', type=Path, help='Optional compatible v1.1.0 save mount; its source is never modified')
 parser.add_argument('--frames', type=int, default=2400)
 parser.add_argument('--menu', action='store_true', help='Capture the Controls overlay near the end of each run')
 args = parser.parse_args()
@@ -34,7 +35,8 @@ exe = args.exe.resolve(strict=True)
 output = args.output.resolve()
 output.mkdir(parents=True, exist_ok=False)
 results = []
-for version, root, build in [('1.0.0', args.base_root, BASE_ID), ('1.1.0', args.updated_root, UPDATE_ID)]:
+for version, root, build, save in [('1.0.0', args.base_root, BASE_ID, args.base_save_copy),
+                                  ('1.1.0', args.updated_root, UPDATE_ID, args.updated_save_copy)]:
     if not root:
         continue
     root = root.resolve(strict=True)
@@ -45,8 +47,8 @@ for version, root, build in [('1.0.0', args.base_root, BASE_ID), ('1.1.0', args.
     case = output/version
     (case/'build').mkdir(parents=True)
     (case/'save').mkdir()
-    if args.save_copy:
-        shutil.copytree(args.save_copy.resolve(strict=True), case/'save/save_0')
+    if save:
+        shutil.copytree(save.resolve(strict=True), case/'save/save_0')
     (case/'larecomp.ini').write_text('language = zh-Hans\n', encoding='utf-8')
     env = {k: v for k, v in os.environ.items() if not k.startswith('LARECOMP_')}
     env.update(LARECOMP_DATA_ROOT=str(case), LARECOMP_SAVE_DIR=str(case/'save'),

@@ -51,6 +51,8 @@ Choose **Game version** on the start screen or in Game Files before importing:
 
 The existing installation is preserved without migration. New slots reject an executable that does not match their version. Each slot keeps its own compiled library and build cache. Randomizer saves remain under their seed folders. The selection is remembered; an explicit game-folder command-line argument still takes precedence. Restart the app before switching installations after any game code has loaded.
 
+Keep saves with the game version that created them. In Windows testing, v1.0.0 aborted while opening a v1.1.0 save; a fresh v1.0.0 save worked. Version slots therefore do not automatically copy or downgrade saves.
+
 ## Resume interrupted compilation
 
 During compilation, choose **Cancel compilation** (or press Escape / controller B). Completed object files and generated source stay in the selected installation's `.gamebuild/` directory. Choose **Build or resume** to continue. Closing the app also stops its compiler processes; Windows cancellation terminates only that build's child process trees.
@@ -110,6 +112,6 @@ python tools/test_save_backups.py
 
 Archive tests run in CI on Windows, Linux and macOS; native harnesses run on Linux/macOS in CI and Windows with the MSYS2 toolchain locally. They cover synthetic base/update imports, solid/block NCZ, gamecard partition hashes, relocation buckets, rollback, corruption, patch mapping, version isolation and actual compiler cancellation/resume. `tools/test_windows_processes.py` additionally checks Windows child-process cleanup. No game files, console keys, or generated game code are included in the repository. Encryption fixtures use arbitrary test bytes. Real encrypted NSP and XCI/XCZ imports have not yet been validated with player archives.
 
-For local two-version regression, run `python tools/compatibility_smoke.py --exe PATH --base-root PATH --updated-root PATH --output NEW_DIRECTORY`. Both installations must already have compiled libraries. The script isolates settings and saves, captures images and writes a JSON result. Optional `--save-copy SAVE_MOUNT` copies a save into each test without modifying its source; `--menu` captures the Controls overlay. Inspect the images as well as the exit status.
+For local two-version regression, run `python tools/compatibility_smoke.py --exe PATH --base-root PATH --updated-root PATH --output NEW_DIRECTORY`. Both installations must already have compiled libraries. The script isolates settings and saves, captures images and writes a JSON result. Optional `--base-save-copy SAVE_MOUNT` and `--updated-save-copy SAVE_MOUNT` use separate, version-compatible save copies without modifying their sources; `--menu` captures the Controls overlay. Inspect the images as well as the exit status.
 
 Windows validation with local game files: both main executable profiles pass all patch instruction assertions; v1.1.0 was recompiled, launched and tested through the opening dialogue and movement in the first room using the Vulkan backend. Full playthrough and native macOS/Linux gameplay validation remain outstanding.
