@@ -19,9 +19,12 @@ typedef struct {
 bool gamebuild_run(const char *game_dir, const GameBuildOpts *opts, char *why, size_t why_size);
 // The generator and the compiler are there (shipped builds; a source checkout with tools/venv and clang).
 bool gamebuild_available(void);
-// Import a base NSZ, optionally applying the supported update NSZ, without changing either source archive.
-bool gameimport_run(const char *base_nsz, const char *update_nsz, const char *game_dir,
+// Import a base NSP/NSZ and optional update using player-selected local keys (never persisted).
+bool gameimport_run(const char *base, const char *update, const char *keys, const char *title_keys, const char *game_dir,
                     void (*progress)(const char *), char *why, size_t why_size);
+typedef struct { char format[8], version[16], metadata[48]; } GameArchiveInfo;
+bool gameimport_inspect(const char *base, const char *update, const char *keys, const char *title_keys,
+                        const char *game_dir, GameArchiveInfo info[2], char *why, size_t why_size);
 
 #ifdef __cplusplus
 }

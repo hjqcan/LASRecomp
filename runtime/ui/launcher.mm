@@ -45,6 +45,7 @@ extern "C" {
 #include "settings.h"
 #include "input_bind.h"
 void controls_bindings_draw(float scale);  // ui/controls_ui.mm
+void save_backups_set_game_root(const char *root);
 void ui_window_init(void);
 SDL_Window *ui_window(void);
 #ifdef __APPLE__
@@ -191,7 +192,14 @@ static std::string check_game_files(const std::string &root) {
 // (runtime/romfs_build.c).
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::string g_src;           // the picked folder
-static std::string g_update_nsz;    // optional update, used only with an NSZ base archive
+static std::string g_update_archive;    // optional NSP/NSZ update
+static std::string g_keys, g_title_keys; // selected local paths, never written to settings
+static GameArchiveInfo g_archive_info[2];
+static bool g_inspected;
+static bool is_archive(const std::string &p) {
+    return p.size() > 4 && (!SDL_strcasecmp(p.c_str() + p.size() - 4, ".nsz") ||
+                            !SDL_strcasecmp(p.c_str() + p.size() - 4, ".nsp"));
+}
 static std::string g_job;           // current setup step / result for the status line
 static std::string g_job_hint;      // a failure: what to do about it (shown under it)
 static bool g_busy, g_job_failed;
@@ -288,10 +296,11 @@ static bool build_game_code(void) {
 static void import_progress(const char *message) { set_job(message); }
 
 static void *extract_thread(void *) {
-    std::string src, update;
+    std::string src, update, keys, title_keys;
     pthread_mutex_lock(&g_lock);
     src = g_src;
-    update = g_update_nsz;
+    update = g_update_archive;
+    keys = g_keys; title_keys = g_title_keys;
     pthread_mutex_unlock(&g_lock);
     g_done = 0, g_total = 0, g_phase_base = 0, g_build_frac = -1, g_copy_skipped = false;
     std::string exefs, romfs;
@@ -307,11 +316,11 @@ static void *extract_thread(void *) {
         goto check;
     }
     set_job("Looking for the game files...");
-    if (src.size() > 4 && SDL_strcasecmp(src.c_str() + src.size() - 4, ".nsz") == 0) {
+    if (is_archive(src)) {
         char why[512] = "";
-        set_job(update.empty() ? "Importing the base NSZ..." : "Importing the base NSZ and update...");
-        if (!gameimport_run(src.c_str(), update.c_str(), g_root.c_str(), import_progress, why, sizeof why)) {
-            set_job("NSZ import failed.", true, why);
+        set_job(update.empty() ? "Importing the base game..." : "Importing the base game and update...");
+        if (!gameimport_run(src.c_str(), update.c_str(), keys.c_str(), title_keys.c_str(), g_root.c_str(), import_progress, why, sizeof why)) {
+            set_job("Game import failed.", true, why);
             goto done;
         }
         if (!build_game_code()) goto done;
@@ -362,20 +371,42 @@ done:
     return NULL;
 }
 
+static void *inspect_thread(void *) {
+    pthread_mutex_lock(&g_lock);
+    std::string src = g_src, update = g_update_archive, keys = g_keys, title_keys = g_title_keys;
+    pthread_mutex_unlock(&g_lock);
+    GameArchiveInfo info[2] = {};
+    char why[512] = "";
+    set_job("Checking archive metadata...");
+    bool ok = gameimport_inspect(src.c_str(), update.c_str(), keys.c_str(), title_keys.c_str(),
+                                 g_root.c_str(), info, why, sizeof why);
+    set_job(ok ? "Metadata checked. Executable and data checks run during import." : "Archive check failed.", !ok, why);
+    pthread_mutex_lock(&g_lock);
+    if (ok) memcpy(g_archive_info, info, sizeof info);
+    g_inspected = ok;
+    g_busy = false;
+    pthread_mutex_unlock(&g_lock);
+    return NULL;
+}
+
 // ------------------------------------------------------------------ folder dialog (SDL calls back on any thread)
 static void SDLCALL picked(void *, const char *const *files, int) {
     if (!files || !files[0]) return;
     pthread_mutex_lock(&g_lock);
     g_src = files[0];
-    g_update_nsz.clear();
+    g_update_archive.clear();
+    g_inspected = false;
     pthread_mutex_unlock(&g_lock);
 }
 
-static void SDLCALL picked_nsz(void *update, const char *const *files, int) {
+static void SDLCALL picked_archive(void *update, const char *const *files, int) {
     if (!files || !files[0]) return;
     pthread_mutex_lock(&g_lock);
-    if (update) g_update_nsz = files[0];
+    if (update == (void *)1) g_update_archive = files[0];
+    else if (update == (void *)2) g_keys = files[0];
+    else if (update == (void *)3) g_title_keys = files[0];
     else g_src = files[0];
+    g_inspected = false;
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -858,6 +889,7 @@ static void prelaunch_tab(float sc) {
 
 extern "C" void launcher_run(const char *root) {
     g_root = root;
+    save_backups_set_game_root(root);
     g_start_screen = 1;
     static bool update_checked;  // (once per launch, not again after a "Title screen" reboot)
     if (!update_checked && !getenv("LARECOMP_NO_UPDATE_CHECK")) {
@@ -950,7 +982,16 @@ extern "C" void launcher_run(const char *root) {
     const char *ap = getenv("LARECOMP_LAUNCHER_AUTOPLAY");
     if (ap && status.empty() && !(runs && !strcmp(ap, "once"))) play = true;  // (test: PLAY at once)
     runs++;
-    if (const char *t = SDL_getenv("LARECOMP_LAUNCHER_UPDATE_NSZ")) g_update_nsz = t;  // UTF-8, including on Windows
+    if (const char *t = SDL_getenv("LARECOMP_IMPORT_KEYS")) g_keys = t;
+    if (const char *t = SDL_getenv("LARECOMP_IMPORT_TITLE_KEYS")) g_title_keys = t;
+    if (const char *t = SDL_getenv("LARECOMP_LAUNCHER_SOURCE")) g_src = t; // screenshot/test selection, no import
+    if (const char *t = SDL_getenv("LARECOMP_LAUNCHER_UPDATE_NSZ")) g_update_archive = t;  // UTF-8, including on Windows
+    if (getenv("LARECOMP_LAUNCHER_INSPECT") && is_archive(g_src)) { // test the real metadata worker and its UI
+        g_busy = true; page = SETUP; play = false;
+        pthread_t th;
+        if (!pthread_create(&th, NULL, inspect_thread, NULL)) pthread_detach(th);
+        else g_busy = false;
+    }
     const char *setup_source = SDL_getenv("LARECOMP_LAUNCHER_EXTRACT");
     bool exit_after_setup = setup_source != NULL;  // (test) set up, log the result, exit
     if (!setup_source) setup_source = SDL_getenv("LARECOMP_LAUNCHER_SETUP");
@@ -1301,19 +1342,22 @@ extern "C" void launcher_run(const char *root) {
                 ImGui::Spacing();
 
                 pthread_mutex_lock(&g_lock);
-                std::string src = g_src, update_nsz = g_update_nsz, job = g_job, job_hint = g_job_hint;
+                std::string src = g_src, update_archive = g_update_archive, keys = g_keys, title_keys = g_title_keys,
+                            job = g_job, job_hint = g_job_hint;
+                GameArchiveInfo info[2]; memcpy(info, g_archive_info, sizeof info);
+                bool inspected = g_inspected;
                 bool failed = g_job_failed;
                 pthread_mutex_unlock(&g_lock);
                 bool ready = status.empty() && !busy;  // (set up: the window offers to delete them)
                 static double files_gb = -1;
                 // chosen: "Selected" with a green check (long paths ran over the label); the path is in the
                 // explanation, and choosing again opens the picker again
-                bool source_is_nsz = src.size() > 4 && SDL_strcasecmp(src.c_str() + src.size() - 4, ".nsz") == 0;
-                std::string src_v = src.empty() || source_is_nsz ? "Choose..." : "Selected";
+                bool source_is_archive = is_archive(src);
+                std::string src_v = src.empty() || source_is_archive ? "Choose..." : "Selected";
                 auto check_left_of_value = [&](const std::string &v) {
                     if (v != "Selected") return;
                     ImVec2 rb = ImGui::GetItemRectMax(), ra = ImGui::GetItemRectMin();
-                    float fs = ImGui::GetFontSize(), vw = ImGui::CalcTextSize(v.c_str()).x;
+                    float fs = ImGui::GetFontSize(), vw = ImGui::CalcTextSize(ui_tr(v.c_str())).x;
                     float x = rb.x - 16 * sc - vw - fs * 0.95f, cy = (ra.y + rb.y) * 0.5f, u = fs * 0.62f;
                     ImU32 g = IM_COL32(120, 220, 120, 255);
                     ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -1322,13 +1366,15 @@ extern "C" void launcher_run(const char *root) {
                 };
                 std::string src_d = "The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Link's "
                                     "Awakening for Nintendo Switch, version 1.0.0 or 1.1.0. The game isn't included with LAS Recomp.";
-                if (!src.empty()) src_d += "\n\nChosen: " + src;
+                src_d = ui_tr(src_d.c_str());
+                if (!src.empty() && !source_is_archive) src_d += "\n\n" + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
                 std::string ex_d = "Copies the game files LAS Recomp needs and recompiles the game from them. This only "
                                    "needs to be done once and may take a while. Your own files aren't changed.";
                 if (gamelib_tables()) ex_d = "Restart LAS Recomp before changing the game files.";
-                if (!job.empty()) ex_d += "\n\n" + job + (job_hint.empty() ? "" : ".\n" + job_hint);
+                ex_d = ui_tr(ex_d.c_str());
+                if (!job.empty()) ex_d += "\n\n" + std::string(ui_tr(job.c_str())) + (job_hint.empty() ? "" : ".\n" + job_hint);
 
                 // the controller's cursor starts on the first row (not the X), a few frames while the window lays out
                 static int seen_frame = -10, focus_first;  // (not drawn last frame: the window has just opened)
@@ -1341,34 +1387,72 @@ extern "C" void launcher_run(const char *root) {
                 {
                     opt_section("Your copy of the game");
                     if (busy) opt_disable_next();
-                    if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
+                    if (opt_action("Game files folder", ui_tr(src_v.c_str()), src_d.c_str(), true))
                         SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
                     check_left_of_value(src_v);
                     first_row();
-                    static const SDL_DialogFileFilter nsz_filter[] = {{"NSZ game archive", "nsz"}};
+                    static const SDL_DialogFileFilter nsz_filter[] = {{"Game archive (NSP / NSZ)", "nsp;nsz"}};
+                    std::string base_hint = std::string(ui_tr("Choose your base game NSP or NSZ. The original archive is kept.")) +
+                                            (source_is_archive ? "\n\n" + src : "");
                     if (busy) opt_disable_next();
-                    if (opt_action("Base game NSZ", source_is_nsz ? "Selected" : "Choose...",
-                                   "Choose your base game NSZ. It is imported locally; the original archive is kept.", true))
-                        SDL_ShowOpenFileDialog(picked_nsz, NULL, win, nsz_filter, 1, NULL, false);
-                    if (source_is_nsz) {
+                    if (opt_action("Base game archive", ui_tr(source_is_archive ? "Selected" : "Choose..."),
+                                   base_hint.c_str(), true))
+                        SDL_ShowOpenFileDialog(picked_archive, NULL, win, nsz_filter, 1, NULL, false);
+                    if (source_is_archive) {
                         if (busy) opt_disable_next();
-                        std::string update_hint = "Optional: choose the v1.1.0 update NSZ to apply to the base game. "
-                                                  "Updated games currently support Vanilla mode.\n\n" + update_nsz;
-                        if (opt_action("Update NSZ (optional)", update_nsz.empty() ? "None" : "Selected",
+                        std::string update_hint = std::string(ui_tr("Optional: choose the v1.1.0 update NSP or NSZ. Updated games support Vanilla mode.")) + "\n\n" + update_archive;
+                        if (opt_action("Update archive (optional)", ui_tr(update_archive.empty() ? "None" : "Selected"),
                                        update_hint.c_str(), true))
-                            SDL_ShowOpenFileDialog(picked_nsz, (void *)1, win, nsz_filter, 1, NULL, false);
-                        if (!update_nsz.empty()) {
+                            SDL_ShowOpenFileDialog(picked_archive, (void *)1, win, nsz_filter, 1, NULL, false);
+                        if (!update_archive.empty()) {
                             if (busy) opt_disable_next();
                             if (opt_action("Use base game only", "", "Clear the update selection; keep both source archives.", true)) {
                                 pthread_mutex_lock(&g_lock);
-                                g_update_nsz.clear();
+                                g_update_archive.clear();
+                                g_inspected = false;
                                 pthread_mutex_unlock(&g_lock);
+                            }
+                        }
+                    }
+                    if (source_is_archive) {
+                        static const SDL_DialogFileFilter key_filter[] = {{"Local key file", "keys;txt"}};
+                        if (busy) opt_disable_next();
+                        std::string kd = std::string(ui_tr("Select your own prod.keys for encrypted NSP content. Used locally for this session only.")) + "\n\n" + keys;
+                        if (opt_action("Decryption keys", ui_tr(keys.empty() ? "Choose..." : "Selected"), kd.c_str(), true))
+                            SDL_ShowOpenFileDialog(picked_archive, (void *)2, win, key_filter, 1, NULL, false);
+                        if (!keys.empty()) {
+                            if (busy) opt_disable_next();
+                            std::string td = std::string(ui_tr("Optional title.keys when the archive has no usable common ticket.")) + "\n\n" + title_keys;
+                            if (opt_action("Title keys (optional)", ui_tr(title_keys.empty() ? "None" : "Selected"), td.c_str(), true))
+                                SDL_ShowOpenFileDialog(picked_archive, (void *)3, win, key_filter, 1, NULL, false);
+                            if (busy) opt_disable_next();
+                            if (opt_action("Clear key selections", "", "Forget selected key paths for this session.", true)) {
+                                pthread_mutex_lock(&g_lock);
+                                g_keys.clear(); g_title_keys.clear(); g_inspected = false;
+                                pthread_mutex_unlock(&g_lock);
+                            }
+                        }
+                        if (busy) opt_disable_next();
+                        if (opt_action("Check selection", "", "Read archive type, game identity and content version before importing.", true)) {
+                            pthread_mutex_lock(&g_lock); g_busy = true; pthread_mutex_unlock(&g_lock);
+                            g_build_frac = -1; g_total = 0;
+                            pthread_t t;
+                            if (!pthread_create(&t, NULL, inspect_thread, NULL)) pthread_detach(t);
+                            else { pthread_mutex_lock(&g_lock); g_busy = false; pthread_mutex_unlock(&g_lock); }
+                        }
+                        if (inspected) {
+                            for (int i = 0; i < 2; ++i) {
+                                if (!strcmp(info[i].format, "-")) continue;
+                                ImGui::Text("%s: %s", ui_tr(i ? "Update archive (optional)" : "Base game archive"), info[i].format);
+                                if (!strcmp(info[i].version, "?")) ImGui::TextWrapped("%s", ui_tr("Version unknown; checked during import."));
+                                else ImGui::TextWrapped(ui_tr("Version %s (%s)"), info[i].version,
+                                        ui_tr(!strcmp(info[i].metadata, "CNMT") ? "content metadata" : "XML, unverified"));
                             }
                         }
                     }
                     opt_section("Set up");
                     if (busy || gamelib_tables() || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
-                    if (opt_action("Set up game files", busy ? "Working..." : "", ex_d.c_str(), true)) {
+                    if (opt_action("Set up game files", ui_tr(busy ? "Working..." : ""), ex_d.c_str(), true)) {
                         files_gb = -1;  // (re-measured after a setup)
                         pthread_mutex_lock(&g_lock);
                         g_busy = true;
@@ -1408,9 +1492,9 @@ extern "C" void launcher_run(const char *root) {
                     ImGui::Dummy(ImVec2(0, 14 * sc));
                     ImGui::PushTextWrapPos(0);
                     ImGui::TextColored(failed ? ImVec4(1, 0.5f, 0.4f, 1) : busy ? ImVec4(0.93f, 0.76f, 0.33f, 1)
-                                              : ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", job_line.c_str());
+                                              : ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", ui_tr(job_line.c_str()));
                     if (failed && !job_hint.empty())  // (what to do next, in the rows' own text colour)
-                        ImGui::TextColored(ImVec4(0.86f, 0.85f, 0.80f, 1), "%s", job_hint.c_str());
+                        ImGui::TextColored(ImVec4(0.86f, 0.85f, 0.80f, 1), "%s", ui_tr(job_hint.c_str()));
                     ImGui::PopTextWrapPos();
                 }
                 opt_end();
@@ -1435,9 +1519,9 @@ extern "C" void launcher_run(const char *root) {
                     float f = test_busy ? 0.42f : extract_progress();
                     // (while the game code is built: what's happening, on whose files - runtime/gamebuild.c)
                     bool recompiling = g_build_frac >= 0;
-                    bool importing = source_is_nsz && !recompiling && !test_busy;
-                    const char *title = recompiling ? "Recompiling the game" : "Setting up the game files";
-                    static const char *const notes[] = {"This only needs to be done once and may take a while."};
+                    bool importing = source_is_archive && !recompiling && !test_busy;
+                    const char *title = ui_tr(recompiling ? "Recompiling the game" : "Setting up the game files");
+                    const char *const notes[] = {ui_tr("This only needs to be done once and may take a while.")};
                     int nnotes = recompiling ? 1 : 0;
                     float tfs = g_font_menu->FontSize * 0.75f, sfs = g_font_small->FontSize * 0.85f;
                     ImVec2 ts = g_font_menu->CalcTextSizeA(tfs, FLT_MAX, 0, title);
@@ -1459,7 +1543,7 @@ extern "C" void launcher_run(const char *root) {
                                           IM_COL32(236, 194, 84, 255), 12 * sc);
                     } else if (f > 0) fg->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * f, bb.y), IM_COL32(236, 194, 84, 255), 12 * sc);
                     char line[200];
-                    if (importing) snprintf(line, sizeof line, "%s", job.c_str());
+                    if (importing) snprintf(line, sizeof line, "%s", ui_tr(job.c_str()));
                     else snprintf(line, sizeof line, "%s   %d%%", test_busy ? "Setting up the game files..." : job.c_str(),
                                   (int)(f * 100));
                     ImVec2 ls = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, line);

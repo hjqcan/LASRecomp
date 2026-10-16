@@ -58,7 +58,9 @@ them, then `make -j10`. The randomizer needs its Python environment in
 - Build cleanly on your platform (`make -j10`). If you touch shared rendering code, say which backend you tested -
   a Metal change usually needs a Vulkan counterpart and the other way round.
 - NSZ importer/version profiles: `python tools/test_import_game.py -v` uses only synthetic archives and needs
-  `zstandard==0.25.0`. It runs on Windows, Linux and macOS in CI; no game files or keys are needed.
+  `zstandard==0.25.0` and `cryptography==50.0.2`. It runs on Windows, Linux and macOS in CI; no game files or keys are needed.
+- Encrypted NSP/NCA: `python tools/test_nsp_import.py -v` checks synthetic AES-XTS/CTR/BKTR content, CNMT hashes, key errors and metadata selection. Fixture keys are arbitrary bytes, never console keys.
+- Save backups: `python tools/test_save_backups.py` compiles the real store and checks retention, corruption rejection, restore safety, links, limits and empty-save recovery. `--save-copy PATH` roundtrips a temporary copy of a real save and checks source preservation.
 - Language settings: `python tools/test_settings_language.py` compiles a small harness against the actual settings
   implementation using `CC` (default `clang`; Windows needs the MSYS2 toolchain). It checks language resolution,
   legacy Chinese settings and saved values with LF/CRLF files; on Linux it also checks automatic locale selection.

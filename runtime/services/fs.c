@@ -10,6 +10,8 @@
 #include "../hle.h"
 #include "../rando.h"
 #include "../ipc.h"
+#include "../save_backup.h"
+#include "../gameversion.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -389,7 +391,14 @@ static Service *open_romfs_storage(void) {
 }
 
 // ------------------------------------------------------------------ host-directory filesystem
-typedef struct { char root[1024]; } HostFs;
+typedef struct { char root[1024]; bool is_save; } HostFs;
+
+static void backup_save(HostFs *fs, const char *reason) {
+    if (!fs->is_save) return;  // SD card commits are not game saves
+    char why[512];
+    if (!save_backup_create(fs->root, reason, game_version_name(game_version_current()), true, why, sizeof why))
+        LOG("[save-backup] %s\n", why); // backup failure never prevents the game from saving
+}
 typedef struct { int fd; char path[1100]; } HostFile;
 typedef struct { DIR *d; char path[1024]; int mode; } HostDir;
 
@@ -565,7 +574,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         ipc_return_object(resp, service_new("IDirectory", directory, hd));
         break;
     }
-    case 10: break;  // Commit
+    case 10: backup_save(fs, "Automatic save"); break;  // Commit: all files in this save are complete
     case 11: case 12: OUT(int64_t, 0) = 0x40000000; resp_size(resp, 8); break;
     case 13: rm_rf(p, true); break;
     case 14: memset(resp->data, 0, 0x20); resp_size(resp, 0x20); break;
@@ -582,11 +591,13 @@ static Service *open_host_fs(const char *sub) {
         g_save_dir = seed_save;
     }
     snprintf(fs->root, sizeof fs->root, "%s/%s", g_save_dir, sub);
+    fs->is_save = !strncmp(sub, "save_", 5);
     char cmd[1200];
     snprintf(cmd, sizeof cmd, "%s", fs->root);
     for (char *q = cmd + 1; *q; q++)
         if (*q == '/') { *q = 0; mkdir(cmd, 0755); *q = '/'; }
     mkdir(cmd, 0755);
+    backup_save(fs, "Before play");
     LOG("[fs] mounted host directory %s\n", fs->root);
     return service_new("IFileSystem", filesystem, fs);
 }

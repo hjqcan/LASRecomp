@@ -23,9 +23,9 @@ native Windows, macOS and Linux application.
 
 > [!NOTE]
 > **No game files are included.** LAS Recomp needs your own legally obtained copy of *Link's Awakening*:
-> extracted **v1.0.0 / v1.1.0** game files, or a base **NSZ** with an optional **v1.1.0 update NSZ**.
+> extracted **v1.0.0 / v1.1.0** game files, or a base **NSP / NSZ** with an optional **v1.1.0 update**. Encrypted NSP imports use your own local keys.
 > v1.1.0 currently supports **Vanilla mode**; Randomizer mode requires v1.0.0.
-> See [NSZ and v1.1.0 support](docs/NSZ-and-v110.md) for accepted builds and input limitations.
+> See [archive import, saves and v1.1.0 support](docs/NSZ-and-v110.md) for accepted builds and input limitations.
 > Instructions on how to obtain game files will **NOT** be provided.
 > On first launch the app sets up what it needs, including the actual recompilation locally. No game files, assets or fonts are included.
 > The screenshot shows the start screen after setup; no Nintendo artwork is included until provided by the user.
@@ -118,7 +118,9 @@ This is a beta release. That means bugs are likely, crashes could occur, randomi
 ## Building from source
 
 Every platform needs your own supported game files: build first, then use the start screen's game-file setup.
-Choose **Game files folder**, or **Base game NSZ** and optionally **Update NSZ**, then **Set up game files**.
+Choose **Game files folder**, or **Base game archive** and optionally **Update archive**, then **Set up game files**.
+For an encrypted NSP, select your own **Decryption keys** (`prod.keys`); **Check selection** reads metadata before import.
+**Settings → Saves → Backups** lists automatic snapshots and lets you restore them before starting a game.
 `make gen` then recompiles the game code from your own game files into `generated/`, and `make` builds it into its own
 library next to the app (`build/lasgame.*`); without it the start screen builds that library itself, as it does for
 players. Release builds hold none of the game's code: the start screen builds it on each player's machine from their
@@ -247,6 +249,7 @@ Release builds include these components; their source code for the exact version
 | Unicorn (game code generator) | 2.1.4 | GPL 2.0 (Python bindings: BSD) | https://pypi.org/project/unicorn/2.1.4/, https://github.com/unicorn-engine/unicorn |
 | python-lz4 (game code generator; includes LZ4) | 4.4.5 | BSD 3-clause; LZ4: BSD 2-clause | https://pypi.org/project/lz4/4.4.5/ |
 | python-zstandard (NSZ importer; includes Zstandard) | 0.25.0 | BSD 3-clause (Zstandard: BSD 3-clause option) | https://github.com/indygreg/python-zstandard, https://github.com/facebook/zstd |
+| cryptography (NSP / NCA decryption) | 50.0.2 | Apache-2.0 OR BSD-3-Clause; bundled OpenSSL: Apache-2.0 | https://github.com/pyca/cryptography |
 | FFmpeg (LGPL configuration, macOS, Windows and Linux builds) | 9.0.2 | LGPL 2.1+ | https://ffmpeg.org/releases/ |
 | SDL 3 | 3.4.18 (macOS, Windows), 3.4.16 (Linux) | zlib | https://github.com/libsdl-org/SDL/releases/tag/release-3.4.18, https://github.com/libsdl-org/SDL/releases/tag/release-3.4.16 |
 | shaderc (Windows, Linux: GLSL to SPIR-V; Linux: with glslang, SPIRV-Tools inside) | 2026.4 (Windows), 2026.3 (Linux) | Apache 2.0 | https://github.com/google/shaderc |

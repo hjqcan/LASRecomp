@@ -211,24 +211,26 @@ static void log_tail(const char *path, char *out, size_t n) {  // the last line 
     snprintf(out, n, "%s", nl ? nl + 1 : buf);
 }
 
-bool gameimport_run(const char *base_nsz, const char *update_nsz, const char *game_dir,
-                    void (*progress)(const char *), char *why, size_t why_size) {
+static bool import_helper(const char *base, const char *update, const char *keys, const char *title_keys,
+                          const char *game_dir, bool inspect, void (*progress)(const char *), char *why, size_t why_size) {
     if (!g_registered) g_registered = true, atexit(end_all);
     Tools t;
     if (!find_tools(&t)) {
-        snprintf(why, why_size, "The NSZ import helper is missing from this copy of LAS Recomp.");
+        snprintf(why, why_size, "The game import helper is missing from this copy of LAS Recomp.");
         return false;
     }
     Args a = {0};
     add(&a, t.gen);
     if (t.gen_script[0]) add(&a, t.gen_script);
-    add(&a, "--import-nsz");
-    add(&a, "--base"); add(&a, base_nsz);
-    if (update_nsz && *update_nsz) { add(&a, "--update"); add(&a, update_nsz); }
-    add(&a, "--output"); add(&a, game_dir);
-    add(&a, "--replace");
+    add(&a, "--import-nsz");  // legacy helper dispatch name; importer accepts NSP and NSZ
+    add(&a, "--base"); add(&a, base);
+    if (update && *update) { add(&a, "--update"); add(&a, update); }
+    if (keys && *keys) { add(&a, "--keys"); add(&a, keys); }
+    if (title_keys && *title_keys) { add(&a, "--title-keys"); add(&a, title_keys); }
+    if (inspect) { add(&a, "--inspect"); add(&a, "--gui-summary"); }
+    else { add(&a, "--output"); add(&a, game_dir); add(&a, "--replace"); }
     char log[1200];
-    snprintf(log, sizeof log, "%s.import.log", game_dir);
+    snprintf(log, sizeof log, "%s.%s.log", game_dir, inspect ? "inspect" : "import");
     PlatProc p = spawn(a.v, log);
     args_free(&a);
     int result = 255;
@@ -244,7 +246,28 @@ bool gameimport_run(const char *base_nsz, const char *update_nsz, const char *ga
     }
     if (result != 0) {
         log_tail(log, why, why_size);
-        if (!why[0]) snprintf(why, why_size, "NSZ import failed; see extracted.import.log.");
+        if (!why[0]) snprintf(why, why_size, "Game import failed; see the import log.");
+        return false;
+    }
+    if (inspect) log_tail(log, why, why_size);
+    return true;
+}
+
+bool gameimport_run(const char *base, const char *update, const char *keys, const char *title_keys, const char *game_dir,
+                    void (*progress)(const char *), char *why, size_t why_size) {
+    return import_helper(base, update, keys, title_keys, game_dir, false, progress, why, why_size);
+}
+
+bool gameimport_inspect(const char *base, const char *update, const char *keys, const char *title_keys,
+                        const char *game_dir, GameArchiveInfo info[2], char *why, size_t why_size) {
+    char result[512] = "";
+    if (!import_helper(base, update, keys, title_keys, game_dir, true, NULL, result, sizeof result)) {
+        snprintf(why, why_size, "%s", result);
+        return false;
+    }
+    if (sscanf(result, "LASMETA1\t%7s\t%15s\t%47s\t%7s\t%15s\t%47s", info[0].format, info[0].version,
+               info[0].metadata, info[1].format, info[1].version, info[1].metadata) != 6) {
+        snprintf(why, why_size, "The import helper returned an invalid metadata summary.");
         return false;
     }
     return true;

@@ -292,7 +292,7 @@ gen-helper: build/rando-venv/.ok build/rando-venv/.gen-ok
 	@du -sh build/helper/lasgen
 
 build/rando-venv/.gen-ok: build/rando-venv/.ok Makefile
-	$(RANDO_VPY) -m pip install -q capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5 zstandard==0.25.0
+	$(RANDO_VPY) -m pip install -q capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5 zstandard==0.25.0 cryptography==50.0.2
 	touch $@
 
 build/rando-venv/.ok: third_party/LAS-Randomizer/requirements.txt
