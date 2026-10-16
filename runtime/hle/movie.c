@@ -85,6 +85,26 @@ HLE_FUNC("_ZNK5movie9MediaData10FindStringEPKcPS2_", md_find_string) {
     c->x[0] = 0;
 }
 
+// The ACNH multimedia API also queries the decoder's visible rectangle. Host
+// frames are emitted uncropped, so their inclusive rectangle is the full frame.
+HLE_FUNC("_ZNK5movie9MediaData8FindRectEPKcPiS3_S3_S3_", md_find_rect) {
+    MediaData *m = md(c->x[0]);
+    const char *k = (const char *)(uintptr_t)c->x[1];
+    int32_t width = 0, height = 0;
+    if (k && !strcmp(k, "crop")) {
+        for (int i = 0; i < m->n; i++) {
+            if (!strcmp(m->e[i].key, "width")) width = (int32_t)m->e[i].ival;
+            if (!strcmp(m->e[i].key, "height")) height = (int32_t)m->e[i].ival;
+        }
+    }
+    if (width <= 0 || height <= 0) { c->x[0] = 0; return; }
+    *(int32_t *)(uintptr_t)c->x[2] = 0;
+    *(int32_t *)(uintptr_t)c->x[3] = 0;
+    *(int32_t *)(uintptr_t)c->x[4] = width - 1;
+    *(int32_t *)(uintptr_t)c->x[5] = height - 1;
+    c->x[0] = 1;
+}
+
 // ------------------------------------------------------------------ Buffer (opaque, <= 0x40 bytes)
 typedef struct {
     uint64_t base, capacity;
@@ -132,6 +152,7 @@ HLE_FUNC("_ZN5movie6Buffer12SetInt32DataEi", buf_set_i32) { BUF(c->x[0])->i32 = 
 
 HLE_FUNC("_ZN5movie12SetAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", movie_set_allocator) { (void)c; }
 HLE_FUNC("_ZN5movie17SetThreadPriorityEi", movie_set_thread_priority) { (void)c; }
+HLE_FUNC("_ZN5movie11SetCoreMaskEm", movie_set_core_mask) { (void)c; }
 HLE_FUNC("_ZN5movie17GetThreadPriorityEv", movie_get_thread_priority) { c->x[0] = 16; }
 
 // ------------------------------------------------------------------ helpers
@@ -384,6 +405,12 @@ HLE_FUNC("_ZN5movie9ExtractorC1ENS_13ContainerTypeE", movie_extractor_ctor) {
     Extractor *e = calloc(1, sizeof(Extractor));
     self[1] = (uint64_t)(uintptr_t)e;
     movie_track(0, e, true);
+}
+
+// Same 16-byte public object/vtable as the one-argument constructor; the extra
+// argument chooses the guest's streaming cache, which FFmpeg owns on the host.
+HLE_FUNC("_ZN5movie9ExtractorC1ENS_13ContainerTypeENS_9CacheSizeE", movie_extractor_cache_ctor) {
+    movie_extractor_ctor(c);
 }
 
 // ------------------------------------------------------------------ Decoder

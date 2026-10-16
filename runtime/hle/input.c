@@ -392,18 +392,7 @@ static void fill_state(Cpu *c) {
     static int nlog;
     if (nlog < 6 && (sampling % 600) == 1) { nlog++; LOG("[input] GetNpadState id %#x lr %llx\n", id, c->x[30]); }
     if (id != 0) return;  // docked: only player 1 (FullKey); Handheld stays disconnected
-    extern void warp_game_tick(Cpu *c);
-    warp_game_tick(c);  // game main thread, once per frame: apply a queued warp
-    { extern void give_item_tick(Cpu *c, uint64_t frame); extern uint64_t renderer_present_count(void);
-      give_item_tick(c, renderer_present_count());
-      extern void chamber_game_tick(Cpu *c, uint64_t frame);
-      chamber_game_tick(c, renderer_present_count());
-      extern void digs_game_tick(Cpu *c, uint64_t frame);
-      digs_game_tick(c, renderer_present_count());
-      extern void qol_tick(void);
-      qol_tick();
-      extern void pets_game_tick(Cpu *c);
-      pets_game_tick(c); }
+    // ACNH input never calls LAS gameplay hooks.
     extern uint64_t g_watch_lo, g_watch_hi;
     if (id == 0 && !g_pad_obj) g_pad_obj = c->x[1] - 8;
     if (id == 0 && !g_watch_lo && getenv("LARECOMP_WATCH_PAD")) {
@@ -459,12 +448,6 @@ static void fill_state(Cpu *c) {
     if (ry > 16000) b |= 1ull << 21;
     if (rx > 16000) b |= 1ull << 22;
     if (ry < -16000) b |= 1ull << 23;
-    {   // the pause menu's companion slot (runtime/hle/pets.c) takes the d-pad / sticks / A while the cursor is on it
-        extern uint64_t pets_menu_input(uint64_t b, int32_t st[4]);
-        int32_t st[4] = {lx, ly, rx, ry};
-        b = pets_menu_input(b, st);
-        lx = st[0], ly = st[1], rx = st[2], ry = st[3];
-    }
     *(uint64_t *)(s + 8) = b;
     static uint64_t last_b;
     if (b != last_b && getenv("LARECOMP_INPUT")) LOG("[input] id %#x buttons %#llx (sampling %lld, lr %llx)\n", id, (unsigned long long)b, (long long)sampling, c->x[30]);

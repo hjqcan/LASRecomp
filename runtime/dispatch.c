@@ -9,7 +9,7 @@
 #include "hle.h"
 
 typedef struct { const uint64_t *addrs; const GuestFn *fns; uint64_t count, lo, hi; } FnTable;
-static FnTable tables[2];
+static FnTable tables[3];
 
 // HLE stubs live at fake addresses HLE_BASE + 16*i
 #define MAX_HLE 4096
@@ -68,6 +68,8 @@ static __thread uint64_t unimpl_pc;
 static int unimpl_counts[MAX_HLE];
 static void hle_unimplemented(Cpu *c) {
     int i = (int)((unimpl_pc - HLE_BASE) / 16);
+    if (getenv("ACNH_STRICT_HLE"))
+        FATAL("[acnh] missing host implementation: %s (lr=%llx)\n", hle_slots[i].name, c->x[30]);
     if (unimpl_counts[i]++ < 3)
         LOG("[hle] UNIMPLEMENTED %s (x0=%llx x1=%llx lr=%llx) -> returning 0\n", hle_slots[i].name, c->x[0],
             c->x[1], c->x[30]);
@@ -110,10 +112,13 @@ void dispatch_init(void) {  // (after gamelib_load)
     uint64_t nm = *g->main_count, ns = *g->sdk_count;
     tables[0] = (FnTable){g->main_addrs, g->main_fns, nm, g->main_addrs[0], g->main_addrs[nm - 1]};
     tables[1] = (FnTable){g->sdk_addrs, g->sdk_fns, ns, g->sdk_addrs[0], g->sdk_addrs[ns - 1]};
+    uint64_t nx = *g->subsdk_count;
+    tables[2] = (FnTable){g->subsdk_addrs, g->subsdk_fns, nx, g->subsdk_addrs[0], g->subsdk_addrs[nx - 1]};
+    LOG("[acnh] dispatch: %llu main, %llu SDK, %llu multimedia functions\n", nm, ns, nx);
 }
 
 GuestFn dispatch_lookup(uint64_t addr) {
-    for (int t = 0; t < 2; t++) {
+    for (int t = 0; t < 3; t++) {
         FnTable *ft = &tables[t];
         if (addr < ft->lo || addr > ft->hi) continue;
         uint64_t lo = 0, hi = ft->count;

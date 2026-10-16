@@ -238,6 +238,7 @@ static bool g_tunic_layout_ok;
 bool texpatch_is_item_cursor(int id) { return id >= 0 && id < g_nrefs && g_refs[id].role == R_ITEM_CURSOR; }
 
 int texpatch_identify(const NvnTexture *t) {
+    return -1;  // LAS glyph/model fingerprints must not transform ACNH textures.
     pthread_once(&g_once, load_refs);
     if (!t->addr || t->depth > 1) return -1;
     uint64_t total = tegra_total_size(&t->layout);

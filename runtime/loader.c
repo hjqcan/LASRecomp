@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "rt.h"
+#include "title_profile.h"
 
 Module g_modules[4];
 int g_nmodules;
@@ -52,7 +53,12 @@ static uint8_t *read_file(const char *path, size_t *len) {
 static void load_nso(Module *m, const char *path, uint64_t base) {
     size_t len;
     uint8_t *raw = read_file(path, &len);
-    if (!raw || memcmp(raw, "NSO0", 4)) FATAL("cannot load %s\n", path);
+    if (!raw || len < 0x100 || memcmp(raw, "NSO0", 4)) FATAL("cannot load %s\n", path);
+    bool matched = false;
+    for (unsigned i = 0; i < sizeof title_modules / sizeof title_modules[0]; i++)
+        if (!strcmp(m->name, title_modules[i].name) && !memcmp(raw + 0x40, title_modules[i].build_id, 32))
+            matched = true;
+    if (!matched) FATAL("ACNH base-release module build ID mismatch: %s\n", path);
     uint32_t flags = *(uint32_t *)(raw + 0xC);
     uint32_t seg[3][3];  // file_off, mem_off, size
     for (int i = 0; i < 3; i++) memcpy(seg[i], raw + 0x10 + i * 0x10, 12);
@@ -174,12 +180,18 @@ static void relocate(Module *m) {
 
 void loader_load(const char *exefs) {
     char path[1024];
-    static const struct { const char *name; uint64_t base; } mods[] = {{"main", MAIN_BASE}, {"sdk", SDK_BASE}};
-    for (unsigned i = 0; i < 2; i++) {
+    static const struct { const char *name; uint64_t base; } mods[] = {
+        {"main", MAIN_BASE}, {"sdk", SDK_BASE}, {"subsdk0", SUBSDK_BASE}};
+    for (unsigned i = 0; i < sizeof mods / sizeof mods[0]; i++) {
         Module *m = &g_modules[g_nmodules++];
         m->name = mods[i].name;
         snprintf(path, sizeof path, "%s/%s", exefs, m->name);
         load_nso(m, path, mods[i].base);
+        for (unsigned j = 0; j < i; j++) {
+            Module *other = &g_modules[j];
+            if (m->base < other->base + other->size && other->base < m->base + m->size)
+                FATAL("module address overlap: %s and %s\n", m->name, other->name);
+        }
     }
     for (int i = 0; i < g_nmodules; i++) relocate(&g_modules[i]);
 }
