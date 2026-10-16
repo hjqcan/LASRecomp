@@ -6,6 +6,7 @@
 
 #include "gamelib.h"
 #include "photo.h"
+#include "mods.h"
 #include "paths.h"
 #include "settings.h"
 #include "hle.h"
@@ -126,6 +127,7 @@ static void teardown(void) {
 
 static void boot(const char *root) {
     photo_mode_exit();
+    mods_set_game_root(root);
     char exefs[1024], romfs[1024], npdm_path[1024];
     snprintf(exefs, sizeof exefs, "%s/exefs", root);
     snprintf(romfs, sizeof romfs, "%s/romfs", root);
@@ -134,6 +136,7 @@ static void boot(const char *root) {
 
     char why[512];
     if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
+    if (!mods_load_active(rt_data_root(), root, why, sizeof why)) FATAL("%s\n", why);
     loader_load(exefs);
     rando_boot();  // the chosen seed's data patches go into the freshly loaded module
     { extern void settings_load(void); settings_load(); }

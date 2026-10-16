@@ -56,6 +56,7 @@ This is a beta release. That means bugs are likely, crashes could occur, randomi
   - Switch games use fonts built into the Switch operating system for some text. Sensible replacements are used by default, but you may optionally set up the Switch fonts for an authentic look. Switch fonts are Nintendo IP; you must provide them from your own hardware.
 - In-game overlay menu (F1, or Minus + Plus on a controller).
 - [Photo mode](docs/photo-mode.md) (F2): freeze the scene, adjust framing/color and save a PNG (F12).
+- [Resource mods](docs/resource-mods.md): import a local replacement folder, inspect metadata and enable it with conflict checks.
 - Switch between vanilla and any randomizer seed without restarting the app.
 - Keyboard and controller support, with every button and key remappable (Controls tab / start screen Settings >
   Controls; menus keep a fixed layout, so a remap can never lock you out).
