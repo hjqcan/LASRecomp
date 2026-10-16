@@ -8,7 +8,7 @@ namespace fs = std::filesystem;
 static int active;
 static const char *dirs[] = {"extracted", "games/v1.0.0", "games/v1.1.0"};
 static const char *saves[] = {"save", "save/v1.0.0", "save/v1.1.0"};
-static const char *names[] = {"Existing installation", "v1.0.0 - Vanilla and Randomizer", "v1.1.0 - Vanilla"};
+static const char *names[] = {"Existing installation", "v1.0.0 - Vanilla and Randomizer", "v1.1.0 - Vanilla and Randomizer"};
 static int bounded(int p) {
     return p >= 0 && p < GAME_PROFILE_COUNT ? p : 0;
 }

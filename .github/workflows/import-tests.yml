@@ -21,6 +21,7 @@ jobs:
       - run: python tools/test_import_game.py -v
       - run: python tools/test_nsp_import.py -v
       - run: python tools/test_xci_import.py -v
+      - run: python tools/test_rando_event_compat.py -v
       - if: runner.os != 'Windows'
         run: python tools/test_build_cache.py
       - if: runner.os != 'Windows'
@@ -31,3 +32,9 @@ jobs:
         run: python tools/test_settings_language.py
       - if: runner.os != 'Windows'
         run: python tools/test_ui_localization.py
+      - if: runner.os != 'Windows'
+        run: python tools/test_rando_profiles.py -v
+      - if: runner.os != 'Windows'
+        run: python tools/test_mods.py
+      - if: runner.os != 'Windows'
+        run: python tools/test_photo.py

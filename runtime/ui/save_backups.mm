@@ -4,6 +4,7 @@
 #include "../gameversion.h"
 #include "../gamelib.h"
 #include "../game_profiles.h"
+#include "../rando_profile.h"
 #include <filesystem>
 #include <algorithm>
 #include <string>
@@ -60,12 +61,13 @@ extern "C" void save_backups_draw(float scale, bool in_game) {
     if (refresh_at == 0) {
         profiles = {""};
         std::error_code ec;
-        if (!getenv("LARECOMP_SAVE_DIR") && installation != GAME_PROFILE_UPDATED)
+        if (!getenv("LARECOMP_SAVE_DIR"))
             for (auto &e : std::filesystem::directory_iterator("rando", ec))
-                if (e.is_directory(ec) && !e.is_symlink(ec)) profiles.push_back(e.path().filename().u8string());
+                if (e.is_directory(ec) && !e.is_symlink(ec) && rando_seed_compatible(e.path().u8string().c_str(),
+                    !strcmp(backup_version(installation), "1.1.0") ? GAME_110 : GAME_100)) profiles.push_back(e.path().filename().u8string());
     }
     seen = ImGui::GetFrameCount();
-    if (getenv("LARECOMP_SAVE_DIR") || installation == GAME_PROFILE_UPDATED) profile.clear();
+    if (getenv("LARECOMP_SAVE_DIR")) profile.clear();
     ImGui::SetNextItemWidth(320 * scale);
     if (ImGui::BeginCombo(ui_label("Save profile").c_str(), profile.empty() ? ui_tr("Vanilla") : profile.c_str())) {
         for (auto &p : profiles)

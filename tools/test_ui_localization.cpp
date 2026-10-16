@@ -40,7 +40,10 @@ int main(int argc, char **) {
         config.SizePixels = 39;
         ImFont *font = ImGui::GetIO().Fonts->AddFontDefault(&config);
         ui_merge_language_font(font);
+        ImFont *user_font = ui_add_user_font();
         assert(ImGui::GetIO().Fonts->Build());
+        assert(user_font && user_font->FindGlyphNoFallback(0x9884) && user_font->FindGlyphNoFallback(0x89c8)); // arbitrary mod names: 预览
+        assert(ImGui::GetIO().Fonts->TexWidth <= 16384 && ImGui::GetIO().Fonts->TexHeight <= 16384);
         int missing = 0;
         for (const auto &t : texts) for (const char *str : {t.hans, t.hant}) {
             for (const char *p = str; *p;) {

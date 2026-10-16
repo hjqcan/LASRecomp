@@ -9,6 +9,7 @@
 
 #include "../hle.h"
 #include "../rando.h"
+#include "../mods.h"
 #include "../ipc.h"
 #include "../save_backup.h"
 #include "../gameversion.h"
@@ -256,7 +257,8 @@ static void rom_index(int fd) {
     // (in a copy) to point them at data appended past the end of the image; reads there go to host files.
     for (int i = 0; i < rom_nfiles; i++) {
         char host[1200];
-        if (!rando_romfs_override(rom_files[i].path, host, sizeof host)) continue;
+        if (!rando_romfs_override(rom_files[i].path, host, sizeof host) &&
+            !mods_romfs_override(rom_files[i].path, host, sizeof host)) continue;
         struct stat sb;
         if (stat(host, &sb)) continue;
         if (!ov_meta) {
@@ -280,7 +282,7 @@ static void rom_index(int fd) {
         ov_n++;
         ov_end = (ov_end + size + 0xF) & ~0xFull;
     }
-    if (ov_n) LOG("[fs] randomizer: %d romfs files replaced\n", ov_n);
+    if (ov_n) LOG("[fs] overlays: %d romfs files replaced\n", ov_n);
     if (ov_meta) { patches[npatches++] = (Patch){ov_meta_off, ov_meta_size, ov_meta}; }
     add_new_files(fd, h, dmeta, dsz, fsz);
     qsort(rom_files, rom_nfiles, sizeof *rom_files, rom_cmp);

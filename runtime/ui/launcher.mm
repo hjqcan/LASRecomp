@@ -41,6 +41,8 @@ extern "C" {
 #include "gamebuild.h"
 #include "gameversion.h"
 #include "game_profiles.h"
+#include "rando_profile.h"
+#include "mods.h"
 #include "build_cache.h"
 #include "gamelib.h"
 #include "romfs_build.h"
@@ -48,6 +50,7 @@ extern "C" {
 #include "input_bind.h"
 void controls_bindings_draw(float scale);  // ui/controls_ui.mm
 void save_backups_set_game_root(const char *root);
+void rando_set_game_root(const char *root);
 void ui_window_init(void);
 SDL_Window *ui_window(void);
 #ifdef __APPLE__
@@ -562,13 +565,13 @@ static void load_background(GpuDevice dev) {
 
 // ------------------------------------------------------------------ seeds
 static std::vector<std::string> list_seeds() {
-    if (game_version_current() == GAME_110) return {};
     std::vector<std::string> out;
     if (DIR *d = opendir("rando")) {
         while (struct dirent *e = readdir(d)) {
             if (e->d_name[0] == '.') continue;
             std::string dir = std::string("rando/") + e->d_name;
-            if (file_exists(dir + "/settings.json") && file_exists(dir + "/romfs")) out.push_back(e->d_name);
+            if (rando_seed_name_valid(e->d_name) && rando_seed_compatible(dir.c_str(), game_version_current()) &&
+                file_exists(dir + "/settings.json") && file_exists(dir + "/romfs")) out.push_back(e->d_name);
         }
         closedir(d);
     }
@@ -959,6 +962,8 @@ extern "C" const char *launcher_run(const char *root) {
     g_profile = game_profile_index(root, rt_data_root());
     game_profile_activate(root, rt_data_root());
     save_backups_set_game_root(root);
+    rando_set_game_root(root);
+    mods_set_game_root(root);
     g_start_screen = 1;
     static bool update_checked;  // (once per launch, not again after a "Title screen" reboot)
     if (!update_checked && !getenv("LARECOMP_NO_UPDATE_CHECK")) {
@@ -1002,7 +1007,9 @@ extern "C" const char *launcher_run(const char *root) {
         g_font_title = io.Fonts->AddFontFromFileTTF(p, 92 * (b2 ? 2.3f : 1), NULL, ranges);
     }
     if (!g_font_menu) g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
-    for (ImFont *font : {g_font_small, g_font_menu, g_font_title}) ui_merge_language_font(font);
+    // The large title font only draws the Latin logo; keep CJK in the actual UI fonts.
+    for (ImFont *font : {g_font_small, g_font_menu}) ui_merge_language_font(font);
+    ui_add_user_font();
     ImGuiStyle &st = ImGui::GetStyle();
     st.Colors[ImGuiCol_Header] = ImVec4(0, 0, 0, 0);
     st.Colors[ImGuiCol_HeaderHovered] = ImVec4(1, 1, 1, 0.08f);
@@ -1125,6 +1132,8 @@ extern "C" const char *launcher_run(const char *root) {
             g_root = game_profile_dir(g_profile);
             game_profile_activate(g_root.c_str(), rt_data_root());
             save_backups_set_game_root(g_root.c_str());
+            rando_set_game_root(g_root.c_str());
+            mods_set_game_root(g_root.c_str());
             game_version_select((g_root + "/exefs/main").c_str());
             status = check_game_files(g_root);
             seeds = list_seeds(); choices = {"Vanilla"}; choices.insert(choices.end(), seeds.begin(), seeds.end()); choice = 0;
@@ -1491,7 +1500,7 @@ extern "C" const char *launcher_run(const char *root) {
                         SDL_ShowOpenFileDialog(picked_archive, NULL, win, nsz_filter, 1, NULL, false);
                     if (source_is_archive) {
                         if (busy) opt_disable_next();
-                        std::string update_hint = std::string(ui_tr("Optional: choose the v1.1.0 update NSP or NSZ. Updated games support Vanilla mode.")) + "\n\n" + update_archive;
+                        std::string update_hint = std::string(ui_tr("Optional: choose the v1.1.0 update NSP or NSZ.")) + "\n\n" + update_archive;
                         if (opt_action("Update archive (optional)", ui_tr(update_archive.empty() ? "None" : "Selected"),
                                        update_hint.c_str(), true))
                             SDL_ShowOpenFileDialog(picked_archive, (void *)1, win, nsz_filter, 1, NULL, false);

@@ -1,3 +1,5 @@
+#include "../mods.h"
+#include "../rando.h"
 // Button prompts in the controller's own style, and the Hero Mode HUD icon hidden: edits made to the game's own UI
 // textures as they are uploaded (ideas from the GameBanana mods "XBOX UI", "PS4 UI Buttons" and "No Hero Mode
 // Indicator", credited in README.md; none of their files are used and no game art ships with the recomp).
@@ -67,9 +69,10 @@ static uint8_t *read_file(const char *p, size_t *len) {
     return d;
 }
 
-static uint8_t *read_all(const char *rel, size_t *len) {  // (the game's own files, never a seed's)
+static uint8_t *read_all(const char *rel, size_t *len) {  // match the resources presented through the guest RomFS
     char p[1200];
-    snprintf(p, sizeof p, "%s/%s", g_romfs_dir ? g_romfs_dir : "extracted/romfs", rel);
+    if (!rando_romfs_override(rel, p, sizeof p) && !mods_romfs_override(rel, p, sizeof p))
+        snprintf(p, sizeof p, "%s/%s", g_romfs_dir ? g_romfs_dir : "extracted/romfs", rel);
     return read_file(p, len);
 }
 

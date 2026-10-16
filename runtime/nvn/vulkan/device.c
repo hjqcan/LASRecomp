@@ -1,3 +1,4 @@
+#include "../../photo.h"
 // Vulkan device, window, swapchain and presentation (counterpart of the window/present half of metal.m).
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -455,7 +456,7 @@ void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h) 
 
 // ================================================================== game presentation (metal.m backend_present)
 // Draws the game's image into the window with the widescreen crop, then the overlay menu.
-extern void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, float vw, float vh, const float pv[8]);
+extern void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, float vw, float vh, const float pv[12]);
 void renderer_submit(void);
 void renderer_set_scale(float sx, float sy);
 uint64_t renderer_present_count(void);
@@ -477,6 +478,7 @@ void backend_represent(void) {
 }
 
 void backend_present(NvnTexture *t) {
+    photo_mode_frame(total_frames);
     g_last_presented = t;
     TexBackend *b = vk_tex(t, true);
     b->presented = true;
@@ -504,20 +506,24 @@ void backend_present(NvnTexture *t) {
         extern void widescreen_present_crop(uint64_t, double, float *, double *, double *, double *, double *);
         float crop[4];  // uv origin and size
         widescreen_present_crop(total_frames, shape, crop, &vx, &vy, &vw, &vh);
+        photo_mode_compose(crop, dw, dh, &vx, &vy, &vw, &vh);
         widescreen_set_factor((float)shape);
         renderer_set_scale((float)sx, (float)sy);
         VkCommandBuffer cb = vk_cmd();
-        float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
+        float pv[12] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3], 1, 1, 0, 0};
+        photo_mode_color(pv + 8);
         memcpy(g_shot_crop, crop, sizeof crop);
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
         static long menu_at = -1;
         if (menu_at < 0) menu_at = getenv("LARECOMP_MENU_AT") ? atol(getenv("LARECOMP_MENU_AT")) : 0;
         if (menu_at && (long)total_frames + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
+        const char *photo_path = photo_mode_capture_path();
         menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("LARECOMP_WINDOW_SHOT") ? atol(getenv("LARECOMP_WINDOW_SHOT")) : 0;
         bool shot = win_shot && (long)total_frames + 1 == win_shot;
-        vk_frame_end(shot ? "build/window.png" : NULL);
+        vk_frame_end(photo_path ? photo_path : shot ? (getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/window.png") : NULL);
+        if (photo_path) photo_mode_capture_done();
         if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) { fflush(stderr); _exit(0); }
     } else {
         renderer_submit();

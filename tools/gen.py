@@ -474,6 +474,7 @@ class Module:
 
 from patches import PATCHES
 from game_versions import game_version, patch_table
+from rando_profiles import validate_catalog
 
 import json as _json
 import os as _os
@@ -517,8 +518,8 @@ def main():
     if args.name == "main":
         m.game_version = game_version(m.nso.build_id)
         PATCHES = patch_table(PATCHES, m.game_version)
-        if m.game_version != "1.0.0":
-            RANDO_CODE = {}  # Randomizer patches have only been validated on v1.0.0.
+        RANDO_CODE = validate_catalog(m.nso.image, m.nso.build_id, RANDO_CODE)
+        print(f"Randomizer: {len(RANDO_CODE)} validated patch sites", file=sys.stderr)
         print(f"Game version: {m.game_version}", file=sys.stderr)
     starts = m.boundaries()
     hle = {}

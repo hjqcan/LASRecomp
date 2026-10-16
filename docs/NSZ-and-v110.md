@@ -32,7 +32,7 @@ The generated game library records its main Build ID. Both its metadata file and
 
 ## Current limits
 
-- Updated game files support **Vanilla mode**. The Randomizer tab and seed selection remain available with v1.0.0; updated-version randomizer patches are not validated.
+- Updated game files support Vanilla mode and experimental Randomizer mode with newly generated, version-specific seeds. See [randomizer compatibility and validation](photo-mods-randomizer.md#randomizer-on-v110).
 - This uses the existing Windows Vulkan renderer. Support for the updated game files does not add Switch 2 HDR features to that renderer.
 - Existing upstream beta limitations still apply. A startup/gameplay smoke test is not a full playthrough.
 - Restart the application before replacing game files after a game library has been loaded.

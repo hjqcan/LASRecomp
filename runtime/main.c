@@ -7,6 +7,8 @@
 #include "gamelib.h"
 #include "gameversion.h"
 #include "game_profiles.h"
+#include "mods.h"
+#include "photo.h"
 #include "paths.h"
 #include "settings.h"
 #include "hle.h"
@@ -127,6 +129,12 @@ static void teardown(void) {
 
 static void boot(const char *root) {
     game_profile_activate(root, rt_data_root());
+    extern void save_backups_set_game_root(const char *);
+    extern void rando_set_game_root(const char *);
+    save_backups_set_game_root(root);
+    rando_set_game_root(root);
+    mods_set_game_root(root);
+    photo_mode_exit();
     char exefs[1024], romfs[1024], npdm_path[1024];
     snprintf(exefs, sizeof exefs, "%s/exefs", root);
     snprintf(romfs, sizeof romfs, "%s/romfs", root);
@@ -140,8 +148,10 @@ static void boot(const char *root) {
     game_version_select(main_path);
     if (game_version_current() == GAME_UNSUPPORTED) FATAL("unsupported game executable\n");
     LOG("[game] version %s\n", game_version_name(game_version_current()));
+    if (!mods_load_active(rt_data_root(), root, game_profile_index(root, rt_data_root()),
+                          game_version_name(game_version_current()), why, sizeof why)) FATAL("%s\n", why);
     loader_load(exefs);
-    rando_boot();  // the chosen seed's data patches go into the freshly loaded module
+    if (!rando_boot()) FATAL("The selected randomizer seed could not be loaded. Choose Vanilla or a compatible seed on the start screen.\n");
     { extern void settings_load(void); settings_load(); }
     kernel_init();
     dispatch_init();

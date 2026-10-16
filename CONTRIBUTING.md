@@ -72,6 +72,7 @@ them, then `make -j10`. The randomizer needs its Python environment in
   against an installed CJK font. Keep English keys and both Chinese translations in `runtime/ui/localization_strings.h`;
   translate at display time, preserving user-entered text and serialized values.
 - Test in game, and look at the result: a fix isn't verified until you've seen it work.
+- Photo/mod/versioned seed tests: `tools/test_photo.py`, `tools/test_mods.py`, `tools/test_rando_profiles.py` and `tools/test_rando_event_compat.py` exercise the actual state/store/parser code with synthetic inputs. See [feature limits and manual checks](docs/photo-mods-randomizer.md).
 - Scripted test runs: `tools/shot.sh <frame> [seconds]` runs the game with `LARECOMP_*` environment hooks (scripted
   input, warps, seeds, scratch saves via `tools/fresh_save.sh`) and saves a screenshot. Many debug hooks are
   documented where they're defined - grep for `getenv("LARECOMP_`. Test runs use a scratch copy of the settings

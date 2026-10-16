@@ -21,6 +21,7 @@ extern "C" {
 #include "../hle.h"
 #include "../paths.h"
 #include "../rando.h"
+#include "../rando_profile.h"
 #include "../settings.h"
 #include "../gameversion.h"
 extern const char *g_romfs_dir;
@@ -28,6 +29,9 @@ extern int g_start_screen;  // hle/warp.c
 void launcher_play_seed(const char *seed);  // ui/launcher.mm
 extern char g_window_shot_request[256];  // runtime/hle/hookshot.c (test shots)
 }
+
+static std::string g_source_romfs = "extracted/romfs";
+extern "C" void rando_set_game_root(const char *root) { g_source_romfs = std::string(root) + "/romfs"; }
 
 // Play a seed ("" = vanilla): in game the game reboots on it; on the start screen (Settings) the game starts with it
 static void play_seed(const char *name) {
@@ -78,7 +82,8 @@ static void scan(void) {
         if (e->d_name[0] == '.') continue;
         std::string dir = std::string("rando/") + e->d_name;
         struct stat sb;
-        if (stat((dir + "/exefs/1.0.0.pchtxt").c_str(), &sb)) continue;
+        if (!rando_seed_compatible(dir.c_str(), game_version_current()) ||
+            stat((dir + "/exefs/" + rando_patch_filename(game_version_current())).c_str(), &sb)) continue;
         Seed s;
         s.name = e->d_name;
         s.mtime = sb.st_mtime;
@@ -302,7 +307,8 @@ static void start_generation(void) {
     std::string req = dir + "/request.json";
     FILE *f = fopen(req.c_str(), "w");
     if (!f) { g_gen_status = "Cannot write " + req; g_gen_failed = g_gen_done = true; return; }
-    fprintf(f, "{\"seed\": \"%s\", \"logic\": \"basic\", \"dungeon-items\": \"%s\", \"traps\": \"%s\",\n", id,
+    fprintf(f, "{\"game-version\": \"%s\",", game_version_name(game_version_current()));
+    fprintf(f, "\"seed\": \"%s\", \"logic\": \"basic\", \"dungeon-items\": \"%s\", \"traps\": \"%s\",\n", id,
             ditems[g_opts.dungeon_items], traps[g_opts.traps]);
     fprintf(f, " \"shuffle-instruments\": %s, \"shuffle-dungeons\": %s, \"randomize-enemies\": %s, \"randomize-music\": %s,\n",
             g_opts.shuffle_instruments ? "true" : "false", g_opts.shuffle_dungeons ? "true" : "false",
@@ -347,7 +353,7 @@ static void start_generation(void) {
     fprintf(f, " \"exclude\": [%s]}\n", shell_excl[g_opts.seashells]);
     fclose(f);
     std::string log = dir + "/generate.log";
-    std::string romfs = g_romfs_dir ? g_romfs_dir : "extracted/romfs";
+    std::string romfs = g_start_screen ? g_source_romfs : g_romfs_dir ? g_romfs_dir : g_source_romfs;
     auto abs = [](std::string &p) { if (p[0] != '/' && !(p.size() > 1 && p[1] == ':')) p = std::string(rt_data_root()) + "/" + p; };
     abs(romfs), abs(dir), abs(req);  // (the helper / script change directory: absolute, in the data root)
     std::vector<std::string> cmd = generator_cmd();
@@ -458,10 +464,15 @@ static std::string g_spoiler_seed;  // seed whose spoiler page is open
 
 extern "C" void rando_tab_draw(float scale) {
     (void)scale;
-    if (game_version_current() == GAME_110) {
-        ImGui::TextWrapped("%s", ui_tr("v1.1.0 currently supports Vanilla mode. Randomizer seeds require v1.0.0 game files."));
-        return;
+    static GameVersion scanned_version = GAME_UNSUPPORTED;
+    if (scanned_version != game_version_current()) {
+        g_scanned = false; g_spoiler_seed.clear(); scanned_version = game_version_current();
     }
+    if (game_version_current() == GAME_UNSUPPORTED) {
+        ImGui::TextWrapped("%s", ui_tr("Set up a supported game version before generating a seed.")); return;
+    }
+    if (game_version_current() == GAME_110)
+        ImGui::TextWrapped("%s", ui_tr("v1.1.0 randomizer support is experimental. Generate a new seed for this game version."));
     if (!g_scanned) scan();
     static bool spoiler_test;  // LARECOMP_SPOILER_TEST=<seed>: open that seed's spoiler page (test hook)
     if (!spoiler_test && getenv("LARECOMP_SPOILER_TEST")) { spoiler_test = true; g_spoiler_seed = getenv("LARECOMP_SPOILER_TEST"); }

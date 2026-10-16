@@ -24,7 +24,7 @@ native Windows, macOS and Linux application.
 > [!NOTE]
 > **No game files are included.** LAS Recomp needs your own legally obtained copy of *Link's Awakening*:
 > extracted **v1.0.0 / v1.1.0** game files, or a base **NSP / NSZ / XCI / XCZ** with an optional **v1.1.0 update**. Encrypted content uses your own local keys.
-> v1.1.0 currently supports **Vanilla mode**; Randomizer mode requires v1.0.0.
+> Both versions support Vanilla mode. v1.1.0 Randomizer support is experimental and requires newly generated, version-specific seeds.
 > See [archive import, saves and v1.1.0 support](docs/NSZ-and-v110.md) for accepted builds and input limitations.
 > Instructions on how to obtain game files will **NOT** be provided.
 > On first launch the app sets up what it needs, including the actual recompilation locally. No game files, assets or fonts are included.
@@ -58,6 +58,9 @@ This is a beta release. That means bugs are likely, crashes could occur, randomi
 - Start screen: play vanilla or any randomizer seed, set up game files from your own dump, import fonts.
   - Switch games use fonts built into the Switch operating system for some text. Sensible replacements are used by default, but you may optionally set up the Switch fonts for an authentic look. Switch fonts are Nintendo IP; you must provide them from your own hardware.
 - In-game overlay menu (F1, or Minus + Plus on a controller).
+- Photo mode (F2): freeze gameplay, hide the interface, adjust framing and color, and save PNGs with F12.
+- Resource mod manager with version-specific enable lists and conflict checks.
+  See [photo mode, mods and updated-version randomizer](docs/photo-mods-randomizer.md) for controls and limits.
 - Keep v1.0.0 and v1.1.0 installed together, with separate Vanilla saves. Choose **Game version** before playing.
 - Cancel game-code compilation and resume later; completed, verified files are reused.
 - Switch between vanilla and any randomizer seed without restarting the app.
