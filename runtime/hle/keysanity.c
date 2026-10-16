@@ -7,11 +7,12 @@
 //
 // Save record (notes/save_format.md): live save + 0xE0 + 0x10 * rec, dungeon n -> rec 2(n-1), Color Dungeon -> 18;
 // +0 small keys held, +1 bits: compass 0, map 1, beak 2, Nightmare Key 3.
+#include "../game_addresses.h"
 #include <stdio.h>
 
 #include "../hle.h"
 
-#define LIVE_SAVE 0x7001CBB220ull
+#define LIVE_SAVE GA_LIVE_SAVE
 // item ids as AddItem gets them: Items.gsheet `itemID` (not the row number; rows 41+ differ)
 enum { IT_COMPASS = 44, IT_MAP = 45, IT_BEAK = 47, IT_SMALL_KEY = 48, IT_NIGHTMARE_KEY = 49 };
 

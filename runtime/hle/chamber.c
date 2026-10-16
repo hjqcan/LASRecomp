@@ -8,6 +8,7 @@
 // "PanelAdventure" with that locator starts it.
 //
 // Layout file (tools/rando/chamber_gen.py --out): 64 panel ids (-1 = empty) then the entrance cell index.
+#include "../game_addresses.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,13 +16,13 @@
 
 #include "../hle.h"
 
-#define CHAMBER_MGR (MAIN_BASE + 0x1cb9fb8)
-#define CHAMBER_CTOR (MAIN_BASE + 0xcdf1c0)
-#define CHAMBER_PREPARE (MAIN_BASE + 0xce34b0)
-#define CHAMBER_START_LOCATOR (MAIN_BASE + 0xcdbd80)
-#define GUEST_NEW (MAIN_BASE + 0x1431170)
-#define PANEL_CATALOGUE (MAIN_BASE + 0x1cb9e50)  // MapPieceList table object
-#define PANEL_LOOKUP (MAIN_BASE + 0xcd0970)      // (out cell, catalogue, id): out = {sheet, ref, row ptr}
+#define CHAMBER_MGR (GA_CHAMBER_MGR)
+#define CHAMBER_CTOR (GA_CHAMBER_CTOR)
+#define CHAMBER_PREPARE (GA_CHAMBER_PREPARE)
+#define CHAMBER_START_LOCATOR (GA_CHAMBER_START_LOCATOR)
+#define GUEST_NEW (GA_GUEST_NEW)
+#define PANEL_CATALOGUE (GA_PANEL_CATALOGUE)  // MapPieceList table object
+#define PANEL_LOOKUP (GA_PANEL_LOOKUP)      // (out cell, catalogue, id): out = {sheet, ref, row ptr}
 
 extern int game_in_play(void);
 extern void warp_request(const char *level, const char *locator);
@@ -149,7 +150,7 @@ static void chamber_restore_rows(void) {
     while (g_nsaved > 0) { g_nsaved--; *(int32_t *)(uintptr_t)g_saved[g_nsaved].addr = g_saved[g_nsaved].old; }
 }
 
-static void set_event_flag(int i) { *(uint8_t *)(uintptr_t)(0x7001CBB220ull + 0x5DC0 + (i >> 3)) |= (uint8_t)(1 << (i & 7)); }
+static void set_event_flag(int i) { *(uint8_t *)(uintptr_t)(GA_LIVE_SAVE + 0x5DC0 + (i >> 3)) |= (uint8_t)(1 << (i & 7)); }
 
 // Chamber-engine prototype: OFF unless a test asks for it (LARECOMP_CHAMBER_TAILCAVE=<layout file>). Generated
 // dungeons are being rebuilt as real dungeon levels (notes/PLAN.md); this stays only as reverse-engineering notes.

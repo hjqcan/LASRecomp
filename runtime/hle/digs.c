@@ -22,6 +22,7 @@
 // Tall grass and bushes would grow back over a dug tile on reload: the factory skips them there (rt_digs_skip_plant,
 // called from runtime/hle/souls.c's create-function hook). Actors are tracked by a weak reference to their shared_ptr
 // control block (libc++: shared count at +8 is -1 once the actor is gone; the block stays while we hold the weak count).
+#include "../game_addresses.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,16 +32,16 @@
 #include "../hle.h"
 #include "../rando.h"
 
-#define PLAYER_STATUS_PTR (MAIN_BASE + 0x1CC1368)  // PlayerStatus*: current level name at +0
-#define GAME_MGR (MAIN_BASE + 0x1C97188)           // +0x4a8: the current scene (weak), scene +0x228 -> +0x1b8 room sp
-#define SCENE_LOCK (MAIN_BASE + 0x1b730)           // (out shared_ptr, scene handle): what the dig commit calls
-#define SPAWN_HOLE (MAIN_BASE + 0xd228d0)          // (out, transform, zone, &room, w4, s0): ObjHolesDug
-#define HOLE_LIST_INIT (MAIN_BASE + 0xd22860)      // first-use init of the game's hole list (the shovel calls it first)
-#define CREATE_ACTOR (MAIN_BASE + 0x8f5ea0)        // (out shared_ptr, &room, spawn info)
-#define STR_POOL (MAIN_BASE + 0x1cab2d0)           // std::vector<{std::string, u64 refs}>: type-5 parameters
-#define STR_POOL_INIT (MAIN_BASE + 0x1d510)        // its first-use init (clears the vector)
-#define SP_RELEASE (MAIN_BASE + 0xbae080)          // shared_ptr release (x0 = control block)
-#define WEAK_RELEASE (MAIN_BASE + 0x14311f0)       // std::__shared_weak_count::__release_weak
+#define PLAYER_STATUS_PTR (GA_PLAYER_STATUS_PTR)  // PlayerStatus*: current level name at +0
+#define GAME_MGR (GA_GAME_MGR)           // +0x4a8: the current scene (weak), scene +0x228 -> +0x1b8 room sp
+#define SCENE_LOCK (GA_SCENE_LOCK)           // (out shared_ptr, scene handle): what the dig commit calls
+#define SPAWN_HOLE (GA_SPAWN_HOLE)          // (out, transform, zone, &room, w4, s0): ObjHolesDug
+#define HOLE_LIST_INIT (GA_HOLE_LIST_INIT)      // first-use init of the game's hole list (the shovel calls it first)
+#define CREATE_ACTOR (GA_CREATE_ACTOR)        // (out shared_ptr, &room, spawn info)
+#define STR_POOL (GA_STR_POOL)           // std::vector<{std::string, u64 refs}>: type-5 parameters
+#define STR_POOL_INIT (GA_STR_POOL_INIT)        // its first-use init (clears the vector)
+#define SP_RELEASE (GA_SP_RELEASE)          // shared_ptr release (x0 = control block)
+#define WEAK_RELEASE (GA_WEAK_RELEASE)       // std::__shared_weak_count::__release_weak
 #define DIG_FLAG_BASE 4096
 #define NTILES (256 * 80)
 #define GOT_FLAG_BASE (DIG_FLAG_BASE + NTILES)

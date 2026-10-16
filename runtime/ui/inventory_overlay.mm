@@ -6,6 +6,7 @@
 // Pets (runtime/hle/pets.c): the Ghost item sits in the equipment panel's free slot (left of the Secret Medicine),
 // ticked once laid to rest; a companion card left of the panel shows who follows Link and switches it (the page
 // cursor reaches it with LEFT from the grid, pets.c). The Items page is detected by tools/patches.py ITEMS_PAGE_SITE.
+#include "../game_addresses.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,13 +30,13 @@ const char *souls_at(int i, int *kind, bool *owned);
 }
 #include "../input_bind.h"
 
-#define DUNGEON_RECORDS (MAIN_BASE + 0x1CBB220 + 0xE0)  // live save: 0x10-byte records (+0 keys, +1 item bits)
+#define DUNGEON_RECORDS (GA_LIVE_SAVE + 0xE0)  // live save: 0x10-byte records (+0 keys, +1 item bits)
 
 static volatile uint64_t g_items_frame;
 static uint64_t g_items_obj;  // the Items page (x0 of ITEMS_PAGE_SITE); +0x4020 u32 = its cursor (0-11, 4 columns)
 
-#define EVENT_FLAGS (MAIN_BASE + 0x1CBB220 + 0x5DC0)  // live save: GlobalFlags bitfield
-#define TRADE_SLOT (MAIN_BASE + 0x1CBB220 + 0x555A)   // live save: current trade item (1..14, 0 = none)
+#define EVENT_FLAGS (GA_LIVE_SAVE + 0x5DC0)  // live save: GlobalFlags bitfield
+#define TRADE_SLOT (GA_LIVE_SAVE + 0x555A)   // live save: current trade item (1..14, 0 = none)
 
 // Trade sequence (save TRADE_SLOT values 1..14), the LAS flag set when each one is obtained, and the flag the trade
 // NPC's flow sets when it takes the item (its "...Drop" = what it hands over; tools/rando/seed_tables.py exports them).
@@ -325,7 +326,7 @@ static void tunics_draw(ImDrawList *dl, ImFont *font, float ox, float oy, float 
     float fs = 15 * u;
     ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
     dl->AddText(font, fs, ImVec2(cx - ts.x * 0.5f, a.y + 6 * u), IM_COL32(240, 206, 110, 255), t);
-    int bits = LD8(MAIN_BASE + 0x1CBB220 + 0x555C);
+    int bits = LD8(GA_LIVE_SAVE + 0x555C);
     static const struct { int bit; ImU32 on; } kT[2] = {{0x40, IM_COL32(222, 64, 52, 255)}, {0x80, IM_COL32(60, 120, 230, 255)}};
     for (int i = 0; i < 2; i++) {
         ImVec2 c(cx + (i ? 15 : -15) * u, a.y + 39 * u);

@@ -1,6 +1,7 @@
 // Save editor tab: edits the game's live save buffer (main+0x1CBB220, an exact image of savedataN.bin),
 // so changes apply immediately and are written out (with fresh checksums) the next time the game saves.
 // Layout: notes/save_format.md.
+#include "../game_addresses.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -21,7 +22,7 @@ extern "C" {
 #include "../hle.h"
 }
 
-#define LIVE_SAVE 0x7001CBB220ull  // main + 0x1CBB220
+#define LIVE_SAVE GA_LIVE_SAVE  // main + 0x1CBB220
 static uint8_t *S(void) { return (uint8_t *)(uintptr_t)LIVE_SAVE; }
 template <typename T> static T &F(uint32_t off) { return *(T *)(S() + off); }
 
@@ -362,7 +363,7 @@ extern "C" void save_editor_frame(uint64_t frame) {
         }
     }
     if (ENV("LARECOMP_FIND_FLAGS") && frame == 3000) {  // locate the event-flag bitfield (ptr, byte capacity)
-        for (uint64_t a = 0x7001C00000ull; a < 0x7001D00000ull; a += 8) {
+        for (uint64_t a = GA_SAVE_SCAN_BEGIN; a < GA_SAVE_SCAN_END; a += 8) {
             uint64_t v = *(uint64_t *)(uintptr_t)a;
             if (v >= LIVE_SAVE && v < LIVE_SAVE + 0x5EE0) {
                 uint32_t cap = *(uint32_t *)(uintptr_t)(a + 8);

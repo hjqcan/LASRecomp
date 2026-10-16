@@ -11,6 +11,7 @@
 // Link's position: the "PlayerCollision" component (vtable main+0x1c501f0, name inline at +0x18), vec3 at +0x80
 // (a second copy at +0xb0); writing it moves Link, every other copy follows (found 2026-10-08 with
 // LARECOMP_ADDF_MATCH bisection, notes/PLAN.md). It's re-found by a heap scan after each level load.
+#include "../game_addresses.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,8 +20,8 @@
 #include "../hle.h"
 #include "../rando.h"
 
-#define PLAYER_STATUS_PTR (MAIN_BASE + 0x1CC1368)  // PlayerStatus*: current level name at +0
-#define PLAYER_COLLISION_VT (MAIN_BASE + 0x1c501f0)
+#define PLAYER_STATUS_PTR (GA_PLAYER_STATUS_PTR)  // PlayerStatus*: current level name at +0
+#define PLAYER_COLLISION_VT (GA_PLAYER_COLLISION_VT)
 
 typedef struct { char level[40]; int col, row; char side; int own, partner, still; int tcol, trow; char tside; float depth;
                  int pair; float height; } Jump;  // height: floor where Link lands (Chaos; <-90 = keep his)  // pair: Chaos doorway pair (both directions share it), -1 = a neighbour jump

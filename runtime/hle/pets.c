@@ -8,13 +8,14 @@
 // found, he skips his house visit (Ghost2/3 flags) and the grave takes him without the companion slot (its trigger
 // reads his found flag, pets.py); laid to rest (Ghost4_Clear) his Owl gives the ghost-reward check (EighthClear).
 // Flag indices come from rando/<seed>/flags.tsv (tools/rando/seed_tables.py).
+#include "../game_addresses.h"
 #include <stdio.h>
 #include <string.h>
 
 #include "../hle.h"
 #include "../rando.h"
 
-#define LIVE_SAVE 0x7001CBB220ull
+#define LIVE_SAVE GA_LIVE_SAVE
 #define COMPANION (LIVE_SAVE + 0x555D)
 #define FLAGS (LIVE_SAVE + 0x5DC0)
 enum { PET_INDEX = 90, NPETS = 3 };
@@ -114,15 +115,15 @@ void pets_call(int c) {
 // The follower actor, swapped in place (no screen change). The game spawns the companion on a level load
 // (f_700085d980: the level's allow_companions config, then COMPANION_SPAWN); Link.LeaveCompanion (event action)
 // is COMPANION_LEAVE. The Player keeps the follower's shared_ptr at +0x1b98 / +0x1ba0.
-#define GAME_SCENE (MAIN_BASE + 0x1c97188)  // -> +0x4b8 Player*
-#define COMPANION_SPAWN (MAIN_BASE + 0xd53c20)  // (x0 = shared_ptr out, x1 = Player): the save's companion by Link
-#define COMPANION_LEAVE (MAIN_BASE + 0xd53ed0)  // (x0 = Player): companion byte 0, the follower sent away
-#define PLAYER_STATUS_PTR (MAIN_BASE + 0x1CC1368)  // PlayerStatus*: current level name at +0 (+0x9d = COMPANION)
+#define GAME_SCENE (GA_GAME_MGR)  // -> +0x4b8 Player*
+#define COMPANION_SPAWN (GA_COMPANION_SPAWN)  // (x0 = shared_ptr out, x1 = Player): the save's companion by Link
+#define COMPANION_LEAVE (GA_COMPANION_LEAVE)  // (x0 = Player): companion byte 0, the follower sent away
+#define PLAYER_STATUS_PTR (GA_PLAYER_STATUS_PTR)  // PlayerStatus*: current level name at +0 (+0x9d = COMPANION)
 // (x0 = actor): actor vtable +0x58 (0); the base actor's vtable +0xa0 and a follower's own leave use it
-#define ACTOR_KILL (MAIN_BASE + 0xfabf70)
+#define ACTOR_KILL (GA_ACTOR_KILL)
 // the level's placed actors by key (the actor factory looks them up): unordered_map, first node at +0x10; node +0 next,
 // +0x10 key, +0x18 shared_ptr<Actor>
-#define ACTOR_REGISTRY (MAIN_BASE + 0x1cb2d00)
+#define ACTOR_REGISTRY (GA_ACTOR_REGISTRY)
 
 // Levels whose config (.lvb allow_companions) keeps companions out; dungeons only with settings.json "bad-pets"
 // (LAS: every dungeon but the Egg). The game's own exceptions too: BowWow stays out of Madam MeowMeow's house, Marin

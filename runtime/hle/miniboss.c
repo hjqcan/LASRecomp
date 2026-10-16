@@ -6,6 +6,7 @@
 // has no zones or boxes, so here the runtime moves it into the fight state itself (no start event: no boss music or
 // shutter steps) once Link comes near. Actors are seen through a per-frame type check (tools/patches.py
 // MB_SEEN_SITE) and picked out by class vtable.
+#include "../game_addresses.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +17,7 @@
 void guest_call(Cpu *c, uint64_t addr);
 uint64_t doorjump_player(uint64_t frame);  // PlayerCollision component: position at +0x80
 
-#define PLAYER_STATUS_PTR (MAIN_BASE + 0x1CC1368)  // PlayerStatus*: current level name at +0
+#define PLAYER_STATUS_PTR (GA_PLAYER_STATUS_PTR)  // PlayerStatus*: current level name at +0
 
 // per class: vtable, its state machine's change(sm, state) (+0xd current state, +0xe previous; states 0x30 apart
 // from +0x40: ctx, enter, exec, exit member functions), the state machine's offset in the actor, idle state, fight
@@ -29,18 +30,18 @@ typedef struct {
     uint64_t vt, chg; uint32_t sm, pos; uint8_t idle, fight; const char *name; uint8_t rest, then, at_once; uint32_t start;
 } Kind;
 static const Kind g_kinds[] = {
-    {MAIN_BASE + 0x1b80e90, MAIN_BASE + 0x3bfc60, 0xff0, 0x260, 0, 1, "Hinox", 0xff},  // 0x53: 10 = request HinoxStart
+    {GA_HINOX_VTABLE, GA_HINOX_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Hinox", 0xff},  // 0x53: 10 = request HinoxStart
     // (found 2026-10-12 with tools placing each one on Field_13D: LARECOMP_MB_SCAN_NAME / _FORCE)
-    {MAIN_BASE + 0x1b86e58, MAIN_BASE + 0x4301d0, 0x1110, 0x260, 0, 1, "Smasher", 0xff},       // 0x5c (+ iron ball)
-    {MAIN_BASE + 0x1badc60, MAIN_BASE + 0x6d4f40, 0xff0, 0x260, 0, 1, "Avalaunch", 0xff},      // 0x60
-    {MAIN_BASE + 0x1ba32c8, MAIN_BASE + 0x61f250, 0xff0, 0x260, 0, 1, "Rolling Bones", 0xff},  // 0x51 (+ spike bar)
-    {MAIN_BASE + 0x1b7e0e8, MAIN_BASE + 0x38bf50, 0x1200, 0x260, 13, 0, "Gohma", 0xff},        // 0x5a (heads for Link: GOHMA_*)
-    {MAIN_BASE + 0x1b91408, MAIN_BASE + 0x4ec6c0, 0x11a0, 0x260, 10, 1, "Blaino", 5},          // 0x5f (5: after a knock-out)
-    {MAIN_BASE + 0x1b82f70, MAIN_BASE + 0x3e59a0, 0xff0, 0x260, 0, 3, "Cue Ball", 0xff},       // 0x58 (+ a rail fitted)
+    {GA_SMASHER_VTABLE, GA_SMASHER_CHANGE_STATE, 0x1110, 0x260, 0, 1, "Smasher", 0xff},       // 0x5c (+ iron ball)
+    {GA_AVALAUNCH_VTABLE, GA_AVALAUNCH_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Avalaunch", 0xff},      // 0x60
+    {GA_ROLLING_BONES_VTABLE, GA_ROLLING_BONES_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Rolling Bones", 0xff},  // 0x51 (+ spike bar)
+    {GA_GOHMA_VTABLE, GA_GOHMA_CHANGE_STATE, 0x1200, 0x260, 13, 0, "Gohma", 0xff},        // 0x5a (heads for Link: GOHMA_*)
+    {GA_BLAINO_VTABLE, GA_BLAINO_CHANGE_STATE, 0x11a0, 0x260, 10, 1, "Blaino", 5},          // 0x5f (5: after a knock-out)
+    {GA_CUE_BALL_VTABLE, GA_CUE_BALL_CHANGE_STATE, 0xff0, 0x260, 0, 3, "Cue Ball", 0xff},       // 0x58 (+ a rail fitted)
     // 0x57: 0 = under the sand until his screen's event (AreaEventBox - not copied) runs his start; back in 0, again
-    {MAIN_BASE + 0x1b8bc08, MAIN_BASE + 0x47db50, 0xff0, 0x260, 0, 1, "Lanmola", 0, 0, 0, 0x487ce0},
+    {GA_LANMOLA_VTABLE, GA_LANMOLA_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Lanmola", 0, 0, 0, (GA_LANMOLA_START - MAIN_BASE)},
     // 0x59: 12 = hidden until his room's event (AreaEventBox - not copied: intro, music) drops him in; 13 shows him
-    {MAIN_BASE + 0x1b8ea08, MAIN_BASE + 0x4b9be0, 0x1230, 0x260, 12, 13, "Master Stalfos", 0xff, 1, 1},
+    {GA_MASTER_STALFOS_VTABLE, GA_MASTER_STALFOS_CHANGE_STATE, 0x1230, 0x260, 12, 13, "Master Stalfos", 0xff, 1, 1},
 };
 #define NKINDS (int)(sizeof g_kinds / sizeof g_kinds[0])
 #define WAKE_DIST 7.0f  // (a Field screen is ~15 x 12 units)
@@ -73,7 +74,7 @@ static uint64_t g_scan_vt[16], g_scan_obj[8], g_scan_sm[8][8];
 static uint8_t g_scan_last[8][8];
 static int g_scan_nv = -1;
 
-static bool code_ptr(uint64_t p) { return p >= MAIN_BASE && p < MAIN_BASE + 0x1600000; }
+static bool code_ptr(uint64_t p) { return p >= MAIN_BASE && p < GA_MAIN_CODE_SCAN_END; }
 
 static void scan_seen(uint64_t o, uint64_t vt) {
     if (g_scan_nv < 0) {
@@ -173,7 +174,7 @@ static void force_tick(Cpu *c, uint64_t frame) {
         uint64_t saved[31], sp = c->sp;
         memcpy(saved, c->x, sizeof saved);
         c->x[0] = scan_latest();
-        guest_call(c, MAIN_BASE + 0x29520);
+        guest_call(c, GA_AREA_EVENT_TRIGGER);
         memcpy(c->x, saved, sizeof saved);
         c->sp = sp;
         LOG("[mb-zone] f%llu actor %llx: zone entry call\n", (unsigned long long)frame, (unsigned long long)scan_latest());
@@ -214,8 +215,8 @@ static void miniboss_marker_set(void) {
         }
     }
     if (g_marker < 0) return;
-    uint8_t *fl = (uint8_t *)(uintptr_t)LD64(MAIN_BASE + 0x1CC1388);
-    if (!fl || (uint32_t)(g_marker >> 3) >= LD32(MAIN_BASE + 0x1CC1390)) return;
+    uint8_t *fl = (uint8_t *)(uintptr_t)LD64(GA_FLAG_PTR);
+    if (!fl || (uint32_t)(g_marker >> 3) >= LD32(GA_FLAG_CAP)) return;
     fl[g_marker >> 3] |= (uint8_t)(1 << (g_marker & 7));
 }
 

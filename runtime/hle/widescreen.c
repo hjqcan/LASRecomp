@@ -1,5 +1,6 @@
 // Widescreen: the camera code's 16:9 aspect literal loads are patched (tools/patches.py) to call
 // rt_aspect_site(); the renderer sets the wide factor (output aspect / 16:9) each frame.
+#include "../game_addresses.h"
 #include <string.h>
 #include <math.h>
 #include <stdbool.h>
@@ -114,7 +115,7 @@ void widescreen_backdrop_seen(uint64_t hash) {
 static bool level_is_interior(void) {
     extern int game_in_play(void);
     if (!game_in_play()) return false;
-    uint64_t ps = LD64(MAIN_BASE + 0x1CC1368);  // PlayerStatus*: current level name at +0
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);  // PlayerStatus*: current level name at +0
     if (!ps) return false;
     const char *lv = (const char *)(uintptr_t)ps;
     return lv[0] && strcmp(lv, "Field") != 0;
@@ -156,7 +157,7 @@ static bool heap_ptr(uint64_t p) { return p >= HEAP_BASE && p + 0x40 <= HEAP_BAS
 
 // Current camera zone's box; false when there is none (title, overworld, loading).
 static bool current_zone(float lo[3], float hi[3], uint32_t *id) {
-    uint64_t o = LD64(SDK_BASE + 0xcf9e38);
+    uint64_t o = LD64(GA_SDK_SYSTEM_OBJECT);
     if (!heap_ptr(o)) return false;
     uint64_t z = LD64(o + 0x680);
     if (!heap_ptr(z)) return false;
@@ -264,6 +265,6 @@ void widescreen_present_crop(uint64_t frame, double shape, float crop[4], double
 // Current level name for logs ("-" when not in play).
 const char *game_level_name(void) {
     extern int game_in_play(void);
-    uint64_t ps = LD64(MAIN_BASE + 0x1CC1368);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     return game_in_play() && ps && *(const char *)(uintptr_t)ps ? (const char *)(uintptr_t)ps : "-";
 }

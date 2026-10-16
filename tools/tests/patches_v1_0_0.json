@@ -1,0 +1,190 @@
+{
+  "baseline": "beta_5 e97402064f948df563580ef435e42afea502d117",
+  "patches": {
+    "700001092c": {
+      "word": "bd4ba520",
+      "sha256": "4bc8af867cd1406e5997b58263c4fbb9aa8cff18ceb9edc95ea691051b9eb476"
+    },
+    "7000010b58": {
+      "word": "bd4ba542",
+      "sha256": "4bb6156215da9d0d4c0622f05cd671be2d394b96e7ad45d793c2999a2f16896d"
+    },
+    "70000c1c84": {
+      "word": "bd4ba520",
+      "sha256": "c6a52c7b6f351798d78bc80e9b337c29b95a4a581477d41269f098b7e4f5f74f"
+    },
+    "70000c3228": {
+      "word": "bd4ba520",
+      "sha256": "a6ef980e50f1b6c09e7900cf719a92b520380a4c6babd7d9df514cb2c1e4540c"
+    },
+    "70000c3edc": {
+      "word": "bd4ba500",
+      "sha256": "bcf5828a1d95cc763967640f73c7bc14e8e8cc4eb15a96084e74b7386d9f9750"
+    },
+    "700085f824": {
+      "word": "bd4ba500",
+      "sha256": "297c29ba77ed658e4ee5fd3e59c8acb33145291c6318989ca9ab22d30f0da0cf"
+    },
+    "7000852ad4": {
+      "word": "bd457369",
+      "sha256": "1e73767f2bd1277ab2739152f16bd2f0f53f4ebfdb1d020d38e3dd589f4812e1"
+    },
+    "7000010914": {
+      "word": "bd4566e0",
+      "sha256": "d8d62c7c6fe576f1a12b6980025853eca9d1ddb5dd4db39ebd2ba6147b3cdea5"
+    },
+    "7000852ad0": {
+      "word": "bd456768",
+      "sha256": "a2e24fefe216027dc8c89953586555a887dbe9a364141eabd90865c67b134c43"
+    },
+    "7001023c70": {
+      "word": "bd4ba541",
+      "sha256": "6273363fadb0b9d63036bf51ac685c43b13305f8346b7dc007676b44dbb39954"
+    },
+    "700080c464": {
+      "word": "f900e114",
+      "sha256": "5e16f683ef98f9435e6774a04bc4bd1f5727590703ceff20fa516de4bc91048d"
+    },
+    "700080d718": {
+      "word": "f900e113",
+      "sha256": "521c9edc616d8e4461b9663e32fc70a30ee2706d6d47ab8211ed2336c90ce27d"
+    },
+    "700081ba80": {
+      "word": "d10203ff",
+      "sha256": "2dfa53d524824e7c06782d0c7cfd3111f9c066ef589c1cba4a2ecd986fd2004c"
+    },
+    "70007f15e0": {
+      "word": "941c4f28",
+      "sha256": "104ef7b0f1f3c9727a6664f039128203b032be2cea0c8b561be02b315e00995f"
+    },
+    "7000d7c8c0": {
+      "word": "1ac92009",
+      "sha256": "ce0df3ab4a6187bcb377126f161e3228f00095ff1ca4d5f85ef30eb309a958cc"
+    },
+    "7000d9694c": {
+      "word": "1ad622a8",
+      "sha256": "292fe895198d6bd1f9a4f945fc58412a86657ab07d6cddddb2d8448909b84775"
+    },
+    "7000d4c738": {
+      "word": "1ac92114",
+      "sha256": "5a40d6f1857ed05b3f8175e0e723f981d3f31b2000f86fd79c5fafe01e227143"
+    },
+    "7000db1f6c": {
+      "word": "1a890154",
+      "sha256": "cc998ffab88679406602edbd1bf6b48ceaf9f96463cf814ccd7f93b588e50d4a"
+    },
+    "7000eb66c0": {
+      "word": "f9407bf6",
+      "sha256": "678ae4fd48dcf94573db0afcdbcf0cf6ae9df32fe3069e04c0479c5a5c09751e"
+    },
+    "7000eb6658": {
+      "word": "94035896",
+      "sha256": "c5ddd2a779ecc550bcc025a792a69e556333425dafb92ecc74519f738db88d7c"
+    },
+    "70008d08e0": {
+      "word": "d10143ff",
+      "sha256": "89166c4a9b9e1525451bb17210c172c7252a97d3a4dab61f24d4e7e9ab379993"
+    },
+    "70007e1d10": {
+      "word": "2a1403e2",
+      "sha256": "61c27cbb9ac03f3d262be2fd565db06a03a450fd828c41b24b567893194916f6"
+    },
+    "7000eb7cd0": {
+      "word": "d10243ff",
+      "sha256": "4757e9a0aa1cadde12ff84f8389e7e18af239651c2be60e42b411a6386b44952"
+    },
+    "7000e93800": {
+      "word": "d10203ff",
+      "sha256": "a69439b0e9a92aa565a1ede1d78f9d5a3ee93081bc48a96801fcc757a1b01fb6"
+    },
+    "7000e78740": {
+      "word": "d10243ff",
+      "sha256": "33a386a8c3483bda653eb7be5f1daee7bca45a666a1caaf2a469a3a4233f169a"
+    },
+    "70010def30": {
+      "word": "d10503ff",
+      "sha256": "1c631871ea586f3ec6597295249bdc1d45a6bc3a5c80f378f8a70e232a59fb34"
+    },
+    "700000c954": {
+      "word": "b8696908",
+      "sha256": "e8b3218b2754c6b82e0619ac791f2774506509ea182f8eff308af330b422c693"
+    },
+    "7000d50f0c": {
+      "word": "1a9f17e0",
+      "sha256": "65b89a4a7428cf636a07646505046116bb6f7415ee360b07715fd3eaa6b745b7"
+    },
+    "70008f5ed4": {
+      "word": "f9400118",
+      "sha256": "ecbb4cdadb02703d4bc4c3ffa074edcf36ca16fe2f331399ff2f11213a2ef10e"
+    },
+    "7000d7ee9c": {
+      "word": "b9403bf7",
+      "sha256": "b3cea28964e98af9f459ef933db4de6a7bd3cecb4d25b0e7551df15d7c8060c6"
+    },
+    "7000ded9f0": {
+      "word": "d10103ff",
+      "sha256": "c5a3eab6a4ca07843dfc799bbaed7998c55a2a48f31cabf5d2737a108db0939c"
+    },
+    "700089ba34": {
+      "word": "3940e308",
+      "sha256": "25cefb5f29ecca36392851a54c61b8e9cff798ab74dfd2ae557d14e5122305b9"
+    },
+    "7001071220": {
+      "word": "d10243ff",
+      "sha256": "d4c83a58856bc5ae0091a7c1d1ff12a1337317d9851d0acece8554a676505394"
+    },
+    "700109fca8": {
+      "word": "321c03e0",
+      "sha256": "46cac2924d40ecac6a60277947b46ce3f55cfa9a4b5a558eeda9a7e95c0cae1c"
+    },
+    "700109fb18": {
+      "word": "321c03e0",
+      "sha256": "4c4973f9a2cad04b7f8f676f7b2ad2407e4b78a25507266f93b300e0dd8378be"
+    },
+    "70008d1118": {
+      "word": "12197929",
+      "sha256": "791ac37ae5dc4d9da15c17ac32b8a026828004ff28ae9613ac778356d5ad0470"
+    },
+    "70008d12f8": {
+      "word": "12001929",
+      "sha256": "fb413296979725c2cc994a56665d46643947b9b5fc02266c4136c63d5931f52d"
+    },
+    "70008c45b8": {
+      "word": "9400351e",
+      "sha256": "93da94a2fe823133125e675402d12977656c61442abfd0bcb10c3f6f8e528911"
+    },
+    "7000ff54c0": {
+      "word": "1a9f07fb",
+      "sha256": "e65913572eb8de79f7a855177754bdf6cda03599fb669925766532034e3864bf"
+    },
+    "70000856e4": {
+      "word": "9420589f",
+      "sha256": "3dc9f8e69b5579f75600443e4f9938306f8e2951a0d23cad8daa1fb4e1b1b85c"
+    },
+    "700108edc8": {
+      "word": "321d03e0",
+      "sha256": "8f6490bf52e9001ad45aa3b093783709db94cfeef67f182ba9456cf5823e221e"
+    },
+    "700108ef40": {
+      "word": "940e8868",
+      "sha256": "e497c963dc6711cf559d981164f2d27a90d52d596a8cd9ee20330a3c08814a1d"
+    },
+    "700108f074": {
+      "word": "940e887b",
+      "sha256": "9888fe18b79641049387451ec0feb7c0d8035f7c5dc8eb690ed893d582f8ca19"
+    },
+    "7000eab138": {
+      "word": "2d060102",
+      "sha256": "3809979dea3ac6b73a1399ee714ac9e264e285092d3c83a76e46a7425ee587f4"
+    },
+    "70010cce50": {
+      "word": "aa0003e1",
+      "sha256": "bd86b26dbe6c60771707975659429060b4d0af2d92de6b7b3d1c0afa4c1c1d0b"
+    },
+    "70010cce30": {
+      "word": "aa0003e1",
+      "sha256": "736dae7df22860619760e5556a27d427392118b491e90d9841684df7f3e8c104"
+    }
+  },
+  "hooks_sha256": "e1d3359aa8f686e467ec9ea5248d58fb35a5a2a235e64e7bb9953a50f40e41be"
+}

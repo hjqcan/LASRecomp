@@ -5,13 +5,14 @@
 // (bug report 2026-10-11; vanilla can't reach the hole without them). Without the Flippers, a moment after landing
 // (the fall and the first drown play out) he's taken back up to the cave door at the top of the stairs beside the hole
 // (the nearest spawn point; moving him onto the ground by the hole instead shows a jump - tried, user 2026-10-11).
+#include "../game_addresses.h"
 #include <stdint.h>
 #include <string.h>
 
 #include "../hle.h"
 
-#define PLAYER_STATUS_PTR (MAIN_BASE + 0x1CC1368)  // PlayerStatus*: level name at +0
-#define KEY_ITEMS (MAIN_BASE + 0x1CBB220 + 0x556C)  // live save key items: bit 0 = Flippers
+#define PLAYER_STATUS_PTR (GA_PLAYER_STATUS_PTR)  // PlayerStatus*: level name at +0
+#define KEY_ITEMS (GA_LIVE_SAVE + 0x556C)  // live save key items: bit 0 = Flippers
 extern int game_in_play(void);
 extern int warp_busy(void);
 extern void warp_request(const char *level, const char *locator);

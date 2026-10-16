@@ -43,6 +43,10 @@ them, then `make -j10`. The randomizer needs its Python environment in
 - `tools/gen.py` - the recompiler: translates the game's executables into C (`generated/`, never committed).
   `tools/patches.py` holds code patches applied during generation; every patch site checks the original instruction
   word, so a wrong address fails loudly instead of silently.
+- `runtime/game_addresses/v1_0_0.h` - the shared table of game addresses. The runtime includes it through
+  `game_addresses.h`; `tools/game_addresses.py` reads the same literal definitions for the patch generator.
+  Add an address here and reuse its name in both consumers. The current selection remains 1.0.0; guest memory
+  layout constants and object field offsets are separate. Existing instruction checks still guard patch sites.
 - `runtime/` - the host side:
   - `kernel.c`, `loader.c`, `services/` - the Switch OS replacement
   - `hle/` - replacements and features (door jumps, keysanity, pots / bushes, souls, warps, input, ...)
@@ -76,6 +80,13 @@ helper process trees, descendant cleanup and crash exit codes. `CC` / `CXX` sele
 the native compiler (defaults: `clang` / `clang++`). For a release smoke test,
 cancel a real game-code build after some objects finish, resume it, inspect the
 reused/compiled counts in the log, and launch the resulting game library.
+
+For address-table changes, run `python tools/test_game_addresses.py`. It checks native/Python agreement,
+patch-output fingerprints from the pre-refactor `beta_5` build, hook records and uncentralized addresses without
+game files. For full generation equivalence, generate from the same player-provided `exefs/main` and `exefs/sdk`
+with both revisions, then run `python tools/test_game_addresses.py --compare-generated /path/to/before /path/to/after`.
+The comparison checks every generated C file byte-for-byte. This table records the existing, verified 1.0.0
+sites; it does not yet discover addresses automatically from code patterns.
 
 - Match the surrounding code: its naming, structure and comment density. Comments explain *why* (what the game does,
   what an address is, which seed or bug showed the problem), not what the next line does.

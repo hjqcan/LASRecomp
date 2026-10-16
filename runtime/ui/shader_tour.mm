@@ -3,6 +3,7 @@
 // its shaders get translated and compiled - they land in cache/shaders/ and Metal's disk cache, which the boot
 // warm-up (runtime/nvn/renderer.m shader_cache_warm) loads every later start: no first-use pop-in. Nothing derived
 // from the game ships: the cache is built on the player's machine from their own copy. Exits when done.
+#include "../game_addresses.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +18,7 @@ int warp_busy(void);
 bool warp_blocked(const char *locator);
 }
 
-#define PLAYER_STATUS_PTR (MAIN_BASE + 0x1CC1368)  // PlayerStatus*: current level name at +0
+#define PLAYER_STATUS_PTR (GA_PLAYER_STATUS_PTR)  // PlayerStatus*: current level name at +0
 
 extern "C" void shader_tour_tick(uint64_t frame) {
     static int per = -1, i, waiting;

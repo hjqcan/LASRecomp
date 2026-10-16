@@ -10,6 +10,7 @@
 // The file-select screen reads every slot, so a slot's extra bits are matched to the save the game puts in play by
 // the body CRC (save +0x5EC4) of the data read from its file.
 // Only on when the seed needs it (rando/<seed>/flags_ext exists) or LARECOMP_FLAGS_EXT=1.
+#include "../game_addresses.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,9 +19,9 @@
 #include "../hle.h"
 #include "../rando.h"
 
-#define FLAG_PTR (MAIN_BASE + 0x1CC1388)
-#define FLAG_CAP (MAIN_BASE + 0x1CC1390)
-#define LIVE_SAVE (MAIN_BASE + 0x1CBB220)
+#define FLAG_PTR (GA_FLAG_PTR)
+#define FLAG_CAP (GA_FLAG_CAP)
+#define LIVE_SAVE (GA_LIVE_SAVE)
 #define LIVE_FLAGS (LIVE_SAVE + 0x5DC0)
 #define BODY_CRC 0x5EC4
 #define NFLAGS 45056

@@ -1,5 +1,6 @@
 // Cheats tab: toggles applied to the live save every frame while a save is loaded (layout: notes/save_format.md),
 // plus one-shot buttons. Settings persist in larecomp.ini (g_settings.cheat_*).
+#include "../game_addresses.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,7 +14,7 @@ extern "C" {
 int game_in_play(void);
 }
 
-#define LIVE_SAVE 0x7001CBB220ull  // main + 0x1CBB220
+#define LIVE_SAVE GA_LIVE_SAVE  // main + 0x1CBB220
 template <typename T> static T &F(uint32_t off) { return *(T *)(uintptr_t)(LIVE_SAVE + off); }
 
 enum : uint32_t {
