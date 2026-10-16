@@ -74,6 +74,7 @@ def main():
     copy(root/'docs/enhanced.md', 'START-HERE-使用说明.md')
     copy(root/'examples/mods/template', 'examples/mods/template')
     copy(root/'fonts/README.md', 'fonts/README.md')
+    copy(root/'third_party/release-licenses', 'licenses')
     files = sorted(p for p in stage.rglob('*') if p.is_file())
     banned = {'.gamebuild', 'extracted', 'games', 'save', 'photos', 'prod.keys', 'title.keys',
               'lasgame.dll', 'lasrecomp.log', 'larecomp.ini', 'romfs.bin'}

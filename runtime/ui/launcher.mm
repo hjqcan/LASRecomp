@@ -546,8 +546,9 @@ static void import_fonts() {
         if (in) fclose(in);
         if (out) fclose(out);
     }
-    g_font_msg = std::to_string(ok) + " font file(s) imported" + (skipped ? ", " + std::to_string(skipped) + " not recognized" : "") +
-                 ". Used from the next game start.";
+    char result[256];
+    snprintf(result, sizeof result, ui_tr("Imported %d font files; %d not recognized. Used from the next game start."), ok, skipped);
+    g_font_msg = result;
 }
 
 static void remove_fonts() {
@@ -997,19 +998,19 @@ static void prelaunch_tab(float sc) {
     heading("Game font");
     import_fonts();
     bool fs = have_font(FONT_STD, 4), fl = have_font(FONT_LANG, 8), fe = have_font(FONT_EXT, 2);
-    ImGui::Text("Text: %s    Chinese / Korean: %s    Button icons: %s",
-                fs ? "Nintendo font (imported)" : "substitute (this OS's, per language)",
-                fl ? "Nintendo font (imported)" : "substitute", fe ? "imported" : "substitute");
+    ImGui::Text(ui_tr("Text: %s    Chinese / Korean: %s    Button icons: %s"),
+                ui_tr(fs ? "Nintendo font (imported)" : "substitute (this OS's, per language)"),
+                ui_tr(fl ? "Nintendo font (imported)" : "substitute"), ui_tr(fe ? "imported" : "substitute"));
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("Fonts aren't included. For the original look, dump them from your own Switch and import "
+    ImGui::TextDisabled("%s", ui_tr("Fonts aren't included. For the original look, dump them from your own Switch and import "
                         "nintendo_udsg-r_std_003.bfttf (text), the same-named files for Chinese and Korean "
                         "(nintendo_udsg-r_org_zh-cn_003, nintendo_udsg-r_ext_zh-cn_003, nintendo_udjxh-db_zh-tw_003, "
                         "nintendo_udsg-r_ko_003) and nintendo_ext_003.bfttf (button icons). "
-                        ".ttf versions with the same names work too.");
+                        ".ttf versions with the same names work too."));
     ImGui::PopTextWrapPos();
-    if (!g_font_msg.empty()) ImGui::Text("%s", g_font_msg.c_str());
+    if (!g_font_msg.empty()) ImGui::Text("%s", ui_tr(g_font_msg.c_str()));
     static const SDL_DialogFileFilter font_f[] = {{"Switch fonts", "bfttf;ttf"}};
-    if (ImGui::Button("Import fonts")) SDL_ShowOpenFileDialog(picked_fonts, NULL, g_launcher_win, font_f, 1, NULL, true);
+    if (ImGui::Button(ui_label("Import fonts").c_str())) SDL_ShowOpenFileDialog(picked_fonts, NULL, g_launcher_win, font_f, 1, NULL, true);
     if (fs || fl || fe) {
         ImGui::SameLine();
         if (ImGui::Button(ui_label("Use substitute font").c_str())) remove_fonts();
