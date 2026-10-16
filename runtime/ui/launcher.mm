@@ -948,36 +948,21 @@ extern "C" void launcher_run(const char *root) {
     if (ap && status.empty() && !(runs && !strcmp(ap, "once"))) play = true;  // (test: PLAY at once)
     runs++;
     if (const char *t = SDL_getenv("LARECOMP_LAUNCHER_UPDATE_NSZ")) g_update_nsz = t;  // UTF-8, including on Windows
-    if (const char *t = SDL_getenv("LARECOMP_LAUNCHER_EXTRACT")) {  // (test) <folder>: set the game files up, log, exit
-        g_src = t;
+    const char *setup_source = SDL_getenv("LARECOMP_LAUNCHER_EXTRACT");
+    bool exit_after_setup = setup_source != NULL;  // (test) set up, log the result, exit
+    if (!setup_source) setup_source = SDL_getenv("LARECOMP_LAUNCHER_SETUP");
+    if (setup_source) {
+        // Automated imports use the same progress screen as interactive setup.
+        // Pumping events alone leaves a black window throughout recompilation.
+        g_src = setup_source;
         g_busy = true;
-        pthread_t setup;
-        if (pthread_create(&setup, NULL, extract_thread, NULL)) {
+        page = SETUP;
+        play = false;
+        pthread_t th;
+        if (pthread_create(&th, NULL, extract_thread, NULL)) {
             fprintf(stderr, "[launcher] could not start setup thread\n");
             exit(1);
         }
-        // This test entry point can compile for several minutes too. Keep the
-        // native window responsive, just as the normal setup screen does.
-        for (;;) {
-            pthread_mutex_lock(&g_lock);
-            bool running = g_busy;
-            pthread_mutex_unlock(&g_lock);
-            if (!running) break;
-            SDL_Event event;
-            while (SDL_PollEvent(&event))
-                if (event.type == SDL_EVENT_QUIT) exit(1);
-            SDL_Delay(20);
-        }
-        pthread_join(setup, NULL);
-        fprintf(stderr, "[launcher] setup: %s -> %s\n", g_job.c_str(), check_game_files(g_root).empty() ? "READY" : "NOT READY");
-        exit(g_job_failed ? 1 : 0);
-    }
-    if (const char *t = SDL_getenv("LARECOMP_LAUNCHER_SETUP")) {  // (test) <folder>: Set up started on the start screen
-        g_src = t;
-        g_busy = true;
-        page = SETUP;
-        pthread_t th;
-        pthread_create(&th, NULL, extract_thread, NULL);
         pthread_detach(th);
     }
     if (getenv("LARECOMP_LAUNCHER_DELETE")) {  // (test) what DELETE GAME FILES does, logged; then the start screen
@@ -1013,13 +998,17 @@ extern "C" void launcher_run(const char *root) {
         while (SDL_PollEvent(&e)) {
             if (page == SETTINGS && bind_capture_event(&e)) continue;  // (waiting for a new binding: controls_ui.mm)
             if (!launcher_pad_event(e)) ImGui_ImplSDL3_ProcessEvent(&e);
-            if (e.type == SDL_EVENT_QUIT) exit(0);
+            if (e.type == SDL_EVENT_QUIT) exit(exit_after_setup ? 1 : 0);
         }
         // extraction finished: re-check, load the background
         pthread_mutex_lock(&g_lock);
         bool busy = g_busy;
         bool setup_failed = g_job_failed;
         pthread_mutex_unlock(&g_lock);
+        if (exit_after_setup && !busy) {
+            fprintf(stderr, "[launcher] setup: %s -> %s\n", g_job.c_str(), check_game_files(g_root).empty() ? "READY" : "NOT READY");
+            exit(setup_failed ? 1 : 0);
+        }
         static bool was_busy;
         if (was_busy && !busy) {
             status = check_game_files(g_root);
@@ -1443,6 +1432,7 @@ extern "C" void launcher_run(const char *root) {
                     float f = test_busy ? 0.42f : extract_progress();
                     // (while the game code is built: what's happening, on whose files - runtime/gamebuild.c)
                     bool recompiling = g_build_frac >= 0;
+                    bool importing = source_is_nsz && !recompiling && !test_busy;
                     const char *title = recompiling ? "Recompiling the game" : "Setting up the game files";
                     static const char *const notes[] = {"This only needs to be done once and may take a while."};
                     int nnotes = recompiling ? 1 : 0;
@@ -1460,10 +1450,15 @@ extern "C" void launcher_run(const char *root) {
                     fg->AddText(g_font_menu, tfs, ImVec2((a.x + b.x - ts.x) * 0.5f, a.y + 36 * sc), IM_COL32(236, 194, 84, 255), title);
                     ImVec2 ba(a.x + 48 * sc, a.y + bar_y), bb(b.x - 48 * sc, a.y + bar_y + 24 * sc);
                     fg->AddRectFilled(ba, bb, IM_COL32(255, 255, 255, 25), 12 * sc);
-                    if (f > 0) fg->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * f, bb.y), IM_COL32(236, 194, 84, 255), 12 * sc);
+                    if (importing) {  // Archive stages report their own counts; no invented overall percentage.
+                        float x = (bb.x - ba.x) * 0.375f * (1 + sinf((float)ImGui::GetTime() * 2));
+                        fg->AddRectFilled(ImVec2(ba.x + x, ba.y), ImVec2(ba.x + x + (bb.x - ba.x) * 0.25f, bb.y),
+                                          IM_COL32(236, 194, 84, 255), 12 * sc);
+                    } else if (f > 0) fg->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * f, bb.y), IM_COL32(236, 194, 84, 255), 12 * sc);
                     char line[200];
-                    snprintf(line, sizeof line, "%s   %d%%", test_busy ? "Setting up the game files..." : job.c_str(),
-                             (int)(f * 100));
+                    if (importing) snprintf(line, sizeof line, "%s", job.c_str());
+                    else snprintf(line, sizeof line, "%s   %d%%", test_busy ? "Setting up the game files..." : job.c_str(),
+                                  (int)(f * 100));
                     ImVec2 ls = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, line);
                     fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ls.x) * 0.5f, bb.y + 26 * sc), IM_COL32(220, 216, 205, 255), line);
                     for (int i = 0; i < nnotes; i++) {
