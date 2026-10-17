@@ -760,6 +760,12 @@ static const VkComponentMapping IDENTITY = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_CO
 VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool render, int want_textype) {
     if (render) vk_mark_render_target(t);
     TexBackend *b = vk_tex(t, render);
+    return vk_view_backend(t, b, v, has_view, render, want_textype);
+}
+
+// Feedback copies retain the original texture's mip/layer range, format and
+// swizzle. Only the backing image changes; each descriptor still needs its view.
+VkImageView vk_view_backend(NvnTexture *t, TexBackend *b, const NvnTextureView *v, bool has_view, bool render, int want_textype) {
     if (!has_view) v = NULL;
     VkFormat fmt = b->format;
     if (v && (v->setmask & 4) && !(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {

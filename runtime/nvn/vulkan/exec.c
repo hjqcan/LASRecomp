@@ -1727,7 +1727,7 @@ static void build_pipeline(void *arg) {
 
 // ================================================================== feedback snapshots (renderer.m resolve_feedback)
 static NvnTexture *feedback_tex[4];
-static VkImageView feedback_view[4];
+static TexBackend *feedback_copy[4];
 static int nfeedback;
 static uint64_t g_cur_fs_hash;
 static NvnTexture *snap_tex[8];
@@ -1757,6 +1757,12 @@ static bool is_attachment(NvnTexture *t) {
     return false;
 }
 
+static bool snapshot_matches(const TexBackend *d, const TexBackend *src) {
+    return d->image && d->width == src->width && d->height == src->height && d->depth == src->depth &&
+           d->levels == src->levels && d->layers == src->layers && d->samples == src->samples &&
+           d->format == src->format && d->base_type == src->base_type;
+}
+
 static TexBackend *snapshot_image(NvnTexture *t, TexBackend *src) {
     Snap *s = NULL;
     for (int i = 0; i < nsnaps; i++) if (snaps[i].key == t) s = &snaps[i];
@@ -1765,21 +1771,27 @@ static TexBackend *snapshot_image(NvnTexture *t, TexBackend *src) {
         s->key = t;
     }
     TexBackend *d = &s->copy;
-    if (d->image && (d->width != src->width || d->height != src->height || d->format != src->format)) {
+    if (d->image && !snapshot_matches(d, src)) {
         vk_views_forget(d);  // (resolution change)
         vk_defer_image(d->image, d->mem);
         d->image = VK_NULL_HANDLE;
         d->mem = VK_NULL_HANDLE;
     }
     if (!d->image) {
-        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = src->format,
-                                .extent = {src->width, src->height, 1}, .mipLevels = 1, .arrayLayers = 1,
+        bool volume = src->base_type == VK_IMAGE_VIEW_TYPE_3D;
+        bool one_d = src->base_type == VK_IMAGE_VIEW_TYPE_1D || src->base_type == VK_IMAGE_VIEW_TYPE_1D_ARRAY;
+        bool cube = src->base_type == VK_IMAGE_VIEW_TYPE_CUBE || src->base_type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | (cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0),
+                                .imageType = volume ? VK_IMAGE_TYPE_3D : one_d ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D, .format = src->format,
+                                .extent = {src->width, src->height, src->depth}, .mipLevels = src->levels, .arrayLayers = src->layers,
                                 .samples = (VkSampleCountFlagBits)src->samples, .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL));
-        d->format = src->format; d->width = src->width; d->height = src->height; d->depth = 1; d->layers = 1; d->levels = 1;
-        d->samples = src->samples; d->aspect = src->aspect; d->base_type = VK_IMAGE_VIEW_TYPE_2D;
+        d->format = src->format; d->width = src->width; d->height = src->height; d->depth = src->depth;
+        d->layers = src->layers; d->levels = src->levels;
+        d->samples = src->samples; d->aspect = src->aspect; d->base_type = src->base_type; d->gpu_owned = true;
         vk_image_init_layout(vk_cmd(), d->image, d->aspect);
     }
     return d;
@@ -2012,11 +2024,9 @@ static void resolve_feedback(Prog *pr) {
             TexBackend *src = vk_tex(t, true);
             Snap *existing = NULL;
             for (int k = 0; k < nsnaps; k++) if (snaps[k].key == t && snaps[k].copy.image) existing = &snaps[k];
-            VkImageAspectFlags sa = src->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : src->aspect;
-            static const VkComponentMapping id = {0};
-            if (!nosnap && si >= 0 && (snap_ok[si] || self_write) && existing) {
+            if (!nosnap && si >= 0 && (snap_ok[si] || self_write) && existing && snapshot_matches(&existing->copy, src)) {
                 feedback_tex[nfeedback] = t;
-                feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
+                feedback_copy[nfeedback++] = &existing->copy;
                 continue;
             }
             stat_feedback_copies++;
@@ -2026,9 +2036,14 @@ static void resolve_feedback(Prog *pr) {
             VkCommandBuffer cb = vk_cmd();
             vk_full_barrier(cb);
             gp_mark(cb, "feedback snapshot %ux%u fmt %d", src->width, src->height, src->format);
-            VkImageCopy rg = {.srcSubresource = {src->aspect, 0, 0, 1}, .dstSubresource = {src->aspect, 0, 0, 1},
-                              .extent = {src->width, src->height, 1}};
-            vkCmdCopyImage(cb, src->image, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+            // A sampler may clamp to an earlier mip while another mip is being
+            // rendered. Keeping only level zero silently defeats that clamp.
+            for (uint32_t lv = 0; lv < src->levels; lv++) {
+                VkImageCopy rg = {.srcSubresource = {src->aspect, lv, 0, src->layers},
+                                  .dstSubresource = {src->aspect, lv, 0, src->layers},
+                                  .extent = {level_extent(src->width, lv), level_extent(src->height, lv), level_extent(src->depth, lv)}};
+                vkCmdCopyImage(cb, src->image, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+            }
             if (g_debug_frame && (src->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) {
                 static int nd;
                 char path[128];
@@ -2039,7 +2054,7 @@ static void resolve_feedback(Prog *pr) {
                 cb = vk_cmd();
             }
             feedback_tex[nfeedback] = t;
-            feedback_view[nfeedback++] = vk_image_view(dst, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
+            feedback_copy[nfeedback++] = dst;
             if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
             snap_ok[si] = true;
             st.rt_dirty = true;
@@ -2660,10 +2675,8 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
             renderer_texture_scale(e->tex, &sc[0], &sc[1]);
             wh[0] = e->tex->width; wh[1] = e->tex->height;
             for (int k = 0; k < nfeedback; k++)
-                if (e->tex == feedback_tex[k] && (st_->type == TEXTYPE_2D || st_->type == TEXTYPE_2D_ARRAY)) {
-                    view = feedback_view[k];
-                    if (st_->type == TEXTYPE_2D_ARRAY) view = vk_dummy_view(TEXTYPE_2D_ARRAY);  // (2D snapshot as array: rare)
-                }
+                if (e->tex == feedback_tex[k])
+                    view = vk_view_backend(e->tex, feedback_copy[k], &e->view, e->has_view, false, st_->type);
         }
     }
     if (h && st.spool && tsc < (uint32_t)st.spool->count) smp = vk_sampler(&((NvnSamplerDesc *)st.spool->entries)[tsc]);

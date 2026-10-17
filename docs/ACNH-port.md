@@ -323,6 +323,14 @@ R11G11B10 texture's raw mip levels on the next debug frame, once per process and
 only with an explicit save directory. This permits inspecting HDR values without
 the clipping applied by an ordinary PNG screenshot.
 
+The sunset lighting investigation found that Vulkan feedback snapshots retained
+only mip zero. Environment filtering reads LOD 2/3/4 from the same texture while
+writing a later level, so these snapshots redirected each read to its sharp base
+image. Snapshots now retain the complete mip/layer chain and each descriptor's
+original view range, format and swizzle. A production-code mock-GPU regression
+checks the LOD result, snapshot refresh, descriptor views, array layers and volume
+depth. Visual sunset verification remains required.
+
 Still required: broader island controls, graphics and audio correctness, day
 rollover, further repeated starts, and an extended gameplay run. Update and DLC compatibility remain
 separate follow-up work after the base game passes these checks.
