@@ -59,7 +59,7 @@ def main():
     for name in ('SDL3.dll', 'avcodec-63.dll', 'avformat-63.dll', 'avutil-61.dll', 'swscale-10.dll',
                  'libiconv-2.dll', 'libshaderc_shared.dll', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll'):
         copy(args.dlls/name, name)
-    for name in ('cpu.h', 'simd.h', 'simd_fp.h', 'gamelib.h'):
+    for name in ('cpu.h', 'simd.h', 'simd_fp.h', 'gamelib.h', 'guest_jump.h'):
         copy(root/'runtime'/name, 'gamelib-src/'+name)
     copy(root/'runtime/hle/hle_symbols.txt', 'gamelib-src/hle_symbols.txt')
     copy(root/'tools/gamelib_entry.c', 'gamelib-src/gamelib_entry.c')

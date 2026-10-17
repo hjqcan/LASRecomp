@@ -117,14 +117,14 @@ endif
 # Only shared generation/ABI inputs belong here. Release-specific inputs are hashed in each adapter's code_identity.
 GAMELIB_SRCS := tools/gen.py tools/gen_game.py tools/adapter_patches.py runtime/title_profile.c tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py \
                 tools/simd_c.py tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
-                runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h
+                runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h runtime/guest_jump.h
 ADAPTER_SRCS := $(wildcard adapters/*/adapter.json) adapters/core-capabilities.json tools/game_catalog.py tools/game_addresses.py runtime/game_addresses/patches_v1_0_0.h \
                 tools/game_versions.py tools/rando_profiles.py tools/patches.py tools/rando/patch_variants.json
 GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(PLATFORM) $(ARCH) $(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 # GAMELIB_BASE_ID: what every compiled piece of it depends on (the headers, the flags, the pinned compiler). The same
 # base keeps the start screen's earlier build pieces: only the pieces whose generated C changed are compiled again
 # (runtime/gamebuild.c). Another base: everything is compiled again.
-GAMELIB_BASE_SRCS := runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/fetch_zig.sh
+GAMELIB_BASE_SRCS := runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h runtime/guest_jump.h tools/fetch_zig.sh
 GAMELIB_BASE_ID := $(shell (cat $(GAMELIB_BASE_SRCS); echo '$(GENFLAGS) $(GAMELIB_SHARED)') | \
                      (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 
@@ -134,7 +134,7 @@ CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime
 
 all: $(EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))
 
-$(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h $(if $(wildcard $(GEN)/research-stores.json),runtime/research_store_probe.h runtime/research_stores.h)
+$(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h runtime/guest_jump.h $(if $(wildcard $(GEN)/research-stores.json),runtime/research_store_probe.h runtime/research_stores.h)
 	@mkdir -p $(dir $@)
 	@$(CC) $(GENFLAGS) -c $< -o $@
 
@@ -271,7 +271,7 @@ dist:
 	tools/zig_slim.sh $(strip $(filter-out -Iruntime,$(GENFLAGS)))  # (zig with its runtime built ahead of time)
 	cp -R build/helper/lasgen "$(DIST)/"
 	cp -R build/zig-slim "$(DIST)/zig"
-	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
+	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h runtime/guest_jump.h tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
 	    "$(DIST)/gamelib-src/"
 	cp docs/icon/icon_1024.png "$(DIST)/icon.png"
 	cp third_party/fonts/Baloo2/Baloo2-SemiBold.ttf "$(DIST)/"  # (start screen font, OFL)

@@ -92,6 +92,33 @@ class Module:
             self._function_entries = sorted(a for a in starts if self.in_text(a))
         return self._function_entries
 
+    def nonlocal_jump_targets(self):
+        """Exported setjmp/longjmp functions and ordinary AArch64 PLT entries for them."""
+        if hasattr(self, '_nonlocal_targets'):
+            return self._nonlocal_targets
+        names = ({'setjmp', '_setjmp', '__setjmp', 'sigsetjmp', '__sigsetjmp'},
+                 {'longjmp', '_longjmp', '__longjmp', 'siglongjmp'})
+        syms = getattr(self.nso, 'syms', [])
+        targets = [{self.base + value for name, info, shndx, value, size in syms
+                    if shndx and name in group} for group in names]
+        got = [{self.base + off for off, typ, sym, add in getattr(self.nso, 'relocs', [])
+                if (sym < len(syms) and syms[sym][0] in names[k]) or
+                   (typ == R_AARCH64_RELATIVE and self.base + add in targets[k])} for k in range(2)]
+        if any(got):
+            for i in range(len(self.words) - 3):
+                adrp, ldr, add, br = self.words[i:i+4]
+                if ((adrp & 0x9f00001f) != 0x90000010 or (ldr & 0xffc003ff) != 0xf9400211 or
+                        (add & 0xffc003ff) != 0x91000210 or br != 0xd61f0220):
+                    continue
+                pc = self.lo + i * 4
+                imm = ((adrp >> 5) & 0x7ffff) << 2 | ((adrp >> 29) & 3)
+                addr = (pc & ~0xfff) + sext(imm, 21) * 4096 + ((ldr >> 10) & 0xfff) * 8
+                for k in range(2):
+                    if addr in got[k]:
+                        targets[k].add(pc)
+        self._nonlocal_targets = tuple(targets)
+        return self._nonlocal_targets
+
     def materialization_start(self, fragment):
         # A table base can be hoisted before a loop's fragment. Replaying only
         # from that fragment leaves its base pointing into zeroed scratch space,
@@ -511,7 +538,7 @@ class Module:
             ext.add(end)
         return labels, ext, tables
 
-    def render_single(self, ins, a, jump, refs):
+    def render_single(self, ins, a, jump, refs, return_code='return;', keep_frame=False):
         """C for one lifted instruction (no batching); used for patch variants."""
         k = ins.kind
         if k == 'asm':
@@ -531,9 +558,11 @@ class Module:
         if k == 'blr':
             return [f'c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; rt_dispatch(c);']
         if k == 'br':
+            if keep_frame:
+                return [f'c->pc = {ins.target}; rt_dispatch(c); {return_code}']
             return [f'c->pc = {ins.target}; __attribute__((musttail)) return rt_dispatch(c);']
         if k == 'ret':
-            return ['return;']
+            return [return_code]
         raise Unsupported(k)
 
     def emit_function(self, entry, end, labels, tables, hle):
@@ -543,6 +572,21 @@ class Module:
             out.append('}')
             return out
         out.append(f'    FN_ENTER({hx(entry)});')
+        setjmps, longjmps = self.nonlocal_jump_targets()
+        checkpoints = {a for a in range(entry, end, 4) if setjmps and
+                       self.lift(a).kind == 'bl' and self.lift(a).target in setjmps}
+        return_code = 'return;'
+        if checkpoints:
+            return_code = 'rt_guest_jump_leave(jump_scope); return;'
+            out.append('    RtGuestJumpScope *const jump_scope = rt_guest_jump_enter(c);')
+            out.append('    if (setjmp(jump_scope->host)) {')
+            cases = ' '.join(f'case {hx(a+4)}: goto L_{a+4:x};' for a in sorted(checkpoints))
+            out.append(f'        switch (c->pc) {{ {cases} default: rt_udf(c, c->pc); }}')
+            out.append('    }')
+            labels = set(labels) | {a + 4 for a in checkpoints}
+        elif entry in longjmps:
+            # Most implementations end with BR LR; RET LR has the same nonlocal semantics here.
+            return_code = 'c->pc = c->x[30]; __attribute__((musttail)) return rt_dispatch(c);'
         batch = []
         refs = set()
 
@@ -555,8 +599,12 @@ class Module:
             if entry <= t < end:
                 return f'goto L_{t:x};'
             if not self.in_text(t):
-                return f'c->pc = {hx(t)}; __attribute__((musttail)) return rt_dispatch(c);'
+                call = f'c->pc = {hx(t)}; '
+                return call + ('rt_dispatch(c); ' + return_code if checkpoints else
+                               '__attribute__((musttail)) return rt_dispatch(c);')
             refs.add(t)
+            if checkpoints:
+                return f'{fname(t)}(c); {return_code}'
             return f'__attribute__((musttail)) return {fname(t)}(c);'
 
         # Functions with jump tables also get the all-instruction fallback: a table whose emulation
@@ -592,9 +640,9 @@ class Module:
                 first = True
                 for w in RANDO_CODE[a - self.base]:
                     v = self.lifter.lift(w, a)
-                    out.append(f'    {"if" if first else "else if"} (rw == {hx(w)}) {{ ' + ' '.join(self.render_single(v, a, jump, refs)) + ' }')
+                    out.append(f'    {"if" if first else "else if"} (rw == {hx(w)}) {{ ' + ' '.join(self.render_single(v, a, jump, refs, return_code, bool(checkpoints))) + ' }')
                     first = False
-                out.append('    else { ' + ' '.join(self.render_single(ins, a, jump, refs)) + ' } }')
+                out.append('    else { ' + ' '.join(self.render_single(ins, a, jump, refs, return_code, bool(checkpoints))) + ' } }')
                 last = 'op'
                 continue
             if a in HOOKS:  # hook site (tools/patches.py HOOKS): the runtime decides, the instruction stays as it is
@@ -603,7 +651,7 @@ class Module:
                 w = struct.unpack_from('<I', self.nso.image, a - self.base)[0]
                 if w != word:
                     raise ValueError(f'hook {a:#x}: instruction {w:#010x}, expected {word:#010x}')
-                body = ' '.join(self.render_single(ins, a, jump, refs))
+                body = ' '.join(self.render_single(ins, a, jump, refs, return_code, bool(checkpoints)))
                 jumps = ' '.join(f'else if (h_ == {k + 2}) goto L_{t:x};' for k, t in enumerate(targets))
                 out.append(f'    {{ int h_ = rt_hook(c, {hx(a)}); if (h_ == 0) {{ {body} }} {jumps} }}'
                            f'  /* {a:#x}: hook (runtime/hle/hooks.c) */')
@@ -636,6 +684,8 @@ class Module:
                 out.append(f'    if ({ins.cond}) {{ {jump(ins.target)} }}')
             elif k == 'bl':
                 t = ins.target
+                if a in checkpoints:
+                    out.append(f'    rt_guest_jump_mark(jump_scope, c->x[0], c->sp, {hx(a+4)});')
                 if self.in_text(t):
                     refs.add(t)
                     out.append(f'    c->x[30] = {hx(a + 4)}; {fname(t)}(c);')
@@ -653,18 +703,21 @@ class Module:
                     out.append(f'    switch ({ins.target}) {{ {cases} default: break; }}')
                     out.append(f'    c->pc = {ins.target}; goto L_dispatch;')
                     continue
-                out.append(f'    c->pc = {ins.target}; __attribute__((musttail)) return rt_dispatch(c);')
+                tail = 'rt_dispatch(c); ' + return_code if checkpoints else '__attribute__((musttail)) return rt_dispatch(c);'
+                out.append(f'    c->pc = {ins.target}; {tail}')
             elif k == 'ret':
-                out.append('    return;')
+                out.append('    ' + return_code)
             last = k
         flush()
+        if end - 4 in checkpoints:
+            out.append(f'L_{end:x}:;')
         if last not in ('b', 'br', 'ret', 'trap'):
             out.append('    ' + jump(end) if end < self.hi else f'    rt_udf(c, {hx(end)});')
         if all_labels:
             out.append('L_dispatch:')
             cases = ' '.join(f'case {hx(t)}: goto L_{t:x};' for t in range(entry, end, 4))
             out.append(f'    switch (c->pc) {{ {cases} default: break; }}')
-            out.append('    __attribute__((musttail)) return rt_dispatch(c);')
+            out.append('    rt_dispatch(c); ' + return_code if checkpoints else '    __attribute__((musttail)) return rt_dispatch(c);')
         out.append('}')
         self._refs = refs
         return out
@@ -846,6 +899,8 @@ def main():
                 break
         path = os.path.join(args.outdir, f'{args.name}_{nchunks:03d}.c')
         text = ['#include "cpu.h"\n' + ('#include "simd.h"\n' if m.lifter.sc else '')]
+        if any('RtGuestJumpScope' in line for line in body):
+            text.append('#include "guest_jump.h"\n')
         text += [f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs)]
         text += [f'void {sanitize(hle[a])}(Cpu *c);\n' for a in sorted(set(hle) & set(fns))]
         text += ['\n'.join(body), '\n']

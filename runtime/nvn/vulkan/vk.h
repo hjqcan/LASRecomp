@@ -92,6 +92,7 @@ typedef struct TexBackend {
 } TexBackend;
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)
+void vk_mark_render_target(NvnTexture *t);  // attachment use also identifies uncompressed screen buffers for scaling
 VkFormat vk_format(uint32_t nvn_format);
 bool vk_format_alpha_one(uint32_t nvn_format);
 // View of t (optionally through an NVN texture view) for rendering or sampling.

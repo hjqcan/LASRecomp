@@ -90,6 +90,17 @@ with tempfile.TemporaryDirectory(prefix='installation-', dir=io_path(tempfile.ge
         tree.update(hashlib.sha256((native / name).read_bytes()).hexdigest().encode('ascii'))
     assert (third / 'installation-receipt').read_text().splitlines()[2] == tree.hexdigest()
     run('content')
+    (third / 'romfs/asset').write_text('original asset')
+    run('clone', code=86, crash='clone-file')
+    interrupted = meta / (meta / 'pending').read_text().splitlines()[1] / 'content'
+    assert (interrupted / 'exefs/main').exists() and not (interrupted / 'romfs/asset').exists()
+    assert Path(run('resolve')) == third
+    assert Path(run('resume-clone')) == interrupted
+    assert (interrupted / 'romfs/asset').read_text() == 'original asset'
+    # Build work after the clone must not be overwritten on another resume.
+    (interrupted / 'exefs/main').write_text('retained candidate')
+    run('resume-clone')
+    assert (interrupted / 'exefs/main').read_text() == 'retained candidate'
     clone = Path(run('clone'))
     assert (clone / 'romfs/Empty').is_dir()
     (clone / 'exefs/main').write_text('changed candidate')

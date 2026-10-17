@@ -939,7 +939,7 @@ static void begin_pass(void) {
         ca[i] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         pass_color[i] = VK_FORMAT_UNDEFINED;
         if (!t) continue;
-        renderer_mark_gpu_owned(t);
+        vk_mark_render_target(t);
         VkImageView v = vk_view(t, &st.rt.cview[i], st.rt.has_cview[i], true, TEXTYPE_2D);
         TexBackend *b = t->backend;
         if (!v) continue;
@@ -978,7 +978,7 @@ static void begin_pass(void) {
     pass_depth = pass_stencil = VK_FORMAT_UNDEFINED;
     bool has_d = false, has_s = false;
     if (st.rt.depth) {
-        renderer_mark_gpu_owned(st.rt.depth);
+        vk_mark_render_target(st.rt.depth);
         VkImageView v = vk_view(st.rt.depth, &st.rt.dview, st.rt.has_dview, true, TEXTYPE_2D);
         TexBackend *b = st.rt.depth->backend;
         if (v && renderer_format_is_depth(st.rt.depth->format)) {
@@ -2659,7 +2659,7 @@ static void build_compute(void *arg) {
     if (r != VK_SUCCESS) LOG("[compute] pipeline failed: %d\n", r);
 }
 
-static struct CsEnt { uint64_t addr, revision; CsProg *cp; } *g_cs_tab;
+static struct CsEnt { uint64_t addr, revision; uint32_t config[4]; CsProg *cp; } *g_cs_tab;
 static int g_cs_cap;
 
 static void reset_compute_programs(void) {
@@ -2673,7 +2673,7 @@ static void reset_compute_programs(void) {
 
 static void translate_compute(void *arg) {
     CsProg *cp = arg;
-    ShaderKey key = {.glsl = 1};
+    ShaderKey key = cp->p.vkey;
     pthread_mutex_lock(&translate_lock);
     maxwell_gmem_base = HEAP_BASE; maxwell_gmem_size = HEAP_MAX;
     cp->si = maxwell_translate(cp->p.snapshot[0] ? cp->p.snapshot[0] : (const uint8_t *)(uintptr_t)cp->p.code[0],
@@ -2692,8 +2692,13 @@ static void translate_compute(void *arg) {
 static CsProg *compute_program(NvnProgram *np) {
     NvnShaderStage *ss = &np->stages[5];
     if (!ss->code_addr) return NULL;
+    // Snapshot local dimensions and shared-memory bytes before queuing work.
+    uint32_t config[4] = {1, 1, 1, 0};
+    if (ss->control) memcpy(config, ss->control + 0x748, sizeof config);
+    for (int i = 0; i < 3; i++) if (!config[i]) config[i] = 1;
     pthread_mutex_lock(&program_lock);
-    for (int i = 0; i < g_cs_n; i++) if (g_cs_tab[i].addr == ss->code_addr && g_cs_tab[i].revision == np->revision) {
+    for (int i = 0; i < g_cs_n; i++) if (g_cs_tab[i].addr == ss->code_addr && g_cs_tab[i].revision == np->revision &&
+                                      !memcmp(g_cs_tab[i].config, config, sizeof config)) {
         CsProg *cp = g_cs_tab[i].cp;
         pthread_mutex_unlock(&program_lock);
         return cp;
@@ -2706,15 +2711,15 @@ static CsProg *compute_program(NvnProgram *np) {
     cp->p.code[0] = ss->code_addr;
     cp->p.cmax[0] = ss->const_offset ? ss->const_offset : 0x10000;
     cp->p.snapshot[0] = shader_snapshot(cp->p.code[0], &cp->p.cmax[0], STAGE_COMPUTE);
-    for (int i = 0; i < 3; i++) {
-        cp->local[i] = ss->control ? *(const uint32_t *)(ss->control + 0x748 + 4 * i) : 1;
-        if (!cp->local[i]) cp->local[i] = 1;
-    }
+    cp->p.vkey = (ShaderKey){.glsl = 1, .shared_memory = config[3]};
+    memcpy(cp->local, config, sizeof cp->local);
     if (!cp->p.cmax[0]) {
         atomic_store(&cp->p.state, 2);
         atomic_store(&cp->p.job.state, SHADER_JOB_DONE);
     } else start_build(&cp->p.job, translate_compute, cp);
-    g_cs_tab[g_cs_n++] = (struct CsEnt){ss->code_addr, np->revision, cp};
+    struct CsEnt *entry = &g_cs_tab[g_cs_n++];
+    *entry = (struct CsEnt){.addr = ss->code_addr, .revision = np->revision, .cp = cp};
+    memcpy(entry->config, config, sizeof config);
     pthread_mutex_unlock(&program_lock);
     return cp;
 }

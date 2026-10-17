@@ -67,7 +67,7 @@ with tempfile.TemporaryDirectory() as temporary:
     (resources/'tools').mkdir()
     (resources/'build').mkdir()
     (game/'exefs').mkdir(parents=True)
-    for name in ('cpu.h','simd.h','simd_fp.h','gamelib.h'):
+    for name in ('cpu.h','simd.h','simd_fp.h','gamelib.h','guest_jump.h'):
         shutil.copy2(ROOT/'runtime'/name, resources/'runtime'/name)
     shutil.copy2(ROOT/'tools/gamelib_entry.c', resources/'tools/gamelib_entry.c')
     (resources/'runtime/hle/hle_symbols.txt').write_text('fixture\n')

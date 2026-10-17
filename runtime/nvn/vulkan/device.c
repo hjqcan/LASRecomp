@@ -568,11 +568,15 @@ void backend_present(NvnTexture *t) {
         menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("LARECOMP_WINDOW_SHOT") ? atol(getenv("LARECOMP_WINDOW_SHOT")) : 0;
+        extern char g_window_shot_request[256];  // same scripted capture hook as the Metal backend
         extern bool research_exit_ready(void);
         bool shot = (win_shot && (long)total_frames + 1 == win_shot) || research_exit_ready();
-        vk_frame_end(photo_path ? photo_path : shot ? (getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/window.png") : NULL);
+        bool requested_shot = !photo_path && g_window_shot_request[0];
+        vk_frame_end(photo_path ? photo_path : requested_shot ? g_window_shot_request :
+                     shot ? (getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/window.png") : NULL);
         if (photo_path) photo_mode_capture_done();
-        if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) { extern void research_finish(void); research_finish(); fflush(stderr); _exit(0); }
+        else if (requested_shot) g_window_shot_request[0] = 0;
+        else if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) { extern void research_finish(void); research_finish(); fflush(stderr); _exit(0); }
     } else {
         renderer_submit();
     }

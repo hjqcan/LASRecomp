@@ -209,6 +209,27 @@ SI int simd_fe_mode(uint64_t fpcr) {
     return m[(fpcr >> 22) & 3];
 }
 
+// The x86-64 lowering uses SSE for binary32/64 arithmetic. Updating the CRT's
+// x87 environment as well is unnecessary and especially costly on Windows.
+// Keep exception flags, masks and denormal controls intact when changing RC.
+SI int simd_host_round(void) {
+#if defined(__x86_64__) && defined(__SSE2__)
+    static const int modes[4] = {FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO};
+    return modes[(__builtin_ia32_stmxcsr() >> 13) & 3];
+#else
+    return fegetround();
+#endif
+}
+SI void simd_set_host_round(int mode) {
+#if defined(__x86_64__) && defined(__SSE2__)
+    unsigned round = mode == FE_UPWARD ? 2 : mode == FE_DOWNWARD ? 1 : mode == FE_TOWARDZERO ? 3 : 0;
+    unsigned old = __builtin_ia32_stmxcsr(), next = (old & ~0x6000u) | (round << 13);
+    if (old != next) __builtin_ia32_ldmxcsr(next);
+#else
+    fesetround(mode);
+#endif
+}
+
 #define F s
 #define T float
 #define U uint32_t
@@ -263,11 +284,11 @@ SI double simd_s2d(Cpu *c, float x) {
 }
 SN float simd_d2s_slow(Cpu *c, double x) {
 #pragma STDC FENV_ACCESS ON
-    int old = fegetround();
-    fesetround(simd_fe_mode(c->fpcr));
+    int old = simd_host_round();
+    simd_set_host_round(simd_fe_mode(c->fpcr));
     volatile double vx = x;
     volatile float r = (float)vx;
-    fesetround(old);
+    simd_set_host_round(old);
     return r;
 }
 SI float simd_d2s(Cpu *c, double x) {

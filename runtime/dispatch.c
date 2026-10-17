@@ -6,11 +6,14 @@
 #include <unistd.h>
 
 #include "gamelib.h"
+#include "guest_jump.h"
 #include "hle.h"
 
 typedef struct { const uint64_t *addrs; const GuestFn *fns; uint64_t count, lo, hi; } FnTable;
 static FnTable tables[TITLE_MAX_MODULES];
 static unsigned table_count;
+static uint64_t debug_jpeg_entry;
+static unsigned debug_jpeg_count;
 
 // HLE stubs live at fake addresses HLE_BASE + 16*i
 #define MAX_HLE 4096
@@ -109,6 +112,9 @@ void *hle_alloc(uint64_t size) {
 }
 
 void dispatch_init(void) {  // (after gamelib_load)
+    debug_jpeg_count = 0;
+    debug_jpeg_entry = getenv("LARECOMP_LOG_JPEG") ?
+        loader_find_symbol("_ZN2nn5image11JpegEncoder6EncodeEPmPvmS3_mPNS0_11ExifBuilderE") : 0;
     const GameLibTables *g = gamelib_tables();
     table_count = g->module_count;
     memset(tables, 0, sizeof tables);
@@ -141,6 +147,13 @@ static __thread struct { uint64_t addr; GuestFn fn; } dcache[DCACHE];
 
 static GuestFn dispatch_slow(Cpu *c) {
     uint64_t pc = c->pc;
+    if (debug_jpeg_entry && pc == debug_jpeg_entry && debug_jpeg_count++ < 4) {
+        LOG("[jpeg] encode output capacity %llu work capacity %llu exif %llx\n",
+            (unsigned long long)c->x[3], (unsigned long long)c->x[5], (unsigned long long)c->x[6]);
+        if (c->x[0]) LOG("[jpeg] image %ux%u format %u options %u/%u/%u\n",
+            LD32(c->x[0] + 0x1c), LD32(c->x[0] + 0x20), LD32(c->x[0] + 0x18),
+            LD32(c->x[0] + 0x24), LD32(c->x[0] + 0x28), LD32(c->x[0] + 0x2c));
+    }
     if (pc >= HLE_BASE && pc < HLE_BASE + HLE_SIZE) {
         rt_unwind_point();  // (HLE calls aren't cached below, so every one passes here: a reboot's safe point)
         int i = (int)((pc - HLE_BASE) / 16);
@@ -169,6 +182,7 @@ static GuestFn dispatch_slow(Cpu *c) {
 
 // Always tail-calls, so chains of indirect jumps don't grow the host stack.
 void rt_dispatch(Cpu *c) {
+    if (__builtin_expect(rt_guest_jump_head != NULL, 0)) rt_guest_jump_resume(c);
     unsigned h = (unsigned)(c->pc >> 2) & (DCACHE - 1);
     GuestFn f = dcache[h].addr == c->pc ? dcache[h].fn : dispatch_slow(c);
     __attribute__((musttail)) return f(c);

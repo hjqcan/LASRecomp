@@ -35,6 +35,15 @@ also needs `romfs/Movie/OpeningMovie.webm` from the same local data.
 Both path-only and client-reader movie source overloads open local files;
 failed source changes clear old tracks and packets. `tools/test_movie_source.c`
 uses a synthetic PCM/WAV fixture to check both overloads and error cleanup.
+The public movie buffer layout supports the game's inline base/size accessors.
+Copy-mode output preserves the caller's allocation: PCM is copied into it,
+and NV12 format 4 strips the host decoder's row and plane padding. Replacing
+the buffer's base pointer left the game's upload allocation empty. The output
+size and alignment query writes two 32-bit integers. Synthetic tests check
+the retained pointer, tight NV12 rows, undersized-buffer rejection and canaries.
+A managed-installation replay now renders the real opening movie correctly
+and reaches the island after decoder EOS. Coastline rendering still shows
+block artifacts, and this replay has not yet completed a game-managed save.
 The executable/library filenames currently retain their inherited LAS names.
 
 Run `build/lasrecomp.exe extracted --play` with an isolated `LARECOMP_DATA_ROOT`
@@ -73,7 +82,33 @@ and volume ramps. With `-DTEST_AUDIO_RENDERER` and the runtime build headers,
 it additionally feeds synthetic PCM through the actual voice/submix mixer,
 checking stereo destination strides and existing direct routes. Local captures
 from the game validate the packet layout but are not repository fixtures.
-Auxiliary-buffer, delay and reverb-3D effects remain incomplete. This routing
+Audio effect 3 implements Q14 delay gains, persistent delay lines, low-pass
+feedback, mono/stereo/quad/5.1 routing and the legacy surround-channel mapping.
+The equations follow [Ryujinx's delay implementation](https://git.axenov.dev/Museum/ryujinx/src/commit/dde9bb5c69d2e1a70df82af8accd3d01fb94b78d/Ryujinx.Audio/Renderer/Dsp/Command/DelayCommand.cs).
+Impulse tests cover packet boundaries, bypass, aliasing, feedback, invalid
+descriptors and the game's observed 48 kHz / 400 ms parameter set. The production
+mixer test checks ordered biquad/delay processing and effect-slot retirement.
+Audio effect 5 implements 3D room reverb, early reflections, filtered feedback,
+two decay stages, persistent delay lines and mono/stereo/quad/5.1 outputs. It
+follows [Ryujinx's reverb-3D implementation](https://git.axenov.dev/Museum/ryujinx/src/commit/dde9bb5c69d2e1a70df82af8accd3d01fb94b78d/Ryujinx.Audio/Renderer/Dsp/Command/Reverb3dCommand.cs).
+Local differential tests run the original C# implementation and compare a full
+second of every channel, including a mid-stream parameter change; all compared
+samples matched exactly in the Windows test. Tests retain selected numerical
+checkpoints for CI. The REV11 channel remap applies to 5.1 only; the reference's
+fixed six-element index arrays also remap inactive quad entries, so the quad
+comparison uses its legacy mapping. Runtime integration checks reverb-setting
+bypass and effect retirement.
+
+Audio effect 2 exchanges signed integer PCM through the game's auxiliary send
+and return rings. The runtime retains attached audio memory-pool ranges, checks
+each ring against them, transfers all planar channels, and publishes frame
+offsets once per block. It converts between the host mixer's normalized samples
+and the guest's integer PCM units. Disabled effects reset DSP offsets and copy
+their input while preserving CPU headers and loss counters. Layout and protocol
+follow the public [auxiliary-buffer implementation](https://git.axenov.dev/Museum/ryujinx/src/commit/dde9bb5c69d2e1a70df82af8accd3d01fb94b78d/Ryujinx.Audio/Renderer/Dsp/Command/AuxiliaryBufferCommand.cs).
+Tests cover ring wrapping, PCM conversion, frame offsets, pool attach/detach,
+canaries, invalid ranges and the production mixer's effect dispatch. Actual
+island audio still needs listening and capture validation. This routing
 implementation covers the legacy destination format, not REV12 biquads.
 
 NVN recorders use private host arenas and compact allocation budgets, avoiding
@@ -88,6 +123,13 @@ submissions that have not yet reached the queue.
 Thread affinity records both the preferred core and allowed mask. Reported guest
 cores follow that mask independently of Windows scheduling; ACNH uses these
 identities to index progress slots in its three-worker barriers.
+Windows guest threads reserve 256 MB of host stack for recompiled recursion but
+commit pages on demand. Passing that size through winpthreads committed the
+whole stack for each thread; an airport boot committed about 18 GB in total.
+The CRT thread entry point uses the documented
+[reservation flag](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/beginthread-beginthreadex).
+A native test creates sixteen threads, checks committed-memory growth, grows a
+stack beyond its initial commit, and verifies pthread locking and thread joins.
 
 First-use shader compilation waits for the shader instead of dropping draws
 that initialize resources only once. Vulkan can render individual depth slices
@@ -122,6 +164,58 @@ Tests cover local/UTC round trips, a leap-day midnight boundary, dates beyond
 
 ## Verification gate
 
+Windows samples in the island scene identified repeated x87 environment saves
+and restores in the generated module's CRT rounding functions. The x86-64 SIMD
+lowering now changes the SSE MXCSR rounding bits directly, leaving exception
+flags, masks, denormal controls and x87 state intact. Other hosts keep the C
+fenv path. Guest FZ handling, NaNs, directed rounding and tiny-result checks are
+unchanged. `tools/test_simd_rounding.c` checks host restoration and independent
+threads; a Cortex-A57 differential run passed 95,988 cases across 8,000 encodings.
+With the packaged Zig compiler, a one-million-operation FZ microbenchmark took
+0.197 seconds before and 0.0063 seconds after, with identical result bits. This
+microbenchmark is not an in-game frame-rate result; the rebuilt game still needs
+that measurement.
+
+Compute LDS/STS instructions use workgroup storage on Vulkan and Metal. NVN's
+control block supplies its byte size at `0x754`, after the three local dimensions.
+Tracing the original parser and compute setup confirmed that this field reaches
+the QMD shared-memory size (offset `0x44`, low 18 bits), whose layout is also
+documented in [NVIDIA's Maxwell QMD definitions](https://github.com/NVIDIA/open-gpu-doc/blob/master/classes/compute/clb1c0qmd.h).
+Byte and halfword stores use atomic compare/exchange to preserve simultaneous
+writes to neighboring bytes. Compute cache keys include these configuration
+values. `tools/test_shader_shared.py` executes translated bodies with concurrent
+workgroups, covers signed loads, 64/128-bit vectors, overlapping registers and
+bounds, and optionally compiles every GLSL shader with `GLSLC`. Metal source is
+checked for workgroup storage but has not been executed on a Mac in this run.
+
+The JPEG encoder's error recovery uses guest `setjmp`/`longjmp`. The generator
+recognizes named entry points and AArch64 PLT calls and keeps a host checkpoint
+in each caller. After the guest restores its own registers, dispatch unwinds the
+host stack and resumes at the original call's continuation. Checkpoints survive
+tail transitions between generated fragments and are retired on return, thread
+exit or reboot. No JPEG return values or game progress flags are replaced.
+`tools/test_guest_jump.py` compiles synthetic callers and checks nested unwinds,
+same-PC frames with different stacks, thread isolation, reused buffers, RET-based
+longjmp implementations, and calls at fragment boundaries.
+The observed portrait failure returns `-65`; the game's caller then reduces JPEG
+quality and retries. The host checkpoint preserves this guest return value rather
+than replacing it with the host `setjmp` result.
+A rebuilt managed installation launched through its existing Windows desktop
+shortcut passed the previously failing appearance-confirmation step at frame
+5,833, then continued to photo registration. This used the same 2560x1440 window
+and native 1080p render override as the failed run. Encoder-entry logging sits
+behind the dispatch cache, so that log does not count every quality retry.
+
+Vulkan screen attachments include ACNH's uncompressed R8/R16F/RG16F buffers,
+not just textures with the compression hint. A captured 720p frame had a 960x540
+color attachment beside 640x360 depth; the clipped image produced a rectangular
+lighting boundary. `tools/test_vk_texture_scale.sh` checks matched physical
+extents, original dimensions for sampled images, and content-preserving late
+attachment classification. New color attachments also start zeroed, like depth,
+so unwritten regions cannot expose undefined VRAM. The airport scene and photo
+registration have passed at the desktop resolution above; a scaled island
+scene and the full save/reopen flow still require validation.
+
 Completed: extraction and module inventory; generation of 242,778 functions;
 sorted, aligned, nonoverlapping function tables; strong import resolution;
 host save-file write/flush/close/reopen cycles (128 iterations), descriptor
@@ -151,6 +245,9 @@ For checkpoint-driven regression, `LARECOMP_INPUT_FILE` reads the same
 the game capture. `LARECOMP_SCREENSHOT_EVERY` and `LARECOMP_SCREENSHOT_FROM`
 capture game images without depending on desktop focus. Cold startup timing is
 not fixed, so input should be scheduled after observing the target screen.
+The same live script accepts `frame:shot:name` to save `build/name.png` from
+the presented window, including menus, on Vulkan or Metal. Names use letters,
+digits, underscores and hyphens.
 
 Synthetic touchscreen tests cover poisoned buffers, 1,024 samples, capacity
 bounds, surrounding canaries and reboot. Native execution of translated synthetic

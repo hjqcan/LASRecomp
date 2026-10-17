@@ -14,6 +14,9 @@ bool game_install_pending_path(const char *slot, char *out, size_t size);
 GameInstall *game_install_begin(const char *slot, bool fresh, char *why, size_t size);
 const char *game_install_candidate(GameInstall *install);
 bool game_install_clone(GameInstall *install, const char *source, char *why, size_t size);
+// Resume an interrupted clone before validation/build. Completed clones and
+// imported candidates are left alone, including their generated build cache.
+bool game_install_resume_clone(GameInstall *install, char *why, size_t size);
 bool game_install_publish(GameInstall *install, const char *launch_id, GameInstallValidator validate, char *why, size_t size);
 void game_install_close(GameInstall *install);
 // Explicit removal of owned generations only. Legacy data and saves are handled separately.

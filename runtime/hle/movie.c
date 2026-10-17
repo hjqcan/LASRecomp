@@ -8,10 +8,11 @@
 //   9 GetSampleTrackIndex(size_t*), 10 Read(Buffer*), 11 Advance(), 12 GetSampleTime(int64*),
 //   15 SetDataSource(DataSource*, const char* path).
 // Decoder slots: 2 Configure(MediaData*), 3 RegisterClientEvents(EventType*[4]), 4 GetOutputFormat(MediaData*),
-//   6 Start, 9 AcquireInputBufferIndex(int*, int*), 10 GetInputBuffer(int, Buffer*),
+//   5 Start, 6 Stop, 9 AcquireInputBufferIndex(int*, int*), 10 GetInputBuffer(int, Buffer*),
 //   11 SendInputBufferForDecode(int, int off, int size, int64 time, uint32 flags),
 //   12 AcquireOutputBufferIndex(int*, int64*, uint32*, int*), 13 GetOutputBuffer(int, Buffer*),
-//   15 ReleaseOutputBufferIndex(int), 18 GetOutputBufferFormat(int, MediaData*).
+//   14 GetOutputBufferSize(int*, int*), 15 ReleaseOutputBufferIndex(int),
+//   17 GetOutputBuffer(int, Buffer*, MediaData*), 18 GetOutputBufferFormat(int, MediaData*).
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/time.h>
@@ -459,6 +460,7 @@ typedef struct {
     AVFrame *frame;
     AVPacket *pkt;
     bool video;
+    int output_format;
     uint64_t events[4];  // input available, output available, format changed, error
     uint8_t *in_mem[NIN];
     uint32_t in_cap;
@@ -554,9 +556,11 @@ static void dec_output_format(Decoder *d, MediaData *m) {
         md_set_str(m, "mime", "video/raw");
         md_set_int(m, "width", d->width);
         md_set_int(m, "height", d->height);
-        md_set_int(m, "nv12-y-stride", d->stride);
+        int stride = d->output_format == 4 ? d->width : d->stride;
+        int rows = d->output_format == 4 ? d->height : ((d->height + 15) & ~15);
+        md_set_int(m, "nv12-y-stride", stride);
         md_set_int(m, "nv12-y-offset", 0);
-        md_set_int(m, "nv12-uv-offset", d->stride * ((d->height + 15) & ~15));
+        md_set_int(m, "nv12-uv-offset", stride * rows);
         md_set_int(m, "nv12-colorspace", 0);
     } else {
         md_set_str(m, "mime", "audio/raw");
@@ -760,7 +764,9 @@ static void dec_get_output_buffer(Cpu *c) {
     n_get_out++;
     int i = (int)c->x[1];
     MBuffer *b = BUF(c->x[2]);
-    if (i < 0 || i >= NOUT) { c->x[0] = 1; return; }
+    if (i < 0 || i >= NOUT || !b) { c->x[0] = 0x100b; return; }
+    b->offset = b->size = 0;
+    if (!d->out_size[i]) { c->x[0] = 0; return; }
     if (d->video && b->base && b->capacity == 8) {
         // texture output mode: the buffer points at the game's NVNtexture; write RGBA into it
         NvnTexture *t = *(NvnTexture **)(uintptr_t)b->base;
@@ -770,6 +776,7 @@ static void dec_get_output_buffer(Cpu *c) {
         if (gpu < 0) gpu = !getenv("LARECOMP_MOVIE_CPU_CONVERT");
         if (gpu && renderer_upload_nv12(t, d->out_mem[i], (uint32_t)w, (uint32_t)h, (uint32_t)d->stride,
                                         (uint32_t)(d->stride * ((h + 15) & ~15)))) {
+            b->size = 8;
             c->x[0] = 0;
             return;
         }
@@ -782,6 +789,32 @@ static void dec_get_output_buffer(Cpu *c) {
         int dst_stride[1] = {w * 4};
         sws_scale(d->sws, src, src_stride, 0, h, dst, dst_stride);
         renderer_upload_rgba(t, d->rgba, (uint32_t)w, (uint32_t)h, (uint32_t)w * 4);
+        b->size = 8;
+        c->x[0] = 0;
+        return;
+    }
+    // Copy-mode callers keep their original allocation and pass it to audio or
+    // NVN after this call. Replacing Base() leaves that allocation untouched.
+    // NV12 output format 4 is tightly packed, unlike our padded decoder slots.
+    if (b->base) {
+        uint64_t size = d->video && d->output_format == 4
+            ? (uint64_t)d->width * d->height + 2ull * (d->width / 2) * (d->height / 2)
+            : d->out_size[i];
+        if (size > b->capacity || size > INT32_MAX) { c->x[0] = 0x100b; return; }
+        uint8_t *dst = (uint8_t *)(uintptr_t)b->base;
+        if (d->video && d->output_format == 4) {
+            const uint8_t *src = d->out_mem[i];
+            for (int y = 0; y < d->height; y++)
+                memcpy(dst + (size_t)y * d->width, src + (size_t)y * d->stride, d->width);
+            dst += (size_t)d->width * d->height;
+            src += (size_t)d->stride * ((d->height + 15) & ~15);
+            for (int y = 0; y < d->height / 2; y++)
+                memcpy(dst + (size_t)y * (d->width / 2) * 2,
+                       src + (size_t)y * d->stride, (d->width / 2) * 2);
+        } else {
+            memcpy(dst, d->out_mem[i], (size_t)size);
+        }
+        b->size = (int32_t)size;
         c->x[0] = 0;
         return;
     }
@@ -790,6 +823,12 @@ static void dec_get_output_buffer(Cpu *c) {
     b->capacity = d->out_cap;
     b->size = (int32_t)d->out_size[i];
     c->x[0] = 0;
+}
+
+static void dec_get_output_buffer_with_format(Cpu *c) {
+    if (!c->x[2] || !c->x[3]) { c->x[0] = 0x100b; return; }
+    dec_output_format(self_state(c), md(c->x[3]));
+    dec_get_output_buffer(c);
 }
 
 static void dec_release_output(Cpu *c) {
@@ -839,9 +878,13 @@ RT_ON_RESET(movie_reset) {
     g_skip_held = false, g_skip_pressed_at = 0;
 }
 
-static void dec_get_counts(Cpu *c) {  // slot 14: (int*, int64*) queried after Configure
-    if (c->x[1]) *(int32_t *)(uintptr_t)c->x[1] = 0;
-    if (c->x[2]) *(int64_t *)(uintptr_t)c->x[2] = 0;
+static void dec_get_counts(Cpu *c) {  // slot 14: size and alignment, both int32_t
+    Decoder *d = self_state(c);
+    if (!c->x[1] || !c->x[2]) { c->x[0] = 0x100b; return; }
+    uint32_t size = d->video && d->output_format == 4
+        ? d->width * d->height + 2u * (d->width / 2) * (d->height / 2) : d->out_cap;
+    *(int32_t *)(uintptr_t)c->x[1] = (int32_t)size;
+    *(int32_t *)(uintptr_t)c->x[2] = 1;
     c->x[0] = 0;
 }
 
@@ -851,11 +894,12 @@ HLE_FUNC("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11Dec
         HostFn f[19] = {dec_dtor, dec_dtor, dec_configure, dec_register_events, dec_get_output_format,
                         dec_start, dec_stop, ok, ok, dec_acquire_input, dec_get_input_buffer, dec_send_input,
                         dec_acquire_output, dec_get_output_buffer, dec_get_counts, dec_release_output, ok,
-                        movie_log_slot, dec_get_output_buffer_format};
+                        dec_get_output_buffer_with_format, dec_get_output_buffer_format};
         vt = g_dec_vt = make_vtable(f, 19, "Decoder");
     }
     uint64_t *self = (uint64_t *)(uintptr_t)c->x[0];
     Decoder *d = calloc(1, sizeof *d);
+    d->output_format = (int)c->x[2];
     movie_track(1, d, true);
     pthread_mutex_init(&d->lock, NULL);
     self[0] = vt;

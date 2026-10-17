@@ -52,11 +52,23 @@ jobs:
         run: make -j"$(nproc)" build/lasrecomp DEPS="$HOME/sdl3"
       - name: Settings regression tests
         run: python3 tools/test_settings.py
+      - name: Audio effect impulse and routing regressions
+        run: |
+          clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_delay.c -o build/test-audio-delay
+          build/test-audio-delay
+          clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_reverb3d.c -lm -o build/test-audio-reverb3d
+          build/test-audio-reverb3d
+          clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_aux.c -o build/test-audio-aux
+          build/test-audio-aux
       - name: Shader scheduling policy regression
         run: |
           python3 tools/test_shader_policy.py
           python3 tools/test_shader_jobs.py
           python3 tools/test_shader_snapshot.py
+      - name: SIMD rounding and host-state isolation
+        run: |
+          clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -lm -o build/test-simd-rounding
+          build/test-simd-rounding
       - name: Save commit and enhanced backup integration
         run: python3 tools/test_save_commit.py
       - name: Game address table tests
@@ -72,6 +84,7 @@ jobs:
         run: |
           python3 -m venv tools/venv && tools/venv/bin/pip install -q unicorn capstone lz4
           tools/venv/bin/python tools/test_simd.py --encodings 3000 --cases 4 --jobs "$(nproc)"
+          tools/venv/bin/python tools/test_guest_jump.py
 
   macos:
     runs-on: macos-15
@@ -111,6 +124,37 @@ jobs:
             vulkan-memory-allocator:p
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp.exe
+      - name: Native runtime regressions (UCRT64 and FFmpeg headers)
+        run: |
+          for name in touch prepo nvn_pool_mapping; do
+            clang -std=gnu11 -O1 -Iruntime "tools/test_${name}.c" -o "build/test-${name}.exe"
+            "build/test-${name}.exe"
+          done
+          clang -std=gnu11 -O1 -D_POSIX_THREAD_SAFE_FUNCTIONS tools/test_time_service.c -o build/test-time.exe
+          build/test-time.exe
+          clang -std=gnu11 -O1 -DTEST_AUDIO_RENDERER tools/test_audio_splitter.c -o build/test-audio-renderer.exe
+          build/test-audio-renderer.exe
+          clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_delay.c -o build/test-audio-delay.exe
+          build/test-audio-delay.exe
+          clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_reverb3d.c -o build/test-audio-reverb3d.exe
+          build/test-audio-reverb3d.exe
+          clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_aux.c -o build/test-audio-aux.exe
+          build/test-audio-aux.exe
+          clang -std=gnu11 -O1 tools/test_movie_source.c -lavformat -lavcodec -lavutil -lswscale -o build/test-movie-source.exe
+          mkdir -p build/movie-source-test
+          build/test-movie-source.exe build/movie-source-test
+          clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe
+          build/test-thread-stack.exe
+          sh tools/test_vk_texture_scale.sh
+      - name: Recompiled guest nonlocal returns
+        run: |
+          python -m venv build/jump-test-env
+          build/jump-test-env/Scripts/python.exe -m pip install -q lz4 unicorn capstone
+          build/jump-test-env/Scripts/python.exe tools/test_guest_jump.py
+          GLSLC=glslc build/jump-test-env/Scripts/python.exe tools/test_shader_shared.py
+          clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -o build/test-simd-rounding.exe
+          build/test-simd-rounding.exe
+          build/jump-test-env/Scripts/python.exe tools/test_simd.py --encodings 4000 --cases 8 --jobs 4 --no-validity
       # (GLSL only: the script's MSL comparison needs a reference commit that isn't in the history any more; REF=HEAD
       # just satisfies it. The GLSL half - every fuzzed translation compiles and validates - is the check)
       - name: Shader translator fuzz (GLSL)

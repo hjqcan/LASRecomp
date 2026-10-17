@@ -22,7 +22,7 @@ for f in "$@"; do
 done
 
 # 1. the headers: what the generated C (cpu.h, simd.h) and tools/gamelib_entry.c include
-printf '#include "cpu.h"\n#include "simd.h"\n' > $W/probe.c
+printf '#include "cpu.h"\n#include "simd.h"\n#include "guest_jump.h"\n' > $W/probe.c
 $Z/zig.exe cc "${flags[@]}" -Iruntime -c $W/probe.c -o $W/probe.o -MD -MF $W/probe.d
 $Z/zig.exe cc "${flags[@]}" -Iruntime '-DGAMELIB_ID="0"' -c tools/gamelib_entry.c -o $W/entry.o -MD -MF $W/entry.d
 n=0

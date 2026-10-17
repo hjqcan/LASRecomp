@@ -15,6 +15,9 @@ Settings g_settings = {0};
 
 static void u32(uint8_t *p, uint32_t x) { memcpy(p, &x, 4); }
 static void f32(uint8_t *p, float x) { memcpy(p, &x, 4); }
+#ifdef TEST_AUDIO_RENDERER
+static void u64(uint8_t *p, uint64_t x) { memcpy(p, &x, 8); }
+#endif
 static size_t state(uint8_t *p, uint32_t id, const uint32_t *dest, uint32_t n) {
     u32(p, 0x49444e53); u32(p + 4, id); u32(p + 8, 48000); u32(p + 12, n);
     if (n) memcpy(p + 16, dest, n * 4);
@@ -85,6 +88,50 @@ static void mixer_test(const uint8_t *packet, size_t size) {
     puts("PASS: PCM voice fan-out, reversed submix ordering, splitter to submix to final mix, direct-route parity");
     puts("PASS: stereo channel destination stride");
 }
+
+static void delay_mixer_test(void) {
+    Effect fx[2] = {0};
+    Renderer r = {.sample_count=4, .effects=2, .fx=fx};
+    float samples[9] = {1,0,0,0,0,0,0,0,12345};
+    Mix mix = {.bufs=2, .buf=samples};
+    uint8_t delay[0xc0] = {3,1,1}, biquad[0xc0] = {6,1,1};
+    u32(delay+4,4); u32(delay+0x18,1);  // delay follows the biquad, despite its lower slot
+    AudioDelayParam p = {.channels=1,.channels_max=1,.output={1},.delay_ms=2,.delay_max=4,
+                         .sample_rate=1000*16384,.in_gain=16384,.out_gain=16384};
+    memcpy(delay+0x20,&p,sizeof p); delay[0x20+52]=2;
+    u32(biquad+4,4); biquad[0x20+22]=1; biquad[0x20+23]=1;
+    int16_t half=8192; memcpy(biquad+0x20+12,&half,2);
+    effect_update(&fx[0],delay,0x38564552); effect_update(&fx[1],biquad,0x38564552);
+    apply_effects(&r,0,&mix); assert(samples[0]==1 && samples[5]==0);
+    apply_effects(&r,4,&mix); assert(samples[0]==.5f && samples[5]==.5f && samples[8]==12345);
+    delay[1]=0; delay[2]=0; effect_update(&fx[0],delay,0x38564552);
+    memset(samples,0,8*sizeof(float)); samples[0]=.5f;
+    apply_effects(&r,4,&mix); assert(samples[4]==.25f);  // disabled delay still routes its input
+    delay[0]=0; effect_update(&fx[0],delay,0x38564552); assert(!fx[0].delay.lines);
+    // The 3D reverb shares the same ordered effect dispatch and global bypass.
+    AudioReverb3dParam rv={.channels=1,.channels_max=1,.sample_rate=48000,.hf_reference=2000,
+        .decay_time=3,.hf_decay_ratio=1,.reflection_delay=.05f,.density=100,.diffusion=100,.dry_gain=.5f,.output={1}};
+    delay[0]=5;delay[1]=1;delay[2]=1;memcpy(delay+0x20,&rv,sizeof rv);delay[0x20+72]=2;
+    effect_update(&fx[0],delay,0x38564552);g_settings.reverb=1;
+    memset(samples,0,8*sizeof(float));samples[0]=1;apply_effects(&r,4,&mix);assert(samples[4]==.25f);
+    g_settings.reverb=0;memset(samples,0,8*sizeof(float));samples[0]=1;
+    apply_effects(&r,4,&mix);assert(samples[4]==.5f);
+    delay[0]=0;effect_update(&fx[0],delay,0x38564552);assert(!fx[0].rv3.pre.data);
+    uint32_t send[40]={0},receive[40]={0};receive[32]=4096;
+    AudioAuxPool pools[2]={{(uintptr_t)send,sizeof send},{(uintptr_t)receive,sizeof receive}};
+    r.pools=pools;r.pool_count=2;
+    memset(delay,0,sizeof delay);delay[0]=2;delay[1]=1;delay[2]=1;u32(delay+4,4);u32(delay+0x18,1);
+    delay[0x20+24]=1;u32(delay+0x20+48,1);u32(delay+0x20+56,8);
+    u64(delay+0x20+64,(uintptr_t)send);u64(delay+0x20+80,(uintptr_t)receive);
+    effect_update(&fx[0],delay,0x38564552);memset(samples,0,8*sizeof(float));samples[0]=1;
+    apply_effects(&r,4,&mix);assert(send[32]==16384 && samples[4]==.125f && !fx[0].aux_invalid);
+    assert(send[17]==4 && receive[16]==4);
+    delay[2]=0;effect_update(&fx[0],delay,0x38564552);r.pool_count=0;
+    memset(samples,0,8*sizeof(float));samples[0]=1;apply_effects(&r,4,&mix);assert(samples[4]==.5f);
+    puts("PASS: production effect dispatch, ordered biquad/delay chain, mix selection, bypass and slot retirement");
+    puts("PASS: production reverb3d dispatch, global reverb setting and slot retirement");
+    puts("PASS: production auxiliary-buffer dispatch, guest PCM exchange and detached bypass");
+}
 #endif
 
 int main(int argc, char **argv) {
@@ -112,6 +159,7 @@ int main(int argc, char **argv) {
     audio_split_free(&s);
 #ifdef TEST_AUDIO_RENDERER
     mixer_test(packet,size);
+    delay_mixer_test();
 #endif
     // Optional local captures exercise the real ABI without checking game data
     // into the repository. The first capture must include initial state.

@@ -214,6 +214,15 @@ extern "C" bool game_install_clone(GameInstall *install, const char *source, cha
     try {
         fs::path root = host_path::io(fs::u8path(source)); plain(root);
         need(root != install->candidate, "Cannot clone an installation onto itself");
+        const auto record = install->candidate.parent_path() / "clone-source";
+        const auto complete = install->candidate.parent_path() / "clone-complete";
+        const std::string identity = "LASCLONE1\n" + host_path::logical(root).u8string();
+        if (fs::exists(record)) need(read(record) == identity, "Clone source changed; start a new installation");
+        else write(record, identity);
+        if (fs::exists(complete)) {
+            need(read(complete) == "LASCLONE1\n", "Invalid clone completion record");
+            return true;
+        }
         for (const char *name : {"exefs", "romfs", "romfs.bin", "icon.ico", "import-manifest.json", ".gamebuild"}) {
             auto path = root / name; plain(path);
             if (!fs::exists(path)) continue;
@@ -230,10 +239,22 @@ extern "C" bool game_install_clone(GameInstall *install, const char *source, cha
                 auto relative = host_path::relative(file, root), target = install->candidate / relative;
                 plain(target); fs::create_directories(target.parent_path());
                 fs::copy_file(file, target, fs::copy_options::overwrite_existing);
+                checkpoint("clone-file");
             }
         }
+        write(complete, "LASCLONE1\n");
         return true;
     } catch (const std::exception &error) { fail(why, cap, error); return false; }
+}
+extern "C" bool game_install_resume_clone(GameInstall *install, char *why, size_t size) {
+    try {
+        const auto record = install->candidate.parent_path() / "clone-source";
+        if (!fs::exists(record)) return true;
+        const std::string source = read(record);
+        constexpr size_t prefix = sizeof("LASCLONE1\n") - 1;
+        need(source.rfind("LASCLONE1\n", 0) == 0 && source.size() > prefix, "Invalid clone source record");
+        return game_install_clone(install, source.substr(prefix).c_str(), why, size);
+    } catch (const std::exception &error) { fail(why, size, error); return false; }
 }
 extern "C" bool game_install_publish(GameInstall *install, const char *id, GameInstallValidator validate, char *why, size_t cap) {
     try {

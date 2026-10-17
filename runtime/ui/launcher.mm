@@ -456,6 +456,8 @@ static void *extract_thread(void *) {
                 if (!game_install_clone(install, g_root.c_str(), why, sizeof why)) {
                     set_job("Could not prepare the game installation.", true, why); goto done;
                 }
+            } else if (!game_install_resume_clone(install, why, sizeof why)) {
+                set_job("Could not resume the game installation copy.", true, why); goto done;
             }
         } else if (is_archive(src)) {
             set_job(update.empty() ? "Importing the base game..." : "Importing the base game and update...");
