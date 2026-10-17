@@ -2,6 +2,9 @@
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <pthread.h>
 
 #include "../hle.h"
 #include "../ipc.h"
@@ -10,7 +13,28 @@
 static const uint8_t clock_uuid[16] = {0x4c, 0x41, 0x52, 0x65, 0x63, 0x6f, 0x6d, 0x70, 1, 2, 3, 4, 5, 6, 7, 8};
 
 static int64_t steady_seconds(void) { return (int64_t)(rt_ticks() / 19200000ull); }
-static int64_t unix_now(void) { return (int64_t)time(NULL); }
+// Reproduce lighting/day-rollover issues against an explicitly separate save.
+// This changes only the guest clock; the host clock and default saves are untouched.
+static pthread_once_t test_clock_once = PTHREAD_ONCE_INIT;
+static bool test_clock_enabled;
+static int64_t test_clock_offset;
+static void init_test_clock(void) {
+    const char *value = getenv("LARECOMP_TEST_TIME");
+    if (!value || !*value) return;
+    const char *save = getenv("LARECOMP_SAVE_DIR");
+    char *end;
+    errno = 0;
+    long long requested = strtoll(value, &end, 10);
+    if (!save || !*save || errno || *end || requested < 946684800ll || requested > 4133980800ll)
+        FATAL("LARECOMP_TEST_TIME needs an explicit test save directory and a Unix time in 2000-2100\n");
+    test_clock_offset = (int64_t)requested - steady_seconds();
+    test_clock_enabled = true;
+    LOG("[time] isolated test clock starts at Unix %lld\n", requested);
+}
+static int64_t unix_now(void) {
+    pthread_once(&test_clock_once, init_test_clock);
+    return test_clock_enabled ? test_clock_offset + steady_seconds() : (int64_t)time(NULL);
+}
 
 static void write_system_context(uint8_t *p) {  // SystemClockContext (0x20)
     int64_t steady = steady_seconds();

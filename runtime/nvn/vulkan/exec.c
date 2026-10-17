@@ -2587,6 +2587,8 @@ void vk_exec_reset(void) {
 }
 
 static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out, float sc[2], uint32_t wh[2]) {
+    static int log_tex_types = -1;
+    if (log_tex_types < 0) log_tex_types = getenv("LARECOMP_LOG_TEX_TYPES") != NULL;
     ShaderTexture *st_ = &si->tex[i];
     int slot = ((int)st_->handle_offset - 0x20) / 8;  // 64-bit handles from offset 0x20
     uint64_t h = (slot >= 0 && slot < 32) ? st.tex[stage][slot] : 0;
@@ -2598,6 +2600,18 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     if (h && st.tpool && tic < (uint32_t)st.tpool->count) {
         NvnTexEntry *e = &((NvnTexEntry *)st.tpool->entries)[tic];
         if (e->tex) {
+            if (log_tex_types && e->tex->target == 2 && st_->type != TEXTYPE_3D) {
+                static uint64_t seen[64]; static unsigned count;
+                uint64_t code = st.program ? st.program->stages[stage].code_addr : 0;
+                uint64_t key = code ^ ((uint64_t)i << 48);
+                unsigned j = 0; while (j < count && seen[j] != key) j++;
+                if (j == count && count < 64) {
+                    seen[count++] = key;
+                    LOG("[tex-type] stage %d code %llx slot %d offset %#x wants %u, texture %ux%ux%u target %u fmt %#x\n",
+                        stage, (unsigned long long)code, i, st_->handle_offset, st_->type, e->tex->width,
+                        e->tex->height, e->tex->depth, e->tex->target, e->tex->format);
+                }
+            }
             // Per-frame memo: ~2400 lookups per overworld frame recomputed the view (format / range math, cache
             // probe). The first lookup of a frame still runs vk_view (upload check); a view that may have been
             // destroyed (eviction, image re-created) bumps vk_view_gen. LARECOMP_VK_NO_TEX_MEMO=1 disables.

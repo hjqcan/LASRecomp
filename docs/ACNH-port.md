@@ -291,18 +291,29 @@ it does not promise a power-loss-atomic transaction across multiple filesystems.
 
 The failed first save's original files were preserved separately. A recovery
 copy passed all 24 checksums for the five 1.0.0 data files and their matching
-version headers. In-game loading and another complete commit still need checking
-before that copy replaces the managed save.
+version headers. The game loaded that copy at the player's tent with the NookPhone,
+completed two automatic commits and a manual Save and End, and displayed its
+successful-save message. The new files again passed all checksums. After normal
+process exit, the verified copy replaced the managed save while retaining both
+original backups; a fresh desktop launch with default shader preparation loaded
+it again and completed two further automatic commits.
 
 Strict Vulkan validation of that recovery run identified an oversized global-memory
 descriptor: the imported heap exceeded this Intel GPU's `maxStorageBufferRange`.
 The Vulkan backend now splits heap bindings at the device's aligned range limit,
 and shader LDG/STG selects a segment for each word. Generated shader tests cover
 signed sub-word loads, masked stores, vectors crossing a segment boundary, the
-last partial segment, and compute fast-copy routing. Actual loading and saving
-with validation enabled remain required before declaring the recovery complete.
+last partial segment, and compute fast-copy routing. The range validation error
+no longer occurred. Longer validation runs remain inconclusive: the local MSYS2
+validation layer stalled during semaphore queries and later crashed inside its
+worker/mutex code. Those runs do not establish a clean Vulkan validation result.
+Normal runs completed the recovery flow above without those failures.
 
-Still required: complete intro and island controls, broader graphics and
-audio correctness, game-managed saving and reopening, day rollover, repeated
-starts, and an extended gameplay run. Update and DLC compatibility remain
+For reproducible lighting/day-rollover diagnostics, `LARECOMP_TEST_TIME` accepts
+a Unix timestamp in 2000-2100 only with an explicit `LARECOMP_SAVE_DIR`. Use a
+separate copy of the save for these tests. It advances the guest clock from that
+instant without changing the host clock. Normal launches retain host time.
+
+Still required: broader island controls, graphics and audio correctness, day
+rollover, further repeated starts, and an extended gameplay run. Update and DLC compatibility remain
 separate follow-up work after the base game passes these checks.
