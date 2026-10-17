@@ -44,6 +44,7 @@ typedef struct {
     VkImage sc_images[8];
     VkImageView sc_views[8];
 } VkG;
+void vk_log_memory(const char *why);  // (device.c: per-heap budget and use, at start and on allocation failures)
 extern VkG g_vk;
 
 // ---- submissions (exec.c)

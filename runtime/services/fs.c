@@ -18,6 +18,7 @@
 #include "../romfs_build.h"
 #include "../gameversion.h"
 #include "../game_profiles.h"
+#include "../research.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -446,7 +447,9 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         IpcBuf *b = out_buf(req, 0);
         if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (size > b->size) size = b->size;
+        bool observed=research_io_begin();
         ssize_t n = romfs_read((uint8_t *)(uintptr_t)b->addr, size, off);
+        if(observed)research_io_end(n);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
         {
             const char *path = romfs_file_at(off);

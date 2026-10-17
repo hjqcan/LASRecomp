@@ -5,6 +5,7 @@
 
 #include "../hle.h"
 #include "../ipc.h"
+#include "../research.h"
 
 static const uint8_t clock_uuid[16] = {0x4c, 0x41, 0x52, 0x65, 0x63, 0x6f, 0x6d, 0x70, 1, 2, 3, 4, 5, 6, 7, 8};
 
@@ -200,6 +201,10 @@ SERVICE("time:s", time_s) { static_service(s, req, resp); }
 HLE_FUNC("_ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", time_std_user_now) {
     static int n;
     if (n++ < 3) LOG("[time] StandardUserSystemClock::GetCurrentTime (host clock)\n");
-    if (c->x[0]) *(int64_t *)(uintptr_t)c->x[0] = unix_now();
+    if (c->x[0]) {
+        int64_t value=unix_now();
+        *(int64_t *)(uintptr_t)c->x[0] = value;
+        research_external(RESEARCH_EXTERNAL_CLOCK,c->x[30],kernel_current_thread_handle(),0,(uint64_t)value);
+    }
     c->x[0] = 0;  // ResultSuccess
 }

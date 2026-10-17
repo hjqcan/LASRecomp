@@ -6,6 +6,7 @@
 
 #include "hle.h"
 #include "kernel.h"
+#include "research.h"
 
 // ------------------------------------------------------------------ results
 #undef R_OK
@@ -802,7 +803,10 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         case 7: case 22: v = heap_size + 0x4000000; break;
         case 8: v = 0; break;
         case 9: v = 0; break;
-        case 11: v = ((uint64_t)arc4random() << 32) | arc4random(); break;
+        case 11:
+            v = ((uint64_t)arc4random() << 32) | arc4random();
+            research_external(RESEARCH_EXTERNAL_ENTROPY,pc,kernel_current_thread_handle(),x[3],v);
+            break;
         case 12: v = GUEST_LO; break;
         case 13: v = GUEST_HI - GUEST_LO; break;
         case 14: v = STACK_BASE; break;

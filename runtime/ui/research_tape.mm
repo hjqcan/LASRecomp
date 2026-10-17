@@ -35,7 +35,7 @@ extern "C" bool research_input_valid(const ResearchInput *in) {
     for (int a:in->axes) if (a<-32767||a>32767) return false;
     return true;
 }
-extern "C" int research_tape_read(const char *path,const char *id,ResearchInput *out,size_t max,char *why,size_t cap) {
+static int tape_read(bool update,const char *path,const char *id,ResearchInput *out,size_t max,char *why,size_t cap) {
     try {
         need(build_ok(id),"Invalid expected Build ID."); auto file=fs::u8path(path); plain(file);
         need(fs::is_regular_file(file)&&fs::file_size(file)<=16*1024*1024,"Invalid or oversized input tape.");
@@ -44,9 +44,10 @@ extern "C" int research_tape_read(const char *path,const char *id,ResearchInput 
         need(!in.bad()&&text.size()<=16*1024*1024&&text.find('\0')==std::string::npos,"Invalid input tape text.");
         std::istringstream data(text); std::string line;
         auto line_read=[&](){ bool ok=bool(std::getline(data,line)); if (!line.empty()&&line.back()=='\r') line.pop_back();return ok; };
-        need(line_read()&&line=="LASINPUT1","Unsupported input tape format.");
+        need(line_read()&&line==(update?"LASINPUT2":"LASINPUT1"),"Input tape uses a different observation boundary or format.");
         need(line_read()&&line==std::string("build_id=")+id,"Input tape belongs to a different executable.");
-        need(line_read()&&line=="poll,buttons,lx,ly,rx,ry","Invalid input tape header.");
+        if(update)need(line_read()&&line=="boundary=las_update_dispatch_v1","Unsupported update boundary.");
+        need(line_read()&&line==(update?"update,buttons,lx,ly,rx,ry":"poll,buttons,lx,ly,rx,ry"),"Invalid input tape header.");
         std::vector<ResearchInput> inputs;
         while (line_read()) {
             need(line.size()<160&&inputs.size()<max&&inputs.size()<RESEARCH_MAX_INPUTS,"Input tape exceeds its limits.");
@@ -61,15 +62,21 @@ extern "C" int research_tape_read(const char *path,const char *id,ResearchInput 
         memcpy(out,inputs.data(),inputs.size()*sizeof *out);return (int)inputs.size();
     } catch (const std::exception &e) { if(cap)snprintf(why,cap,"%s",e.what());return -1; }
 }
-extern "C" bool research_tape_write(const char *path,const char *id,const ResearchInput *inputs,size_t count,char *why,size_t cap) {
+static bool tape_write(bool update,const char *path,const char *id,const ResearchInput *inputs,size_t count,char *why,size_t cap) {
     try {
         need(build_ok(id)&&count>0&&count<=RESEARCH_MAX_INPUTS,"Invalid input tape identity or count.");
         for(size_t i=0;i<count;++i) need(research_input_valid(inputs+i),"Invalid input state.");
         auto file=fs::u8path(path);plain(file);need(!fs::exists(file),"Input tape already exists.");
-        auto tmp=file;tmp+=".writing";plain(tmp);
+        auto tmp=file;tmp+=".writing";plain(tmp);need(!fs::exists(tmp),"Input tape staging file already exists.");
         std::ofstream f(tmp,std::ios::binary); f.imbue(std::locale::classic());
-        f<<"LASINPUT1\nbuild_id="<<id<<"\npoll,buttons,lx,ly,rx,ry\n";
+        f<<(update?"LASINPUT2":"LASINPUT1")<<"\nbuild_id="<<id<<'\n';
+        if(update)f<<"boundary=las_update_dispatch_v1\nupdate,buttons,lx,ly,rx,ry\n";
+        else f<<"poll,buttons,lx,ly,rx,ry\n";
         for(size_t i=0;i<count;++i) { const auto &s=inputs[i];f<<i<<','<<s.buttons;for(int a:s.axes)f<<','<<a;f<<'\n'; }
         f.close();need(bool(f),"Cannot write input tape.");fs::rename(tmp,file);return true;
     } catch (const std::exception &e) { if(cap)snprintf(why,cap,"%s",e.what());return false; }
 }
+extern "C" int research_tape_read(const char *p,const char *id,ResearchInput *out,size_t max,char *why,size_t cap){return tape_read(false,p,id,out,max,why,cap);}
+extern "C" bool research_tape_write(const char *p,const char *id,const ResearchInput *in,size_t n,char *why,size_t cap){return tape_write(false,p,id,in,n,why,cap);}
+extern "C" int research_update_tape_read(const char *p,const char *id,ResearchInput *out,size_t max,char *why,size_t cap){return tape_read(true,p,id,out,max,why,cap);}
+extern "C" bool research_update_tape_write(const char *p,const char *id,const ResearchInput *in,size_t n,char *why,size_t cap){return tape_write(true,p,id,in,n,why,cap);}

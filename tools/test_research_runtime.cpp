@@ -1,5 +1,6 @@
 #include "research.h"
 #include "gameversion.h"
+#include "research_actors.h"
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
@@ -15,6 +16,7 @@ volatile uint64_t g_vsync_count=20;
 uint64_t plat_now_ns(void){static uint64_t now=1000000000;return now+=1000000;}
 bool game_build_id(const char *,char out[41]){strcpy(out,id);return readable;}
 GameVersion game_version_id(const char *){return known?GAME_100:GAME_UNSUPPORTED;}
+void research_read_actors(ResearchActorSnapshot *out){*out={};out->complete=true;}
 }
 static void env(const char *key,const char *value){
 #ifdef _WIN32
@@ -48,5 +50,34 @@ int main(int argc,char **argv){
     buttons=0;memset(axes,0,sizeof axes);research_input(1,&buttons,axes);assert(buttons==1&&axes[1]==-456);
     research_input(2,&buttons,axes);assert(buttons==0&&axes[0]==0&&axes[1]==0);research_finish();
     auto result=read(root/"two/research/summary.ini");assert(result.find("replay_consumed=1\n")!=std::string::npos&&result.find("replay_eof=1\n")!=std::string::npos);
+    env("LARECOMP_RESEARCH_REPLAY",nullptr);env("LARECOMP_RESEARCH_CAPTURE","1");
+    fs::create_directories(root/"semantics/save");save=(root/"semantics/save").u8string();
+    env("LARECOMP_RESEARCH_SEMANTICS","1");assert(!research_boot("game",save.c_str(),why,sizeof why));
+    env("LARECOMP_RESEARCH_BOUNDARY","update");env("LARECOMP_RESEARCH_UPDATES","1");
+    env("LARECOMP_RESEARCH_WARMUP","0");env("LARECOMP_RESEARCH_STABLE","1");env("LARECOMP_RESEARCH_START_LEVEL","Field");
+    env("LARECOMP_RESEARCH_SEMANTICS","2");assert(!research_boot("game",save.c_str(),why,sizeof why));
+    env("LARECOMP_RESEARCH_SEMANTICS","1");assert(research_boot("game",save.c_str(),why,sizeof why));
+    assert(research_semantics_active());
+    assert(research_io_begin());auto io=research_io_snapshot();assert(io.started==1&&io.completed==0);
+    research_io_end(123);assert(research_io_begin());research_io_end(-1);
+    io=research_io_snapshot();assert(io.started==2&&io.completed==2&&io.bytes==123&&io.failed==1);
+    research_external(RESEARCH_EXTERNAL_ENTROPY,123,4,2,987);
+    ResearchPhaseSample point{};point.state=sample;point.state.now_ns=plat_now_ns();point.observed=true;point.rng_observed=true;
+    point.rng[0]=123;point.rng[1]=456;point.rng[2]=789;point.rng[3]=42;
+    unsigned char raw[0x259]={};raw[4]=0xab;
+    research_phase(RESEARCH_PHASE_UPDATE,true,&point,raw,sizeof raw);
+    research_input(11,&buttons,axes);++point.counter;point.rng[3]=43;
+    research_phase(RESEARCH_PHASE_UPDATE,false,&point,raw,sizeof raw);
+    research_external(RESEARCH_EXTERNAL_CLOCK,456,4,0,123456);
+    for(int i=0;i<4095;++i)research_external(RESEARCH_EXTERNAL_ENTROPY,123,4,2,987);
+    research_finish();
+    result=read(root/"semantics/research/summary.ini");assert(result.find("external_samples=4096\n")!=std::string::npos);
+    assert(result.find("external_truncated=1\n")!=std::string::npos);
+    assert(read(root/"semantics/research/start-state.ini").find("rng3=42\n")!=std::string::npos);
+    assert(read(root/"semantics/research/updates.csv").find(",1,1,123,456,789,42,123,456,789,43\n")!=std::string::npos);
+    assert(read(root/"semantics/research/external.csv").find("0,0,123,4,2,987,")!=std::string::npos);
+    assert(read(root/"semantics/research/save-windows.csv").find("-1,1,00000000ab")!=std::string::npos);
+    assert(!research_semantics_active());
+    assert(!research_io_begin());
     std::cout<<"Research boot gates, clock reset, capture, replay and neutral EOF passed\n";
 }

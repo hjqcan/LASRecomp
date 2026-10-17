@@ -4,6 +4,8 @@ This is a developer experiment on `enhanced`, disabled during normal play. It do
 
 Measured results and the current acceptance gaps are in the [2026-10-17 findings](research-findings-2026-10-17.md).
 
+The subsequent [update-dispatch experiment](research-update-boundary.md) adds guarded callback observations, a configurable observed start gate, latched input and exact update-count capture. The commands below continue to describe the original HID mode.
+
 ## What the probe records
 
 The probe attaches to existing LAS runtime boundaries without changing the generated game library ABI:
@@ -45,6 +47,8 @@ Replay through this harness requires matching runtime/library SHA-256 hashes, th
 Repeat replay with `--hz 30` or `--hz 120` to investigate clock coupling. Run native experiments sequentially so they do not compete for the GPU. `--frames` changes the capture boundary, not the input tape's ordering. EOF or an early capture boundary can yield different record counts; both are visible in the report.
 
 On Vulkan, `--present mailbox|fifo|immediate` requests a presentation mode; the report also records the actual mode from the runtime log. Unsupported requests can fall back to FIFO. Compare 60/120 Hz with the same actual mode, including an immediate-mode control when available, before attributing a frame-rate limit to the game. The request does not control Metal presentation, the desktop compositor or display scanout. Neither host GPU performance nor presentation rate establishes simulation speed.
+
+`--pace on|off` explicitly selects the existing Vulkan frame-pacing heuristic. `--phases` adds the guarded callback observations without changing HID tape ordering. These controls are recorded in the report.
 
 ## Output and interpretation
 

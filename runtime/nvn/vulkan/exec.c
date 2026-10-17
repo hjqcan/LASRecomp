@@ -486,13 +486,38 @@ static int new_chunk(uint64_t size) {
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO,
                                   .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
     static bool sysmem;  // (the device-local window ran out: system memory from then on)
-    if (sysmem || getenv("LARECOMP_VK_RING_SYSMEM")) ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;  // (test: a GPU without resizable BAR)
+    // Without resizable BAR the device-local host-visible window is ~256 MB, shared with other programs and the driver:
+    // two 64 MB chunks took 128 of its 132 MB in use while its budget fell to 81 MB (RTX 3080 Ti), and a GTX 1060 ran
+    // out (issue #45). A chunk goes there only while the window's use stays under half its budget; past that, system
+    // memory (~1 ms more GPU time a frame on a 3080 Ti at 1x). The first chunks, which most frames use, stay fast.
+    // LARECOMP_VK_RING_BAR=1: no budget check.
+    bool spill = false;
+    if (!sysmem && !getenv("LARECOMP_VK_RING_BAR")) {
+        uint32_t type;
+        if (vmaFindMemoryTypeIndexForBufferInfo(g_vk.vma, &bi, &ai, &type) == VK_SUCCESS) {
+            const VkPhysicalDeviceMemoryProperties *mp;
+            vmaGetMemoryProperties(g_vk.vma, &mp);
+            uint32_t heap = mp->memoryTypes[type].heapIndex;
+            VmaBudget bud[VK_MAX_MEMORY_HEAPS];
+            vmaGetHeapBudgets(g_vk.vma, bud);
+            spill = (mp->memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
+                    bud[heap].usage + size > bud[heap].budget / 2;
+            static bool logged;
+            if (spill && !logged) {
+                logged = true;
+                LOG("[vk] transient ring: device-local window %llu of %llu MB budget in use: new chunks in system memory\n",
+                    (unsigned long long)(bud[heap].usage >> 20), (unsigned long long)(bud[heap].budget >> 20));
+            }
+        }
+    }
+    if (sysmem || spill || getenv("LARECOMP_VK_RING_SYSMEM")) ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;  // (test: a GPU without resizable BAR)
     VmaAllocationInfo info;
     VkResult r = vmaCreateBuffer(g_vk.vma, &bi, &ai, &c->buf, &c->mem, &info);
     bool moved = false;
     // (a driver may report the full window as out of host memory too; if memory is really gone, the retry fails as well)
     if ((r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY) && ai.usage != VMA_MEMORY_USAGE_AUTO_PREFER_HOST) {
         LOG("[vk] transient ring: device-local memory full after %d chunks, system memory from now on\n", nchunks);
+        vk_log_memory("ring chunk failed");
         sysmem = moved = true;
         ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
         r = vmaCreateBuffer(g_vk.vma, &bi, &ai, &c->buf, &c->mem, &info);
@@ -500,7 +525,9 @@ static int new_chunk(uint64_t size) {
     VK_CHECK(r);
     c->ptr = info.pMappedData;
     c->size = size;
-    if (!nchunks || moved) {  // where the ring lives: device-local (resizable BAR) or system memory read across PCIe
+    static bool spilled;  // (the first chunk in system memory: logged too)
+    if (!nchunks || moved || (spill && !spilled)) {  // where the ring lives: device-local (resizable BAR) or system memory read across PCIe
+        if (spill) spilled = true;
         VkMemoryPropertyFlags f;
         vmaGetMemoryTypeProperties(g_vk.vma, info.memoryType, &f);
         LOG("[vk] transient ring: memory type %u (%s%s%s)\n", info.memoryType, f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? "device-local " : "system memory ",
@@ -954,6 +981,17 @@ static void begin_pass(void) {
         if (eh < minh) minh = eh;
         pass_samples = b->samples;
     }
+    // Bound color slots without a texture / view stay as VK_NULL_HANDLE attachments (legal), but Intel's Windows
+    // driver for UHD 630 (Vulkan 1.3.215) crashes in vkCmdBeginRendering reading near a null pointer on the title
+    // screen's first clear (issues #8, #46). Empty slots at the end are left out (pipelines and clears follow
+    // pass_ncolor); one in the middle, or a pass with no attachment at all, is logged once for the next report.
+    while (pass_ncolor && !ca[pass_ncolor - 1].imageView) pass_ncolor--;
+    static bool logged_hole;
+    for (uint32_t i = 0; i < pass_ncolor && !logged_hole; i++)
+        if (!ca[i].imageView) {
+            logged_hole = true;
+            LOG("[vk] pass with an empty color slot %u of %u (texture %s)\n", i, pass_ncolor, st.rt.color[i] ? "without a view" : "none");
+        }
     pass_depth = pass_stencil = VK_FORMAT_UNDEFINED;
     bool has_d = false, has_s = false;
     if (st.rt.depth) {
@@ -974,11 +1012,34 @@ static void begin_pass(void) {
             if (!pass_ncolor) pass_samples = b->samples;
         }
     }
-    if (!w) { pass_sx = pass_sy = 1; minw = minh = 16; }
+    if (!w) {
+        pass_sx = pass_sy = 1; minw = minh = 16;
+        static bool logged_none;
+        if (!logged_none) logged_none = true, LOG("[vk] pass with no attachments (%d color slots bound)\n", st.rt.ncolor);
+    }
     pass_w = minw; pass_h = minh;
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {minw, minh}}, .layerCount = 1,
-                          .colorAttachmentCount = pass_ncolor, .pColorAttachments = ca,
+                          .colorAttachmentCount = pass_ncolor, .pColorAttachments = pass_ncolor ? ca : NULL,
                           .pDepthAttachment = has_d ? &da : NULL, .pStencilAttachment = has_s ? &sa : NULL};
+    // LARECOMP_VK_LOG_PASSES=<n> (default 300 with =1): each of the first n passes before it begins - an Intel crash
+    // inside vkCmdBeginRendering (issues #8, #46) ends the log on the pass the driver choked on
+    static long log_passes = -1;
+    if (log_passes < 0) {
+        log_passes = getenv("LARECOMP_VK_LOG_PASSES") ? atol(getenv("LARECOMP_VK_LOG_PASSES")) : 0;
+        if (log_passes == 1) log_passes = 300;
+    }
+    if (log_passes > 0) {
+        log_passes--;
+        LOG("[vk] pass %ux%u: %u color", minw, minh, pass_ncolor);
+        for (uint32_t i = 0; i < pass_ncolor; i++) LOG(" [%u: fmt %d view %s %s]", i, pass_color[i], ca[i].imageView ? "yes" : "none",
+                                                       ca[i].loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR ? "clear" : "load");
+        if (has_d || has_s)
+            LOG(", depth %s fmt %d, stencil %s fmt %d (same view %s, layout %d, load op %d / %d)", has_d ? "yes" : "no",
+                pass_depth, has_s ? "yes" : "no", pass_stencil, has_d && has_s && da.imageView == sa.imageView ? "yes" : "no",
+                has_d ? da.imageLayout : sa.imageLayout, has_d ? da.loadOp : -1, has_s ? sa.loadOp : -1);
+        else LOG(", no depth / stencil");
+        LOG(", samples %u\n", pass_samples);
+    }
     vkCmdBeginRendering(cb, &ri);
     ss_forget();  // (whatever ran between the passes may have set its own state)
     in_pass = true;
@@ -2599,12 +2660,13 @@ static void draw_(CmdRec *r, bool indexed) {
     g_mirror_w = 0;
     {   // mirror mode (runtime/hle/mirror.c; as renderer.m): the scene's composite into the window image is mirrored
         extern bool mirror_draw(bool composite);
+        extern bool mirror_scene_size(uint32_t sw, uint32_t sh, uint32_t w, uint32_t h);
         bool composite = false;
         if (st.rt.ncolor && st.rt.color[0] && renderer_texture_presented(st.rt.color[0]) && !(st.color_state[0] & 1) &&
             r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
             st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height && pr->fi->ntex) {
             NvnTexture *t0 = shader_texture_object(1, &pr->fi->tex[0]);
-            composite = t0 && t0->width == st.rt.color[0]->width && t0->height == st.rt.color[0]->height;
+            composite = t0 && mirror_scene_size(t0->width, t0->height, st.rt.color[0]->width, st.rt.color[0]->height);
         }
         if (photo_mode_active()) {
             bool photo_composite = composite;

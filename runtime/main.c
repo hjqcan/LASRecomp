@@ -168,6 +168,7 @@ static void boot(const char *root) {
     { extern void settings_load(void); settings_load(); }
     kernel_init();
     dispatch_init();
+    if (title_is_las() && !research_hooks_init(why, sizeof why)) FATAL("%s\n", why);
 
     uint32_t stack_size = 0x100000;
     int prio = 44;

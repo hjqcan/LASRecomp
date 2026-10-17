@@ -327,10 +327,9 @@ MB_SEEN_SITE = A.MB_SEEN_SITE
 
 
 
-# Frame pacing (runtime/hle/framepace.c): the game's frame timer (f_700000c910) advances by its frame period times
-# the swap interval it reads from the system object (+0x812c, written only by the interval setter f_7000017800). It
-# reads it here and nowhere else: we hand it the number of vsyncs that really passed since the last frame, so a
-# late frame advances the world by the time that passed (no slow motion below 60 fps).
+# Experimental timer observation (runtime/hle/framepace.c): the callback reads the system swap interval at
+# +0x812c. This load is not a verified world-update delta; forcing it to 2 did not change walking speed.
+# Ordinary play retains the original interval. The separate research dispatcher probes observe update order.
 FRAME_STEPS_SITE = A.FRAME_STEPS_SITE
 
 
