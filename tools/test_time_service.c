@@ -5,6 +5,10 @@
 Service *service_new(const char *n, ServiceHandler h, void *s) { abort(); }
 void ipc_return_object(IpcResp *r, Service *s) { abort(); }
 KSharedMem *kernel_create_shared_memory(uint64_t n, void (*f)(KSharedMem *), uint32_t *h) { abort(); }
+uint32_t kernel_current_thread_handle(void) { return 1; }
+void research_external(int kind, uint64_t pc, uint32_t thread, uint64_t index, uint64_t value) {
+    (void)kind; (void)pc; (void)thread; (void)index; (void)value;
+}
 
 static void zone(const char *name) {
 #ifdef _WIN32
