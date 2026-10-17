@@ -69,8 +69,8 @@ static __thread uint64_t unimpl_pc;
 static int unimpl_counts[MAX_HLE];
 static void hle_unimplemented(Cpu *c) {
     int i = (int)((unimpl_pc - HLE_BASE) / 16);
-    if (getenv("ACNH_STRICT_HLE"))
-        FATAL("[acnh] missing host implementation: %s (lr=%llx)\n", hle_slots[i].name, c->x[30]);
+    if (getenv("LARECOMP_STRICT_HLE") || getenv("ACNH_STRICT_HLE"))
+        FATAL("[adapter] missing host implementation: %s (lr=%llx)\n", hle_slots[i].name, c->x[30]);
     if (unimpl_counts[i]++ < 3)
         LOG("[hle] UNIMPLEMENTED %s (x0=%llx x1=%llx lr=%llx) -> returning 0\n", hle_slots[i].name, c->x[0],
             c->x[1], c->x[30]);

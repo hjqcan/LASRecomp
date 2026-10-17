@@ -48,7 +48,7 @@ GEN_SRC  := $(strip $(foreach mod,$(GAME_MODULES),$(wildcard $(GEN)/$(mod)/*.c))
 GEN_OBJ  := $(patsubst %.c,$(B)/obj/%.o,$(patsubst $(GEN)/%,%,$(GEN_SRC))) $(B)/obj/tools/gamelib_entry.o
 RT_SRC   := $(wildcard runtime/*.c) $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
             $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c
-RT_HDRS  := $(wildcard runtime/*.h runtime/game_addresses/*.h runtime/services/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
+RT_HDRS  := $(wildcard runtime/*.h runtime/game_addresses/*.h runtime/services/*.h) runtime/game_installations.inc $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
             $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h)
 UI_SRC   := $(wildcard runtime/ui/*.mm)
 UI_OBJ   := $(patsubst runtime/%.mm,$(B)/rt/%.o,$(UI_SRC))
@@ -114,10 +114,13 @@ endif
 
 # GAMELIB_ID: what the game code library is built from (the generator, the headers it is compiled against, the
 # flags). A library with another id is rebuilt by the start screen, never loaded.
-GAMELIB_SRCS := tools/game_catalog.py runtime/title_catalog.inc runtime/title_profile.h tools/game_addresses.py runtime/game_addresses/v1_0_0.h tools/gen.py tools/game_versions.py tools/rando_profiles.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py \
-                tools/simd_c.py tools/rando/patch_variants.json tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
+# Only shared generation/ABI inputs belong here. Release-specific inputs are hashed in each adapter's code_identity.
+GAMELIB_SRCS := tools/gen.py tools/gen_game.py tools/adapter_patches.py runtime/title_profile.c tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py \
+                tools/simd_c.py tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
                 runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h
-GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
+ADAPTER_SRCS := $(wildcard adapters/*/adapter.json) adapters/core-capabilities.json tools/game_catalog.py tools/game_addresses.py runtime/game_addresses/v1_0_0.h \
+                tools/game_versions.py tools/rando_profiles.py tools/patches.py tools/rando/patch_variants.json
+GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(PLATFORM) $(ARCH) $(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 # GAMELIB_BASE_ID: what every compiled piece of it depends on (the headers, the flags, the pinned compiler). The same
 # base keeps the start screen's earlier build pieces: only the pieces whose generated C changed are compiled again
 # (runtime/gamebuild.c). Another base: everything is compiled again.
@@ -181,6 +184,7 @@ $(GAMELIB): $(GEN_OBJ) | $(EXE)
 	mv -f $@.tmp $@
 	echo $(GAMELIB_ID) > $@.id
 	sed -n 's/^const char main_build_id_full\[\] = "\([0-9a-f]*\)";.*/\1/p' $(GEN)/main/main_table.c >> $@.id
+	sed -n 's/^\#define GAMELIB_ADAPTER_ID "\([0-9a-f]*\)"/\1/p' $(GEN)/gamelib_modules.inc >> $@.id
 
 $(B)/rt/ui/%.o: runtime/ui/%.mm $(RT_HDRS)
 	@mkdir -p $(dir $@)
@@ -199,15 +203,21 @@ $(B)/imgui/imgui_impl_metal.o: $(IMGUI)/backends/imgui_impl_metal.mm
 	$(CXX) $(CXXFLAGS) -fobjc-arc -c $< -o $@
 
 # Python: tools/venv (macOS, Linux: bin/python, Windows: Scripts/python.exe)
-PY := $(firstword $(wildcard tools/venv/bin/python) $(wildcard tools/venv/Scripts/python.exe))
+PY := $(or $(firstword $(wildcard tools/venv/bin/python) $(wildcard tools/venv/Scripts/python.exe)),python)
 
 gen:
 	$(PY) tools/gen_game.py --game-dir $(GAME_DIR) --outdir $(GEN) $(GENSIMD)
 
-$(GEN)/gamelib_modules.inc: tools/game_catalog.py tools/gen_game.py
+$(GEN)/gamelib_modules.inc: $(ADAPTER_SRCS) tools/gen_game.py
 	$(PY) tools/gen_game.py --game-dir $(GAME_DIR) --outdir $(GEN) --metadata-only
 
 $(B)/rt/title_profile.o: runtime/title_catalog.inc
+
+runtime/title_catalog.inc: $(ADAPTER_SRCS) $(GAMELIB_SRCS)
+	$(PY) tools/game_catalog.py --write-c $@
+
+runtime/game_installations.inc: $(ADAPTER_SRCS)
+	$(PY) tools/game_catalog.py --write-installations $@
 
 gen-objs: $(GEN_OBJ)
 

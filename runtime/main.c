@@ -8,6 +8,7 @@
 #include "gameversion.h"
 #include "game_profiles.h"
 #include "game_shortcut.h"
+#include "game_install.h"
 #include "mods.h"
 #include "photo.h"
 #include "workshop.h"
@@ -217,7 +218,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--create-shortcut")) create_shortcut = true;
         else if (!strcmp(argv[i], "--game")) {
             if (++i >= argc || (launch_profile = game_profile_from_id(argv[i])) < 0) {
-                fprintf(stderr, "Unknown game installation. Use las/1.0.0, las/1.1.0 or acnh/1.0.0.\n"); return 2;
+                fprintf(stderr, "Unknown game installation. Available launch IDs:\n");
+                for (int p = 1; p < GAME_PROFILE_COUNT; ++p) fprintf(stderr, "  %s\n", game_profile_id(p));
+                return 2;
             }
         } else if (!strcmp(argv[i], "--data-root")) {
             if (++i >= argc) { fprintf(stderr, "--data-root needs a folder path.\n"); return 2; }
@@ -230,11 +233,16 @@ int main(int argc, char **argv) {
     settings_load();
     if (launch_profile >= 0) root = game_profile_dir(launch_profile);
     if (!root) root = game_profile_dir(g_settings.game_profile);
+    static char installed_root[2048];
+    char install_error[512];
+    if (game_install_resolve(root, installed_root, sizeof installed_root, install_error, sizeof install_error)) root = installed_root;
+    else { fprintf(stderr, "%s\n", install_error); skip_launcher = false; }
     if (create_shortcut) {
         char shortcut[2048], why[512];
         if (!game_shortcut_create(root, shortcut, sizeof shortcut, why, sizeof why)) { fprintf(stderr, "%s\n", why); return 1; }
         printf("%s\n", shortcut); return 0;
     }
+    if (skip_launcher && !gamelib_present(root)) skip_launcher = false;
     for (bool title = !skip_launcher;;) {
         if (title) {  // start screen (runtime/ui/launcher.mm): game files setup, seed choice, settings
             extern const char *launcher_run(const char *root);

@@ -22,7 +22,8 @@ def main():
     tools=Path(__file__).resolve().parent
     for module in plan['modules']:
         command=[sys.executable,str(tools/'gen.py'),module['name'],str(args.game_dir/'exefs'/module['name']),
-                 module['base'],str(args.outdir/module['name']),'--profile',plan['generator_profile']]
+                 module['base'],str(args.outdir/module['name']),'--profile',plan['generator_profile'],
+                 '--adapter',plan['game_id'],'--release',plan['version'],'--adapter-id',plan['code_identity']]
         if module['hle']:
             command+=['--hle',str(tools.parent/'runtime/hle/hle_symbols.txt')]
         if args.simd:

@@ -20,7 +20,7 @@ import uuid
 import xml.etree.ElementTree as ET
 
 import zstandard
-from game_catalog import GAMES, catalog, get_game, game_for_application, game_for_build
+from game_catalog import GAMES, catalog, get_game, game_for_application, game_for_build, code_identity
 from nca import Keyset, Nca, parse_cnmt, ticket_key
 from containers import View, safe_name, pfs_entries, open_container
 
@@ -234,8 +234,8 @@ def inspect_package(path, keys=None, game=None):
                            application_id=game.application_id,
                            title_id=game.application_id if release.role == 'base' else game.update_id,
                            main_build_id_full=build_id, metadata_source='ExeFS')
-    return dict(format=fmt, game_id=game.id, name=game.name, adapter_status=game.status,
-                installable=game.installable, game_version=release.version, **details)
+    return dict(format=fmt, game_id=game.id, name=game.name, adapter_status=release.status,
+                installable=release.installable, game_version=release.version, **details)
 
 
 def verify_content(view, content):
@@ -469,7 +469,7 @@ def import_game(base_path, update_path, output, replace=False, keys_path=None, t
     game = get_game(game_id) if game_id and game_id != 'auto' else None
     if game is None:
         game = get_game(inspect_package(base_path, keys)['game_id'])
-    require(game.installable or allow_development,
+    require(any(r.installable and (expected_version is None or r.version == expected_version) for r in game.releases) or allow_development,
             f'{game.name} adaptation is in development; installation is not enabled')
     require(expected_version is None or any(r.version == expected_version for r in game.releases),
             'Unsupported installation slot version for the selected game')
@@ -498,7 +498,7 @@ def import_game(base_path, update_path, output, replace=False, keys_path=None, t
         with ExitStack() as stack:
             base, sections, exefs, build_id, metadata = open_program(base_path, scratch, stack, 'base', keys, game)
             require(game.release(build_id).role == 'base', 'The base archive must contain a supported base game')
-            offset, header, section_start, section_size = find_romfs(base, sections, game)
+            offset, header, section_start, section_size = find_romfs(base, sections, game.release(build_id))
             romfs = base
             executable = base
             if update_path:
@@ -506,17 +506,25 @@ def import_game(base_path, update_path, output, replace=False, keys_path=None, t
                 require(game.release(build_id).role == 'update', 'Only a verified update is supported')
                 print('import: applying update extents', flush=True)
                 romfs = update_view(base.sub(section_start, section_size), update, update_sections)
-                offset, header, _, _ = find_romfs(romfs, [(0, romfs.size)], game)
+                offset, header, _, _ = find_romfs(romfs, [(0, romfs.size)], game.release(build_id))
                 executable = update
             require(expected_version is None or game.release(build_id).version == expected_version,
                     'The imported game does not match the selected installation slot')
+            require(game.release(build_id).installable or allow_development,
+                    f'{game.name} {game.release(build_id).version} adaptation is in development; installation is not enabled')
             for name, start, size in exefs:
                 copy_range(executable, start, size, ready / 'exefs' / name)
             count, size = extract_romfs(romfs, offset, header, ready / 'romfs')
-        manifest = dict(game_id=game.id, application_id=game.application_id, adapter_revision=game.adapter_revision,
+        manifest = dict(schema=2, game_id=game.id, application_id=game.application_id, adapter_revision=game.adapter_revision,
+                        code_identity=code_identity(game, game.release(build_id)),
                         game_version=game.release(build_id).version, main_build_id=build_id[:40], main_build_id_full=build_id,
                         source_base=base_path.name, source_update=update_path.name if update_path else None,
                         romfs_files=count, romfs_bytes=size)
+        manifest['modules'] = []
+        for module in game.release(build_id).modules:
+            with (ready / 'exefs' / module.name).open('rb') as source:
+                manifest['modules'].append(dict(name=module.name, build_id=module.build_id,
+                                                sha256=hashlib.file_digest(source, 'sha256').hexdigest()))
         if metadata:
             manifest.update({k: metadata[k] for k in ('title_id', 'content_version', 'metadata_source')})
         (ready / 'import-manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')

@@ -13,6 +13,7 @@ extern "C" bool gamelib_present(const char *) { return library_ready; }
 extern "C" const char *rt_data_root(void) { return test_root.c_str(); }
 extern "C" int game_profile_index(const char *, const char *) { return test_slot; }
 extern "C" const char *game_profile_id(int) { return "acnh/1.0.0"; }
+extern "C" const char *game_profile_install_dir(int) { return "games with spaces"; }
 
 int main(int argc, char **argv) {
     assert(argc == 2);

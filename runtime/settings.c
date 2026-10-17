@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "game_profiles.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -107,7 +108,7 @@ void settings_load(void) {
         }
         if (fields != 2) continue;
         if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
-        else if (!strcmp(key, "game_profile")) g_settings.game_profile = !strcmp(val, "1.0.0") ? 1 : !strcmp(val, "1.1.0") ? 2 : !strcmp(val, "acnh/1.0.0") ? 3 : 0;
+        else if (!strcmp(key, "game_profile")) g_settings.game_profile = game_profile_parse_setting(val);
         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
@@ -202,6 +203,6 @@ void settings_save(void) {
     fprintf(f, "tunic = %s\nhearts = %s\n", g_tunic_colours[g_settings.tunic], g_heart_colours[g_settings.hearts]);
     bind_settings_save(f);
     fprintf(f, "rando_seed = %s\n", g_settings.rando_seed);
-    fprintf(f, "game_profile = %s\n", g_settings.game_profile == 1 ? "1.0.0" : g_settings.game_profile == 2 ? "1.1.0" : g_settings.game_profile == 3 ? "acnh/1.0.0" : "existing");
+    fprintf(f, "game_profile = %s\n", game_profile_setting(g_settings.game_profile));
     fclose(f);
 }

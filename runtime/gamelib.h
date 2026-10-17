@@ -24,7 +24,7 @@
 #ifndef GAMELIB_ID
 #define GAMELIB_ID "dev"
 #endif
-#define GAMELIB_ABI 3
+#define GAMELIB_ABI 4
 
 typedef struct {
     const char *name;
@@ -40,6 +40,7 @@ typedef struct {
     const char *game_id, *version;
     uint32_t adapter_revision, module_count;
     const GameLibModule *modules;
+    const char *adapter_id; // this release's code-generation inputs, independent of the complete catalog
 } GameLibTables;
 
 // The library's one exported function (tools/gamelib_entry.c).
@@ -57,6 +58,8 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size);
 const GameLibTables *gamelib_tables(void);
 // True when a library usable with this build is in one of those places (without loading it).
 bool gamelib_present(const char *game_dir);
+// Validate the exact candidate library with the host loader, then unload it without selecting it for play.
+bool gamelib_verify(const char *game_dir, char *why, size_t why_size);
 
 #ifdef __cplusplus
 }

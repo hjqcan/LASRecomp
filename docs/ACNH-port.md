@@ -15,7 +15,8 @@ generated C, compiled game library, or saves belong in commits.
 
 The loader checks the full 32-byte IDs and rejects other versions. The SDK runs
 its initializers first, followed by multimedia and game initialization. All three
-modules have independent function tables (game-library ABI 3). The runtime also
+modules have independent function tables (game-library ABI 4, including a release
+code-identity check). The runtime also
 loads the reviewed LAS 1.0.0 and 1.1.0 adapters from the same catalog.
 
 `tools/gen_game.py` selects the generic profile for ACNH, with no LAS instruction

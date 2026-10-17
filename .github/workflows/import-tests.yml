@@ -20,6 +20,9 @@ jobs:
       - run: python -m pip install zstandard==0.25.0 cryptography==50.0.2
       - run: python tools/test_import_game.py -v
       - run: python tools/test_game_catalog.py -v
+      - run: python tools/adapter.py check
+      - run: python tools/test_adapter_contract.py -v
+      - run: python tools/test_game_install.py
       - run: python tools/test_title_profile.py
       - run: python tools/test_game_profiles.py
       - run: python tools/test_shader_ldc.py

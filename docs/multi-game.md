@@ -1,7 +1,8 @@
 # Shared game installations
 
-The enhanced runtime uses `tools/game_catalog.py` and its generated native
-catalog to identify each reviewed game/version by every module's full 32-byte
+The enhanced runtime reads reviewed `adapters/*/adapter.json` definitions through
+`tools/game_catalog.py` and generates its native catalog and installation list.
+It identifies each reviewed game/version by every module's full 32-byte
 Build ID. LAS 1.0.0 and 1.1.0 use two modules; ACNH 1.0.0 uses three. ACNH is
 still marked as development while the gameplay and save gates in
 [ACNH-port.md](ACNH-port.md) remain open.
@@ -10,7 +11,9 @@ Archive inspection accepts NSP, NSZ, XCI and XCZ. The default is automatic game
 identification. Readable content metadata provides a preliminary identity;
 metadata-free NCZ packages are inspected through their executable modules.
 Filenames do not select the game or version. Import validates module identities,
-base/update roles and RomFS structure before publishing the installation.
+base/update roles and RomFS structure. The launcher stages this content, builds
+and validates the exact library, then publishes the installation. The standalone
+import command below extracts data only; it does not compile or create shortcuts.
 The development override is intended for local port testing:
 
 ```
@@ -24,7 +27,7 @@ source commits or distributed runtime packages.
 
 ## Managed locations
 
-| Launch ID | Game folder | Vanilla save folder |
+| Launch ID | Stable installation slot | Vanilla save folder |
 | --- | --- | --- |
 | `existing` | `extracted` | `save` |
 | `las/1.0.0` | `games/v1.0.0` | `save/v1.0.0` |
@@ -36,11 +39,70 @@ and setting values remain valid. A custom ACNH folder uses a save namespace
 containing its program ID and executable Build ID. Test runs can explicitly
 override the save directory.
 
+Legacy files directly inside these slots remain valid. New managed setup uses
+`<slot>/.installations/build-<id>/content`; `.installations/current` selects the
+published generation. This internal directory is never embedded in a managed
+desktop shortcut or used as a save identity. Legacy numeric slot indices and
+setting aliases are explicitly preserved in the adapter definitions.
+
 The launcher inspects a selected archive and selects the matching managed slot.
 The native importer checks the expected title as well as version, so two games
 that both use version 1.0.0 cannot overwrite each other's slot. Generated-source
 and object caches include the adapter and all modules; an incompatible SDK or
 module set is rejected before compilation replaces a working library.
+
+## Candidate installation and recovery
+
+An exclusive OS lock covers a managed installation's import, build and publication.
+All new content and build work stays in a candidate, recorded by
+`.installations/pending`. Cancelling compilation or terminating the process leaves
+that candidate available to **Build or resume game code**. The old installation
+remains selected throughout. A failed import needs the source to be selected again;
+only a complete imported candidate can resume compilation without its archive.
+
+Before switching `current`, the publisher checks the exact module set, the
+adapter's content rules, the resulting library through the host dynamic loader,
+and its ABI, core ID and adapter ID. It writes a content receipt and atomically
+replaces the small startup record. A crash before the switch retains the old
+installation; a crash after it leaves the complete new installation selected.
+Shortcut creation follows publication and can be retried independently.
+
+Previous generations and legacy content are retained, including while another
+process may still be using them. This costs additional disk space: rebuilding an
+existing installation currently copies its data and verified build cache. There
+is no automatic garbage collection or rollback UI yet. **Delete game files**
+removes the managed slot's owned generations and legacy game files; saves, seeds,
+mods and settings remain outside them. **Clear compilation cache** operates on
+the pending build when there is one and keeps the installed game library.
+
+External extracted developer folders retain their original build-only workflow
+and library-pair rollback. Managed setup does not overwrite those source folders.
+
+## Code identity and reuse
+
+The native library ABI is now **4**. Libraries from the previous ABI need a
+one-time rebuild; existing saves and launch IDs do not change. Thereafter:
+
+- The common identity covers shared generation code, host ABI, target and flags.
+- The release identity covers its module plan, reviewed instruction patches,
+  adapter revision, shared generator sources and its own generator profile inputs.
+- The complete title catalog, labels, paths and unrelated adapters are excluded
+  from these code dependencies. Adding another title does not invalidate an
+  already compatible library. LAS-only patch changes do not invalidate ACNH.
+- Generation and compiler receipts still validate file contents and retain
+  unchanged compiled chunks. Compiler/header/flag changes invalidate the affected
+  objects. The helper checks the requested release identity before generation,
+  rejecting mismatched helper/runtime packages.
+
+These checks establish artifact compatibility. Developer qualification of a
+game/version remains separate from successful installation on a player's PC.
+Players do not repeat the developer's extended gameplay acceptance run.
+Keeping an older installation does not make an incompatible library loadable
+with a newer host ABI/code contract: that host still requires a successful rebuild.
+Failure preservation keeps the older files intact for their compatible runtime.
+
+See [adapter development](adapter-development.md) for schema checks, guarded
+patches, scaffolding and missing-capability diagnostics.
 
 ## Desktop launch
 
@@ -66,7 +128,7 @@ files. `tools/test_game_profiles.py` checks exact managed locations, launch IDs
 and distinct save folders. These tests do not replace real import, compilation,
 desktop launch and gameplay verification.
 
-The Windows development package has imported a metadata-free ACNH base NSZ,
+Before the ABI-4 installation refactor, the Windows development package imported a metadata-free ACNH base NSZ,
 validated all three modules, and built them using its bundled frozen generator
 and Zig compiler, with no external Python/compiler override. Generation produced
 523 main, 102 SDK and 100 multimedia chunks; compilation produced 729 objects

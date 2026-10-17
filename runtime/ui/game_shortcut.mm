@@ -73,10 +73,11 @@ static bool create_windows_shortcut(const char *game_dir, const TitleProfile *pr
         if (!length || length >= 32768) { snprintf(why, why_size, "Cannot locate the running application."); return false; }
         fs::path root = fs::absolute(fs::u8path(game_dir)).lexically_normal();
         int slot = game_profile_index(game_dir, rt_data_root());
-        std::wstring identity = L"LAS Recomp game: " + wide(profile->key) + L"/" + wide(profile->version) + L" @ " + root.wstring();
+        fs::path stable = slot >= 0 ? fs::absolute(fs::u8path(rt_data_root()) / game_profile_install_dir(slot)).lexically_normal() : root;
+        std::wstring identity = L"LAS Recomp game: " + wide(profile->key) + L"/" + wide(profile->version) + L" @ " + stable.wstring();
         std::wstring args = L"--play --data-root " + quote_arg(wide(rt_data_root()));
         if (slot > GAME_PROFILE_EXISTING) args += L" --game " + quote_arg(wide(game_profile_id(slot)));
-        else args += L" " + quote_arg(root.wstring());
+        else args += L" " + quote_arg(stable.wstring());
         std::wstring label = wide(profile->name) + L" " + wide(profile->version);
         for (wchar_t &ch : label) if (wcschr(L"<>:\"/\\|?*", ch)) ch = L'-';
         fs::path destination;

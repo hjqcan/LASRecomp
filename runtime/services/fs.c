@@ -709,7 +709,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
 static Service *open_host_fs(const char *sub) {
     HostFs *fs = calloc(1, sizeof *fs);
     g_save_dir = game_profile_save_dir(game_profile_active());
-    if (!title_is_las() && game_profile_active() != GAME_PROFILE_ACNH) {
+    if (!title_is_las() && game_profile_active() <= GAME_PROFILE_EXISTING) {
         static char title_save[160];
         const TitleProfile *p=title_profile_current();
         snprintf(title_save,sizeof title_save,"save/%016llx/%s",(unsigned long long)p->program_id,p->modules[0].build_id);

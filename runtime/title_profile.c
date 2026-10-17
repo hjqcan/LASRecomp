@@ -4,8 +4,16 @@
 #include "title_catalog.inc"
 
 static const TitleProfile *selected;
-const TitleProfile *title_profile_current(void) { return selected ? selected : &title_profiles[0]; }
-bool title_is_las(void) { return !strcmp(title_profile_current()->key, "las"); }
+static const TitleProfile unselected = {.key="", .name="LAS Recomp", .version="", .generator_profile="generic", .status="unselected", .heap_scale=1};
+const TitleProfile *title_profile_current(void) { return selected ? selected : &unselected; }
+bool title_is_las(void) { return title_profile_current()->las_extensions; }
+unsigned title_profile_count(void) { return sizeof title_profiles / sizeof title_profiles[0]; }
+const TitleProfile *title_profile_at(unsigned index) { return index < title_profile_count() ? &title_profiles[index] : NULL; }
+void title_profile_preview(const char *key, const char *version) {
+    selected = NULL;
+    if (key && version) for (unsigned i = 0; i < title_profile_count(); ++i)
+        if (!strcmp(key, title_profiles[i].key) && !strcmp(version, title_profiles[i].version)) selected = &title_profiles[i];
+}
 
 static void hex_id(const unsigned char id[32], char out[65]) {
     static const char hex[] = "0123456789abcdef";
@@ -58,8 +66,9 @@ bool title_profile_write_entry(const TitleProfile *p, const char *path, char *wh
     FILE *f=fopen(path,"wb");
     if (!f) { snprintf(why,size,"Cannot create the game module entry"); return false; }
     fprintf(f,"// Generated from the reviewed game adapter.\n#define GAMELIB_GAME_ID \"%s\"\n"
-              "#define GAMELIB_GAME_VERSION \"%s\"\n#define GAMELIB_ADAPTER_REVISION %u\n",
-              p->key,p->version,p->adapter_revision);
+              "#define GAMELIB_GAME_VERSION \"%s\"\n#define GAMELIB_ADAPTER_REVISION %u\n"
+              "#define GAMELIB_ADAPTER_ID \"%s\"\n",
+              p->key,p->version,p->adapter_revision,p->code_identity);
     for (unsigned i=0;i<p->module_count;i++) {
         const char *name=p->modules[i].name;
         fprintf(f,"extern const uint64_t %s_fn_addrs[], %s_fn_count;\nextern const GuestFn %s_fn_ptrs[];\n"

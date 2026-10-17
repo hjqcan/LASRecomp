@@ -15,7 +15,7 @@ HARNESS=r'''
 #include <stdlib.h>
 #include <string.h>
 int main(int argc,char **argv) {
-    assert(argc==4 && title_is_las());
+    assert(argc==4 && !title_is_las() && !*title_profile_current()->key);
     const char *keys[]={"las","las","acnh"}, *versions[]={"1.0.0","1.1.0","1.0.0"};
     unsigned counts[]={2,2,3};
     char why[256],path[2048],id[65];

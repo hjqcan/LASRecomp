@@ -42,10 +42,14 @@ The [fourth research round](research-fourth-round.md) separates startup seed inp
 
 The [Enhanced Beta 5.1 validation record](enhanced-beta5.1-validation.md) lists actual checks and remaining limits, including the save-mount concurrency fix found during release testing.
 
-[Multi-game development](multi-game.md) records the shared-core/adapters direction.
-The importer now uses a title catalog with full module Build-ID checks. ACNH is
-registered for development inspection only; its runtime integration, a game
-library screen and automatic desktop shortcuts are not released features.
+[Multi-game development](multi-game.md) now includes the shared module runtime,
+reviewed per-game adapter definitions, catalog-generated installation selection,
+release-scoped cache identities and Windows desktop shortcuts. Managed setup
+imports and builds a candidate before atomically selecting it; failed builds keep
+the previous installation. ABI 4 requires a one-time game-library rebuild while
+preserving saves and launch IDs. ACNH remains a development adapter with normal
+installation disabled until its gameplay/save acceptance gates pass. These source
+changes do not themselves publish a new prerelease.
 
 ## Windows quick start / Windows 使用说明
 

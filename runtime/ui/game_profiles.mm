@@ -1,4 +1,5 @@
 #include "../game_profiles.h"
+#include "../game_install.h"
 #include <filesystem>
 #include <string>
 #include <cstring>
@@ -7,31 +8,38 @@
 #endif
 namespace fs = std::filesystem;
 static int active;
-static const char *dirs[] = {"extracted", "games/v1.0.0", "games/v1.1.0", "games/acnh/v1.0.0"};
-static const char *saves[] = {"save", "save/v1.0.0", "save/v1.1.0", "save/acnh/v1.0.0"};
-static const char *names[] = {"Existing installation", "Link's Awakening 1.0.0", "Link's Awakening 1.1.0", "Animal Crossing: New Horizons 1.0.0"};
-static const char *ids[] = {"existing", "las/1.0.0", "las/1.1.0", "acnh/1.0.0"};
 static int bounded(int p) {
     return p >= 0 && p < GAME_PROFILE_COUNT ? p : 0;
 }
 extern "C" const char *game_profile_dir(int p) {
-    return dirs[bounded(p)];
+    static thread_local std::string resolved[GAME_PROFILE_COUNT];
+    p = bounded(p);
+    char path[2048], why[256];
+    if (game_install_resolve(game_profile_install_dir(p), path, sizeof path, why, sizeof why)) {
+        if (fs::u8path(path).lexically_normal() == fs::absolute(fs::u8path(game_profile_install_dir(p))).lexically_normal())
+            return game_profile_install_dir(p);
+        resolved[p] = path; return resolved[p].c_str();
+    }
+    return game_profile_install_dir(p); // a missing/corrupt publication opens the repair flow
+}
+extern "C" const char *game_profile_install_dir(int p) {
+    return game_installations[bounded(p)].directory;
 }
 extern "C" const char *game_profile_save_dir(int p) {
-    return saves[bounded(p)];
+    return game_installations[bounded(p)].save_directory;
 }
 extern "C" const char *game_profile_name(int p) {
-    return names[bounded(p)];
+    return game_installations[bounded(p)].name;
 }
 extern "C" const char *game_profile_version(int p) {
-    return p == GAME_PROFILE_BASE || p == GAME_PROFILE_ACNH ? "1.0.0" : p == GAME_PROFILE_UPDATED ? "1.1.0" : NULL;
+    return game_installations[bounded(p)].version;
 }
 extern "C" const char *game_profile_title(int p) {
-    return p == GAME_PROFILE_ACNH ? "acnh" : p == GAME_PROFILE_BASE || p == GAME_PROFILE_UPDATED ? "las" : NULL;
+    return game_installations[bounded(p)].title;
 }
-extern "C" const char *game_profile_id(int p) { return ids[bounded(p)]; }
+extern "C" const char *game_profile_id(int p) { return game_installations[bounded(p)].id; }
 extern "C" int game_profile_from_id(const char *id) {
-    if (id) for (int i = 0; i < GAME_PROFILE_COUNT; i++) if (!strcmp(id, ids[i])) return i;
+    if (id) for (int i = 0; i < GAME_PROFILE_COUNT; i++) if (!strcmp(id, game_profile_id(i))) return i;
     return -1;
 }
 extern "C" int game_profile_match(const char *title, const char *version) {
@@ -62,7 +70,7 @@ extern "C" int game_profile_index(const char *game_dir, const char *data_root) {
             return -1;
         auto normalized = dir.lexically_normal();
         for (int i = 0; i < GAME_PROFILE_COUNT; ++i) {
-            auto want = (root / fs::u8path(dirs[i])).lexically_normal();
+            auto want = (root / fs::u8path(game_profile_install_dir(i))).lexically_normal();
 #ifdef _WIN32
             if (_wcsicmp(normalized.c_str(), want.c_str()) == 0)
                 return i;
@@ -70,6 +78,15 @@ extern "C" int game_profile_index(const char *game_dir, const char *data_root) {
             if (normalized == want)
                 return i;
 #endif
+            char resolved[2048], why[256];
+            if (game_install_resolve(want.u8string().c_str(), resolved, sizeof resolved, why, sizeof why)) {
+                auto published = fs::u8path(resolved).lexically_normal();
+#ifdef _WIN32
+                if (_wcsicmp(normalized.c_str(), published.c_str()) == 0) return i;
+#else
+                if (normalized == published) return i;
+#endif
+            }
         }
     } catch (...) {
     }

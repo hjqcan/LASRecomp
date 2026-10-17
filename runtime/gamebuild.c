@@ -361,8 +361,8 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     // Generator changes should rebuild only chunks whose C changed, as in the existing incremental builder.
     // Compiler/header/flag changes invalidate every object; entry always rebuilds because it embeds GAMELIB_ID.
     const char *inputs[] = {input_paths[module_count], input_paths[module_count+1], input_paths[module_count+2], input_paths[module_count+3], t.cc};
-    snprintf(spec, sizeof spec, "LASBUILD4\n%s\n%s\n%s\n%s\nzig=%d pointer=%d\n%s:%s:adapter=%u\n", GAMELIB_BASE_ID,
-             GAMELIB_CFLAGS, GAMELIB_SHARED, t.cc, t.zig, (int)sizeof(void *),profile->key,profile->version,profile->adapter_revision);
+    snprintf(spec, sizeof spec, "LASBUILD5\n%s\n%s\n%s\n%s\nzig=%d pointer=%d\n%s:%s\n", GAMELIB_BASE_ID,
+             GAMELIB_CFLAGS, GAMELIB_SHARED, t.cc, t.zig, (int)sizeof(void *),profile->key,profile->version);
     if (o->progress) o->progress(0, "Checking completed build files...");
     BuildCache *cache = build_cache_open(game_dir, spec, inputs, 5, why, why_size);
     if (!cache) return false;
@@ -374,7 +374,8 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     for (unsigned i=0;i<module_count;i++) gen_inputs[ngen++]=input_paths[i];
     gen_inputs[ngen++]=t.gen; gen_inputs[ngen++]=t.hle; gen_inputs[ngen++]=entry_header;
     if (t.gen_script[0]) gen_inputs[ngen++] = t.gen_script;
-    if (!build_cache_prepare_generation(cache, GAMELIB_ID, gen_inputs, ngen, why, why_size)) {
+    snprintf(spec, sizeof spec, "%s\n%s", GAMELIB_ID, profile->code_identity);
+    if (!build_cache_prepare_generation(cache, spec, gen_inputs, ngen, why, why_size)) {
         build_cache_close(cache);
         return false;
     }
@@ -417,6 +418,9 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         add(&a, base);
         add(&a, g->out);
         add(&a,"--profile"); add(&a,profile->generator_profile);
+        add(&a,"--adapter"); add(&a,profile->key);
+        add(&a,"--release"); add(&a,profile->version);
+        add(&a,"--adapter-id"); add(&a,profile->code_identity);
         if (profile->modules[i].hle) { add(&a, "--hle"); add(&a, t.hle); }
         g->p = spawn(a.v, g->log);
         args_free(&a);
@@ -593,7 +597,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         if (title_profile_validate(game_dir,why,why_size)!=profile || !title_build_id(main_path, build_id)) {
             snprintf(why, why_size, "the game executable changed"); ok = false;
         }
-        else ok = build_cache_publish(cache, GAMELIB_NAME, GAMELIB_ID, build_id, why, why_size);
+        else ok = build_cache_publish(cache, GAMELIB_NAME, GAMELIB_ID, build_id, profile->code_identity, why, why_size);
     }
     free(units.u);
     build_cache_close(cache);
