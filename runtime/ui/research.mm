@@ -2,6 +2,7 @@
 #include "../research.h"
 #include "../research_update.h"
 #include "../research_seed.h"
+#include "../research_stores.h"
 #include "../gameversion.h"
 #include "../platform.h"
 #include <algorithm>
@@ -83,7 +84,8 @@ extern "C" bool research_boot(const char *root,const char *save,char *why,size_t
     const char *record=getenv("LARECOMP_RESEARCH_CAPTURE"),*tape=getenv("LARECOMP_RESEARCH_REPLAY"),*rate=getenv("LARECOMP_RESEARCH_HZ");
     const char *phase_option=getenv("LARECOMP_RESEARCH_PHASES");
     const char *semantics_option=getenv("LARECOMP_RESEARCH_SEMANTICS");
-    if (!record&&!tape&&!rate&&!phase_option&&!semantics_option&&!getenv("LARECOMP_RESEARCH_STARTUP_SEED")&&!research_update_configured()) return true;
+    if (!record&&!tape&&!rate&&!phase_option&&!semantics_option&&!getenv("LARECOMP_RESEARCH_STARTUP_SEED")&&
+        !getenv("LARECOMP_RESEARCH_STORE_FROM")&&!getenv("LARECOMP_RESEARCH_STORE_TO")&&!getenv("LARECOMP_RESEARCH_STORE_MAX")&&!research_update_configured()) return true;
     try {
         if ((!record&&!tape)||(record&&tape)||!save||!*save) throw std::runtime_error("Research needs exactly one capture/replay mode and an isolated workshop save.");
         if(record&&strcmp(record,"1"))throw std::runtime_error("Research capture must be explicitly set to 1.");
@@ -96,6 +98,7 @@ extern "C" bool research_boot(const char *root,const char *save,char *why,size_t
         if(semantics_option&&(strcmp(semantics_option,"1")||!research_update_active()))
             throw std::runtime_error("Semantic observations require update mode and an explicit value of 1.");
         if(!research_seed_boot(semantics_option!=nullptr,update_error,sizeof update_error))throw std::runtime_error(update_error);
+        if(!research_stores_boot(semantics_option!=nullptr,update_error,sizeof update_error))throw std::runtime_error(update_error);
         int hz=60;
         if(rate) { if(strcmp(rate,"30")&&strcmp(rate,"60")&&strcmp(rate,"120")) throw std::runtime_error("Research frequency must be 30, 60 or 120 Hz.");hz=atoi(rate); }
         replay.clear();
@@ -190,6 +193,7 @@ extern "C" void research_finish(void) {
             output.close();if(!output)throw std::runtime_error("Phase export could not be completed.");
         }
         if(semantics) {
+            if(!research_stores_export(directory.c_str(),why,sizeof why))throw std::runtime_error(why);
             if(!research_seed_export(directory.c_str(),why,sizeof why))throw std::runtime_error(why);
             std::ofstream output(root/"external.csv",std::ios::binary);output.imbue(std::locale::classic());
             output<<"event,kind,pc,thread,index,value,elapsed_ns,completed_updates,gate_ready\n";

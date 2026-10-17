@@ -38,6 +38,8 @@ The subsequent [research probes](research-capture.md) now measure final HID inpu
 
 The [fourth research round](research-fourth-round.md) separates startup seed input from RNG consumption and compares exact save-window bytes and observed loading activity in both supported versions.
 
+[Store tracing](research-store-tracing.md) builds an optional diagnostic library to locate differences in observed RNG writes, with explicit source coverage, buffer limits and state-chain validation.
+
 The [Enhanced Beta 5.1 validation record](enhanced-beta5.1-validation.md) lists actual checks and remaining limits, including the save-mount concurrency fix found during release testing.
 
 [Multi-game development](multi-game.md) records the shared-core/adapters direction.

@@ -16,6 +16,7 @@ jobs:
       - run: python tools/test_workshop.py
       - run: python tools/test_research.py
       - run: python tools/test_research_analyze.py
+      - run: python tools/test_research_stores.py
   windows:
     runs-on: windows-latest
     defaults:
@@ -27,7 +28,8 @@ jobs:
         with:
           msystem: UCRT64
           update: true
-          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-python
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-python
       - run: CC=gcc CXX=g++ python tools/test_workshop.py
-      - run: CXX=g++ python tools/test_research.py
+      - run: CC=gcc CXX=g++ python tools/test_research.py
       - run: python tools/test_research_analyze.py
+      - run: python tools/test_research_stores.py

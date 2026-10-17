@@ -16,6 +16,8 @@
 
 static const GameLibTables *g_tables;
 static char g_error[256];
+static char g_research_stores[65];
+const char *gamelib_research_stores(void) { return g_research_stores[0]?g_research_stores:NULL; }
 
 // The library's id file (<library>.id, written next to it by the build): its GAMELIB_ID, read without loading it.
 static bool id_matches(const char *lib, const char *game_dir) {
@@ -83,6 +85,20 @@ static const GameLibTables *open_lib(const char *path, const char *game_dir) {
     if (!t->main_build_id || !game_build_id(main_path, current_id) || strcmp(t->main_build_id, current_id)) {
         snprintf(g_error, sizeof g_error, "%s was built for a different game executable", path);
         return NULL;
+    }
+    typedef const char *(*ResearchStoresEntry)(void);
+#ifdef _WIN32
+    ResearchStoresEntry research = (ResearchStoresEntry)(void *)GetProcAddress(h, "lasgame_research_stores");
+#else
+    ResearchStoresEntry research = (ResearchStoresEntry)dlsym(h, "lasgame_research_stores");
+#endif
+    g_research_stores[0]=0;
+    if(research) {
+        const char *manifest=research();
+        if(!manifest||strnlen(manifest,65)!=64||strspn(manifest,"0123456789abcdef")!=64) {
+            snprintf(g_error,sizeof g_error,"%s has invalid research-library metadata",path);return NULL;
+        }
+        memcpy(g_research_stores,manifest,65);
     }
     return t;
 }
