@@ -87,6 +87,13 @@ submissions that have not yet reached the queue.
 Thread affinity records both the preferred core and allowed mask. Reported guest
 cores follow that mask independently of Windows scheduling; ACNH uses these
 identities to index progress slots in its three-worker barriers.
+Windows guest threads reserve 256 MB of host stack for recompiled recursion but
+commit pages on demand. Passing that size through winpthreads committed the
+whole stack for each thread; an airport boot committed about 18 GB in total.
+The CRT thread entry point uses the documented
+[reservation flag](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/beginthread-beginthreadex).
+A native test creates sixteen threads, checks committed-memory growth, grows a
+stack beyond its initial commit, and verifies pthread locking and thread joins.
 
 First-use shader compilation waits for the shader instead of dropping draws
 that initialize resources only once. Vulkan can render individual depth slices

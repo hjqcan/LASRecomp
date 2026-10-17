@@ -23,16 +23,16 @@ jobs:
       - run: python tools/test_title_profile.py
       - run: python tools/test_game_profiles.py
       - run: python tools/test_shader_ldc.py
-      - run: clang -std=gnu11 -O1 -Iruntime tools/test_touch.c -o test-touch
-      - run: ./test-touch
-      - run: clang -std=gnu11 -O1 -Iruntime tools/test_prepo.c -o test-prepo
-      - run: ./test-prepo
+      - if: runner.os != 'Windows'
+        run: clang -std=gnu11 -O1 -Iruntime tools/test_touch.c -o test-touch && ./test-touch
+      - if: runner.os != 'Windows'
+        run: clang -std=gnu11 -O1 -Iruntime tools/test_prepo.c -o test-prepo && ./test-prepo
       - run: clang -std=gnu11 -O1 tools/test_audio_biquad.c -o test-audio-biquad
       - run: ./test-audio-biquad
       - run: clang -std=gnu11 -O1 tools/test_audio_splitter.c -o test-audio-splitter
       - run: ./test-audio-splitter
-      - run: clang -std=gnu11 -O1 tools/test_nvn_pool_mapping.c -o test-nvn-pool
-      - run: ./test-nvn-pool
+      - if: runner.os != 'Windows'
+        run: clang -std=gnu11 -O1 tools/test_nvn_pool_mapping.c -o test-nvn-pool && ./test-nvn-pool
       - if: runner.os != 'Windows'
         run: clang -std=gnu11 -O1 -Iruntime tools/test_time_service.c -o test-time && ./test-time
       - if: runner.os == 'Windows'

@@ -85,6 +85,21 @@ jobs:
             vulkan-memory-allocator:p
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp.exe
+      - name: Native runtime regressions (UCRT64 and FFmpeg headers)
+        run: |
+          for name in touch prepo nvn_pool_mapping; do
+            clang -std=gnu11 -O1 -Iruntime "tools/test_${name}.c" -o "build/test-${name}.exe"
+            "build/test-${name}.exe"
+          done
+          clang -std=gnu11 -O1 -D_POSIX_THREAD_SAFE_FUNCTIONS tools/test_time_service.c -o build/test-time.exe
+          build/test-time.exe
+          clang -std=gnu11 -O1 -DTEST_AUDIO_RENDERER tools/test_audio_splitter.c -o build/test-audio-renderer.exe
+          build/test-audio-renderer.exe
+          clang -std=gnu11 -O1 tools/test_movie_source.c -lavformat -lavcodec -lavutil -o build/test-movie-source.exe
+          mkdir -p build/movie-source-test
+          build/test-movie-source.exe build/movie-source-test
+          clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe
+          build/test-thread-stack.exe
       # (GLSL only: the script's MSL comparison needs a reference commit that isn't in the history any more; REF=HEAD
       # just satisfies it. The GLSL half - every fuzzed translation compiles and validates - is the check)
       - name: Shader translator fuzz (GLSL)
