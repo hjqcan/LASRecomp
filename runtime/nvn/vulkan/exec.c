@@ -144,6 +144,9 @@ static bool pace_slow;
 static uint64_t stat_pace_over;
 
 void vk_pace_frame(void) {
+    // Inflating GPU timestamps to select LAS's frame mode is title-specific.
+    // Other adapters must receive their actual timestamp query results.
+    if (!title_is_las()) { pace_slow = false; return; }
     static int on = -1;
     if (on < 0) { const char *e = getenv("LARECOMP_PACE"); on = !e || atoi(e) != 0; }
     static uint64_t last, last_wait;
