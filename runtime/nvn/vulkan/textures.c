@@ -473,10 +473,12 @@ static pthread_mutex_t pending_lock = PTHREAD_MUTEX_INITIALIZER;
 static void upload_pending(TexBackend *b) {
     pthread_mutex_lock(&pending_lock);
     void *px = b->pending_rgba;
-    uint32_t w = b->pending_w, h = b->pending_h, stride = b->pending_stride;
+    uint32_t w = b->pending_w, h = b->pending_h, stride = b->pending_stride, uv_off = b->pending_uv_off;
+    bool nv12 = b->pending_nv12;
     b->pending_rgba = NULL;
     pthread_mutex_unlock(&pending_lock);
     if (!px) return;
+    if (nv12) { vk_convert_nv12(b, px, w, h, stride, uv_off); free(px); return; }
     if (w > b->width) w = b->width;
     if (h > b->height) h = b->height;
     VkSpan s = vk_transient_copy(px, (uint64_t)stride * h, 16);
@@ -632,8 +634,32 @@ void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t 
     free(b->pending_rgba);
     b->pending_rgba = copy;
     b->pending_w = w; b->pending_h = h; b->pending_stride = stride;
+    b->pending_nv12 = false;
     b->gpu_owned = true;
     pthread_mutex_unlock(&pending_lock);
+}
+
+// Decoded video as NV12 (runtime/hle/movie.c): the planes (half the bytes of RGBA) go to the GPU, which converts them
+// into the texture (exec.c vk_convert_nv12) - swscale plus the RGBA upload cost mid-range CPUs most of a frame at the
+// movies' 60 fps. false: a texture format this doesn't handle (the caller converts on the CPU).
+bool renderer_upload_nv12(NvnTexture *t, const void *nv12, uint32_t w, uint32_t h, uint32_t stride, uint32_t uv_off) {
+    TexBackend *b = t->backend;
+    if (!b) return true;  // (as renderer_upload_rgba: a frame before the texture is first bound is dropped)
+    if (b->format != VK_FORMAT_R8G8B8A8_UNORM && b->format != VK_FORMAT_R8G8B8A8_SRGB && b->format != VK_FORMAT_B8G8R8A8_UNORM &&
+        b->format != VK_FORMAT_B8G8R8A8_SRGB)
+        return false;
+    size_t n = (size_t)uv_off + (size_t)stride * (h / 2);
+    void *copy = malloc(n);
+    memcpy(copy, nv12, n);
+    pthread_mutex_lock(&pending_lock);
+    free(b->pending_rgba);
+    b->pending_rgba = copy;
+    b->pending_w = w; b->pending_h = h; b->pending_stride = stride;
+    b->pending_nv12 = true;
+    b->pending_uv_off = uv_off;
+    b->gpu_owned = true;
+    pthread_mutex_unlock(&pending_lock);
+    return true;
 }
 
 // ================================================================== views

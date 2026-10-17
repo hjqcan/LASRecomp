@@ -40,8 +40,10 @@ def analyze(case,output):
         r'\[coop-control\] step (\d+) dir ([-.\d]+) ([-.\d]+) state \d+ pos ([-.\d]+) ([-.\d]+) distance ([-.\d]+)', log)]
     travel = {}
     for name,axis,sign in (('right',0,1),('down',1,1),('left',0,-1),('up',1,-1)):
+        # Positions are sampled before applying that row's movement command.
+        # Include the next sample when the leash or key-up has stopped movement.
         travel[name] = sum(max(0,(b[3+axis]-a[3+axis])*sign) for a,b in zip(rows,rows[1:])
-                           if a[1+axis]*sign > .9 and b[1+axis]*sign > .9)
+                           if a[1+axis]*sign > .9 and 0 < b[0]-a[0] <= 30)
     attacks = len(re.findall(r'\[coop-attack\]', log))
     defeated = bool(re.search(r'\[coop-test\] enemy defeated', log))
     enemies = re.findall(r'\[coop-test-enemy\] flags (0x[0-9a-f]+)', log)

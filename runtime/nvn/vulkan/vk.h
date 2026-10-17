@@ -82,6 +82,8 @@ typedef struct TexBackend {
     float sx, sy;
     void *pending_rgba;  // host-produced pixels (video) waiting to be uploaded on the render thread
     uint32_t pending_w, pending_h, pending_stride;
+    bool pending_nv12;        // pending_rgba holds NV12 (Y, then UV at pending_uv_off): converted on the GPU
+    uint32_t pending_uv_off;
     uint8_t astc_bw, astc_bh;  // ASTC without GPU support: decoded to RGBA8 on upload (runtime/nvn/astc.c)
     bool astc_srgb;
     int tp;              // runtime/nvn/texpatch.c: 0 not checked yet, -1 none, else known UI texture + 1
@@ -97,6 +99,7 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
 VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uint32_t lv0, uint32_t nlv, uint32_t ly0,
                           uint32_t nly, VkComponentMapping sw, VkImageAspectFlags aspect);
 VkImageView vk_dummy_view(int textype);
+void vk_convert_nv12(TexBackend *b, const void *nv12, uint32_t w, uint32_t h, uint32_t stride, uint32_t uv_off);  // exec.c
 VkSampler vk_sampler(NvnSamplerDesc *d);
 VkSampler vk_default_sampler(bool linear);
 void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect);

@@ -18,7 +18,8 @@ rando/<seed>/digs.tsv: screen, tile, ground height, item name, then for a check 
 seashell (1/0), scale and turn (degrees) ('-' on a tile that isn't a check), and what stands on the tile (grass / bush:
 the runtime keeps it from growing back once the tile is dug, so the hole stays).
 
-Logic: the shovel AND the logic regions of the tile's screen (the same screen regions as bushsanity: bushes.py).
+Logic: the shovel AND the logic regions of the tile's screen (the same screen regions as bushsanity: bushes.py, with
+its POCKETS).
 Filler: what digging turns up in the original game - rupees and hearts mostly, a few refills.
 """
 import glob
@@ -135,8 +136,8 @@ def add_to_logic(digs, logic_defs, item_defs):
         name = location_name(d)
         logic_defs[name] = {'type': 'item', 'subtype': 'standing', 'content': 'rupee-5', 'region': regs[0],
                             'spoiler-region': spoiler_of.get(regs[0], 'mabe-village'),
-                            'condition-basic': pots._and(*regs[1:], 'shovel',
-                                                         CUT.get(d['blocker']))}
+                            'condition-basic': pots._and(*regs[1:], bushes.pocket_condition(d['room'], d['tile']),
+                                                         'shovel', CUT.get(d['blocker']))}
         locs[name] = d
     for k, v in list(pots.FILLER_DEFS.items()) + list(FILLER_DEFS.items()):
         item_defs.setdefault(k, dict(v, type='junk', quantity=0, **{'chest-type': 'junk'}))
