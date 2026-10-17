@@ -98,9 +98,29 @@ def main(argv=None):
     new.add_argument('--id', required=True); new.add_argument('--name', required=True)
     new.add_argument('--application-id', required=True); new.add_argument('--version', required=True)
     new.add_argument('--exefs', type=Path, required=True); new.add_argument('--output', type=Path, required=True)
+    probe = commands.add_parser('probe', help='Inventory an unregistered archive without installing or enabling it')
+    probe.add_argument('--archive', type=Path, required=True)
+    probe.add_argument('--keys', type=Path)
+    probe.add_argument('--title-keys', type=Path)
+    probe.add_argument('--exefs-output', type=Path, help='Optional new local directory for executable files; never commit these files')
+    probe.add_argument('--output', type=Path, help='Write the JSON inventory to a new file')
     args = parser.parse_args(argv)
     try:
-        if args.command == 'scaffold':
+        if args.command == 'probe':
+            from contextlib import redirect_stdout
+            import sys
+            from nca import Keyset
+            from probe_archive import probe_archive
+            if args.output and io_path(args.output).exists():
+                raise ValueError('Inventory output file already exists')
+            with redirect_stdout(sys.stderr):
+                result = probe_archive(args.archive, Keyset(io_path(args.keys) if args.keys else None,
+                                                           io_path(args.title_keys) if args.title_keys else None),
+                                       args.exefs_output)
+            if args.output:
+                with io_path(args.output).open('x', encoding='utf-8') as output:
+                    json.dump(result, output, ensure_ascii=False, indent=2); output.write('\n')
+        elif args.command == 'scaffold':
             result = scaffold(args)
         elif args.command == 'check':
             load_games()

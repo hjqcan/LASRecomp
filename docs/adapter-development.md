@@ -28,6 +28,22 @@ gameplay evidence. An installable release cannot require an unavailable variant.
 
 ## Start with an inventory
 
+An unregistered archive can be inventoried without adding it to the catalog:
+
+```text
+python tools/adapter.py probe --archive <local-game.nsz> --output <new-inventory.json> --exefs-output <new-local-exefs-directory>
+```
+
+The probe reads bounded NSO headers, reports every module's full Build ID and
+memory layout, and compares the executable set with existing adapters. It does
+not install, publish, execute or qualify the game. `--exefs-output` is optional;
+omit it for a JSON-only inventory. Decompression uses temporary disk space, which
+is removed after the probe. Existing output directories/files are not replaced.
+Encrypted NSP/XCI content requires explicitly supplied `--keys` / `--title-keys`.
+NSZ XML labels are reported as unverified; filenames never establish identity.
+Probe base and update archives separately; this command does not merge updates
+or install DLC. Keep all extracted modules outside the source checkout.
+
 The scaffold command reads NSO headers without executing game code:
 
 ```text

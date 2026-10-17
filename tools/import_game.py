@@ -58,7 +58,11 @@ def decompress_frame(view, expected, write):
 def decompress_ncz(view, destination):
     require(view.read(0x4000, 8) == b'NCZSECTN', 'Missing NCZ section header')
     count, = struct.unpack('<Q', view.read(0x4008, 8))
-    require(0 < count <= 64, 'Invalid NCZ section count')
+    # Update NCZs split encryption-counter ranges into many sections. They are
+    # not the NCA's (at most four) filesystem sections. Bound the table's memory
+    # and archive extent, without rejecting ordinary large update tables.
+    require(0 < count <= 4096 and 0x4010 + count * 64 <= view.size,
+            'Invalid NCZ section count or table range')
     sections = []
     for i in range(count):
         start, size, crypto, _ = struct.unpack('<QQQQ', view.read(0x4010 + i * 64, 32))
@@ -155,7 +159,7 @@ def validate_metadata(metadata, role=None, game=None):
     game.metadata_release(check_role, metadata['content_version'])
 
 
-def package_info(package, entries, keys, game=None):
+def package_info(package, entries, keys, game=None, *, validate_adapter=True):
     """Inspect metadata without decompressing the multi-gigabyte NCZ program."""
     has_ncz = any(name.lower().endswith('.ncz') for name, _, _ in entries)
     tickets = {}
@@ -210,7 +214,7 @@ def package_info(package, entries, keys, game=None):
     require(len(records) <= 1, 'Archive contains multiple applications/updates; select a single-game package')
     metadata = records[0] if records else None
     require(has_ncz or metadata is not None, 'NSP has no readable application metadata; check the archive and prod.keys')
-    if metadata:
+    if metadata and validate_adapter:
         validate_metadata(metadata, game=game or game_for_application(metadata['application_id']))
     return metadata, ncas, 'NSZ' if has_ncz else 'NSP'
 

@@ -21,8 +21,12 @@ with tempfile.TemporaryDirectory(prefix='frozen-adapters-', dir=io_path(tempfile
         files.update({'main.npdm': b'fixture metadata', 'rtld': b'fixture loader'})
         exefs = pfs_files(files); romfs = synthetic_romfs(game.romfs_roots[0])
         archive = root / (game.id + '.nsz')
-        archive.write_bytes(pfs_files({'program.ncz': ncz(bytes(romfs) + exefs, sections=[
-            (0x4000, len(romfs)), (0x4000 + len(romfs), len(exefs))])}))
+        # NCZ counter ranges are not limited to the number of NCA filesystems.
+        # Real update packages can have more than the former 64-section limit.
+        sections = [(0x4000 + i * 256, 256) for i in range(168)]
+        sections += [(0x4000 + 168 * 256, len(romfs) - 168 * 256),
+                     (0x4000 + len(romfs), len(exefs))]
+        archive.write_bytes(pfs_files({'program.ncz': ncz(bytes(romfs) + exefs, sections=sections)}))
         command = [str(helper), '--import-nsz', '--base', str(archive)]
         inspected = subprocess.run(command + ['--inspect', '--gui-summary'], capture_output=True, encoding='utf-8')
         assert inspected.returncode == 0, inspected.stdout + inspected.stderr

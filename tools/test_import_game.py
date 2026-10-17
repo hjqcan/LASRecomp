@@ -150,6 +150,22 @@ class ImportTests(unittest.TestCase):
             decompress_ncz(View(io.BytesIO(ncz(payload, True))), output)
             self.assertEqual(output.read_bytes()[0x4000:], payload)
 
+    def test_many_ncz_counter_sections_and_bounded_table(self):
+        payload = b'x' * (169 * 512)
+        sections = [(0x4000 + i * 512, 512) for i in range(169)]
+        with tempfile.TemporaryDirectory() as temporary:
+            for blocked in (False, True):
+                output = Path(temporary) / f'decoded-{blocked}'
+                self.assertEqual(decompress_ncz(View(io.BytesIO(ncz(payload, blocked, sections))), output), sections)
+                self.assertEqual(output.read_bytes()[0x4000:], payload)
+            for count in (0, 4097, 169):
+                # 169 is within the limit but its declared table is truncated.
+                broken = bytes(0x4000) + b'NCZSECTN' + struct.pack('<Q', count)
+                output = Path(temporary) / f'invalid-{count}'
+                with self.assertRaisesRegex(ValueError, 'section count or table range'):
+                    decompress_ncz(View(io.BytesIO(broken)), output)
+                self.assertFalse(output.exists())
+
     def test_block_header_size_and_count_are_validated(self):
         valid = ncz(b'A' * 100, True)
         for offset, value in ((0x4060, 2), (0x4064, 101)):

@@ -34,6 +34,7 @@ jobs:
       - run: python tools/adapter.py check
       - run: python tools/test_adapter_contract.py -v
       - run: python tools/test_adapter_doctor.py -v
+      - run: python tools/test_adapter_probe.py -v
       - run: python tools/test_game_install.py
       - run: python tools/test_exit_status.py
       - run: python tools/test_title_profile.py
