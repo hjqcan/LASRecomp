@@ -188,6 +188,11 @@ longjmp implementations, and calls at fragment boundaries.
 The observed portrait failure returns `-65`; the game's caller then reduces JPEG
 quality and retries. The host checkpoint preserves this guest return value rather
 than replacing it with the host `setjmp` result.
+A rebuilt managed installation launched through its existing Windows desktop
+shortcut passed the previously failing appearance-confirmation step at frame
+5,833, then continued to photo registration. This used the same 2560x1440 window
+and native 1080p render override as the failed run. Encoder-entry logging sits
+behind the dispatch cache, so that log does not count every quality retry.
 
 Vulkan screen attachments include ACNH's uncompressed R8/R16F/RG16F buffers,
 not just textures with the compression hint. A captured 720p frame had a 960x540
@@ -195,8 +200,9 @@ color attachment beside 640x360 depth; the clipped image produced a rectangular
 lighting boundary. `tools/test_vk_texture_scale.sh` checks matched physical
 extents, original dimensions for sampled images, and content-preserving late
 attachment classification. New color attachments also start zeroed, like depth,
-so unwritten regions cannot expose undefined VRAM. Game validation at the user's
-desktop resolution and the character-photo encoding step remains required.
+so unwritten regions cannot expose undefined VRAM. The airport scene and photo
+registration have passed at the desktop resolution above; a scaled island
+scene and the full save/reopen flow still require validation.
 
 Completed: extraction and module inventory; generation of 242,778 functions;
 sorted, aligned, nonoverlapping function tables; strong import resolution;
