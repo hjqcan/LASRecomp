@@ -12,6 +12,7 @@
 // such a room unless he leaves into the cell he came from, until the room's defeat flag is set (vanilla: the shutters
 // open on that same flag) or the soul is found (then the enemy is there and the game's own shutters take over).
 // Entered by falling / stairs (no neighbouring cell before): no wall (he can't go back the way he came).
+#include "../game_addresses.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +21,7 @@
 #include "../hle.h"
 #include "../rando.h"
 
-#define PLAYER_STATUS_PTR (MAIN_BASE + 0x1CC1368)  // PlayerStatus*: current level name at +0
+// GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
 
 bool flags_ext_get(int idx);
 uint64_t doorjump_player(uint64_t frame);  // PlayerCollision component: position at +0x80 (and +0xb0)
@@ -82,7 +83,7 @@ static void load(void) {
 }
 
 static const char *level_name(void) {
-    uint64_t ps = LD64(PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     return ps ? (const char *)(uintptr_t)ps : "";
 }
 

@@ -7,6 +7,7 @@
 // Code patches: gen.py compiled every variant of every patched instruction in (tools/rando/patch_variants.json);
 // rando_word() tells the generated code which one the seed uses (0 = the original instruction).
 #include "rando.h"
+#include "game_addresses.h"
 
 #include <dirent.h>
 #include <pthread.h>
@@ -41,7 +42,7 @@ static void apply_data(uint64_t img_off, const uint8_t *bytes, size_t n) {
     memcpy(p, bytes, n);
 }
 
-static bool is_code(uint64_t off) { return off < 0x16a0000; }
+static bool is_code(uint64_t off) { return off < GA_MAIN_CODE_SIZE; }
 
 static void load_pchtxt(const char *path) {
     FILE *f = fopen(path, "r");

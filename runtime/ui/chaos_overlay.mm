@@ -9,6 +9,7 @@
 // units, 8 x 8 cells of 81.5 x 64.75 (1280 x 720 layout, origin at the centre, y up); found 2026-10-09 with
 // LARECOMP_PANE_SCAN. Zoom and scroll live in N_MapOrigin_00 (page+0x8 -> +0x10 -> +0xf0 -> +0x6a8: translate
 // +0x30/+0x34, scale +0x48; 1 at rest, 2 zoomed), found by scanning before/after a right-stick zoom.
+#include "../game_addresses.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,8 +27,8 @@ bool doorjump_chaos_seen(int id);
 bool doorjump_chaos_twoway(int id);
 }
 
-#define PLAYER_STATUS_PTR (MAIN_BASE + 0x1CC1368)  // PlayerStatus*: current level name at +0
-#define DUNGEON_RECORDS (MAIN_BASE + 0x1CBB220 + 0xE0)  // live save: 0x10-byte records (+1 bit 1 = Map)
+// GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
+#define DUNGEON_RECORDS (GA_LIVE_SAVE + 0xE0)  // live save: 0x10-byte records (+1 bit 1 = Map)
 
 static volatile uint64_t g_dm_frame, g_dm_obj;
 
@@ -41,7 +42,7 @@ extern "C" void rt_dgnmap_tick(Cpu *c) {
 extern "C" uint64_t chaos_dgnmap_obj(void) { return g_dm_obj; }  // (LARECOMP_PANE_SCAN)
 
 static const char *current_level(void) {
-    uint64_t ps = LD64(PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     return ps ? (const char *)(uintptr_t)ps : "";
 }
 

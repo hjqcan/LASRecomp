@@ -1,6 +1,7 @@
 // Gameplay tab (was Difficulty): damage taken multiplier / one-hit KO (applied where the game computes Link's damage, see
 // tools/patches.py DAMAGE_*_SITES); rt_hero_mode() reads the game's own Hero Mode flag (PlayerStatus+0x120 = save
 // 0x55E0). Settings persist in larecomp.ini (g_settings.diff_*).
+#include "../game_addresses.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -17,8 +18,8 @@ int rt_hookshot_seed_forced(void);  // hle/hookshot.c
 int rt_no_buff_seed_forced(void);   // hle/qol.c
 }
 
-#define LIVE_SAVE 0x7001CBB220ull
-#define HERO_FLAG (LIVE_SAVE + 0x55E0)  // PlayerStatus (save+0x54C0) + 0x120
+
+#define HERO_FLAG (GA_LIVE_SAVE + 0x55E0)  // PlayerStatus (save+0x54C0) + 0x120
 
 extern "C" int rt_hero_mode(void) { return *(volatile uint8_t *)(uintptr_t)HERO_FLAG == 1; }
 

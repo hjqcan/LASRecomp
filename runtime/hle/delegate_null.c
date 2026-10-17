@@ -23,9 +23,7 @@
 
 #include "../hle.h"
 #include "../platform.h"
-
-#define JOB_VTABLE_LIVE 0x7001c51308ull
-#define JOB_VTABLE_BASE 0x7001c51358ull
+#include "../game_addresses.h"
 
 static uint64_t rd64(uint64_t a) { return __atomic_load_n((uint64_t *)(uintptr_t)a, __ATOMIC_ACQUIRE); }
 static uint32_t rd32(uint64_t a) { return __atomic_load_n((uint32_t *)(uintptr_t)a, __ATOMIC_ACQUIRE); }
@@ -38,10 +36,10 @@ int rt_delegate_null(Cpu *c, int slot) {
     bool in_owner = owner && owner + 0xc8 == obj;  // (the layout this was worked out on; anything else just skips)
     uint64_t t0 = plat_now_ns(), waited = 0;
     bool forwarded = false;
-    if (vt == JOB_VTABLE_LIVE && in_owner) {
+    if (vt == GA_DELEGATE_JOB_VTABLE_LIVE && in_owner) {
         while ((waited = plat_now_ns() - t0) < 1000000000ull) {
             if (rd64(obj + 0x10) && !rd32(owner + 0x1f8)) { forwarded = true; break; }
-            if (rd64(obj) != JOB_VTABLE_LIVE) break;  // (torn down meanwhile: it ran)
+            if (rd64(obj) != GA_DELEGATE_JOB_VTABLE_LIVE) break;  // (torn down meanwhile: it ran)
             plat_sleep_until_ns(plat_now_ns() + 50000);
         }
     }

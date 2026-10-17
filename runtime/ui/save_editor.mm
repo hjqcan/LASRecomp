@@ -1,6 +1,7 @@
 // Save editor tab: edits the game's live save buffer (main+0x1CBB220, an exact image of savedataN.bin),
 // so changes apply immediately and are written out (with fresh checksums) the next time the game saves.
 // Layout: notes/save_format.md.
+#include "../game_addresses.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -21,8 +22,8 @@ extern "C" {
 #include "../hle.h"
 }
 
-#define LIVE_SAVE 0x7001CBB220ull  // main + 0x1CBB220
-static uint8_t *S(void) { return (uint8_t *)(uintptr_t)LIVE_SAVE; }
+// GA_LIVE_SAVE: main + 0x1CBB220
+static uint8_t *S(void) { return (uint8_t *)(uintptr_t)GA_LIVE_SAVE; }
 template <typename T> static T &F(uint32_t off) { return *(T *)(S() + off); }
 
 enum : uint32_t {
@@ -310,8 +311,8 @@ extern "C" void save_editor_frame(uint64_t frame) {
         unsigned lo, hi;
         if (ENV("LARECOMP_WATCH_SAVE") && sscanf(ENV("LARECOMP_WATCH_SAVE"), "%x,%x", &lo, &hi) == 2) {
             extern uint64_t g_watch_lo, g_watch_hi;
-            g_watch_lo = LIVE_SAVE + lo;
-            g_watch_hi = LIVE_SAVE + hi;
+            g_watch_lo = GA_LIVE_SAVE + lo;
+            g_watch_hi = GA_LIVE_SAVE + hi;
             extern void watch_arm(void);
             watch_arm();
         }
@@ -331,7 +332,7 @@ extern "C" void save_editor_frame(uint64_t frame) {
         poke_done = 1;
         for (const char *p = ENV("LARECOMP_POKE_SAVE"); *p;) {
             unsigned off = 0, val = 0;
-            if (sscanf(p, "%x=%x", &off, &val) == 2 && off < 0x5EE0) *(uint8_t *)(uintptr_t)(LIVE_SAVE + off) = (uint8_t)val;
+            if (sscanf(p, "%x=%x", &off, &val) == 2 && off < 0x5EE0) *(uint8_t *)(uintptr_t)(GA_LIVE_SAVE + off) = (uint8_t)val;
             while (*p && *p != ',') p++;
             if (*p) p++;
         }
@@ -340,7 +341,7 @@ extern "C" void save_editor_frame(uint64_t frame) {
     if (loaded()) {  // LARECOMP_LOG_FLAGS: log event-flag bit changes; LARECOMP_SET_FLAGS=i,j,..: force those bits on
         static uint8_t prev[256];
         static bool have_prev;
-        uint8_t *fl = (uint8_t *)(uintptr_t)(LIVE_SAVE + 0x5DC0);
+        uint8_t *fl = (uint8_t *)(uintptr_t)(GA_LIVE_SAVE + 0x5DC0);
         if (const char *sf = ENV("LARECOMP_SET_FLAGS")) {
             for (const char *p = sf; *p;) {
                 int i = atoi(p);
@@ -362,12 +363,12 @@ extern "C" void save_editor_frame(uint64_t frame) {
         }
     }
     if (ENV("LARECOMP_FIND_FLAGS") && frame == 3000) {  // locate the event-flag bitfield (ptr, byte capacity)
-        for (uint64_t a = 0x7001C00000ull; a < 0x7001D00000ull; a += 8) {
+        for (uint64_t a = GA_SAVE_SCAN_BEGIN; a < GA_SAVE_SCAN_END; a += 8) {
             uint64_t v = *(uint64_t *)(uintptr_t)a;
-            if (v >= LIVE_SAVE && v < LIVE_SAVE + 0x5EE0) {
+            if (v >= GA_LIVE_SAVE && v < GA_LIVE_SAVE + 0x5EE0) {
                 uint32_t cap = *(uint32_t *)(uintptr_t)(a + 8);
                 if (cap > 16 && cap < 0x1000) LOG("[flags] ptr at %llx -> save+%#llx, next u32 %u\n", (unsigned long long)a,
-                                                  (unsigned long long)(v - LIVE_SAVE), cap);
+                                                  (unsigned long long)(v - GA_LIVE_SAVE), cap);
             }
         }
     }

@@ -22,6 +22,7 @@
 // Tall grass and bushes would grow back over a dug tile on reload: the factory skips them there (rt_digs_skip_plant,
 // called from runtime/hle/souls.c's create-function hook). Actors are tracked by a weak reference to their shared_ptr
 // control block (libc++: shared count at +8 is -1 once the actor is gone; the block stays while we hold the weak count).
+#include "../game_addresses.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,16 +32,16 @@
 #include "../hle.h"
 #include "../rando.h"
 
-#define PLAYER_STATUS_PTR (MAIN_BASE + 0x1CC1368)  // PlayerStatus*: current level name at +0
-#define GAME_MGR (MAIN_BASE + 0x1C97188)           // +0x4a8: the current scene (weak), scene +0x228 -> +0x1b8 room sp
-#define SCENE_LOCK (MAIN_BASE + 0x1b730)           // (out shared_ptr, scene handle): what the dig commit calls
-#define SPAWN_HOLE (MAIN_BASE + 0xd228d0)          // (out, transform, zone, &room, w4, s0): ObjHolesDug
-#define HOLE_LIST_INIT (MAIN_BASE + 0xd22860)      // first-use init of the game's hole list (the shovel calls it first)
-#define CREATE_ACTOR (MAIN_BASE + 0x8f5ea0)        // (out shared_ptr, &room, spawn info)
-#define STR_POOL (MAIN_BASE + 0x1cab2d0)           // std::vector<{std::string, u64 refs}>: type-5 parameters
-#define STR_POOL_INIT (MAIN_BASE + 0x1d510)        // its first-use init (clears the vector)
-#define SP_RELEASE (MAIN_BASE + 0xbae080)          // shared_ptr release (x0 = control block)
-#define WEAK_RELEASE (MAIN_BASE + 0x14311f0)       // std::__shared_weak_count::__release_weak
+// GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
+// GA_GAME_MGR: +0x4a8: the current scene (weak), scene +0x228 -> +0x1b8 room sp
+// GA_SCENE_LOCK: (out shared_ptr, scene handle): what the dig commit calls
+// GA_SPAWN_HOLE: (out, transform, zone, &room, w4, s0): ObjHolesDug
+// GA_HOLE_LIST_INIT: first-use init of the game's hole list (the shovel calls it first)
+// GA_CREATE_ACTOR: (out shared_ptr, &room, spawn info)
+// GA_STR_POOL: std::vector<{std::string, u64 refs}>: type-5 parameters
+// GA_STR_POOL_INIT: its first-use init (clears the vector)
+// GA_SP_RELEASE: shared_ptr release (x0 = control block)
+// GA_WEAK_RELEASE: std::__shared_weak_count::__release_weak
 #define DIG_FLAG_BASE 4096
 #define NTILES (256 * 80)
 #define GOT_FLAG_BASE (DIG_FLAG_BASE + NTILES)
@@ -138,7 +139,7 @@ static bool enabled(void) {
 uint64_t rt_hole_cap(void) { return enabled() ? HOLE_CAP : 0x51; }
 
 static bool on_field(void) {
-    uint64_t ps = LD64(PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     return ps && !strcmp((const char *)(uintptr_t)ps, "Field");
 }
 
@@ -184,7 +185,7 @@ static void drop(Cpu *c, uint64_t *slot) {
     if (!*slot) return;
     c->x[0] = *slot;
     *slot = 0;
-    guest_call(c, WEAK_RELEASE);
+    guest_call(c, GA_WEAK_RELEASE);
 }
 
 // shovel dig commit, right after the hole's spawn: [sp+0x10] the hole (actor, control block), x21 its transform
@@ -217,18 +218,18 @@ static int pool_index(Cpu *c, const char *str) {
     for (int i = 0; i < g_nstr; i++)
         if (!strcmp(g_strtab[i], str)) return i;
     if (!g_pool) {
-        guest_call(c, STR_POOL_INIT);
-        if (LD64(STR_POOL) != LD64(STR_POOL + 8)) LOG("[digs] warning: the string pool was in use\n");
+        guest_call(c, GA_STR_POOL_INIT);
+        if (LD64(GA_STR_POOL) != LD64(GA_STR_POOL + 8)) LOG("[digs] warning: the string pool was in use\n");
         g_pool = (uint64_t)(uintptr_t)hle_alloc(32 * POOL_CAP);
-        ST64(STR_POOL, g_pool), ST64(STR_POOL + 8, g_pool), ST64(STR_POOL + 16, g_pool + 32 * POOL_CAP);
+        ST64(GA_STR_POOL, g_pool), ST64(GA_STR_POOL + 8, g_pool), ST64(GA_STR_POOL + 16, g_pool + 32 * POOL_CAP);
         for (int i = 0; i < g_nstr; i++) free(g_strtab[i]);
         g_nstr = 0;
     }
-    uint64_t e = LD64(STR_POOL + 8);
+    uint64_t e = LD64(GA_STR_POOL + 8);
     if (g_nstr == POOL_CAP || e >= g_pool + 32 * POOL_CAP) {
         static int nl;
         if (nl++ < 5) LOG("[digs] pool full: ours %d, vector %llx..%llx (%lld entries), our storage %llx\n", g_nstr,
-                          (unsigned long long)LD64(STR_POOL), (unsigned long long)e, (long long)((e - LD64(STR_POOL)) / 32),
+                          (unsigned long long)LD64(GA_STR_POOL), (unsigned long long)e, (long long)((e - LD64(GA_STR_POOL)) / 32),
                           (unsigned long long)g_pool);
         return -1;
     }
@@ -239,7 +240,7 @@ static int pool_index(Cpu *c, const char *str) {
     ST64(e + 8, n);
     ST64(e + 16, (uint64_t)(uintptr_t)buf);
     ST64(e + 24, 1ull << 40);  // refs: never released
-    ST64(STR_POOL + 8, e + 32);
+    ST64(GA_STR_POOL + 8, e + 32);
     g_strtab[g_nstr++] = strdup(str);  // (the lookup: each string once - it was never counted, every spawn added
     return (int)((e - g_pool) / 32);      //  its six again and the pool was full after ~170 item spawns)
 }
@@ -250,12 +251,12 @@ static int pool_index(Cpu *c, const char *str) {
 // 0x260-byte entries (+0x50 the entry itself, +0x240 1 while loaded, +0x1a8 -> +0x74 the screen's file, "Field_11A.").
 // false when the scene isn't up or the screen isn't loaded
 static bool screen_room(Cpu *c, uint64_t pair, int screen, uint64_t *sctrl) {
-    uint64_t mgr = LD64(GAME_MGR);
+    uint64_t mgr = LD64(GA_GAME_MGR);
     *sctrl = 0;
     if (!mgr) return false;
     c->x[0] = pair + 0x10;  // (scene shared_ptr, released by the caller)
     c->x[1] = LD64(mgr + 0x4a8);
-    guest_call(c, SCENE_LOCK);
+    guest_call(c, GA_SCENE_LOCK);
     uint64_t scene = LD64(pair + 0x10), holder = scene ? LD64(scene + 0x228) : 0;
     *sctrl = LD64(pair + 0x18);
     if (!holder) return false;
@@ -283,7 +284,7 @@ static uint64_t scratch(void) {
 // false: the tile's screen isn't loaded
 static bool spawn_hole(Cpu *c, int g) {
     uint64_t s = scratch(), sctrl;
-    guest_call(c, HOLE_LIST_INIT);
+    guest_call(c, GA_HOLE_LIST_INIT);
     bool loaded = screen_room(c, s + 0x10, g / 80, &sctrl);
     if (loaded) {
         float x, z, y = g_tiles[g].y;
@@ -300,15 +301,15 @@ static bool spawn_hole(Cpu *c, int g) {
         c->x[3] = s + 0x10;
         c->x[4] = 0;  // (1: the hole shows filled in)
         c->v[0] = 0;  // s0: the shovel passes 1.0 (normal y); the hole then may drop a rupee - 0 drops nothing (checked)
-        guest_call(c, SPAWN_HOLE);
+        guest_call(c, GA_SPAWN_HOLE);
         uint64_t hctrl = LD64(s + 8);
         if (LD64(s) && hctrl) {
             hold_weak(&g_alive[g], hctrl);
             c->x[0] = hctrl;
-            guest_call(c, SP_RELEASE);
+            guest_call(c, GA_SP_RELEASE);
         }
     }
-    if (sctrl) { c->x[0] = sctrl; guest_call(c, SP_RELEASE); }
+    if (sctrl) { c->x[0] = sctrl; guest_call(c, GA_SP_RELEASE); }
     return loaded;
 }
 
@@ -336,17 +337,17 @@ static bool spawn_item(Cpu *c, int g) {
         c->x[0] = s;
         c->x[1] = s + 0x10;
         c->x[2] = info;
-        guest_call(c, CREATE_ACTOR);
+        guest_call(c, GA_CREATE_ACTOR);
         uint64_t ictrl = LD64(s + 8);
         if (LD64(s) && ictrl) {
             hold_weak(&g_item[g], ictrl);
             c->x[0] = ictrl;
-            guest_call(c, SP_RELEASE);
+            guest_call(c, GA_SP_RELEASE);
         }
         LOG("[digs] item %s on %02d%c tile %d (%s)\n", t->name, g / 80 / 16 + 1, 'A' + g / 80 % 16, g % 80,
             LD64(s) ? "up" : "failed");
     }
-    if (sctrl) { c->x[0] = sctrl; guest_call(c, SP_RELEASE); }
+    if (sctrl) { c->x[0] = sctrl; guest_call(c, GA_SP_RELEASE); }
     return loaded;
 }
 
@@ -398,7 +399,7 @@ static void dig_test(uint64_t frame) {
     }
     if (state < 0 || (long)frame < at) return;
     {   // (the shovel on Y: item slot 7 at player status +0xa2)
-        uint64_t ps = LD64(PLAYER_STATUS_PTR);
+        uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
         if (ps) ST8(ps + 0xa2, 7);
     }
     while (cur < n && (!list[cur].ns || flags_ext_get(DIG_FLAG_BASE + list[cur].g))) {  // nowhere to stand / dug
@@ -480,7 +481,7 @@ void digs_game_tick(Cpu *c, uint64_t frame) {
     __uint128_t v0 = c->v[0];
     memcpy(saved, c->x, sizeof saved);
     int field = on_field();
-    uint64_t mgr = LD64(GAME_MGR), scene = mgr ? LD64(mgr + 0x4a8) : 0;
+    uint64_t mgr = LD64(GA_GAME_MGR), scene = mgr ? LD64(mgr + 0x4a8) : 0;
     if (field != g_field_was || scene != g_scene_was) {  // left / (re)loaded the Field: drop the refs of actors gone
         for (int g = 0; g < NTILES; g++) {
             if (g_alive[g] && !alive(g_alive[g])) drop(c, &g_alive[g]);

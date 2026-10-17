@@ -38,7 +38,7 @@ def main():
                LARECOMP_KBD_AUTO='Link', LARECOMP_PHOTO_AT='2300',
                LARECOMP_PHOTO_SHOT_AT='2350,2400', LARECOMP_PHOTO_EXIT_AT='2600',
                LARECOMP_WINDOW_SHOT='2700', LARECOMP_SHOT_PATH=str(output/'resumed.png'),
-               LARECOMP_EXIT_AFTER_SHOT='1', NO_AUDIO='1', NO_MOVIE_AUDIO='1',
+               LARECOMP_EXIT_AFTER_SHOT='1', NO_AUDIO='1', LARECOMP_NO_MOVIE_AUDIO='1',
                LARECOMP_INPUT='200:A:8,600:L:12,600:R:12,700:A:8,900:L:12,900:R:12,1000:A:8,'
                               '1300:A:8,1450:DOWN:8,1600:A:8,1900:A:8,2200:A:8')
     options = {}

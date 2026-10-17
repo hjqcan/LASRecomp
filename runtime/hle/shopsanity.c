@@ -10,14 +10,15 @@
 //   the next figure's condition, the BowWow figure's final prize).
 // rando/<seed>/shopsanity.tsv: "item <itemID> <done flag> <give flag>" / "prize <row> <done flag> <give flag> <row
 // to add instead, 255 = nothing>" (GlobalFlags indices).
+#include "../game_addresses.h"
 #include <stdio.h>
 #include <string.h>
 
 #include "../hle.h"
 #include "../rando.h"
 
-#define FLAG_PTR (MAIN_BASE + 0x1CC1388)  // the event-flag bitfield (runtime/hle/flags_ext.c)
-#define FLAG_CAP (MAIN_BASE + 0x1CC1390)
+// GA_FLAG_PTR: the event-flag bitfield (runtime/hle/flags_ext.c)
+
 
 typedef struct { int kind, id, done, give, add; } Entry;  // kind 0 item, 1 prize
 static Entry g_e[64];
@@ -44,8 +45,8 @@ static void load(void) {
 }
 
 static void set_flag(int idx) {
-    uint64_t p = LD64(FLAG_PTR);
-    if (!p || idx < 0 || (uint32_t)(idx >> 3) >= LD32(FLAG_CAP)) return;
+    uint64_t p = LD64(GA_FLAG_PTR);
+    if (!p || idx < 0 || (uint32_t)(idx >> 3) >= LD32(GA_FLAG_CAP)) return;
     ST8(p + (idx >> 3), LD8(p + (idx >> 3)) | (1u << (idx & 7)));
 }
 

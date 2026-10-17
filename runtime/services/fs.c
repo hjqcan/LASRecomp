@@ -6,6 +6,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include <pthread.h>
 
@@ -473,8 +476,71 @@ static Service *open_romfs_storage(void) {
 }
 
 // ------------------------------------------------------------------ host-directory filesystem
-typedef struct { char root[1024]; } HostFs;
+// Save data is all-or-nothing, as on the Switch (its save storage commits a mount's changes at once): a file opened
+// for writing on a save mount works on a copy, <file>.pending, which the mount's Commit syncs and renames over the
+// file - so a crash or power loss mid-save leaves the last committed save, never a half-written one (the save
+// backups PR #55 was closed in favour of this). Reads see the pending copy, as the Switch's do before a commit. A
+// copy left by a crash is dropped at the next mount (uncommitted, as on the Switch). The SD card mount writes in place.
+#define PENDING_MAX 16
+typedef struct { char root[1024]; bool journaled; int npending; char pending[PENDING_MAX][1100]; } HostFs;
 typedef struct { int fd; char path[1100]; } HostFile;
+
+static void sync_dir_of(const char *path) {
+    char d[1100];
+    snprintf(d, sizeof d, "%s", path);
+    char *slash = strrchr(d, '/');
+    if (!slash) return;
+    *slash = 0;
+#ifndef _WIN32
+    int fd = open(d, O_RDONLY);
+    if (fd >= 0) { fsync(fd); close(fd); }
+#endif
+}
+
+// the working copy over the file in one step (Windows' rename doesn't replace an existing file; with the UTF-8
+// code page the A function takes our paths as they are)
+static int replace_file(const char *from, const char *to) {
+#ifdef _WIN32
+    return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
+#else
+    return rename(from, to);
+#endif
+}
+
+static bool copy_file(const char *from, const char *to) {
+    int in = open(from, O_RDONLY);
+    int out = open(to, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    bool ok = out >= 0;
+    char buf[65536];
+    ssize_t n = 0;
+    while (ok && in >= 0 && (n = read(in, buf, sizeof buf)) > 0) ok = write(out, buf, (size_t)n) == n;
+    if (in >= 0) close(in);
+    if (out >= 0) close(out);
+    return ok && n >= 0;
+}
+
+// the working copy of a save file (made on its first open for writing; "" for the SD card mount)
+static bool pending_of(HostFs *fs, const char *p, bool create, char *out, size_t n) {
+    if (!fs->journaled) return false;
+    snprintf(out, n, "%s.pending", p);
+    for (int i = 0; i < fs->npending; i++) if (!strcmp(fs->pending[i], p)) return true;
+    if (!create || fs->npending == PENDING_MAX) return false;
+    if (!copy_file(p, out)) { unlink(out); return false; }
+    snprintf(fs->pending[fs->npending++], sizeof fs->pending[0], "%s", p);
+    return true;
+}
+
+static void commit(HostFs *fs) {
+    for (int i = 0; i < fs->npending; i++) {
+        char tmp[1100];
+        snprintf(tmp, sizeof tmp, "%s.pending", fs->pending[i]);
+        int fd = open(tmp, O_RDWR);
+        if (fd >= 0) { fsync(fd); close(fd); }
+        if (replace_file(tmp, fs->pending[i])) LOG("[save] commit %s failed (%d)\n", fs->pending[i], errno);
+        else { LOG("[save] committed %s\n", fs->pending[i]); sync_dir_of(fs->pending[i]); }
+    }
+    fs->npending = 0;
+}
 typedef struct { DIR *d; char path[1024]; int mode; } HostDir;
 
 static const char *in_path(IpcReq *req, int i) {
@@ -631,6 +697,9 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     }
     case 8: {  // OpenFile(mode)
         uint32_t mode = IN(uint32_t, 0);
+        char work[2100];
+        struct stat sb;
+        if (!stat(p, &sb) && pending_of(fs, p, (mode & 2) != 0, work, sizeof work)) snprintf(p, sizeof p, "%s", work);
         int fd = open(p, (mode & 2) ? O_RDWR : O_RDONLY);
         if (fd < 0) { resp->result = errno_result(); break; }
         HostFile *f = calloc(1, sizeof *f);
@@ -649,7 +718,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         ipc_return_object(resp, service_new("IDirectory", directory, hd));
         break;
     }
-    case 10: break;  // Commit
+    case 10: commit(fs); break;  // Commit
     case 11: case 12: OUT(int64_t, 0) = 0x40000000; resp_size(resp, 8); break;
     case 13: rm_rf(p, true); break;
     case 14: memset(resp->data, 0, 0x20); resp_size(resp, 0x20); break;
@@ -671,6 +740,21 @@ static Service *open_host_fs(const char *sub) {
     for (char *q = cmd + 1; *q; q++)
         if (*q == '/') { *q = 0; mkdir(cmd, 0755); *q = '/'; }
     mkdir(cmd, 0755);
+    fs->journaled = strcmp(sub, "sdcard") != 0;
+    if (fs->journaled) {  // (a working copy left by a crash: never committed - dropped, as on the Switch)
+        DIR *d = opendir(fs->root);
+        struct dirent *e;
+        while (d && (e = readdir(d))) {
+            size_t l = strlen(e->d_name);
+            if (l > 8 && !strcmp(e->d_name + l - 8, ".pending")) {
+                char stale[1300];
+                snprintf(stale, sizeof stale, "%s/%s", fs->root, e->d_name);
+                LOG("[save] dropping uncommitted %s\n", stale);
+                unlink(stale);
+            }
+        }
+        if (d) closedir(d);
+    }
     LOG("[fs] mounted host directory %s\n", fs->root);
     return service_new("IFileSystem", filesystem, fs);
 }

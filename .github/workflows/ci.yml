@@ -50,6 +50,10 @@ jobs:
           cmake --install sdl-build
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp DEPS="$HOME/sdl3"
+      - name: Settings regression tests
+        run: python3 tools/test_settings.py
+      - name: Game address table tests
+        run: python3 tools/test_game_addresses.py
       - name: Photo state tests
         run: python3 tools/test_photo.py
       - name: FP/SIMD lowering vs a CPU emulator (a sample)
@@ -65,6 +69,10 @@ jobs:
         run: brew install sdl3 ffmpeg
       - name: App builds
         run: make -j"$(sysctl -n hw.ncpu)" build/lasrecomp
+      - name: Settings regression tests
+        run: python3 tools/test_settings.py
+      - name: Game address table tests
+        run: python3 tools/test_game_addresses.py
       - name: Photo state tests
         run: python3 tools/test_photo.py
 

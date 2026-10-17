@@ -8,6 +8,7 @@
 // "PanelAdventure" with that locator starts it.
 //
 // Layout file (tools/rando/chamber_gen.py --out): 64 panel ids (-1 = empty) then the entrance cell index.
+#include "../game_addresses.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,13 +16,13 @@
 
 #include "../hle.h"
 
-#define CHAMBER_MGR (MAIN_BASE + 0x1cb9fb8)
-#define CHAMBER_CTOR (MAIN_BASE + 0xcdf1c0)
-#define CHAMBER_PREPARE (MAIN_BASE + 0xce34b0)
-#define CHAMBER_START_LOCATOR (MAIN_BASE + 0xcdbd80)
-#define GUEST_NEW (MAIN_BASE + 0x1431170)
-#define PANEL_CATALOGUE (MAIN_BASE + 0x1cb9e50)  // MapPieceList table object
-#define PANEL_LOOKUP (MAIN_BASE + 0xcd0970)      // (out cell, catalogue, id): out = {sheet, ref, row ptr}
+
+
+
+
+
+// GA_PANEL_CATALOGUE: MapPieceList table object
+// GA_PANEL_LOOKUP: (out cell, catalogue, id): out = {sheet, ref, row ptr}
 
 extern int game_in_play(void);
 extern void warp_request(const char *level, const char *locator);
@@ -95,22 +96,22 @@ static uint64_t call(Cpu *c, uint64_t fn, uint64_t a0) { return call3(c, fn, a0,
 // Load g_ids into the chamber manager and prepare a run; returns the start locator (guest char *), 0 on failure.
 // Clobbers guest registers (callers save/restore).
 static uint64_t chamber_setup(Cpu *c) {
-    uint64_t mgr = LD64(CHAMBER_MGR);
+    uint64_t mgr = LD64(GA_CHAMBER_MGR);
     if (!mgr) {
-        mgr = call(c, GUEST_NEW, 0x1920);
-        call(c, CHAMBER_CTOR, mgr);
-        ST64(CHAMBER_MGR, mgr);
+        mgr = call(c, GA_GUEST_NEW, 0x1920);
+        call(c, GA_CHAMBER_CTOR, mgr);
+        ST64(GA_CHAMBER_MGR, mgr);
         LOG("[chamber] created manager %llx\n", (unsigned long long)mgr);
     }
-    call(c, CHAMBER_PREPARE, mgr);  // (before writing the layout: it resets the manager's state)
+    call(c, GA_CHAMBER_PREPARE, mgr);  // (before writing the layout: it resets the manager's state)
     pthread_mutex_lock(&g_lock);
     uint64_t layout = mgr + 8;
-    uint64_t cat = LD64(PANEL_CATALOGUE);
+    uint64_t cat = LD64(GA_PANEL_CATALOGUE);
     for (int i = 0; i < 64; i++) {
         *(uint32_t *)(uintptr_t)(layout + 4 * i) = g_ids[i];
         // the cells the engine actually reads: layout+0x100 + i*0x18 = {sheet, shared ref, catalogue row}
         uint64_t cell = layout + 0x100 + (uint64_t)i * 0x18;
-        if (g_ids[i] != 0xffffffffu && cat) call3(c, PANEL_LOOKUP, cell, cat, g_ids[i]);
+        if (g_ids[i] != 0xffffffffu && cat) call3(c, GA_PANEL_LOOKUP, cell, cat, g_ids[i]);
         else memset((void *)(uintptr_t)cell, 0, 0x18);  // (drops a reference: a small leak, never freed early)
     }
     // per-room door/flag overrides on the catalogue rows (restored by chamber_restore_rows when the run ends)
@@ -139,7 +140,7 @@ static uint64_t chamber_setup(Cpu *c) {
     *(uint8_t *)(uintptr_t)(mgr + 0x15e1) = (uint8_t)m1;
     *(uint32_t *)(uintptr_t)(mgr + 0x15e4) = 0;
     *(uint8_t *)(uintptr_t)(mgr + 0x18fc) = 1;
-    uint64_t loc = call(c, CHAMBER_START_LOCATOR, layout);
+    uint64_t loc = call(c, GA_CHAMBER_START_LOCATOR, layout);
     LOG("[chamber] layout ready: entrance id %d cell %d, start locator '%s'\n", *(int32_t *)(uintptr_t)(layout + 0x1578),
         *(int32_t *)(uintptr_t)(layout + 0x157c), loc ? (const char *)(uintptr_t)loc : "");
     return loc;
@@ -149,7 +150,7 @@ static void chamber_restore_rows(void) {
     while (g_nsaved > 0) { g_nsaved--; *(int32_t *)(uintptr_t)g_saved[g_nsaved].addr = g_saved[g_nsaved].old; }
 }
 
-static void set_event_flag(int i) { *(uint8_t *)(uintptr_t)(0x7001CBB220ull + 0x5DC0 + (i >> 3)) |= (uint8_t)(1 << (i & 7)); }
+static void set_event_flag(int i) { *(uint8_t *)(uintptr_t)(GA_LIVE_SAVE + 0x5DC0 + (i >> 3)) |= (uint8_t)(1 << (i & 7)); }
 
 // Chamber-engine prototype: OFF unless a test asks for it (LARECOMP_CHAMBER_TAILCAVE=<layout file>). Generated
 // dungeons are being rebuilt as real dungeon levels (notes/PLAN.md); this stays only as reverse-engineering notes.
@@ -203,7 +204,7 @@ void rt_level_request(Cpu *c) {
 // exit. Returns 1 when handled, 0 to show the prompt as usual (Dampe's own chamber dungeons).
 int rt_adv_exit_choice(void) {
     if (!g_run_active) return 0;
-    uint64_t mgr = LD64(CHAMBER_MGR);
+    uint64_t mgr = LD64(GA_CHAMBER_MGR);
     if (!mgr) return 0;
     *(int32_t *)(uintptr_t)(mgr + 0x18f8) = 0;
     LOG("[chamber] staircase: leaving directly\n");

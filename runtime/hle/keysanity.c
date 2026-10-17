@@ -7,11 +7,12 @@
 //
 // Save record (notes/save_format.md): live save + 0xE0 + 0x10 * rec, dungeon n -> rec 2(n-1), Color Dungeon -> 18;
 // +0 small keys held, +1 bits: compass 0, map 1, beak 2, Nightmare Key 3.
+#include "../game_addresses.h"
 #include <stdio.h>
 
 #include "../hle.h"
 
-#define LIVE_SAVE 0x7001CBB220ull
+
 // item ids as AddItem gets them: Items.gsheet `itemID` (not the row number; rows 41+ differ)
 enum { IT_COMPASS = 44, IT_MAP = 45, IT_BEAK = 47, IT_SMALL_KEY = 48, IT_NIGHTMARE_KEY = 49 };
 
@@ -21,7 +22,7 @@ enum { IT_COMPASS = 44, IT_MAP = 45, IT_BEAK = 47, IT_SMALL_KEY = 48, IT_NIGHTMA
 enum { IT_BOMB = 4, IT_POWDER = 11, IT_ARROW = 60, IT_RUPEE_BLUE = 102, REFILL_INDEX = 80 };
 
 static int refill(Cpu *c, int item, int count) {
-    uint32_t inv = *(const uint32_t *)(uintptr_t)(LIVE_SAVE + 0x5568);
+    uint32_t inv = *(const uint32_t *)(uintptr_t)(GA_LIVE_SAVE + 0x5568);
     int have = item == IT_BOMB ? inv & (1u << 2) : item == IT_POWDER ? inv & (1u << 8) : inv & (1u << 3);
     if (!have) {
         c->x[0] = IT_RUPEE_BLUE;
@@ -42,7 +43,7 @@ int rt_add_item(Cpu *c) {
     if (index >= 90 && index < 93) return rt_pet_item(index - 90);
     if (index < 0 || index > 9 || index == 8) return 0;
     int rec = index == 9 ? 18 : 2 * index;
-    uint8_t *r = (uint8_t *)(uintptr_t)(LIVE_SAVE + 0xE0 + 0x10 * rec);
+    uint8_t *r = (uint8_t *)(uintptr_t)(GA_LIVE_SAVE + 0xE0 + 0x10 * rec);
     switch (item) {
     case IT_SMALL_KEY: r[0] = (uint8_t)(r[0] + (count > 0 ? count : 1)); break;
     case IT_COMPASS: r[1] |= 1; break;

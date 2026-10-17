@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "hle.h"
 #include "input_bind.h"
@@ -49,6 +50,21 @@ static const char *host_language(void) {
     if (!e || !*e) e = getenv("LC_MESSAGES");
     if (!e || !*e) e = getenv("LANG");
     if (!e || !*e || !strcmp(e, "C") || !strcmp(e, "POSIX")) return "en-US";
+    if (!strncmp(e, "zh", 2) && (!e[2] || strchr("_-.@", e[2]))) {
+        char locale[64];
+        snprintf(locale, sizeof locale, "%s", e);
+        locale[strcspn(locale, ".@")] = 0;
+        for (char *p = locale; *p; ++p) *p = (char)tolower((unsigned char)*p);
+        bool traditional = false;
+        char *next;
+        for (char *part = strtok_r(locale, "_-", &next); part; part = strtok_r(NULL, "_-", &next)) {
+            // An explicit script takes precedence over the region, e.g. zh-Hans-HK.
+            if (!strcmp(part, "hant")) return "zh-Hant";
+            if (!strcmp(part, "hans")) return "zh-Hans";
+            if (!strcmp(part, "tw") || !strcmp(part, "hk") || !strcmp(part, "mo")) traditional = true;
+        }
+        return traditional ? "zh-Hant" : "zh-Hans";
+    }
     char l[8] = {0};
     size_t n = 0;
     for (const char *p = e; *p && *p != '.' && *p != '@' && *p != '_' && n < sizeof l - 1; p++) l[n++] = *p;
@@ -56,7 +72,6 @@ static const char *host_language(void) {
                                                              {"de", "de"}, {"it", "it"}, {"fr", "fr"}, {"es", "es"}};
     for (size_t i = 0; i < sizeof map / sizeof *map; i++)
         if (!strcmp(l, map[i].loc)) return map[i].code;
-    if (!strcmp(l, "zh")) return e[n] == '_' && e[n + 1] == 'T' ? "zh-Hant" : "zh-Hans";  // (TW / HK: traditional)
     return "en-US";
 }
 
@@ -81,14 +96,16 @@ void settings_load(void) {
     char line[256];
     bool tip_key = false, aspect_key = false;
     while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
         char key[64];
-        char val[128];
-        if (sscanf(line, " %63[^= ] = %127[^\n]", key, val) < 1) continue;
+        char val[128] = {0};
+        int fields = sscanf(line, " %63[^= ] = %127[^\n]", key, val);
+        if (fields < 1) continue;
         if (!strcmp(key, "rando_seed")) {
-            if (sscanf(line, " %63[^= ] = %127[^\n]", key, val) != 2) val[0] = 0;
             strlcpy(g_settings.rando_seed, val, sizeof g_settings.rando_seed);
             continue;
         }
+        if (fields != 2) continue;
         if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);

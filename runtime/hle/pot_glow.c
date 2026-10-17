@@ -4,6 +4,7 @@
 // The renderer asks pot_tint() for each draw whose shader supports the tint (runtime/nvn/maxwell/translate.c);
 // a draw is a pot when its model matrix (vertex UBO 2, 3x4 row-major) is unscaled and sits exactly on a pot
 // of the current level. The pot stays gold until its item's GlobalFlags bit is set.
+#include "../game_addresses.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,8 +14,8 @@
 #include "../platform.h"
 #include "../rando.h"
 
-#define PLAYER_STATUS_PTR (MAIN_BASE + 0x1CC1368)  // PlayerStatus*: current level name at +0
-#define EVENT_FLAGS (MAIN_BASE + 0x1CBB220 + 0x5DC0)  // live save: GlobalFlags bitfield (2048 bits)
+// GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
+#define EVENT_FLAGS (GA_LIVE_SAVE + 0x5DC0)  // live save: GlobalFlags bitfield (2048 bits)
 
 // bushes.tsv rows may add: cut flag, hidden item scale, full item scale, room file, item record offset in it
 // (see pot_reveal_tick)
@@ -55,7 +56,7 @@ static void load(void) {
 }
 
 static const char *current_level(void) {
-    uint64_t ps = LD64(PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     return ps ? (const char *)(uintptr_t)ps : "";
 }
 
