@@ -7,7 +7,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='installation-') as temporary:
-    root = Path(temporary)
+    root = Path(temporary).resolve()
     executable = root / ('install.exe' if os.name == 'nt' else 'install')
     subprocess.run(shlex.split(os.environ.get('CXX', 'clang++')) + ['-std=c++17', '-DGAME_INSTALL_TESTING',
         '-x', 'c++', str(ROOT / 'runtime/ui/game_install.mm'), str(ROOT / 'tools/test_game_install.cpp'), '-o', str(executable)], check=True)

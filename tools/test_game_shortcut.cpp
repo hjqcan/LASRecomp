@@ -49,8 +49,9 @@ int main(int argc, char **argv) {
         assert(SUCCEEDED(file->Load(fs::u8path(output).c_str(), STGM_READ)));
         wchar_t target[32768], current[32768], arguments[32768], working[32768];
         GetModuleFileNameW(nullptr, current, 32768);
-        assert(SUCCEEDED(link->GetPath(target, 32768, nullptr, SLGP_RAWPATH)) && !wcscmp(target, current));
-        assert(SUCCEEDED(link->GetWorkingDirectory(working, 32768)) && wide(test_root.c_str()) == working);
+        // The shell may expand a runner's 8.3 path or normalize its casing.
+        assert(SUCCEEDED(link->GetPath(target, 32768, nullptr, SLGP_RAWPATH)) && fs::equivalent(target, current));
+        assert(SUCCEEDED(link->GetWorkingDirectory(working, 32768)) && fs::equivalent(fs::u8path(test_root), working));
         assert(SUCCEEDED(link->GetArguments(arguments, 32768)));
         int count;
         LPWSTR *parts = CommandLineToArgvW((L"runtime " + std::wstring(arguments)).c_str(), &count);

@@ -43,7 +43,7 @@ int main(int argc,char **argv) {
 
 assert (ROOT/'runtime/title_catalog.inc').read_text()==render_c_catalog(), 'Native catalog is out of date'
 with tempfile.TemporaryDirectory() as temp:
-    root=Path(temp)
+    root=Path(temp).resolve()
     installs=[]
     for game in GAMES:
         for release in game.releases:
