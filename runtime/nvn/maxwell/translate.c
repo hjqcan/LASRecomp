@@ -829,6 +829,47 @@ static void emit_tex(Ctx *c, uint64_t w, bool bindless) {
     write_tex_result(c, slot, call, mask, d, RZ, false, false);
 }
 
+// TMML.LOD returns signed 8-bit-fraction fixed-point LODs, not float bits.
+// Maxwell x/y correspond to GLSL's unclamped/clamped y/x components.
+static void emit_tmml(Ctx *c, uint64_t w) {
+    int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8);
+    uint32_t mask = (uint32_t)bits(w, 31, 4);
+    if (d == RZ || !mask) return;
+    if (!c->glsl || c->stage != STAGE_FRAGMENT) { fail(c, "tmml requires a GLSL fragment shader"); return; }
+    if (mask & 12) { fail(c, "tmml non-LOD components"); return; }
+    int target = (int)bits(w, 29, 2);
+    bool array = bits(w, 28, 1);
+    if (array && target == 2) { fail(c, "tmml 3d array"); return; }
+    int type = target == 0 ? (array ? TEXTYPE_1D_ARRAY : TEXTYPE_1D)
+             : target == 1 ? (array ? TEXTYPE_2D_ARRAY : TEXTYPE_2D)
+             : target == 2 ? TEXTYPE_3D
+                           : (array ? TEXTYPE_CUBE_ARRAY : TEXTYPE_CUBE);
+    int slot = tex_slot(c, (uint32_t)bits(w, 36, 13), type, false, array);
+    int ncoord = target == 0 ? 1 : target == 1 ? 2 : 3;
+    // Array index occupies the first source register but is not part of the
+    // LOD derivative calculation. Snapshot the query before any destination
+    // write, since source and destination registers may overlap.
+    int first = a + (array ? 1 : 0);
+    char coords[256] = "", value[64];
+    for (int i = 0; i < ncoord; i++) {
+        snprintf(value, sizeof value, "%sas_f(%s)", i ? ", " : "", R(first + i < RZ ? first + i : RZ));
+        strcat(coords, value);
+    }
+    sp(&c->body, "    { // TMML\n");
+    if (ncoord == 1) sp(&c->body, "      vec2 lodq = textureQueryLod(t%d, %s);\n", slot, coords);
+    else sp(&c->body, "      vec2 lodq = textureQueryLod(t%d, vec%d(%s));\n", slot, ncoord, coords);
+    int output = d;
+    for (int component = 0; component < 2; component++) {
+        if (!(mask & (1u << component))) continue;
+        if (output < RZ) {
+            c->reg_used[output] = 1;
+            sp(&c->body, "      r%d = uint(int(lodq.%c * 256.0f));\n", output, component ? 'x' : 'y');
+        }
+        output++;
+    }
+    sp(&c->body, "    } // TMML end\n");
+}
+
 // Scalar and swizzled gathers return one component from four neighboring texels.
 static void emit_gather(Ctx *c, uint64_t w, bool swizzled) {
     int a = (int)bits(w,8,8), b = (int)bits(w,20,8), d = (int)bits(w,0,8);
@@ -972,6 +1013,8 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         emit_gather(c,w,false);
     } else if (OPM(0xdf00000000000000ull, 0xff40000000000000ull)) {
         emit_gather(c,w,true);
+    } else if (OPM(0xdf58000000000000ull, 0xfff8000000000000ull)) {  // TMML.LOD
+        emit_tmml(c, w);
     } else if (OPM(0xdf48000000000000ull, 0xfff8000000000000ull)) {  // TXQ
         uint32_t index = (uint32_t)bits(w, 36, 13);
         int qt = (int)bits(w, 22, 6);

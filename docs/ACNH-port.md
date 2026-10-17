@@ -261,6 +261,22 @@ LDC shader bodies covers negative and boundary offsets plus overlapping load
 destinations. Shared-runtime LAS startup exposed and fixed an unfenced-sync
 polling regression; delayed fence publication and GPU completion still wait.
 
+The 2026-10-17 desktop audio correction preserves PCM16 magnitudes through the
+auxiliary send/return path and normalizes only at the final device sink. Its
+production-renderer regression passes, and the player confirmed audible in-game
+music/effects after restarting the updated desktop program.
+
+Two fragment programs used `TMML.LOD`, which previously failed translation.
+The Vulkan translator now supports bound 1D/2D/3D/cube and supported array LOD
+queries, including their reversed component order and signed fixed-point result.
+The encoding and result semantics were checked against
+[envytools](https://github.com/envytools/envytools/blob/master/envydis/gm107.c)
+and [Ryujinx's translator](https://github.com/kotx/Ryujinx/blob/master/src/Ryujinx.Graphics.Shader/Instructions/InstEmitTexture.cs).
+Synthetic tests execute the generated query/result code and compile complete
+GLSL for seven texture types. The recorded post-tent sunset material brightness
+still requires scene comparison; supporting this instruction alone does not
+establish that the lighting problem is fixed.
+
 Still required: complete intro and island controls, broader graphics and
 audio correctness, game-managed saving and reopening, day rollover, repeated
 starts, and an extended gameplay run. Update and DLC compatibility remain
