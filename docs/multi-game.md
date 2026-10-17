@@ -25,6 +25,39 @@ Encrypted content uses locally selected player key files. No keys, extracted
 game code, game assets, generated sources, game libraries or saves belong in
 source commits or distributed runtime packages.
 
+## Shared Vulkan shader preparation
+
+All titles use background shader preparation by default. Program registration
+snapshots the translated code range and queues common variants; bounded
+command-list lookahead queues exact attribute/target variants ahead of draws.
+Lookahead stops at memory-writing, dispatch and synchronization commands.
+It does not execute guest commands. A required queued job can run immediately
+on the calling thread; an already running job is joined before the draw or
+dispatch executes. An unfinished compilation never causes a draw to be skipped.
+
+Identical GLSL stages share one compilation, reflection result and shader module.
+Both successful and failed jobs wake all dependents. Guest shader bytes are
+copied before background work begins. Replacing a program's shaders advances
+its cache revision, including when guest addresses are reused. In-process reset
+drains workers before releasing pipelines, programs and shared shader modules.
+The translator remains serialized because it has shared scratch storage;
+independent shaderc compilation uses between two and eight worker threads.
+
+`LARECOMP_SYNC_SHADERS=1` is the inline diagnostic baseline; unset or `0` enables
+the safe background path. `LARECOMP_VK_PREWARM=0` disables speculative preparation
+while retaining required-job waits and stage deduplication. The renderer reports
+`shader waits <count> <milliseconds>` separately. An unseen variant that cannot
+finish ahead of use still blocks; this is not a guarantee of zero first-use
+hitches. Metal's scheduling is unchanged.
+
+Run `python tools/test_shader_policy.py`, `python tools/test_shader_jobs.py` and
+`python tools/test_shader_snapshot.py` for policy, queue, snapshot and lookahead
+regressions. With a Vulkan 1.3 GPU plus shaderc development libraries, run
+`python tools/test_shader_prepare_gpu.py`: it uses the production queue and stage
+cache, exercises simultaneous requests, checks a first-use compute dispatch's
+output, resets the cache, and verifies that compile failures wake every waiter.
+The intentional invalid-shader diagnostic in that test is expected.
+
 ## Managed locations
 
 | Launch ID | Stable installation slot | Vanilla save folder |

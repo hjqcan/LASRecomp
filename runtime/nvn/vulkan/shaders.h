@@ -5,8 +5,17 @@
 #include "vk.h"
 
 typedef struct { uint32_t set, binding; VkDescriptorType type; } VkBindingInfo;
+typedef struct {
+    VkShaderModule module;
+    VkBindingInfo binds[96];
+    int nbinds;
+} VkPreparedShader;
 
 void vk_shaders_init(void);
+bool vk_shaders_ready(void);
+// Identical stages share compilation, reflection and their module across programs.
+const VkPreparedShader *vk_prepare_shader(const char *src, int stage);
+void vk_shader_cache_reset(void); // all preparation jobs joined; no new callers
 uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t *nwords);  // malloc'd, NULL on error
 VkShaderModule vk_module(const uint32_t *spv, size_t nwords);
 // Descriptor bindings declared by a SPIR-V module.

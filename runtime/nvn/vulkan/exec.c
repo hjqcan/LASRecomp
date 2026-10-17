@@ -18,9 +18,11 @@
 
 #include "../../kernel.h"
 #include "shaders.h"
+#include "shader_jobs.h"
 #include "vk.h"
 #include "../renderer.h"
 #include "../render_control.h"
+#include "../shader_prefetch.h"
 #include "../../settings.h"
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
@@ -625,93 +627,57 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     return s;
 }
 
-// ================================================================== worker threads (shader / pipeline builds)
-// First-use compiles run off the render thread; draws needing them are skipped until ready (as on Metal).
-// LAS keeps its established asynchronous path. Other adapters wait by default:
-// a skipped draw can be a one-time LUT, shadow or resource initialization.
-// LARECOMP_SYNC_SHADERS=0/1 explicitly overrides either title's default.
-typedef struct Job { void (*fn)(void *); void *arg; struct Job *next; } Job;
-static Job *jobs_head, *jobs_tail;
-static pthread_mutex_t jobs_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t jobs_cond = PTHREAD_COND_INITIALIZER;
-
-static void *worker(void *a) {
-    (void)a;
-    for (;;) {
-        pthread_mutex_lock(&jobs_lock);
-        while (!jobs_head) pthread_cond_wait(&jobs_cond, &jobs_lock);
-        Job *j = jobs_head;
-        jobs_head = j->next;
-        if (!jobs_head) jobs_tail = NULL;
-        pthread_mutex_unlock(&jobs_lock);
-        j->fn(j->arg);
-        free(j);
-    }
-    return NULL;
-}
-
+// ================================================================== shader preparation
+// Compilation is queued ahead of use. A required draw/dispatch joins its job:
+// first-use initialization commands are never discarded because a worker is busy.
 static bool sync_shaders(void) {
-    static int override = -2;
-    if (override == -2) {
+    static _Atomic int override = -1;
+    int value = atomic_load(&override);
+    if (value < 0) {
         const char *e = getenv("LARECOMP_SYNC_SHADERS");
-        override = e ? atoi(e) != 0 : -1;
+        value = e && atoi(e) != 0;
+        atomic_store(&override, value);
     }
-    // The launcher can switch titles without restarting the host process.
-    return override < 0 ? !title_is_las() : override != 0;
+    return value != 0;
 }
 
-// Shader translation: one dedicated thread (the translator isn't re-entrant - translate.c's RSC2 string ring - and
-// translating on the game thread cost up to ~90 ms per frame on entering an area). Compiles go on to the workers.
-static pthread_mutex_t translate_lock = PTHREAD_MUTEX_INITIALIZER;  // (compute shaders translate on the game thread)
-static Job *tjobs_head, *tjobs_tail;
-static pthread_mutex_t tjobs_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t tjobs_cond = PTHREAD_COND_INITIALIZER;
-static void *translator(void *a) {
-    (void)a;
-    for (;;) {
-        pthread_mutex_lock(&tjobs_lock);
-        while (!tjobs_head) pthread_cond_wait(&tjobs_cond, &tjobs_lock);
-        Job *j = tjobs_head;
-        tjobs_head = j->next;
-        if (!tjobs_head) tjobs_tail = NULL;
-        pthread_mutex_unlock(&tjobs_lock);
-        j->fn(j->arg);
-        free(j);
+static pthread_mutex_t translate_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t program_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t stat_shader_wait_ns, stat_shader_waits;
+
+static bool shader_debug(void) { return maxwell_dbg_code || maxwell_dbg_vs; }
+
+static void start_build(ShaderJob *job, void (*fn)(void *), void *arg) {
+    if (sync_shaders() || shader_debug()) {
+        fn(arg);
+        atomic_store(&job->state, SHADER_JOB_DONE);
+        return;
     }
-    return NULL;
-}
-static bool sync_shaders(void);
-static void run_translate(void (*fn)(void *), void *arg) {
-    if (sync_shaders()) { fn(arg); return; }
-    static bool started;
-    if (!started) { started = true; pthread_t t; pthread_create(&t, NULL, translator, NULL); }
-    Job *j = malloc(sizeof *j);
-    j->fn = fn; j->arg = arg; j->next = NULL;
-    pthread_mutex_lock(&tjobs_lock);
-    if (tjobs_tail) tjobs_tail->next = j; else tjobs_head = j;
-    tjobs_tail = j;
-    pthread_cond_signal(&tjobs_cond);
-    pthread_mutex_unlock(&tjobs_lock);
+    int n = SDL_GetNumLogicalCPUCores() - 4;
+    shader_jobs_init(n < 2 ? 2 : n > 8 ? 8 : n);
+    shader_job_submit(job, fn, arg);
 }
 
-static void run_job(void (*fn)(void *), void *arg) {
-    if (sync_shaders()) { fn(arg); return; }
-    static bool started;
-    if (!started) {
-        started = true;
-        // first entry into an area builds dozens of pipelines at once: use most of the CPU (draws wait for them)
-        int n = SDL_GetNumLogicalCPUCores() - 4;
-        if (n < 4) n = 4;
-        if (n > 16) n = 16;
-        for (int i = 0; i < n; i++) { pthread_t t; pthread_create(&t, NULL, worker, NULL); }
-    }
-    Job *j = malloc(sizeof *j);
-    j->fn = fn; j->arg = arg; j->next = NULL;
-    pthread_mutex_lock(&jobs_lock);
-    if (jobs_tail) jobs_tail->next = j; else jobs_head = j;
-    jobs_tail = j;
-    pthread_cond_signal(&jobs_cond);
-    pthread_mutex_unlock(&jobs_lock);
+static void finish_build(ShaderJob *job) {
+    if (atomic_load(&job->state) == SHADER_JOB_DONE) return;
+    uint64_t start = plat_now_ns();
+    shader_job_wait(job);
+    uint64_t elapsed = plat_now_ns() - start;
+    stat_shader_wait_ns += elapsed;
+    stat_shader_waits++;
+    // First-use preparation is not the steady-state CPU cost used by the pacer.
+    g_blocked_ns += elapsed;
+}
+
+static void *shader_snapshot(uint64_t code, uint64_t *size, int stage) {
+    if (!code) { *size = 0; return NULL; }
+    *size = maxwell_code_size((const uint8_t *)(uintptr_t)code, *size, stage);
+    if (!*size) return NULL;
+    if (shader_debug()) return NULL; // diagnostics identify shaders by their original address
+    void *copy = malloc(*size);
+    if (!copy) FATAL("[shader] cannot allocate code snapshot\n");
+    memcpy(copy, (const void *)(uintptr_t)code, *size);
+    return copy;
 }
 
 // ================================================================== state
@@ -784,6 +750,10 @@ const char *renderer_stats(void) {
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              atomic_exchange(&stat_compiles, 0), (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0);
+    size_t shader_n = strlen(stats_text);
+    snprintf(stats_text + shader_n, sizeof stats_text - shader_n, " | shader waits %llu %.1fms",
+             (unsigned long long)stat_shader_waits, stat_shader_wait_ns / 1e6);
+    stat_shader_waits = stat_shader_wait_ns = 0;
     stat_feedback_copies = stat_upload_bytes = 0;
     {
         extern void vk_alias_stats(void);
@@ -1258,7 +1228,9 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
 #define MAX_BIND 96
 typedef struct {
     ShaderInfo *vi, *fi;
-    uint64_t code[2], cmax[2];  // translation inputs (copied: translated on the translator thread)
+    uint64_t code[2], cmax[2];
+    void *snapshot[2];
+    ShaderJob job;
     ShaderKey vkey, fkey;
     VkShaderModule vs, fs;
     VkBindingInfo binds[MAX_BIND];
@@ -1267,6 +1239,7 @@ typedef struct {
     VkPipelineLayout layout;
     bool vs_uses_vid;
     _Atomic int state;  // 0 building, 1 ready, 2 failed
+    _Atomic bool reported;
 } Prog;
 
 static VkPipelineLayout make_layout(Prog *p, int nsets, VkShaderStageFlags s0, VkShaderStageFlags s1) {
@@ -1290,16 +1263,13 @@ static void save_glsl(const char *src, uint64_t addr, const char *suffix) {
 
 static void compile_program(void *arg) {
     Prog *p = arg;
-    size_t nv = 0, nf = 0;
-    uint32_t *sv = vk_glsl_to_spirv(p->vi->msl, STAGE_VERTEX, "vs", &nv);
-    uint32_t *sf = sv ? vk_glsl_to_spirv(p->fi->msl, STAGE_FRAGMENT, "fs", &nf) : NULL;
-    if (!sv || !sf) { free(sv); free(sf); atomic_store(&p->state, 2); return; }
-    p->nbinds = vk_reflect(sv, nv, p->binds, MAX_BIND);
-    p->nbinds += vk_reflect(sf, nf, p->binds + p->nbinds, MAX_BIND - p->nbinds);
-    p->vs = vk_module(sv, nv);
-    p->fs = vk_module(sf, nf);
-    free(sv);
-    free(sf);
+    const VkPreparedShader *vs = vk_prepare_shader(p->vi->msl, STAGE_VERTEX);
+    const VkPreparedShader *fs = vk_prepare_shader(p->fi->msl, STAGE_FRAGMENT);
+    if (!vs->module || !fs->module || vs->nbinds + fs->nbinds > MAX_BIND) { atomic_store(&p->state, 2); return; }
+    memcpy(p->binds, vs->binds, vs->nbinds * sizeof *p->binds);
+    memcpy(p->binds + vs->nbinds, fs->binds, fs->nbinds * sizeof *p->binds);
+    p->nbinds = vs->nbinds + fs->nbinds;
+    p->vs = vs->module; p->fs = fs->module;
     p->layout = make_layout(p, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT);
     atomic_fetch_add(&stat_compiles, 1);
     atomic_store(&p->state, p->vs && p->fs ? 1 : 2);
@@ -1307,56 +1277,102 @@ static void compile_program(void *arg) {
 
 static void translate_program(void *arg) {
     Prog *p = arg;
+    pthread_mutex_lock(&translate_lock);
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
-    pthread_mutex_lock(&translate_lock);
-    p->vi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[0], p->cmax[0], STAGE_VERTEX, &p->vkey);
+    p->vi = maxwell_translate(p->snapshot[0] ? p->snapshot[0] : (const uint8_t *)(uintptr_t)p->code[0], p->cmax[0], STAGE_VERTEX, &p->vkey);
     if (p->vi->msl) {
         p->fkey.vs_out_mask = p->vi->out_mask;
-        p->fi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[1], p->cmax[1], STAGE_FRAGMENT, &p->fkey);
+        p->fi = maxwell_translate(p->snapshot[1] ? p->snapshot[1] : (const uint8_t *)(uintptr_t)p->code[1], p->cmax[1], STAGE_FRAGMENT, &p->fkey);
     }
     pthread_mutex_unlock(&translate_lock);
+    free(p->snapshot[0]); free(p->snapshot[1]);
+    p->snapshot[0] = p->snapshot[1] = NULL;
     if (!p->vi->msl) {
-        LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
         atomic_store(&p->state, 2);
         return;
     }
     if (!p->fi->msl) {
-        LOG("[shader] FS translate failed: %s\n", p->fi->error);
         atomic_store(&p->state, 2);
         return;
     }
     p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
     save_glsl(p->vi->msl, p->code[0], "vs");
     save_glsl(p->fi->msl, p->code[1], "fs");
-    run_job(compile_program, p);
+    compile_program(p);
 }
 
-#define PROG_TAB 4096
-static struct { uint64_t key; Prog *prog; } prog_tab[PROG_TAB];
+typedef struct { uint64_t key; Prog *prog; } ProgEntry;
+static ProgEntry *prog_tab;
+static size_t prog_cap, prog_count;
 
 static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     if (!(np->stage_mask & 1) || !(np->stage_mask & 2)) return NULL;
     uint64_t h = 0xcbf29ce484222325ull;
-    for (int i = 0; i < 2; i++) { uint64_t a = np->stages[i].code_addr; for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; } }
+    for (int i = 0; i < 3; i++) {
+        uint64_t a = i == 2 ? np->revision : np->stages[i].code_addr;
+        for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; }
+    }
     const uint8_t *vb = (const uint8_t *)vkey;
     for (size_t i = 0; i < sizeof *vkey; i++) { h ^= vb[i]; h *= 0x100000001B3ull; }
     for (int i = 0; i < 8; i++) { h ^= fkey->rt_kind[i]; h *= 0x100000001B3ull; }
     if (!h) h = 1;
-    uint32_t slot = (uint32_t)(h ^ (h >> 31)) & (PROG_TAB - 1);
-    while (prog_tab[slot].key && prog_tab[slot].key != h) slot = (slot + 1) & (PROG_TAB - 1);
-    if (prog_tab[slot].key) return prog_tab[slot].prog;
+    pthread_mutex_lock(&program_lock);
+    if (!prog_cap || (prog_count + 1) * 4 > prog_cap * 3) {
+        size_t cap = prog_cap ? prog_cap * 2 : 4096;
+        ProgEntry *next = calloc(cap, sizeof *next);
+        for (size_t i = 0; i < prog_cap; i++) if (prog_tab[i].key) {
+            uint64_t k = prog_tab[i].key;
+            size_t at = (k ^ (k >> 31)) & (cap - 1);
+            while (next[at].key) at = (at + 1) & (cap - 1);
+            next[at] = prog_tab[i];
+        }
+        free(prog_tab); prog_tab = next; prog_cap = cap;
+    }
+    size_t slot = (h ^ (h >> 31)) & (prog_cap - 1);
+    while (prog_tab[slot].key && prog_tab[slot].key != h) slot = (slot + 1) & (prog_cap - 1);
+    if (prog_tab[slot].key) {
+        Prog *p = prog_tab[slot].prog;
+        pthread_mutex_unlock(&program_lock);
+        return p;
+    }
     Prog *p = calloc(1, sizeof *p);
-    prog_tab[slot].key = h;
-    prog_tab[slot].prog = p;
     for (int i = 0; i < 2; i++) {
         p->code[i] = np->stages[i].code_addr;
         p->cmax[i] = np->stages[i].const_offset ? np->stages[i].const_offset : 0x10000;
+        p->snapshot[i] = shader_snapshot(p->code[i], &p->cmax[i], i);
     }
     p->vkey = *vkey;
     p->fkey = *fkey;
-    run_translate(translate_program, p);
+    if (!p->cmax[0] || !p->cmax[1]) {
+        atomic_store(&p->state, 2);
+        atomic_store(&p->job.state, SHADER_JOB_DONE);
+    } else start_build(&p->job, translate_program, p);
+    prog_tab[slot] = (ProgEntry){h, p}; prog_count++;
+    pthread_mutex_unlock(&program_lock);
     return p;
+}
+
+static bool program_ready(Prog *p) {
+    if (!p) return false;
+    finish_build(&p->job);
+    if (atomic_load(&p->state) == 1) return true;
+    if (!atomic_exchange(&p->reported, true)) {
+        ShaderInfo *failed = p->vi && !p->vi->msl ? p->vi : p->fi && !p->fi->msl ? p->fi : NULL;
+        LOG("[shader] required program failed: %s (code %llx)\n", failed ? failed->error : "compile or module creation failed",
+            (unsigned long long)p->code[0]);
+    }
+    return false;
+}
+
+static void destroy_program(Prog *p) {
+    if (p->layout) vkDestroyPipelineLayout(g_vk.dev, p->layout, NULL);
+    for (int i = 0; i < 2; i++) {
+        if (p->set_layout[i]) vkDestroyDescriptorSetLayout(g_vk.dev, p->set_layout[i], NULL);
+        free(p->snapshot[i]);
+    }
+    maxwell_free(p->vi); maxwell_free(p->fi);
+    free(p);
 }
 
 // ================================================================== vertex formats / fixed function tables
@@ -1544,9 +1560,10 @@ typedef struct {
     uint32_t write_mask[8];
 } PipeKey;
 
-typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; } Pipe;  // state: 0 building, 1 ready, 2 failed
-#define PIPE_TAB 8192
-static struct { uint64_t key; Pipe *pipe; } pipe_tab[PIPE_TAB];
+typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; ShaderJob job; } Pipe;  // state: 0 building, 1 ready, 2 failed
+typedef struct { uint64_t key; Pipe *pipe; } PipelineEntry;
+static PipelineEntry *pipe_tab;
+static size_t pipe_cap, pipe_count;
 
 // 8 bytes a step (PipeKey is ~700 bytes, hashed per draw); in-memory tables only - hmix values are compared with
 // stored constants (fragment-shader hashes) and must not change.
@@ -2470,14 +2487,25 @@ static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSi
 }
 
 static int g_cs_n;  // (compute program table below)
+static void reset_compute_programs(void);
 
-// In-place reboot (device.c backend_reset; GPU idle): drop what is keyed by guest addresses - programs by code
-// address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
-// programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
+// In-place reboot (GPU idle, guest threads stopped): join preparation before
+// releasing snapshots, pipelines, programs and address-keyed caches.
 void vk_exec_reset(void) {
-    memset(prog_tab, 0, sizeof prog_tab);
-    memset(pipe_tab, 0, sizeof pipe_tab);
-    g_cs_n = 0;
+    shader_jobs_drain();
+    for (size_t i = 0; i < pipe_cap; i++) if (pipe_tab[i].pipe) {
+        Pipe *p = pipe_tab[i].pipe;
+        if (p->pipe) vkDestroyPipeline(g_vk.dev, p->pipe, NULL);
+        free(p);
+    }
+    if (pipe_tab) memset(pipe_tab, 0, pipe_cap * sizeof *pipe_tab);
+    pipe_count = 0;
+    for (size_t i = 0; i < prog_cap; i++) if (prog_tab[i].prog) destroy_program(prog_tab[i].prog);
+    if (prog_tab) memset(prog_tab, 0, prog_cap * sizeof *prog_tab);
+    prog_count = 0;
+    reset_compute_programs();
+    vk_shader_cache_reset();
+    ss_forget();
     gcopy_gen++;
     if (gmem_buf) {
         vkDestroyBuffer(g_vk.dev, gmem_buf, NULL);
@@ -2612,12 +2640,11 @@ typedef struct { Prog p; ShaderInfo *si; VkPipeline pipe; uint32_t local[3]; } C
 
 static void build_compute(void *arg) {
     CsProg *cp = arg;
-    size_t n = 0;
-    uint32_t *spv = vk_glsl_to_spirv(cp->si->msl, STAGE_COMPUTE, "cs", &n);
-    if (!spv) { atomic_store(&cp->p.state, 2); return; }
-    cp->p.nbinds = vk_reflect(spv, n, cp->p.binds, MAX_BIND);
-    VkShaderModule m = vk_module(spv, n);
-    free(spv);
+    const VkPreparedShader *cs = vk_prepare_shader(cp->si->msl, STAGE_COMPUTE);
+    if (!cs->module) { atomic_store(&cp->p.state, 2); return; }
+    cp->p.nbinds = cs->nbinds;
+    memcpy(cp->p.binds, cs->binds, cs->nbinds * sizeof *cp->p.binds);
+    VkShaderModule m = cs->module;
     cp->p.layout = make_layout(&cp->p, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0);
     VkSpecializationMapEntry me[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
     VkSpecializationInfo spec = {3, me, 12, cp->local};
@@ -2632,43 +2659,84 @@ static void build_compute(void *arg) {
     if (r != VK_SUCCESS) LOG("[compute] pipeline failed: %d\n", r);
 }
 
-static struct CsEnt { uint64_t addr; CsProg *cp; } g_cs_tab[256];  // compute programs by code address
+static struct CsEnt { uint64_t addr, revision; CsProg *cp; } *g_cs_tab;
+static int g_cs_cap;
+
+static void reset_compute_programs(void) {
+    for (int i = 0; i < g_cs_n; i++) {
+        CsProg *cp = g_cs_tab[i].cp;
+        if (cp->pipe) vkDestroyPipeline(g_vk.dev, cp->pipe, NULL);
+        destroy_program(&cp->p); // Prog is the first member; also owns cp->si
+    }
+    g_cs_n = 0;
+}
+
+static void translate_compute(void *arg) {
+    CsProg *cp = arg;
+    ShaderKey key = {.glsl = 1};
+    pthread_mutex_lock(&translate_lock);
+    maxwell_gmem_base = HEAP_BASE; maxwell_gmem_size = HEAP_MAX;
+    cp->si = maxwell_translate(cp->p.snapshot[0] ? cp->p.snapshot[0] : (const uint8_t *)(uintptr_t)cp->p.code[0],
+                               cp->p.cmax[0], STAGE_COMPUTE, &key);
+    pthread_mutex_unlock(&translate_lock);
+    free(cp->p.snapshot[0]); cp->p.snapshot[0] = NULL;
+    cp->p.vi = cp->si;
+    if (!cp->si->msl) {
+        atomic_store(&cp->p.state, 2);
+        return;
+    }
+    save_glsl(cp->si->msl, cp->p.code[0], "cs");
+    build_compute(cp);
+}
 
 static CsProg *compute_program(NvnProgram *np) {
     NvnShaderStage *ss = &np->stages[5];
     if (!ss->code_addr) return NULL;
-    struct CsEnt *tab = g_cs_tab;
-    int n = g_cs_n;
-    for (int i = 0; i < n; i++) if (tab[i].addr == ss->code_addr) return tab[i].cp;
-    CsProg *cp = calloc(1, sizeof *cp);
-    if (n < 256) { tab[n].addr = ss->code_addr; tab[n].cp = cp; g_cs_n = n + 1; }
-    maxwell_gmem_base = HEAP_BASE;
-    maxwell_gmem_size = HEAP_MAX;
-    ShaderKey k = {0};
-    k.glsl = 1;
-    pthread_mutex_lock(&translate_lock);
-    cp->si = maxwell_translate((const uint8_t *)(uintptr_t)ss->code_addr, ss->const_offset ? ss->const_offset : 0x10000, STAGE_COMPUTE, &k);
-    pthread_mutex_unlock(&translate_lock);
-    cp->p.vi = cp->si;
-    if (!cp->si->msl) {
-        LOG("[compute] translate failed: %s (code %llx)\n", cp->si->error, (unsigned long long)ss->code_addr);
-        atomic_store(&cp->p.state, 2);
+    pthread_mutex_lock(&program_lock);
+    for (int i = 0; i < g_cs_n; i++) if (g_cs_tab[i].addr == ss->code_addr && g_cs_tab[i].revision == np->revision) {
+        CsProg *cp = g_cs_tab[i].cp;
+        pthread_mutex_unlock(&program_lock);
         return cp;
     }
+    if (g_cs_n == g_cs_cap) {
+        g_cs_cap = g_cs_cap ? g_cs_cap * 2 : 256;
+        g_cs_tab = realloc(g_cs_tab, g_cs_cap * sizeof *g_cs_tab);
+    }
+    CsProg *cp = calloc(1, sizeof *cp);
+    cp->p.code[0] = ss->code_addr;
+    cp->p.cmax[0] = ss->const_offset ? ss->const_offset : 0x10000;
+    cp->p.snapshot[0] = shader_snapshot(cp->p.code[0], &cp->p.cmax[0], STAGE_COMPUTE);
     for (int i = 0; i < 3; i++) {
         cp->local[i] = ss->control ? *(const uint32_t *)(ss->control + 0x748 + 4 * i) : 1;
         if (!cp->local[i]) cp->local[i] = 1;
     }
-    save_glsl(cp->si->msl, ss->code_addr, "cs");
-    run_job(build_compute, cp);
+    if (!cp->p.cmax[0]) {
+        atomic_store(&cp->p.state, 2);
+        atomic_store(&cp->p.job.state, SHADER_JOB_DONE);
+    } else start_build(&cp->p.job, translate_compute, cp);
+    g_cs_tab[g_cs_n++] = (struct CsEnt){ss->code_addr, np->revision, cp};
+    pthread_mutex_unlock(&program_lock);
     return cp;
+}
+
+void backend_prepare_program(NvnProgram *np) {
+    if (!vk_shaders_ready() || sync_shaders() || shader_debug()) return;
+    const char *e = getenv("LARECOMP_VK_PREWARM");
+    if (e && !atoi(e)) return;
+    // Most graphics programs use float attributes/targets. Integer and mirrored
+    // variants remain exact-key cache entries and join their own preparation.
+    ShaderKey vk = {.glsl = 1}, fk = {.glsl = 1};
+    vk.flip_y = fk.flip_y = nvn_window_origin() == 0;
+    vk.depth_minus_one = nvn_depth_mode() == 0;
+    if ((np->stage_mask & 3) == 3) get_program(np, &vk, &fk);
+    if (np->stage_mask & (1u << STAGE_COMPUTE)) compute_program(np);
 }
 
 static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program);
-    if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
+    if (!cp || !program_ready(&cp->p)) { stat_skipped++; return; }
     {   // LARECOMP_SKIP_CS=<code address hex> (debug): skip that compute shader's dispatches, to see what it does
         static uint64_t skip = ~0ull;
         if (skip == ~0ull) { const char *e = getenv("LARECOMP_SKIP_CS"); skip = e ? strtoull(e, NULL, 16) : 0; }
@@ -2763,7 +2831,7 @@ static void draw_(CmdRec *r, bool indexed) {
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
     Prog *pr = get_program(st.program, &vkey, &fkey);
-    if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
+    if (!program_ready(pr)) { stat_skipped++; return; }
     g_mirror_w = 0;
     {   // mirror mode (runtime/hle/mirror.c; as renderer.m): the scene's composite into the window image is mirrored
         extern bool mirror_draw(bool composite);
@@ -2790,7 +2858,7 @@ static void draw_(CmdRec *r, bool indexed) {
         if (mirror_draw(composite)) {
             vkey.flip_x = fkey.flip_x = true;
             pr = get_program(st.program, &vkey, &fkey);
-            if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
+            if (!program_ready(pr)) { stat_skipped++; return; }
             g_mirror_w = (float)st.rt.color[0]->width;
         }
     }
@@ -2886,16 +2954,29 @@ static void draw_(CmdRec *r, bool indexed) {
     k.poly_fill = st.poly[2] != 1;
     uint64_t ph = hash_words(0xcbf29ce484222325ull, &k, sizeof k);
     if (!ph) ph = 1;
-    uint32_t pslot = (uint32_t)(ph ^ (ph >> 29)) & (PIPE_TAB - 1);
-    while (pipe_tab[pslot].key && pipe_tab[pslot].key != ph) pslot = (pslot + 1) & (PIPE_TAB - 1);
+    if (!pipe_cap || (pipe_count + 1) * 4 > pipe_cap * 3) {
+        size_t cap = pipe_cap ? pipe_cap * 2 : 8192;
+        PipelineEntry *next = calloc(cap, sizeof *next);
+        for (size_t i = 0; i < pipe_cap; i++) if (pipe_tab[i].key) {
+            uint64_t h = pipe_tab[i].key;
+            size_t at = (h ^ (h >> 29)) & (cap - 1);
+            while (next[at].key) at = (at + 1) & (cap - 1);
+            next[at] = pipe_tab[i];
+        }
+        free(pipe_tab); pipe_tab = next; pipe_cap = cap;
+    }
+    size_t pslot = (ph ^ (ph >> 29)) & (pipe_cap - 1);
+    while (pipe_tab[pslot].key && pipe_tab[pslot].key != ph) pslot = (pslot + 1) & (pipe_cap - 1);
     Pipe *pp = pipe_tab[pslot].pipe;
     if (!pp) {
         pp = calloc(1, sizeof *pp);
         pp->k = k;
         pipe_tab[pslot].key = ph;
         pipe_tab[pslot].pipe = pp;
-        run_job(build_pipeline, pp);
+        pipe_count++;
+        start_build(&pp->job, build_pipeline, pp);
     }
+    finish_build(&pp->job);
     if (atomic_load(&pp->state) != 1) { stat_skipped++; return; }
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
@@ -3935,7 +4016,29 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 }
 
 // ================================================================== executor (renderer.m exec_list)
+static void prefetch_program(const NvnShaderPrefetch *s) {
+    ShaderKey vk = {.glsl = 1}, fk = {.glsl = 1};
+    vk.flip_y = fk.flip_y = nvn_window_origin() == 0;
+    vk.depth_minus_one = nvn_depth_mode() == 0;
+    for (int i = 0; i < s->nattrib; i++) vk.attr_kind[i] = (uint8_t)attr_kind(s->attrib[i] & 0xFF);
+    for (int i = 0; i < s->ncolor; i++) if (s->rt_format[i]) fk.rt_kind[i] = (uint8_t)rt_kind(s->rt_format[i]);
+    get_program(s->program, &vk, &fk);
+}
+
+static void prefetch_commands(uint64_t handle, int depth) {
+    if (sync_shaders() || shader_debug()) return;
+    const char *e = getenv("LARECOMP_VK_PREWARM");
+    if (e && !atoi(e)) return;
+    NvnShaderPrefetch s = {.program = st.program, .nattrib = st.nattrib, .ncolor = st.rt.ncolor,
+                          .render_enabled = st.render_enabled};
+    memcpy(s.attrib, st.attrib, sizeof s.attrib);
+    for (int i = 0; i < s.ncolor; i++) if (st.rt.color[i]) s.rt_format[i] = st.rt.color[i]->format;
+    unsigned budget = 100000;
+    nvn_shader_prefetch(handle, depth, &budget, &s, prefetch_program);
+}
+
 static void exec_list(uint64_t handle, int depth) {
+    prefetch_commands(handle, depth);
     uint64_t p = handle;
     for (int guard = 0; guard < 10000000; guard++) {
         CmdRec *r = (CmdRec *)(uintptr_t)p;
@@ -4186,6 +4289,7 @@ static void exec_list(uint64_t handle, int depth) {
         default: break;
         }
         p += stride;
+        if (nvn_shader_prefetch_barrier(r->op)) prefetch_commands(p, depth);
     }
 }
 

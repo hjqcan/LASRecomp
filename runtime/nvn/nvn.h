@@ -73,6 +73,7 @@ typedef struct NvnProgram {
     NvnShaderStage stages[6];
     uint32_t stage_mask;
     void *backend;
+    uint64_t revision;        // changes when shader binaries are replaced, even at reused addresses
 } NvnProgram;
 
 typedef struct NvnWindow {
@@ -147,6 +148,9 @@ enum {
 // renderer backend (runtime/nvn/metal.m)
 void backend_init(void);
 void backend_execute(uint64_t handle);            // run a recorded command list
+#ifndef __APPLE__
+void backend_prepare_program(NvnProgram *program); // Vulkan: snapshot and prepare registered shaders ahead of draws
+#endif
 void backend_present(NvnTexture *tex);            // show a texture in the window
 void backend_texture_destroyed(NvnTexture *tex);
 void backend_pool_written(uint64_t addr, uint64_t size);

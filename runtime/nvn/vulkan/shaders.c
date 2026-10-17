@@ -4,14 +4,27 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <stdatomic.h>
 
 #include "shaders.h"
 
+static pthread_once_t options_once = PTHREAD_ONCE_INIT;
+static bool no_cache, optimize;
+static _Atomic bool initialized;
+static void init_options(void) {
+    no_cache = getenv("LARECOMP_VK_NO_SPIRV_CACHE") != NULL;
+    optimize = getenv("LARECOMP_VK_OPT") != NULL;
+    if (!no_cache) { mkdir("cache", 0755); mkdir("cache/spirv", 0755); }
+}
+
 void vk_shaders_init(void) {  // (compilers are per thread: check shaderc works at all)
+    pthread_once(&options_once, init_options);
     shaderc_compiler_t c = shaderc_compiler_initialize();
     if (!c) FATAL("shaderc_compiler_initialize failed\n");
     shaderc_compiler_release(c);
+    atomic_store(&initialized, true);
 }
+bool vk_shaders_ready(void) { return atomic_load(&initialized); }
 
 static shaderc_shader_kind kind_of(int stage) {
     return stage == STAGE_VERTEX ? shaderc_vertex_shader : stage == STAGE_FRAGMENT ? shaderc_fragment_shader : shaderc_compute_shader;
@@ -21,6 +34,7 @@ static shaderc_shader_kind kind_of(int stage) {
 // GLSL compile (the driver's pipeline cache only covers the step after this one).
 static uint64_t src_hash(const char *src, int stage) {
     uint64_t h = (0xcbf29ce484222325ull ^ (uint64_t)stage) + 3;  // + version of the post-processing (no_contraction)
+    if (optimize) h ^= 0x97c12e519a670033ull;
     for (const char *p = src; *p; p++) { h ^= (uint8_t)*p; h *= 0x100000001B3ull; }
     return h;
 }
@@ -42,11 +56,9 @@ static uint32_t *cache_load(uint64_t h, size_t *nwords) {
 }
 
 static void cache_store(uint64_t h, const uint32_t *spv, size_t nwords) {
-    static int made;
-    if (!made) { made = 1; mkdir("cache", 0755); mkdir("cache/spirv", 0755); }
     char path[64], tmp[80];
     snprintf(path, sizeof path, "cache/spirv/%016llx.spv", (unsigned long long)h);
-    snprintf(tmp, sizeof tmp, "%s.%llx", path, (unsigned long long)(uintptr_t)&made ^ (unsigned long long)(uintptr_t)spv);
+    snprintf(tmp, sizeof tmp, "%s.%llx", path, (unsigned long long)(uintptr_t)spv);
     FILE *f = fopen(tmp, "wb");
     if (!f) return;
     bool ok = fwrite(spv, 4, nwords, f) == nwords;
@@ -114,29 +126,28 @@ static uint32_t *no_contraction(uint32_t *spv, size_t *nwords) {
 // their depths stopped matching (EQUAL test: black holes in foliage), and it was most of the compile time; the
 // driver optimises anyway. LARECOMP_VK_OPT=1 turns it back on (experiments).
 uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t *nwords) {
+    pthread_once(&options_once, init_options);
     uint64_t h = src_hash(src, stage);
-    static int nocache = -1;
-    if (nocache < 0) nocache = getenv("LARECOMP_VK_NO_SPIRV_CACHE") != NULL;
-    uint32_t *out = nocache ? NULL : cache_load(h, nwords);
+    uint32_t *out = no_cache ? NULL : cache_load(h, nwords);
     if (out) return out;
     static __thread shaderc_compiler_t comp;
     if (!comp) comp = shaderc_compiler_initialize();
     shaderc_compile_options_t o = shaderc_compile_options_initialize();
     shaderc_compile_options_set_target_env(o, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
-    shaderc_compile_options_set_optimization_level(o, getenv("LARECOMP_VK_OPT") ? shaderc_optimization_level_performance
+    shaderc_compile_options_set_optimization_level(o, optimize ? shaderc_optimization_level_performance
                                                                                   : shaderc_optimization_level_zero);
     shaderc_compilation_result_t r = shaderc_compile_into_spv(comp, src, strlen(src), kind_of(stage), name, "main", o);
     shaderc_compile_options_release(o);
     if (shaderc_result_get_compilation_status(r) != shaderc_compilation_status_success) {
-        static int nlog;
-        if (nlog++ < 20) LOG("[shader] %s: GLSL compile failed:\n%s\n%s\n", name, shaderc_result_get_error_message(r), src);
+        static _Atomic int nlog;
+        if (atomic_fetch_add(&nlog, 1) < 20) LOG("[shader] %s: GLSL compile failed:\n%s\n%s\n", name, shaderc_result_get_error_message(r), src);
     } else {
         size_t n = shaderc_result_get_length(r);
         out = malloc(n);
         memcpy(out, shaderc_result_get_bytes(r), n);
         *nwords = n / 4;
         if (stage == STAGE_VERTEX) out = no_contraction(out, nwords);
-        if (!nocache) cache_store(h, out, *nwords);
+        if (!no_cache) cache_store(h, out, *nwords);
     }
     shaderc_result_release(r);
     return out;
@@ -146,6 +157,60 @@ VkShaderModule vk_module(const uint32_t *spv, size_t nwords) {
     VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = nwords * 4, .pCode = spv};
     VkShaderModule m;
     return vkCreateShaderModule(g_vk.dev, &ci, NULL, &m) == VK_SUCCESS ? m : VK_NULL_HANDLE;
+}
+
+typedef struct ShaderEntry {
+    uint64_t hash;
+    int stage;
+    bool ready;
+    char *source;
+    VkPreparedShader shader;
+    struct ShaderEntry *next;
+} ShaderEntry;
+static ShaderEntry *stage_cache[2048];
+static pthread_mutex_t stage_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t stage_changed = PTHREAD_COND_INITIALIZER;
+
+const VkPreparedShader *vk_prepare_shader(const char *src, int stage) {
+    pthread_once(&options_once, init_options);
+    uint64_t hash = src_hash(src, stage);
+    unsigned bucket = (unsigned)(hash ^ (hash >> 32)) & 2047;
+    pthread_mutex_lock(&stage_lock);
+    for (ShaderEntry *e = stage_cache[bucket]; e; e = e->next) {
+        if (e->hash != hash || e->stage != stage || strcmp(e->source, src)) continue;
+        while (!e->ready) pthread_cond_wait(&stage_changed, &stage_lock);
+        pthread_mutex_unlock(&stage_lock);
+        return &e->shader;
+    }
+    ShaderEntry *entry = calloc(1, sizeof *entry);
+    entry->hash = hash; entry->stage = stage; entry->source = strdup(src);
+    entry->next = stage_cache[bucket]; stage_cache[bucket] = entry;
+    pthread_mutex_unlock(&stage_lock);
+
+    size_t n = 0;
+    uint32_t *spv = vk_glsl_to_spirv(src, stage, stage == STAGE_VERTEX ? "vs" : stage == STAGE_FRAGMENT ? "fs" : "cs", &n);
+    if (spv) {
+        entry->shader.nbinds = vk_reflect(spv, n, entry->shader.binds, 96);
+        entry->shader.module = vk_module(spv, n);
+        free(spv);
+    }
+    pthread_mutex_lock(&stage_lock);
+    entry->ready = true; // failures are terminal too: every dependent must wake
+    pthread_cond_broadcast(&stage_changed);
+    pthread_mutex_unlock(&stage_lock);
+    return &entry->shader;
+}
+
+void vk_shader_cache_reset(void) {
+    for (unsigned i = 0; i < 2048; i++) {
+        ShaderEntry *e = stage_cache[i];
+        while (e) {
+            ShaderEntry *next = e->next;
+            if (e->shader.module) vkDestroyShaderModule(g_vk.dev, e->shader.module, NULL);
+            free(e->source); free(e); e = next;
+        }
+        stage_cache[i] = NULL;
+    }
 }
 
 VkShaderModule vk_compile_glsl(const char *src, int stage, const char *name) {

@@ -16,6 +16,7 @@ def main():
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdatomic.h>
 static bool las = true;
 static bool title_is_las(void) { return las; }
 '''
@@ -36,7 +37,7 @@ int main(void) {
         src.write_text(harness, encoding='utf-8')
         subprocess.run([*shlex.split(os.environ.get('CC', 'cc')), '-std=c11',
                         str(src), '-o', str(exe)], check=True)
-        for value, expected in ((None, '0 1 0'), ('0', '0 0 0'),
+        for value, expected in ((None, '0 0 0'), ('0', '0 0 0'),
                                 ('1', '1 1 1'), ('2', '1 1 1')):
             env = dict(os.environ)
             env.pop('LARECOMP_SYNC_SHADERS', None)
@@ -45,7 +46,7 @@ int main(void) {
             result = subprocess.run([str(exe)], env=env, check=True,
                                     text=True, capture_output=True).stdout.strip()
             assert result == expected, (value, result, expected)
-    print('Shader policy: LAS asynchronous, other titles synchronous, switching and overrides passed')
+    print('Shader policy: background preparation for every title, switching and synchronous override passed')
 
 
 if __name__ == '__main__':

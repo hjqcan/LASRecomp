@@ -53,7 +53,10 @@ jobs:
       - name: Settings regression tests
         run: python3 tools/test_settings.py
       - name: Shader scheduling policy regression
-        run: python3 tools/test_shader_policy.py
+        run: |
+          python3 tools/test_shader_policy.py
+          python3 tools/test_shader_jobs.py
+          python3 tools/test_shader_snapshot.py
       - name: Save commit and enhanced backup integration
         run: python3 tools/test_save_commit.py
       - name: Game address table tests

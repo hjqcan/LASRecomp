@@ -1999,9 +1999,29 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     return info;
 }
 
+size_t maxwell_code_size(const uint8_t *blob, size_t max_size, int stage) {
+    size_t header = stage == STAGE_COMPUTE ? 0 : 0x80;
+    if (max_size < header) return 0;
+    const uint64_t *code = (const uint64_t *)(blob + header);
+    size_t n = (max_size - header) / 8, end = 0;
+    if (n > 65536) n = 65536;
+    for (size_t i = 0; i < n; i++) {
+        uint64_t w = code[i];
+        if (i % 4 == 0) continue;
+        if ((w & 0xfff0000000000000ull) == 0xe240000000000000ull && sbits(w, 20, 24) == -8 && end) break;
+        if (w == 0 && i > 4) break;
+        end = i + 1;
+    }
+    return header + end * 8;
+}
+
 ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, const ShaderKey *key) {
     ShaderInfo *info = calloc(1, sizeof *info);
     info->stage = stage;
+    if (stage != STAGE_COMPUTE && max_size < 0x80) {
+        snprintf(info->error, sizeof info->error, "truncated shader header");
+        return info;
+    }
     Ctx *c = calloc(1, sizeof *c);
     c->info = info;
     c->key = key;
@@ -2017,16 +2037,9 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         c->omap_depth = (*(const uint32_t *)(sph + 0x4C) >> 1) & 1;
     }
     // find the end: the last EXIT followed by self-branch padding, or max_size
-    size_t n = (max_size - (code - blob)) / 8;
-    if (n > 65536) n = 65536;
-    size_t end = 0;
-    for (size_t i = 0; i < n; i++) {
-        uint64_t w = ((const uint64_t *)code)[i];
-        if (i % 4 == 0) continue;
-        if ((w & 0xfff0000000000000ull) == 0xe240000000000000ull && sbits(w, 20, 24) == -8 && end) break;  // bra self
-        if (w == 0 && i > 4) break;
-        end = i + 1;
-    }
+    size_t size = maxwell_code_size(blob, max_size, stage);
+    if (size < (size_t)(code - blob)) { snprintf(info->error, sizeof info->error, "truncated shader header"); free(c); return info; }
+    size_t end = (size - (code - blob)) / 8;
     // collect branch targets (labels)
     uint8_t *label = calloc(end + 4, 1);
     label[1] = 1;
