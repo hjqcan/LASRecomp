@@ -105,7 +105,17 @@ static void delay_mixer_test(void) {
     memset(samples,0,8*sizeof(float)); samples[0]=.5f;
     apply_effects(&r,4,&mix); assert(samples[4]==.25f);  // disabled delay still routes its input
     delay[0]=0; effect_update(&fx[0],delay,0x38564552); assert(!fx[0].delay.lines);
+    // The 3D reverb shares the same ordered effect dispatch and global bypass.
+    AudioReverb3dParam rv={.channels=1,.channels_max=1,.sample_rate=48000,.hf_reference=2000,
+        .decay_time=3,.hf_decay_ratio=1,.reflection_delay=.05f,.density=100,.diffusion=100,.dry_gain=.5f,.output={1}};
+    delay[0]=5;delay[1]=1;delay[2]=1;memcpy(delay+0x20,&rv,sizeof rv);delay[0x20+72]=2;
+    effect_update(&fx[0],delay,0x38564552);g_settings.reverb=1;
+    memset(samples,0,8*sizeof(float));samples[0]=1;apply_effects(&r,4,&mix);assert(samples[4]==.25f);
+    g_settings.reverb=0;memset(samples,0,8*sizeof(float));samples[0]=1;
+    apply_effects(&r,4,&mix);assert(samples[4]==.5f);
+    delay[0]=0;effect_update(&fx[0],delay,0x38564552);assert(!fx[0].rv3.pre.data);
     puts("PASS: production effect dispatch, ordered biquad/delay chain, mix selection, bypass and slot retirement");
+    puts("PASS: production reverb3d dispatch, global reverb setting and slot retirement");
 }
 #endif
 

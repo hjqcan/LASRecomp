@@ -88,8 +88,17 @@ The equations follow [Ryujinx's delay implementation](https://git.axenov.dev/Mus
 Impulse tests cover packet boundaries, bypass, aliasing, feedback, invalid
 descriptors and the game's observed 48 kHz / 400 ms parameter set. The production
 mixer test checks ordered biquad/delay processing and effect-slot retirement.
-Actual island audio still needs listening and capture validation.
-Auxiliary-buffer and reverb-3D effects remain incomplete. This routing
+Audio effect 5 implements 3D room reverb, early reflections, filtered feedback,
+two decay stages, persistent delay lines and mono/stereo/quad/5.1 outputs. It
+follows [Ryujinx's reverb-3D implementation](https://git.axenov.dev/Museum/ryujinx/src/commit/dde9bb5c69d2e1a70df82af8accd3d01fb94b78d/Ryujinx.Audio/Renderer/Dsp/Command/Reverb3dCommand.cs).
+Local differential tests run the original C# implementation and compare a full
+second of every channel, including a mid-stream parameter change; all compared
+samples matched exactly in the Windows test. Tests retain selected numerical
+checkpoints for CI. The REV11 channel remap applies to 5.1 only; the reference's
+fixed six-element index arrays also remap inactive quad entries, so the quad
+comparison uses its legacy mapping. Runtime integration checks reverb-setting
+bypass and effect retirement. Actual island audio still needs listening and
+capture validation. Auxiliary-buffer effects remain incomplete. This routing
 implementation covers the legacy destination format, not REV12 biquads.
 
 NVN recorders use private host arenas and compact allocation budgets, avoiding

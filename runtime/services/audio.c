@@ -12,6 +12,7 @@
 #include "../ipc.h"
 #include "audio_biquad.h"
 #include "audio_delay.h"
+#include "audio_reverb3d.h"
 #include "audio_splitter.h"
 
 // ------------------------------------------------------------------ audren: a CPU mixer modelled on
@@ -433,12 +434,14 @@ struct Effect {
     Reverb rv;
     AudioBiquad bq;
     AudioDelay delay;
+    AudioReverb3d rv3;
 };
 
 // Effect slot update from EffectInParameterVersion1 (0xC0 bytes: type, is_new, enabled, mix, buffers, order, data).
 static void effect_update(Effect *fx, const uint8_t *e, uint32_t revision) {
     bool new_type = fx->type != e[0];
     if (new_type) audio_delay_free(&fx->delay);
+    if (new_type) audio_reverb3d_free(&fx->rv3);
     if (fx->type != e[0]) memset(&fx->rv.p, 0, sizeof fx->rv.p), fx->rv.ready = 0;
     fx->type = e[0];
     fx->enabled = e[2];
@@ -446,6 +449,10 @@ static void effect_update(Effect *fx, const uint8_t *e, uint32_t revision) {
     memcpy(&fx->order, e + 0x18, 4);
     if (fx->type == 3) {
         audio_delay_update(&fx->delay, e + 0x20, new_type || e[1], (revision >> 24) - '0' >= 11);
+        return;
+    }
+    if (fx->type == 5) {
+        audio_reverb3d_update(&fx->rv3, e + 0x20, new_type || e[1], (revision >> 24) - '0' >= 11);
         return;
     }
     if (fx->type == 6) {
@@ -475,6 +482,13 @@ static void effect_update(Effect *fx, const uint8_t *e, uint32_t revision) {
     }
 }
 
+static bool reverb_off(uint64_t frame) {
+    static int no_reverb = -1, toggle = -1;
+    if (no_reverb < 0) no_reverb = getenv("LARECOMP_NO_REVERB") ? 1 : 0;
+    if (toggle < 0) toggle = getenv("LARECOMP_REVERB_TOGGLE") ? atoi(getenv("LARECOMP_REVERB_TOGGLE")) : 0;
+    return no_reverb || !g_settings.reverb || (toggle > 0 && (frame / toggle) % 2);
+}
+
 static void apply_effects(Renderer *r, int32_t mix_id, Mix *m) {
     uint32_t N = r->sample_count;
     for (uint32_t order = 0; order < r->effects; order++) {
@@ -482,6 +496,10 @@ static void apply_effects(Renderer *r, int32_t mix_id, Mix *m) {
             Effect *fx = &r->fx[i];
             if (fx->type == 3 && fx->mix_id == mix_id && fx->order == order) {
                 audio_delay_process(&fx->delay, m->buf, m->bufs, N, fx->enabled);
+                continue;
+            }
+            if (fx->type == 5 && fx->mix_id == mix_id && fx->order == order) {
+                audio_reverb3d_process(&fx->rv3, m->buf, m->bufs, N, fx->enabled && !reverb_off(r->elapsed_frames));
                 continue;
             }
             if (fx->type == 6 && fx->mix_id == mix_id && fx->order == order) {
@@ -498,12 +516,7 @@ static void apply_effects(Renderer *r, int32_t mix_id, Mix *m) {
                 out[c] = m->buf + (fx->rv.p.output[c] % MIXBUF_MAX) * N;
             }
             if (!ok) continue;
-            static int no_reverb = -1;
-            if (no_reverb < 0) no_reverb = getenv("LARECOMP_NO_REVERB") ? 1 : 0;
-            static int toggle = -1;
-            if (toggle < 0) toggle = getenv("LARECOMP_REVERB_TOGGLE") ? atoi(getenv("LARECOMP_REVERB_TOGGLE")) : 0;
-            int off = no_reverb || !g_settings.reverb || (toggle && (r->elapsed_frames / toggle) % 2);
-            if (fx->enabled && !off) reverb_process(&fx->rv, in, out, N);
+            if (fx->enabled && !reverb_off(r->elapsed_frames)) reverb_process(&fx->rv, in, out, N);
             else
                 for (int c = 0; c < ch; c++) if (in[c] != out[c]) memcpy(out[c], in[c], N * sizeof(float));
         }
@@ -942,7 +955,7 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
         static uint32_t seen_types;
         if (e[0] && e[0] < 32 && !(seen_types & (1u << e[0]))) {
             seen_types |= 1u << e[0];
-            LOG("[audren] effect type %u used%s: slot %u mix %d enabled %u\n", e[0], (e[0] == 3 || e[0] == 4 || e[0] == 6) ? "" : " (not implemented)", i,
+            LOG("[audren] effect type %u used%s: slot %u mix %d enabled %u\n", e[0], (e[0] >= 3 && e[0] <= 6) ? "" : " (not implemented)", i,
                 *(const int32_t *)(e + 4), e[2]);
         }
         if (e[0] && getenv("LARECOMP_AUDIO_LOG")) {
@@ -1169,6 +1182,7 @@ RT_ON_RESET(audio_reset) {
             if (r->wav) { wav_header(r->wav, r->wav_bytes); fclose(r->wav); }
             for (uint32_t m = 0; m < r->nmix; m++) free(r->mix[m].buf);
             for (uint32_t f = 0; f < r->effects; f++) audio_delay_free(&r->fx[f].delay);
+            for (uint32_t f = 0; f < r->effects; f++) audio_reverb3d_free(&r->fx[f].rv3);
             free(r->voice), free(r->chres), free(r->chst), free(r->mix), free(r->fx);  // (reverb delay lines leak)
             audio_split_free(&r->routing);
             free(r);
