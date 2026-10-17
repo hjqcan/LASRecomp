@@ -113,7 +113,7 @@ def scenario_transition(rows):
             'note': 'Observed level names and available positions; does not certify completed loading or combat.'}
 
 
-def main():
+def main(extra_env=None, argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--exe', type=Path, required=True)
     p.add_argument('--game', type=Path, required=True)
@@ -137,7 +137,7 @@ def main():
     p.add_argument('--warmup', type=int, default=240, help='Minimum consecutive valid updates at the start gate')
     p.add_argument('--stable', type=int, default=60, help='Consecutive equal player-position/health observations')
     p.add_argument('--frames', type=int, help='Presentation fallback limit; default 5700 for house, 9000 for house-exit')
-    args = p.parse_args()
+    args = p.parse_args(argv)
     if args.updates is None:
         args.updates = 4800 if args.scenario == 'house-exit' else 2400
     if args.frames is None:
@@ -195,6 +195,8 @@ def main():
             fingerprint['startup_seed'] = args.startup_seed
     if manifest_id:
         fingerprint['store_trace'] = {'manifest': manifest_id, 'window': store_window, 'capacity': args.store_capacity}
+    if extra_env:
+        fingerprint['extension_environment'] = extra_env
     tape = None
     if args.replay:
         previous = args.replay.resolve()
@@ -249,6 +251,8 @@ def main():
                                 '3000:A:8,3100:A:8,3200:A:8,3300:STICK_DOWN:180,' +
                                 ','.join(f'{f}:A:8' for f in range(3400, 4400, 100)) +
                                 ',4400:STICK_DOWN:180,4700:STICK_RIGHT:180,5000:STICK_UP:180')
+    if extra_env:
+        env.update(extra_env)
     options = {}
     if os.name == 'nt':
         startup = subprocess.STARTUPINFO()

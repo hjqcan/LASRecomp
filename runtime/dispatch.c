@@ -144,7 +144,9 @@ static GuestFn dispatch_slow(Cpu *c) {
     }
     for (int i = 0; i < override_count; i++)
         if (overrides[i].addr == pc) return overrides[i].fn;
-    GuestFn f = research_dispatch_override(pc);
+    extern GuestFn coop_dispatch_override(uint64_t);
+    GuestFn f = coop_dispatch_override(pc);
+    if (!f) f = research_dispatch_override(pc);
     if (!f) f = dispatch_lookup(pc);
     if (!f) {
         uint64_t off;

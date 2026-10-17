@@ -16,6 +16,7 @@
 #include "../settings.h"
 #include "../research.h"
 #include "../input_bind.h"
+#include "../coop.h"
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -28,6 +29,8 @@ static _Atomic uint64_t key_buttons, pad_buttons;
 static _Atomic int32_t key_lx, key_ly, key_rx, key_ry, pad_lx, pad_ly, pad_rx, pad_ry;
 static uint8_t keys_down[SDL_SCANCODE_COUNT];
 static SDL_Gamepad *pad;
+static SDL_Gamepad *pad2;
+static bool second_focused=true;
 static _Atomic int64_t sampling;
 
 // Host keys / buttons held by a test script (LARECOMP_HOST_INPUT, input_frame): they go through the bindings
@@ -36,7 +39,32 @@ static _Atomic uint32_t test_pad;
 static _Atomic int32_t test_lx, test_ly;  // (a resting stick's drift: "lstick" in LARECOMP_HOST_INPUT)
 static bool host_test;  // (then a real controller is left out: the player's own pad must not spoil the test)
 
-static int held_key(int sc) { return sc > 0 && sc < SDL_SCANCODE_COUNT && (keys_down[sc] || test_keys[sc]); }
+static bool coop_key(int sc) { return sc==SDL_SCANCODE_KP_4||sc==SDL_SCANCODE_KP_6||sc==SDL_SCANCODE_KP_8||sc==SDL_SCANCODE_KP_5||sc==SDL_SCANCODE_KP_0; }
+static int held_key(int sc) { return sc > 0 && sc < SDL_SCANCODE_COUNT && !(coop_active()&&coop_key(sc)) && (keys_down[sc] || test_keys[sc]); }
+static int second_key(int sc){return keys_down[sc]||test_keys[sc];}
+static void recompute_second(void) {
+    int32_t x=0,y=0;bool attack=false;
+    if(coop_active()&&second_focused) {
+        x=(second_key(SDL_SCANCODE_KP_6)-second_key(SDL_SCANCODE_KP_4))*32767;
+        y=(second_key(SDL_SCANCODE_KP_8)-second_key(SDL_SCANCODE_KP_5))*32767;
+        attack=second_key(SDL_SCANCODE_KP_0);
+        if(pad2&&!host_test) {
+            x+=SDL_GetGamepadAxis(pad2,SDL_GAMEPAD_AXIS_LEFTX);
+            y-=SDL_GetGamepadAxis(pad2,SDL_GAMEPAD_AXIS_LEFTY);
+            attack|=SDL_GetGamepadButton(pad2,SDL_GAMEPAD_BUTTON_SOUTH);
+        }
+    }
+    coop_host_input(x,y,attack);
+}
+bool input_second_event(const SDL_Event *event) {
+    if(!coop_active())return false;
+    if(event->type==SDL_EVENT_KEY_DOWN||event->type==SDL_EVENT_KEY_UP)return coop_key(event->key.scancode);
+    if(!pad2)return false;
+    SDL_JoystickID id=SDL_GetGamepadID(pad2);
+    if(event->type==SDL_EVENT_GAMEPAD_AXIS_MOTION)return event->gaxis.which==id;
+    if(event->type==SDL_EVENT_GAMEPAD_BUTTON_DOWN||event->type==SDL_EVENT_GAMEPAD_BUTTON_UP)return event->gbutton.which==id;
+    return false;
+}
 
 // Through the bindings (runtime/hle/bindings.c: g_bind_key), read on every key event, so a rebind applies at once.
 static void recompute_keyboard(void) {
@@ -48,10 +76,12 @@ static void recompute_keyboard(void) {
     key_ly = (held_key(g_bind_key[BIND_LS_UP]) - held_key(g_bind_key[BIND_LS_DOWN])) * 32767;
     key_rx = (held_key(g_bind_key[BIND_RS_RIGHT]) - held_key(g_bind_key[BIND_RS_LEFT])) * 32767;
     key_ry = (held_key(g_bind_key[BIND_RS_UP]) - held_key(g_bind_key[BIND_RS_DOWN])) * 32767;
+    recompute_second();
 }
 
 // Controller buttons (and the triggers as buttons) -> Switch buttons through g_bind_pad; the sticks stay the sticks.
 static void recompute_pad(void) {
+    recompute_second();
     uint32_t host = test_pad;
     if (pad && !host_test) {
         for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT; i++)
@@ -148,14 +178,24 @@ int input_pad_family(void) {
     return env >= 0 ? env : pad_family;
 }
 
+// Preserve each pad's assignment when the other player disconnects; never give P1 P2's pad.
+static void refresh_pads(void) {
+    bool two=coop_requested();
+    if(!two&&pad2){SDL_CloseGamepad(pad2);pad2=NULL;}
+    int n=0;SDL_JoystickID *ids=SDL_GetGamepads(&n);
+    for(int i=0;i<n;++i) {
+        if((pad&&SDL_GetGamepadID(pad)==ids[i])||(pad2&&SDL_GetGamepadID(pad2)==ids[i]))continue;
+        if(!pad){pad=SDL_OpenGamepad(ids[i]);if(pad)LOG("[input] gamepad: %s\n",SDL_GetGamepadName(pad));note_family();}
+        else if(two&&!pad2){pad2=SDL_OpenGamepad(ids[i]);if(pad2)LOG("[coop] player 2 gamepad: %s\n",SDL_GetGamepadName(pad2));}
+    }
+    SDL_free(ids);recompute_pad();
+}
+
 void input_handle_event(const SDL_Event *e) {
     static bool scanned;  // pads present at startup: their ADDED event may have gone to the start screen's loop
     if (!scanned) {
         scanned = true;
-        int n = 0;
-        SDL_JoystickID *ids = SDL_GetGamepads(&n);
-        if (n > 0 && !pad) { pad = SDL_OpenGamepad(ids[0]); LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad)); note_family(); }
-        SDL_free(ids);
+        refresh_pads();
     }
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:
@@ -164,12 +204,17 @@ void input_handle_event(const SDL_Event *e) {
         recompute_keyboard();
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
-        if (!pad) { pad = SDL_OpenGamepad(e->gdevice.which); LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad)); note_family(); }
+        refresh_pads();
         break;
     case SDL_EVENT_GAMEPAD_REMOVED:
         if (pad && SDL_GetGamepadID(pad) == e->gdevice.which) { SDL_CloseGamepad(pad); pad = NULL; note_family(); }
+        if (pad2 && SDL_GetGamepadID(pad2) == e->gdevice.which) { SDL_CloseGamepad(pad2); pad2=NULL; }
         recompute_pad();
         break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+        second_focused=false;input_reset();break;
+    case SDL_EVENT_WINDOW_FOCUS_GAINED:
+        second_focused=true;recompute_second();break;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
         recompute_pad();
         break;
@@ -319,6 +364,9 @@ static uint64_t g_pad_obj;
 volatile int g_inject_plus;  // frames to hold Plus for the game (movie.c: A/B skip the opening on rando seeds)
 RT_ON_RESET(input_reboot_reset) { g_pad_obj = 0; g_inject_plus = 0; }  // (reboot: the controller object was guest memory)
 void input_frame(uint64_t frame) {
+    static bool second_wanted;
+    bool want=coop_requested();
+    if(want!=second_wanted){second_wanted=want;refresh_pads();recompute_keyboard();}
     extern void performance_frame(uint64_t frame);
     performance_frame(frame);
     extern void workshop_frame(uint64_t frame);
@@ -408,7 +456,8 @@ static void fill_state(Cpu *c) {
       extern void qol_tick(void);
       qol_tick();
       extern void pets_game_tick(Cpu *c);
-      pets_game_tick(c); }
+      pets_game_tick(c);
+      extern void coop_game_tick(Cpu *c);coop_game_tick(c); }
     extern uint64_t g_watch_lo, g_watch_hi;
     if (id == 0 && !g_pad_obj) g_pad_obj = c->x[1] - 8;
     if (id == 0 && !g_watch_lo && getenv("LARECOMP_WATCH_PAD")) {

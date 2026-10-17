@@ -173,6 +173,7 @@ static void boot(const char *root) {
     kernel_init();
     dispatch_init();
     if (!research_hooks_init(why, sizeof why)) FATAL("%s\n", why);
+    { extern bool coop_boot(char *,size_t); if (!coop_boot(why,sizeof why)) FATAL("%s\n",why); }
 
     uint32_t stack_size = 0x100000;
     int prio = 44;

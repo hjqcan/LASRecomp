@@ -21,6 +21,7 @@ This is the independently maintained edition in [hjqcan/LASRecomp](https://githu
 | Resource mods | Local pack import, metadata, version-specific enable lists, shareable version-checked presets, conflict paths, save backup before selection changes |
 | Randomizer | Existing upstream options plus experimental version-specific v1.1.0 generation and validated patches/event adaptation |
 | Challenge workshop | Shareable destination/time/damage rules, isolated save snapshots, result and observed-route recording |
+| Local co-op prototype | Vanilla 1.0.0 Link + player-controlled BowWow, separate P2 input, native movement/combat and isolated saves |
 | Route viewer | Local CSV loading, playback/scrubbing, per-level X/Z map, health and controller samples |
 | Performance | Bounded gameplay frame-interval captures, CSV export, percentile and 1% low statistics |
 | Research tools | Isolated HID/update input capture, observed start gates, RNG/NPC/clock/callback observations, optional startup-seed control, save-byte/I/O comparison, scene-transition scripts and explicit divergence reports; disabled in ordinary play |
@@ -28,7 +29,7 @@ This is the independently maintained edition in [hjqcan/LASRecomp](https://githu
 
 See [import and versions](NSZ-and-v110.md), [photo/mod/randomizer details](photo-mods-randomizer.md), [mod format](resource-mods.md) and [workshop/replay/performance](workshop.md).
 
-The workshop, extended photo controls, mod presets and frame captures are development additions after the published Beta 5.1 package. Their scope and checks are recorded in [third/fourth-round validation](enhanced-stage34-validation.md). High-refresh simulation, deterministic game replay and real-time co-op remain research work.
+The workshop, extended photo controls, mod presets and frame captures are development additions after the published Beta 5.1 package. Their scope and checks are recorded in [third/fourth-round validation](enhanced-stage34-validation.md). The [local companion co-op prototype](local-coop.md) adds same-PC Link + BowWow play in isolated 1.0.0 sessions. High-refresh simulation, deterministic game replay and online co-op remain research work.
 
 The subsequent [research probes](research-capture.md) now measure final HID input, clock behavior and scene camera matrices in isolated saves. See the [2026-10-17 findings](research-findings-2026-10-17.md) for actual dual-version replay divergence and presentation-mode controls.
 
