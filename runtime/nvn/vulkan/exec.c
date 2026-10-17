@@ -3415,6 +3415,32 @@ static void draw_(CmdRec *r, bool indexed) {
     }
 }
 
+static void debug_texture_mips(NvnTexture *t, const TexBackend *b) {
+    const char *address = getenv("LARECOMP_DEBUG_TEXTURE_MIPS");
+    if (!address || !getenv("LARECOMP_SAVE_DIR") || !b || t->addr != strtoull(address, NULL, 16)) return;
+    static bool done;
+    if (done || b->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || b->layers != 1 || b->depth != 1 ||
+        b->samples != 1 || b->width > 4096 || b->height > 4096 || b->levels > 16) return;
+    done = true;
+    vk_end_pass();
+    for (uint32_t lv = 0; lv < b->levels; lv++) {
+        uint32_t w = level_extent(b->width, lv), h = level_extent(b->height, lv);
+        size_t bytes = (size_t)w * h * 4;
+        VkSpan out = vk_readback(bytes);
+        VkCommandBuffer cb = vk_cmd();
+        vk_full_barrier(cb);
+        VkBufferImageCopy copy = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, 0, 1},
+                                 .imageExtent = {w, h, 1}};
+        vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &copy);
+        renderer_flush();
+        char path[160];
+        snprintf(path, sizeof path, "build/texture_%llx_%u_%ux%u.r11g11b10", (unsigned long long)t->addr, lv, w, h);
+        FILE *f = fopen(path, "wb");
+        if (f) { fwrite(out.ptr, 1, bytes, f); fclose(f); }
+        LOG("[texture diagnostic] %s (%zu bytes)\n", path, bytes);
+    }
+}
+
 static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
     LOG("[draw] %s inst %llu mode %llu count %llu prog vs=%llx fs=%llx | vs cb %#x fs cb %#x | rt %d", indexed ? "e" : "a",
         (unsigned long long)(indexed ? r->x[6] : r->x[4]), (unsigned long long)r->x[0], (unsigned long long)r->x[2],
@@ -3461,6 +3487,7 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
         const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
         if (!t) { LOG("[draw]   tex%d: none\n", i); continue; }
+        debug_texture_mips(t, b);
         LOG("[draw]   tex%d: %p %ux%u f%#x lv %u -> %ux%u scale %.4f %.4f%s\n", i, (void *)t, t->width, t->height, t->format,
             b ? b->levels : 0, b ? b->width : 0, b ? b->height : 0, b ? b->sx : 0, b ? b->sy : 0, b && b->scalable ? " scalable" : "");
         if (getenv("LARECOMP_DEBUG_DATA")) {

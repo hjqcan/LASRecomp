@@ -318,6 +318,10 @@ translated fragment shader from `<hex-code-address>_fs.glsl` for translator
 comparisons. Overrides must preserve the translated descriptor bindings and
 interface locations; they are ignored without an explicit save directory.
 Keep captured game shaders outside the repository.
+`LARECOMP_DEBUG_TEXTURE_MIPS=<hex-guest-address>` dumps the matching single-layer
+R11G11B10 texture's raw mip levels on the next debug frame, once per process and
+only with an explicit save directory. This permits inspecting HDR values without
+the clipping applied by an ordinary PNG screenshot.
 
 Still required: broader island controls, graphics and audio correctness, day
 rollover, further repeated starts, and an extended gameplay run. Update and DLC compatibility remain
