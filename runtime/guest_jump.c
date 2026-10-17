@@ -1,5 +1,6 @@
 #include "guest_jump.h"
 #include "rt.h"
+#include <stdlib.h>
 
 typedef struct JumpPoint {
     uint64_t buffer, sp, pc;

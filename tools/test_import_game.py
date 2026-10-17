@@ -238,10 +238,10 @@ class InstallTests(unittest.TestCase):
         return (self.output / 'romfs/region_common/example.bin').read_bytes()
 
     def test_deep_candidate_import_and_replace(self):
-        deep = self.root / ('managed-' + 'x'*80) / ('candidate-' + 'y'*100)
+        deep = self.root / ('managed-' + 'x'*100) / ('candidate-' + 'y'*120)
         self.output = deep / 'content'
         self.assertGreater(len(str(self.output / 'romfs/region_common/example.bin')), 260)
-        self.addCleanup(shutil.rmtree, io_path(self.root / ('managed-' + 'x'*80)))
+        self.addCleanup(shutil.rmtree, io_path(self.root / ('managed-' + 'x'*100)))
         self.assertEqual(self.install()['game_version'], '1.0.0')
         self.assertEqual(io_path(self.output / 'romfs/region_common/example.bin').read_bytes(), b'original')
         self.assertEqual(self.install(True, True)['game_version'], '1.1.0')

@@ -63,14 +63,23 @@ with tempfile.TemporaryDirectory(prefix='installation-', dir=io_path(tempfile.ge
     (meta / 'current').write_bytes(current)
     outside = root / 'outside'; outside.mkdir(); (outside / 'keep').write_text('untouched')
     unsafe = meta / 'build-ffff'
+    linked, junction = False, False
     try:
         unsafe.symlink_to(outside, target_is_directory=True)
     except OSError:
-        pass
+        if os.name == 'nt':
+            env = dict(os.environ, LAS_TEST_JUNCTION=str(unsafe), LAS_TEST_TARGET=str(outside))
+            subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+                "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:LAS_TEST_JUNCTION -Target $env:LAS_TEST_TARGET | Out-Null"],
+                env=env, check=True)
+            linked, junction = True, True
     else:
+        linked = True
+    if linked:
         run('clear', code=1)
         assert (outside / 'keep').read_text() == 'untouched'
-        unsafe.unlink()
+        if junction: unsafe.rmdir()
+        else: unsafe.unlink()
     # Cloning an active installation keeps empty directories and independent source bytes.
     third = Path(run('stage', 'long-path')); run('complete')
     (third / 'exefs').mkdir(); (third / 'exefs/main').write_text('original module')

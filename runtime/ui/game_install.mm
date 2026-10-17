@@ -41,18 +41,26 @@ void checkpoint(const char *name) {
 #endif
 }
 bool link(const fs::path &path) {
-    if (fs::is_symlink(fs::symlink_status(path))) return true;
 #ifdef _WIN32
     DWORD attributes = GetFileAttributesW(path.c_str());
-    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return true;
-#endif
+    if (attributes != INVALID_FILE_ATTRIBUTES) return (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+    DWORD error = GetLastError();
+    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+        throw std::system_error((int)error, std::system_category(), "Cannot inspect installation path");
     return false;
+#else
+    return fs::is_symlink(fs::symlink_status(path));
+#endif
 }
 void plain(const fs::path &path) {
-    fs::path part;
-    for (const auto &item : fs::absolute(path)) {
-        part /= item;
-        need(!link(part), "Installation paths cannot contain links or reparse points");
+    // Iterating/reassembling \\?\C:\ components can lose the extended prefix
+    // in libstdc++. Check complete ancestor paths instead, including the leaf.
+    auto part = fs::absolute(host_path::logical(path)).lexically_normal();
+    for (;;) {
+        need(!link(host_path::io(part)), "Installation paths cannot contain links or reparse points");
+        auto parent = part.parent_path();
+        if (parent == part || parent.empty()) break;
+        part = parent;
     }
 }
 std::string read(const fs::path &path) {

@@ -115,6 +115,10 @@ jobs:
       - uses: actions/checkout@v4
       # MSYS2 UCRT64 with the packages tools/setup_windows.ps1 installs (minus the debugger / validation layers),
       # binutils for windres (the exe's icon), git for tools/test_translate.sh
+      - uses: actions/setup-python@v5
+        id: native_python
+        with:
+          python-version: '3.12'
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -147,8 +151,11 @@ jobs:
           build/test-thread-stack.exe
           sh tools/test_vk_texture_scale.sh
       - name: Recompiled guest nonlocal returns
+        env:
+          WINDOWS_TEST_PYTHON: ${{ steps.native_python.outputs.python-path }}
         run: |
-          python -m venv build/jump-test-env
+          test_python=$(cygpath -u "$WINDOWS_TEST_PYTHON")
+          "$test_python" -m venv build/jump-test-env
           build/jump-test-env/Scripts/python.exe -m pip install -q lz4 unicorn capstone
           build/jump-test-env/Scripts/python.exe tools/test_guest_jump.py
           GLSLC=glslc build/jump-test-env/Scripts/python.exe tools/test_shader_shared.py

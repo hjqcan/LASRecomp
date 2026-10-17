@@ -13,7 +13,7 @@ from game_catalog import GAMES
 class DoctorTests(unittest.TestCase):
     def test_published_and_pending_versions_are_distinct(self):
         with tempfile.TemporaryDirectory() as temp:
-            slot = Path(temp); meta = slot / '.installations'; meta.mkdir()
+            slot = Path(temp).resolve(); meta = slot / '.installations'; meta.mkdir()
             (meta / 'owner').write_bytes(b'LASINSTALL2\n')
             for index, release in enumerate(GAMES[0].releases, 1):
                 content = meta / f'build-{index}' / 'content'; (content / 'exefs').mkdir(parents=True)
@@ -41,7 +41,7 @@ class DoctorTests(unittest.TestCase):
 
     def test_legacy_and_invalid_records(self):
         with tempfile.TemporaryDirectory() as temp:
-            slot = Path(temp)
+            slot = Path(temp).resolve()
             self.assertEqual(installation_root(slot)[1]['state'], 'legacy')
             meta = slot / '.installations'; meta.mkdir()
             (meta / 'owner').write_bytes(b'LASINSTALL2\n')
