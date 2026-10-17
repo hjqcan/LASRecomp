@@ -1,4 +1,3 @@
-#include "../../photo.h"
 // Vulkan device, window, swapchain and presentation (counterpart of the window/present half of metal.m).
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -10,6 +9,7 @@
 #include <unistd.h>
 
 #include "../../paths.h"
+#include "../../photo.h"
 #include "../../settings.h"
 #include "../../ui/menu.h"
 #include "vk.h"

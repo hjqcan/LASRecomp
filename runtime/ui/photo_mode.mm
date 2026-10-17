@@ -1,5 +1,5 @@
 #include "../photo.h"
-#include "menu.h"
+#include "../paths.h"
 #include "imgui.h"
 #include <atomic>
 #include <cmath>
@@ -97,7 +97,7 @@ extern "C" const char *photo_mode_capture_path(void) {
     capture_pending = false;
     try {
         namespace fs = std::filesystem;
-        fs::path directory = "photos";
+        fs::path directory = fs::u8path(rt_data_root()) / "photos";
         if (fs::is_symlink(fs::symlink_status(directory))) throw std::runtime_error("Photo directory cannot be a link.");
         fs::create_directories(directory);
         std::time_t now = std::time(NULL); std::tm tm;
@@ -155,11 +155,4 @@ extern "C" void photo_mode_draw(float scale) {
     }
     if (!message.empty()) ImGui::TextWrapped("%s", message.c_str());
     ImGui::End();
-}
-extern "C" void photo_mode_tab(float, bool in_game) {
-    ImGui::TextWrapped("%s", "Freeze a scene, hide the game interface, adjust framing and color, and save a PNG in the photos folder.");
-    ImGui::TextWrapped("%s", "Enter photo mode with F2 during gameplay. Saved photos exclude the photo controls and FPS counter.");
-    ImGui::BeginDisabled(!in_game || !photo_mode_available());
-    if (ImGui::Button("Enter photo mode")) { menu_close(); photo_mode_toggle(); }
-    ImGui::EndDisabled();
 }

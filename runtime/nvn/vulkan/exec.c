@@ -1,4 +1,3 @@
-#include "../../photo.h"
 // Executes recorded NVN command lists with Vulkan (port of renderer.m; same structure, same behaviour).
 #include <SDL3/SDL_cpuinfo.h>
 #include <SDL3/SDL_timer.h>
@@ -17,6 +16,7 @@
 #endif
 
 #include "../../kernel.h"
+#include "../../photo.h"
 #include "shaders.h"
 #include "vk.h"
 #include "../renderer.h"
@@ -2748,6 +2748,7 @@ static void draw_(CmdRec *r, bool indexed) {
             composite = t0 && mirror_scene_size(t0->width, t0->height, st.rt.color[0]->width, st.rt.color[0]->height);
         }
         if (photo_mode_active()) {
+            // As on Metal: find the scene composite before dropping the HUD draws which follow it.
             bool photo_composite = composite;
             if (st.rt.ncolor && st.rt.color[0] && pr->fi->ntex) {
                 NvnTexture *source = shader_texture_object(1, &pr->fi->tex[0]);

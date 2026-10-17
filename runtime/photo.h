@@ -34,7 +34,6 @@ const char *photo_mode_capture_path(void);
 void photo_mode_capture_done(void);
 bool photo_mode_suppress_overlay(void);
 void photo_mode_draw(float scale);
-void photo_mode_tab(float scale, bool in_game);
 #ifdef __cplusplus
 }
 #endif

@@ -1,4 +1,3 @@
-#include "../photo.h"
 #include <sys/mman.h>
 #include "paths.h"
 #include "settings.h"
@@ -15,6 +14,7 @@
 #include <stdatomic.h>
 
 #include "nvn.h"
+#include "../photo.h"
 #include "renderer.h"
 #include "texpatch.h"
 
@@ -963,6 +963,9 @@ void backend_present(NvnTexture *t) {
     TexBackend *b = t->backend;
     if (b) b->presented = true;
     @autoreleasepool {
+        // Photos read the drawable back; ordinary play keeps Metal's framebuffer-only optimisation.
+        BOOL framebuffer_only = !photo_mode_active() && !getenv("LARECOMP_WINDOW_SHOT");
+        if (layer.framebufferOnly != framebuffer_only) layer.framebufferOnly = framebuffer_only;
         uint64_t nd0 = SDL_GetTicksNS();
         id<CAMetalDrawable> drawable = [layer nextDrawable];
         uint64_t nd = SDL_GetTicksNS() - nd0;
@@ -1168,7 +1171,7 @@ void ui_window_init(void) {
     dev = MTLCreateSystemDefaultDevice();
     layer.device = dev;
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-    layer.framebufferOnly = NO; // photos can be requested at runtime
+    layer.framebufferOnly = getenv("LARECOMP_WINDOW_SHOT") ? NO : YES;
 }
 
 SDL_Window *ui_window(void) { return window; }

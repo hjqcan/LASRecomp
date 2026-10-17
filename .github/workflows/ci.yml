@@ -50,6 +50,8 @@ jobs:
           cmake --install sdl-build
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp DEPS="$HOME/sdl3"
+      - name: Photo state tests
+        run: python3 tools/test_photo.py
       - name: FP/SIMD lowering vs a CPU emulator (a sample)
         run: |
           python3 -m venv tools/venv && tools/venv/bin/pip install -q unicorn capstone lz4
@@ -63,6 +65,8 @@ jobs:
         run: brew install sdl3 ffmpeg
       - name: App builds
         run: make -j"$(sysctl -n hw.ncpu)" build/lasrecomp
+      - name: Photo state tests
+        run: python3 tools/test_photo.py
 
   windows:
     runs-on: windows-2022

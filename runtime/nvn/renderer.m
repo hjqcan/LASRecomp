@@ -1,4 +1,3 @@
-#include "../photo.h"
 // Executes recorded NVN command lists with Metal.
 #include <pthread.h>
 #include <dirent.h>
@@ -13,6 +12,7 @@
 #include <SDL3/SDL_timer.h>
 
 #include "maxwell/shader.h"
+#include "../photo.h"
 #include "nvn.h"
 #include "renderer.h"
 
@@ -1631,6 +1631,7 @@ static void draw(CmdRec *r, bool indexed) {
             composite = t0 && mirror_scene_size(t0->width, t0->height, st.rt.color[0]->width, st.rt.color[0]->height);
         }
         if (photo_mode_active()) {
+            // The scene may be downscaled before this composite; the HUD follows it in the window image.
             bool photo_composite = composite;
             if (st.rt.ncolor && st.rt.color[0] && pr->fi->ntex) {
                 NvnTexture *source = shader_texture_object(1, &pr->fi->tex[0]);
