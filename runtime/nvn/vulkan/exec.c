@@ -2715,7 +2715,15 @@ static void build_compute(void *arg) {
                                                 .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main",
                                                 .pSpecializationInfo = &spec},
                                       .layout = cp->p.layout};
+    const char *fast_compile = getenv("LARECOMP_VK_FAST_COMPILE");
+    bool diagnostic = fast_compile && atoi(fast_compile);
+    if (diagnostic) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+    uint64_t started = SDL_GetTicksNS();
+    if (diagnostic) LOG("[compute] compiling %llx, %zu source bytes, driver optimization disabled\n",
+                        (unsigned long long)cp->p.code[0], strlen(cp->si->msl));
     VkResult r = vkCreateComputePipelines(g_vk.dev, g_vk.pcache, 1, &ci, NULL, &cp->pipe);
+    if (diagnostic) LOG("[compute] compiled %llx in %.1f ms, result %d\n", (unsigned long long)cp->p.code[0],
+                        (SDL_GetTicksNS() - started) / 1e6, r);
     atomic_fetch_add(&stat_compiles, 1);
     atomic_store(&cp->p.state, r == VK_SUCCESS ? 1 : 2);
     if (r != VK_SUCCESS) LOG("[compute] pipeline failed: %d\n", r);
