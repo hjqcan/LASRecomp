@@ -16,6 +16,7 @@ terminate = re.search(r'void plat_terminate\(int status\) \{[^}]+\}', host).grou
 device = (root / 'runtime/nvn/vulkan/device.c').read_text(encoding='utf-8')
 idle = device[device.index('static VkResult wait_device_idle('):device.index('\nstatic void recreate_swapchain(')]
 shutdown = device[device.index('static void quick_exit_handler('):device.index('\nvoid ui_window_init(')]
+debug = device[device.index('static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb('):device.index('\n// LARECOMP_VK_VALIDATION=')]
 harness = r'''
 #define _POSIX_C_SOURCE 200809L
 #include "platform.h"
@@ -23,6 +24,7 @@ harness = r'''
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <time.h>
 #ifdef _WIN32
@@ -62,7 +64,13 @@ static VkResult vkDeviceWaitIdle(int device) {
 }
 static void vk_pipeline_cache_save(void) { puts("pipeline cache saved"); }
 #define LOG(...) fprintf(stderr, __VA_ARGS__)
-''' + terminate + '\n' + idle + '\n' + shutdown + r'''
+#define VKAPI_ATTR
+#define VKAPI_CALL
+typedef unsigned VkBool32, VkDebugUtilsMessageSeverityFlagBitsEXT, VkDebugUtilsMessageTypeFlagsEXT;
+enum { VK_FALSE = 0, VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT = 0x100,
+       VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT = 0x1000 };
+typedef struct { const char *pMessage; } VkDebugUtilsMessengerCallbackDataEXT;
+''' + terminate + '\n' + idle + '\n' + shutdown + '\n' + debug + r'''
 static void cleanup(void) { puts("GPU cleanup entered"); fflush(stdout); }
 static void *quick_calls(void *arg) {
     (void)arg;
@@ -111,6 +119,11 @@ int main(int argc, char **argv) {
         exit_status = scenario == 7 ? 7 : 0;
         atexit(quick_exit_handler);
         return 0;
+    } else if (scenario >= 8 && scenario <= 11) {
+        VkDebugUtilsMessengerCallbackDataEXT message = { .pMessage = "validation warning" };
+        if (scenario == 11) for (unsigned i = 0; i < 501; i++) debug_cb(0x100, 0, &message, NULL);
+        message.pMessage = scenario == 8 ? "validation warning" : "validation error";
+        debug_cb(scenario == 8 ? 0x100 : 0x1000, 0, &message, NULL);
     } else return 99;
     puts("completed normally");
     return 0;
@@ -143,4 +156,15 @@ with tempfile.TemporaryDirectory(prefix='gpu-watchdog-') as temp:
             assert 'GPU idle wait failed' in run.stderr, run
         if scenario == 6:
             assert 'vkDeviceWaitIdle (exit)' in run.stderr, run
-print('PASS: cancelled/reused guards, blocked main/worker calls, concurrency, nesting, and real shutdown success/error/stall paths')
+    for scenario in (8, 9, 10, 11):
+        env = dict(os.environ)
+        env.pop('LARECOMP_VK_VALIDATION_STOP', None)
+        if scenario != 9:
+            env['LARECOMP_VK_VALIDATION_STOP'] = '1'
+        run = subprocess.run([str(exe), str(scenario)], env=env, capture_output=True, text=True, timeout=8)
+        if scenario in (8, 9):
+            assert run.returncode == 0 and 'completed normally' in run.stdout, run
+        else:
+            assert run.returncode == 1 and not run.stdout, run
+            assert 'validation error' in run.stderr and 'stopping at the first validation error' in run.stderr, run
+print('PASS: guard concurrency/cancellation, blocked calls, real shutdown paths, and opt-in validation fail-stop')

@@ -26,8 +26,16 @@ static VkDebugUtilsMessengerEXT messenger;
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev, VkDebugUtilsMessageTypeFlagsEXT type,
                                                const VkDebugUtilsMessengerCallbackDataEXT *d, void *user) {
     (void)type, (void)user;
-    static int n;
-    if (sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT && n++ < 500) LOG("[vk] %s\n", d->pMessage);
+    static atomic_uint n;
+    bool stop = sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT && getenv("LARECOMP_VK_VALIDATION_STOP");
+    if (sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT &&
+        (stop || atomic_fetch_add_explicit(&n, 1, memory_order_relaxed) < 500)) LOG("[vk] %s\n", d->pMessage);
+    if (stop) {
+        LOG("[vk] stopping at the first validation error before continuing GPU work\n");
+        fflush(stderr);
+        plat_terminate(1);
+        abort();
+    }
     return VK_FALSE;
 }
 
@@ -48,6 +56,10 @@ static void create_instance(void) {
                                .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers};
     VkResult r = vkCreateInstance(&ci, NULL, &g_vk.inst);
     if (r != VK_SUCCESS && validate) {
+        if (getenv("LARECOMP_VK_VALIDATION_STOP")) {
+            rt_fatal_msg("Required Vulkan validation layer is unavailable (%d); refusing an unvalidated test run\n", r);
+            plat_exit(1);
+        }
         LOG("[vk] validation layer unavailable (%d); continuing without\n", r);
         ci.enabledLayerCount = 0;
         ci.enabledExtensionCount--;
@@ -64,7 +76,12 @@ static void create_instance(void) {
             .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
             .pfnUserCallback = debug_cb};
-        if (f) f(g_vk.inst, &mi, NULL, &messenger);
+        VkResult result = f ? f(g_vk.inst, &mi, NULL, &messenger) : VK_ERROR_EXTENSION_NOT_PRESENT;
+        if (result != VK_SUCCESS && getenv("LARECOMP_VK_VALIDATION_STOP")) {
+            rt_fatal_msg("Required Vulkan validation callback is unavailable (%d)\n", result);
+            plat_exit(1);
+        }
+        if (result == VK_SUCCESS) LOG("[vk] validation layer enabled%s\n", getenv("LARECOMP_VK_VALIDATION_STOP") ? " (stop on error)" : "");
     }
 }
 
