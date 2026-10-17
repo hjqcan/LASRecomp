@@ -135,6 +135,7 @@ jobs:
           build/test-movie-source.exe build/movie-source-test
           clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe
           build/test-thread-stack.exe
+          sh tools/test_vk_texture_scale.sh
       # (GLSL only: the script's MSL comparison needs a reference commit that isn't in the history any more; REF=HEAD
       # just satisfies it. The GLSL half - every fuzzed translation compiles and validates - is the check)
       - name: Shader translator fuzz (GLSL)

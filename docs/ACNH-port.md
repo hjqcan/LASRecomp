@@ -164,6 +164,15 @@ Tests cover local/UTC round trips, a leap-day midnight boundary, dates beyond
 
 ## Verification gate
 
+Vulkan screen attachments include ACNH's uncompressed R8/R16F/RG16F buffers,
+not just textures with the compression hint. A captured 720p frame had a 960x540
+color attachment beside 640x360 depth; the clipped image produced a rectangular
+lighting boundary. `tools/test_vk_texture_scale.sh` checks matched physical
+extents, original dimensions for sampled images, and content-preserving late
+attachment classification. New color attachments also start zeroed, like depth,
+so unwritten regions cannot expose undefined VRAM. Game validation at the user's
+desktop resolution and the character-photo encoding step remains required.
+
 Completed: extraction and module inventory; generation of 242,778 functions;
 sorted, aligned, nonoverlapping function tables; strong import resolution;
 host save-file write/flush/close/reopen cycles (128 iterations), descriptor

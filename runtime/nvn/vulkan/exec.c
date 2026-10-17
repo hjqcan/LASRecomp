@@ -964,7 +964,7 @@ static void begin_pass(void) {
         ca[i] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         pass_color[i] = VK_FORMAT_UNDEFINED;
         if (!t) continue;
-        renderer_mark_gpu_owned(t);
+        vk_mark_render_target(t);
         VkImageView v = vk_view(t, &st.rt.cview[i], st.rt.has_cview[i], true, TEXTYPE_2D);
         TexBackend *b = t->backend;
         if (!v) continue;
@@ -1003,7 +1003,7 @@ static void begin_pass(void) {
     pass_depth = pass_stencil = VK_FORMAT_UNDEFINED;
     bool has_d = false, has_s = false;
     if (st.rt.depth) {
-        renderer_mark_gpu_owned(st.rt.depth);
+        vk_mark_render_target(st.rt.depth);
         VkImageView v = vk_view(st.rt.depth, &st.rt.dview, st.rt.has_dview, true, TEXTYPE_2D);
         TexBackend *b = st.rt.depth->backend;
         if (v && renderer_format_is_depth(st.rt.depth->format)) {
