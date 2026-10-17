@@ -196,3 +196,13 @@ are excluded from this clock. Window-image acquisition uses a finite wait and
 minimized windows are skipped. Mocked blocking calls test cancellation, thread
 and slot reuse, simultaneous calls, nesting and termination without exit handlers;
 no real driver hang is deliberately induced by these tests.
+
+A later player freeze retained a thread dump showing the main thread in
+`nvnSyncWait` / `renderer_wait_seq_timeout`, an alternate semaphore wait that
+had bypassed the watchdog. That path now also caps each driver wait at ten
+seconds and monitors both semaphore waiting and counter queries. Ordinary
+finite guest timeouts still return the NVN timeout result. An indefinite guest
+wait that exhausts the ten-second GPU limit terminates without cleanup. The
+regression executes these production paths with a mocked driver, including
+non-returning wait/query calls. This closes the observed protection gap; the
+underlying rendering/submission stall and sunset lighting remain under investigation.

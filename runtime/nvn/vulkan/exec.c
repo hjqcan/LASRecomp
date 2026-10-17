@@ -65,7 +65,9 @@ static bool in_pass;
 
 uint64_t vk_completed_seq(void) {
     uint64_t v = 0;
-    vkGetSemaphoreCounterValue(g_vk.dev, g_vk.timeline, &v);
+    VkResult r;
+    VK_WATCHDOG("vkGetSemaphoreCounterValue", 0, r = vkGetSemaphoreCounterValue(g_vk.dev, g_vk.timeline, &v));
+    VK_CHECK(r);
     return v;
 }
 
@@ -460,7 +462,19 @@ int renderer_wait_seq_timeout(uint64_t seq, uint64_t timeout) {
     if (!seq || vk_completed_seq() >= seq) return 0;
     VkSemaphoreWaitInfo wi = {.sType=VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount=1,
         .pSemaphores=&g_vk.timeline, .pValues=&seq};
-    VkResult r = vkWaitSemaphores(g_vk.dev, &wi, timeout);
+    // SyncWait can request UINT64_MAX. Do not let that bypass either the
+    // finite submission wait policy or the independent driver watchdog.
+    const uint64_t limit = 10ull * 1000000000ull;
+    VkResult r;
+    VK_WATCHDOG("vkWaitSemaphores (SyncWait)", seq,
+                r = vkWaitSemaphores(g_vk.dev, &wi, timeout < limit ? timeout : limit));
+    if (r == VK_TIMEOUT && timeout > limit) {
+        rt_fatal_msg("Vulkan GPU did not finish SyncWait submission %llu within 10 s; stopping without GPU cleanup\n",
+                     (unsigned long long)seq);
+        fflush(stderr);
+        plat_terminate(1);
+        abort();
+    }
     if (r == VK_TIMEOUT) return 2;
     if (r != VK_SUCCESS) FATAL("nvn: fence wait failed (%d)\n", r);
     cq_resolve_done(seq);
