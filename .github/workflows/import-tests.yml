@@ -38,6 +38,9 @@ jobs:
       - run: python tools/test_game_install.py
       - run: python tools/test_exit_status.py
       - run: python tools/test_title_profile.py
+      - run: python tools/test_sdk_start.py
+      - run: python tools/test_kernel_info.py
+      - run: python tools/test_tipc.py
       - run: python tools/test_game_profiles.py
       - run: python tools/test_shader_ldc.py
       - run: python tools/test_shader_shared.py

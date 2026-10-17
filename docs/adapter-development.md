@@ -12,6 +12,10 @@ configuration, compatibility requirements and acceptance checklist. Each release
 has its own `status` and `installable` flag; a development release cannot be
 installable. Releases may override the common initialization order, RomFS roots,
 runtime parameters and capability requirements when an update changes them.
+`runtime.nvn_major` is optional and defaults to 53 for existing definitions;
+`runtime.nvn_minor` remains required. These fields report the reviewed API
+version to guest code. They do not establish renderer compatibility: an
+unqualified major version must remain a development requirement.
 
 The shared core implements archive/container parsing, supported update assembly,
 generation, compilation, installation publication, graphics, sound, input, host

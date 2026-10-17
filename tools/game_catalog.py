@@ -117,7 +117,8 @@ def load_games(directory=ADAPTERS):
             relative_path(name)
             require('/' not in name, 'RomFS roots must be top-level names')
         runtime = data['runtime']
-        require(type(runtime['nvn_minor']) is int and runtime['nvn_minor'] > 0 and
+        require(type(runtime.get('nvn_major', 53)) is int and runtime.get('nvn_major', 53) > 0 and
+                type(runtime['nvn_minor']) is int and runtime['nvn_minor'] > 0 and
                 type(runtime['heap_scale']) is int and 1 <= runtime['heap_scale'] <= 16, 'Invalid runtime configuration')
         require(set(runtime['features']) <= {'las_extensions'}, 'Unknown adapter feature')
         require(data['acceptance'] and isinstance(data['requirements'], dict), 'Adapter needs requirements and acceptance checks')
@@ -131,7 +132,8 @@ def load_games(directory=ADAPTERS):
             require(0 < len(roots) <= 8, 'Release needs content roots')
             for root in roots:
                 relative_path(root); require('/' not in root, 'RomFS roots must be top-level names')
-            require(type(release_runtime['nvn_minor']) is int and release_runtime['nvn_minor'] > 0 and
+            require(type(release_runtime.get('nvn_major', 53)) is int and release_runtime.get('nvn_major', 53) > 0 and
+                    type(release_runtime['nvn_minor']) is int and release_runtime['nvn_minor'] > 0 and
                     type(release_runtime['heap_scale']) is int and 1 <= release_runtime['heap_scale'] <= 16 and
                     set(release_runtime['features']) <= {'las_extensions'}, 'Invalid release runtime configuration')
             require(all(isinstance(k, str) and isinstance(v, str) for k, v in requirements.items()), 'Invalid release requirement')
@@ -274,7 +276,8 @@ def render_c_catalog(games=None):
             lines.append(f'     "{code_identity(game, release)}", {{{roots}}}, {len(release.romfs_roots)}, '
                          f'{release.content["minimum_files"]}, {str(release.content["image_satisfies_count"]).lower()}, '
                          f'{release.runtime["nvn_minor"]}, {release.runtime["heap_scale"]}, '
-                         f'{str("las_extensions" in release.runtime["features"]).lower()}' + '},')
+                         f'{str("las_extensions" in release.runtime["features"]).lower()}, '
+                         f'{release.runtime.get("nvn_major", 53)}' + '},')
     return '\n'.join(lines + ['};', ''])
 
 

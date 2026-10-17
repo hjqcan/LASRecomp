@@ -75,7 +75,7 @@ class AdapterContract(unittest.TestCase):
             from game_catalog import PROFILE_INPUTS, SHARED_GENERATOR_INPUTS
             for name in PROFILE_INPUTS['las'] + SHARED_GENERATOR_INPUTS:
                 target = root / name; target.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / name, target)
-            las, acnh = GAMES
+            las, acnh = (next(game for game in GAMES if game.id == key) for key in ('las', 'acnh'))
             las_before = code_identity(las, las.releases[0], root)
             acnh_before = code_identity(acnh, acnh.releases[0], root)
             with (root / 'tools/patches.py').open('ab') as stream: stream.write(b'\n# changed LAS patch\n')

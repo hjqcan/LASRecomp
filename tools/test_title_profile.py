@@ -1,6 +1,7 @@
 """Compile and exercise native adapter selection with synthetic NSO headers."""
 from pathlib import Path
 import os
+import json
 import shlex
 import shutil
 import subprocess
@@ -14,25 +15,28 @@ HARNESS=r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+@DEVICE_INTEGER@
+@EXPECTED@
 int main(int argc,char **argv) {
-    assert(argc==4 && !title_is_las() && !*title_profile_current()->key);
-    const char *keys[]={"las","las","acnh"}, *versions[]={"1.0.0","1.1.0","1.0.0"};
-    unsigned counts[]={2,2,3};
+    assert(argc==(int)title_profile_count()+1 && !title_is_las() && !*title_profile_current()->key);
+    assert(device_integer(0)==53);
     char why[256],path[2048],id[65];
-    for(int i=0;i<3;i++) {
+    for(int i=0;i<argc-1;i++) {
         const TitleProfile *before=title_profile_current();
         const TitleProfile *p=title_profile_validate(argv[i+1],why,sizeof why);
         assert(p && title_profile_current()==before);
         assert(!strcmp(p->key,keys[i]) && !strcmp(p->version,versions[i]) && p->module_count==counts[i]);
         assert(title_profile_select(argv[i+1],why,sizeof why));
-        assert(title_is_las()==(i<2));
-        assert(p->init_order[0]==1 && p->init_order[p->module_count-1]==0);
+        assert(title_is_las()==las[i]);
+        for(unsigned j=0;j<p->module_count;j++) assert(p->init_order[j]==orders[i][j]);
+        assert(p->nvn_major==majors[i] && device_integer(0)==majors[i] && device_integer(1)==minors[i]);
         snprintf(path,sizeof path,"%s/exefs/sdk",argv[i+1]);
         assert(title_build_id(path,id) && strlen(id)==64);
-        FILE *f=fopen(path,"r+b"); assert(f); fseek(f,0x5f,SEEK_SET); fputc(1,f); fclose(f);
+        FILE *f=fopen(path,"r+b"); assert(f); fseek(f,0x5f,SEEK_SET); int old=fgetc(f);
+        fseek(f,0x5f,SEEK_SET); fputc(old^0x80,f); fclose(f);
         assert(!title_profile_validate(argv[i+1],why,sizeof why));
         assert(strstr(why,"sdk") && title_profile_current()==p);
-        f=fopen(path,"r+b"); assert(f); fseek(f,0x5f,SEEK_SET); fputc(0,f); fclose(f);
+        f=fopen(path,"r+b"); assert(f); fseek(f,0x5f,SEEK_SET); fputc(old,f); fclose(f);
         snprintf(path,sizeof path,"%s/native-entry.inc",argv[i+1]);
         assert(title_profile_write_entry(p,path,why,sizeof why));
     }
@@ -53,7 +57,21 @@ with tempfile.TemporaryDirectory() as temp:
                 header=bytearray(0x60);header[:4]=b'NSO0';header[0x40:0x60]=bytes.fromhex(module.build_id)
                 (exefs/module.name).write_bytes(header)
             installs.append(install)
-    harness=root/'test.c';harness.write_text(HARNESS)
+    pairs=[(game,release) for game in GAMES for release in game.releases]
+    expected=''
+    for name,values,typ in (
+        ('keys',[json.dumps(g.id) for g,r in pairs],'const char *'),
+        ('versions',[json.dumps(r.version) for g,r in pairs],'const char *'),
+        ('counts',[str(len(r.modules)) for g,r in pairs],'unsigned'),
+        ('las',[str('las_extensions' in r.runtime['features']).lower() for g,r in pairs],'bool'),
+        ('majors',[str(r.runtime.get('nvn_major',53)) for g,r in pairs],'unsigned'),
+        ('minors',[str(r.runtime['nvn_minor']) for g,r in pairs],'unsigned')):
+        expected+=f'static {typ} {name}[]={{'+','.join(values)+'};\n'
+    orders=[','.join(str(next(i for i,m in enumerate(r.modules) if m.name==name)) for name in r.init_order) for g,r in pairs]
+    expected+='static unsigned orders[][TITLE_MAX_MODULES]={{'+'},{'.join(orders)+'}};\n'
+    objects=(ROOT/'runtime/nvn/objects.c').read_text(encoding='utf-8')
+    device_integer=objects[objects.index('static uint32_t device_integer('):objects.index('\nNVN(nvnDeviceBuilderSetDefaults)')]
+    harness=root/'test.c';harness.write_text(HARNESS.replace('@EXPECTED@',expected).replace('@DEVICE_INTEGER@',device_integer))
     executable=root/('test.exe' if os.name=='nt' else 'test')
     cc=shlex.split(os.environ.get('CC','clang'))
     assert shutil.which(cc[0]),'A C compiler is required'

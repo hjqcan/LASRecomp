@@ -22,6 +22,7 @@ typedef struct {
     bool image_satisfies_count;
     unsigned nvn_minor, heap_scale;
     bool las_extensions;
+    unsigned nvn_major;
 } TitleProfile;
 
 #ifdef __cplusplus

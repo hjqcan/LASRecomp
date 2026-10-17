@@ -76,7 +76,7 @@ def main():
         copy(root/name, name)
     for name in ('enhanced.md', 'enhanced-beta5.1-validation.md', 'enhanced-beta5.2-validation.md', 'NSZ-and-v110.md',
                  'photo-mods-randomizer.md', 'photo-mode.md', 'resource-mods.md',
-                 'multi-game.md', 'adapter-development.md', 'ACNH-port.md',
+                 'multi-game.md', 'adapter-development.md', 'ACNH-port.md', 'pokemon-za-port.md',
                  'local-coop.md', 'workshop.md', 'enhanced-stage34-validation.md',
                  'research-capture.md', 'research-findings-2026-10-17.md',
                  'research-update-boundary.md', 'research-update-validation-2026-10-17.md',

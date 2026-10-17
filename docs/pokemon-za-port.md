@@ -1,8 +1,9 @@
 # Pokemon Legends: Z-A integration probe
 
-Status on 2026-10-17: **unregistered and not playable in this runtime**. This is
-third-title framework evidence, not a completed port. No Z-A release has been
-added to the installable catalog. Tests used local files on Windows, starting
+Status on 2026-10-18: **base 1.0.0 fully compiled; native startup blocked by virtual memory support; not playable**.
+This is third-title framework evidence, not a completed port. No Z-A release has
+been added to the installable catalog. Update 2.0.2 remains an inventory-only
+input. Tests used local files on Windows, starting
 from enhanced commit `871dc34` plus the archive-probe/NCZ changes accompanying
 this document. No game files, generated code, libraries or keys are included.
 
@@ -23,9 +24,9 @@ The main image sizes are 100,114,432 and 102,215,680 bytes; the SDK image is
 12,967,936 bytes. An additional supplied DLC NSP could not be read without a
 local header key. DLC loading was not tested.
 
-## Framework results
+## Initial framework results (2026-10-17)
 
-- Normal archive inspection rejected the unregistered application before
+- Before adapter registration, normal archive inspection rejected the application before
   installation. The developer probe read both complete executable inventories
   into a separate test directory and produced deliberately incomplete adapter
   templates. It did not change existing installations, settings or saves.
@@ -39,11 +40,12 @@ local header key. DLC loading was not tested.
   chunks), base SDK (49,410 functions, 122 chunks) and update main (288,324
   functions, 964 chunks). The update used the newly frozen Windows generator.
   Diagnostic bases were `0x7000000000` for main and `0x7008000000` for SDK;
-  these are not an approved runtime layout.
+  these were diagnostic bases, subsequently retained by the development adapter.
 - Six generated translation units compiled with the packaged Zig compiler and
   current runtime headers: base main chunks 000/463/926, SDK chunks 000/115 and
   the SDK function table. This was an object sample, not a complete linked game
-  library. No game startup or gameplay was attempted.
+  library. At that stage no game startup or gameplay was attempted; the native
+  follow-up below records the subsequent full build and startup result.
 - Archive probe, NSZ/NSP/XCI imports, catalog and adapter contract tests passed.
   The frozen-helper regression imported both existing adapters using synthetic
   NCZs with 170 counter ranges and passed its real tiny ARM64 generation check.
@@ -79,10 +81,10 @@ without a separate atomic library. Cross-compiled AArch64 Clang output uses
 native LL/SC. Actual macOS/Linux execution still requires CI validation; it
 was not performed on this Windows host.
 
-The full Windows runtime builds, base main chunks 000/464/928 compile with the
-packaged compiler, and native nonlocal-return, adapter identity and production
-build/cancel/resume/publication tests pass. A complete Z-A game library and
-startup/gameplay/save checks remain outstanding.
+The paired-exclusive step built the full Windows runtime, compiled base main
+chunks 000/464/928 with the packaged compiler, and passed native nonlocal-return,
+adapter identity and production build/cancel/resume/publication tests. Full
+Z-A linking and startup were tested in the subsequent step below.
 
 Reservations retain the runtime's existing **value-based** model: a write that
 restores identical bits (ABA) is not detected. This limitation is recorded in
@@ -95,10 +97,96 @@ save identities and the module-table ABI remain unchanged.
 The implementation follows the pair access and atomic-store requirements in
 the [Arm instruction reference](https://documentation-service.arm.com/static/67e40f3398aa3c3b6eea6a85).
 
-Next review the module layout and initialization, NVN version,
-RomFS rules, required HLE/services and update assembly. Only then register a
-development adapter and proceed to complete linking, strict startup diagnostics,
-graphics/audio/controls, saving and reopening, repeated starts and extended play.
+## Native adapter and loader follow-up
+
+Base 1.0.0 now has a development-only descriptor. Its main module occupies about
+100 MiB, so the SDK is placed at `0x7008000000`, after main's complete image and
+BSS; the existing LAS SDK base would overlap it. Main depends on `nnSdk.nss`,
+and initialization runs SDK before main. Its RomFS has 22 files (4,276,739,531
+bytes) under `arc`, `audio` and `system`; all three roots and the file count are
+required. A real standalone development import passed those content checks.
+
+Reading the SDK's static NVN fallback function table and emulating its actual
+`DeviceGetInteger` version queries returned **55.15**. Existing titles retain
+their default major 53. A new optional major-version descriptor field feeds the
+same shared query handler. NVN 55 remains an unavailable qualification capability,
+so changing a release flag alone cannot enable normal installation. The adapter
+does not claim that the renderer already implements every NVN 55 operation.
+
+The executable modules use `DT_RELR`, which neither the previous generator nor
+native loader handled. Their compact tables identify 346,629 main and 14,682
+SDK relative relocations. Both paths now decode address/bitmap entries and
+implicit addends, alongside ordinary RELA entries. Native validation completes
+before writing any RELR target. Tests cover malformed tables, unaligned even
+targets, overflow/range errors, bitmap chains and RELA coexistence, following
+the [ELF relative relocation format](https://gabi.xinuos.com/elf/06-reloc.html#relative-relocation-table).
+Fresh generation discovers 280,731 main functions and 49,412 SDK functions;
+main still has no unsupported-instruction diagnostics.
+
+The remaining SDK `STG` matches the tagged-stack cleanup guarded by `stage2`
+and `mteTaggedFrame` in LLVM's
+[unwinder](https://github.com/llvm/llvm-project/blob/llvmorg-20.1.0/libunwind/src/DwarfInstructions.hpp).
+The [CIE parser](https://github.com/llvm/llvm-project/blob/llvmorg-20.1.0/libunwind/src/DwarfParser.hpp)
+sets that flag for augmentation `G`. An inventory of the supplied base main,
+update main and SDK unwind tables found only `zR` and `zPLR`: respectively
+222,376, 228,334 and 32,097 FDEs, with zero tagged frames. This supports attempting
+startup with the trap retained. It does not certify dynamically registered
+unwind metadata or add MTE emulation.
+
+## Full native build and startup (2026-10-18)
+
+A private development package built the complete base game with its bundled
+generator and Zig compiler: **1,052 objects, 302,430,720-byte DLL, exit 0**, in
+about 562 seconds. Native identity validation accepted the library. This READY
+result certifies the build pipeline, not gameplay. Generated code and the DLL
+stay outside the repository.
+
+Strict startup then exposed three shared runtime gaps, now covered by synthetic
+native tests:
+
+- The SDK exports the five-argument `nn::init::Start` variant. Entry selection
+  now supports both variants, passes the third callback in `x4`, and finalizes
+  modules in reverse initialization order without duplicating `DT_FINI` arrays.
+  The legacy four-argument path remains preferred when both symbols exist.
+- `GetInfo(28)` now returns the actual alias-extra size, zero for this host
+  layout, with invalid-handle and invalid-subtype errors. The meaning and
+  validation follow the [kernel implementation](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/source/svc/kern_svc_info.cpp).
+- Service-manager requests use TIPC. The shared codec now decodes its compact
+  unaligned payload and result-first response, PID, copy/move handles, returned
+  objects and A/B/W map-alias buffers. Object handles precede explicit move
+  handles as consumed by the [libnx TIPC client](https://github.com/switchbrew/libnx/blob/master/nx/include/switch/sf/tipc.h).
+  Bounds are checked against the 256-byte TIPC command buffer. CMIF requests,
+  domain conversion, object responses and object close retain regression coverage.
+
+After these fixes, startup reaches `nninitStartup` and opens several SDK
+services. Some applet commands still use logged default responses, and `ectx:aw`
+has only a logging stub; service compatibility is not qualified. Startup stops
+in `StandardAllocator::Initialize` at SDK offset `0x134154`:
+the game passes a null backing buffer and requests **`0x300000000` (12 GiB)**
+from main caller `0x19e8760`. The SDK calls `IsVirtualAddressMemoryEnabled`,
+whose implementation checks `GetInfo(16)` (`SystemResourceSize`). That value
+is zero in the current runtime, so the SDK rejects this allocator mode.
+
+The requested size is a virtual address reservation, not evidence that the
+game needs 12 GiB of physical RAM. The current alias region is only 4 GiB, and
+the existing physical-map handlers do not supply the partial unmap and resource
+accounting needed by this allocator. Enabling it requires a reviewed address
+layout and mapping lifecycle, including concurrent mappings, subrange removal,
+zeroing/reuse and reset. Returning a nonzero resource size alone is insufficient.
+`kernel.virtual_memory: dynamic_physical` is therefore an unavailable adapter
+requirement, independently of the still-unqualified NVN 55 requirement.
+
+No title screen, rendered game frame, controls, graphics/audio qualification,
+save/reopen or extended play has been reached. The final diagnostic run exited
+with SDK assertion status 3; it is not a successful startup. Update 2.0.2 remains
+outside the development adapter, and no playable release/package was published.
+
+Final Windows checks passed for the full runtime build, frozen helper imports
+for all three adapters, RELR decoding, both SDK entry variants, kernel information,
+TIPC/CMIF, catalog and native title identity, adapter contracts/doctor, managed
+game profiles, save mount concurrency and save commit failure/retry handling.
+These save tests use synthetic data; they do not establish Z-A save support.
+Linux/macOS checks were added to CI but were not executed on this host.
 
 ## Reproduction
 
@@ -117,5 +205,10 @@ python tools/test_xci_import.py -v
 python tools/test_game_catalog.py -v
 python tools/test_adapter_contract.py -v
 python tools/test_exclusive_pairs.py -v
+python tools/test_relr.py -v
+python tools/test_sdk_start.py
+python tools/test_kernel_info.py
+python tools/test_tipc.py
+python tools/adapter.py doctor --game pokemon_za
 python tools/test_frozen_adapters.py <fresh-lasgen-executable>
 ```

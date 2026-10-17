@@ -145,6 +145,10 @@ HLE_FUNC("_ZN2nn3mem17StandardAllocator10InitializeEPvm", heap_std_init) {
 
 HLE_FUNC("_ZN2nn3mem17StandardAllocator10InitializeEPvmb", heap_std_init_b) {
     uint64_t lr = c->x[30], size = c->x[2];
+    if (ENV("LARECOMP_LOG_HEAPS"))
+        LOG("[heaps] initialize standard allocator object=%llx buffer=%llx size=%llx flags=%llx from lr %llx\n",
+            (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)size,
+            (unsigned long long)c->x[3], (unsigned long long)lr);
     CALL("_ZN2nn3mem17StandardAllocator10InitializeEPvmb");
     if (ENV("LARECOMP_LOG_HEAPS"))
         LOG("[heaps] standard allocator %#llx bytes (b) from lr %llx\n", (unsigned long long)size, (unsigned long long)lr);

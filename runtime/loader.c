@@ -4,12 +4,14 @@
 
 #include "rt.h"
 #include "title_profile.h"
+#include "relr.h"
 
 Module g_modules[TITLE_MAX_MODULES];
 int g_nmodules;
 
 enum { DT_NULL = 0, DT_PLTRELSZ = 2, DT_HASH = 4, DT_STRTAB = 5, DT_SYMTAB = 6, DT_RELA = 7, DT_RELASZ = 8,
-       DT_JMPREL = 23, DT_INIT_ARRAY = 25, DT_FINI_ARRAY = 26, DT_INIT_ARRAYSZ = 27, DT_FINI_ARRAYSZ = 28 };
+       DT_JMPREL = 23, DT_INIT_ARRAY = 25, DT_FINI_ARRAY = 26, DT_INIT_ARRAYSZ = 27, DT_FINI_ARRAYSZ = 28,
+       DT_RELRSZ = 35, DT_RELR = 36, DT_RELRENT = 37 };
 enum { R_ABS64 = 257, R_GLOB_DAT = 1025, R_JUMP_SLOT = 1026, R_RELATIVE = 1027 };
 
 typedef struct { uint32_t name; uint8_t info, other; uint16_t shndx; uint64_t value, size; } Elf64Sym;
@@ -149,12 +151,20 @@ static uint64_t resolve(Module *m, uint32_t symidx) {
 
 static void relocate(Module *m) {
     uint64_t rela = 0, relasz = 0, jmprel = 0, pltsz = 0;
+    uint64_t relr = 0, relrsz = 0, relrent = 0;
+    unsigned relr_tags = 0;
     for (uint64_t *d = (uint64_t *)m->dynamic; d[0] != DT_NULL; d += 2) {
         if (d[0] == DT_RELA) rela = m->base + d[1];
         if (d[0] == DT_RELASZ) relasz = d[1];
         if (d[0] == DT_JMPREL) jmprel = m->base + d[1];
         if (d[0] == DT_PLTRELSZ) pltsz = d[1];
+        if (d[0] == DT_RELR) { relr = d[1]; relr_tags |= 1; }
+        if (d[0] == DT_RELRSZ) { relrsz = d[1]; relr_tags |= 2; }
+        if (d[0] == DT_RELRENT) { relrent = d[1]; relr_tags |= 4; }
     }
+    if (relr_tags && (relr_tags != 7 ||
+        !relr_apply((uint8_t *)(uintptr_t)m->base, m->size, m->base, relr, relrsz, relrent)))
+        FATAL("%s: invalid packed relative relocations\n", m->name);
     int unresolved = 0;
     for (int pass = 0; pass < 2; pass++) {
         Elf64Rela *r = (Elf64Rela *)(pass ? jmprel : rela);
