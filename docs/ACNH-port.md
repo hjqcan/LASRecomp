@@ -164,6 +164,18 @@ Tests cover local/UTC round trips, a leap-day midnight boundary, dates beyond
 
 ## Verification gate
 
+Compute LDS/STS instructions use workgroup storage on Vulkan and Metal. NVN's
+control block supplies its byte size at `0x754`, after the three local dimensions.
+Tracing the original parser and compute setup confirmed that this field reaches
+the QMD shared-memory size (offset `0x44`, low 18 bits), whose layout is also
+documented in [NVIDIA's Maxwell QMD definitions](https://github.com/NVIDIA/open-gpu-doc/blob/master/classes/compute/clb1c0qmd.h).
+Byte and halfword stores use atomic compare/exchange to preserve simultaneous
+writes to neighboring bytes. Compute cache keys include these configuration
+values. `tools/test_shader_shared.py` executes translated bodies with concurrent
+workgroups, covers signed loads, 64/128-bit vectors, overlapping registers and
+bounds, and optionally compiles every GLSL shader with `GLSLC`. Metal source is
+checked for workgroup storage but has not been executed on a Mac in this run.
+
 The JPEG encoder's error recovery uses guest `setjmp`/`longjmp`. The generator
 recognizes named entry points and AArch64 PLT calls and keeps a host checkpoint
 in each caller. After the guest restores its own registers, dispatch unwinds the

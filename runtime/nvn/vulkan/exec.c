@@ -2627,20 +2627,26 @@ static void build_compute(void *arg) {
     if (r != VK_SUCCESS) LOG("[compute] pipeline failed: %d\n", r);
 }
 
-static struct CsEnt { uint64_t addr; CsProg *cp; } g_cs_tab[256];  // compute programs by code address
+static struct CsEnt { uint64_t addr; uint32_t config[4]; CsProg *cp; } g_cs_tab[256];
 
 static CsProg *compute_program(NvnProgram *np) {
     NvnShaderStage *ss = &np->stages[5];
     if (!ss->code_addr) return NULL;
+    // NVN control: local dimensions at 0x748, then shared-memory bytes at 0x754.
+    uint32_t config[4] = {1, 1, 1, 0};
+    if (ss->control) memcpy(config, ss->control + 0x748, sizeof config);
+    for (int i = 0; i < 3; i++) if (!config[i]) config[i] = 1;
     struct CsEnt *tab = g_cs_tab;
     int n = g_cs_n;
-    for (int i = 0; i < n; i++) if (tab[i].addr == ss->code_addr) return tab[i].cp;
+    for (int i = 0; i < n; i++)
+        if (tab[i].addr == ss->code_addr && !memcmp(tab[i].config, config, sizeof config)) return tab[i].cp;
     CsProg *cp = calloc(1, sizeof *cp);
-    if (n < 256) { tab[n].addr = ss->code_addr; tab[n].cp = cp; g_cs_n = n + 1; }
+    if (n < 256) { tab[n].addr = ss->code_addr; memcpy(tab[n].config, config, sizeof config); tab[n].cp = cp; g_cs_n = n + 1; }
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
     ShaderKey k = {0};
     k.glsl = 1;
+    k.shared_memory = config[3];
     pthread_mutex_lock(&translate_lock);
     cp->si = maxwell_translate((const uint8_t *)(uintptr_t)ss->code_addr, ss->const_offset ? ss->const_offset : 0x10000, STAGE_COMPUTE, &k);
     pthread_mutex_unlock(&translate_lock);
@@ -2650,10 +2656,7 @@ static CsProg *compute_program(NvnProgram *np) {
         atomic_store(&cp->p.state, 2);
         return cp;
     }
-    for (int i = 0; i < 3; i++) {
-        cp->local[i] = ss->control ? *(const uint32_t *)(ss->control + 0x748 + 4 * i) : 1;
-        if (!cp->local[i]) cp->local[i] = 1;
-    }
+    memcpy(cp->local, config, sizeof cp->local);
     save_glsl(cp->si->msl, ss->code_addr, "cs");
     run_job(build_compute, cp);
     return cp;

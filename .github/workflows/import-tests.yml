@@ -37,6 +37,7 @@ jobs:
       - run: python tools/test_title_profile.py
       - run: python tools/test_game_profiles.py
       - run: python tools/test_shader_ldc.py
+      - run: python tools/test_shader_shared.py
       - if: runner.os != 'Windows'
         run: clang -std=gnu11 -O1 -Iruntime tools/test_touch.c -o test-touch && ./test-touch
       - if: runner.os != 'Windows'

@@ -21,6 +21,7 @@
 //  - clip space exactly as the MSL output (key->flip_y / depth_minus_one epilogue unchanged): the renderer uses
 //    a negative-height viewport so Vulkan matches Metal's y-up NDC, clip z in [0, 1].
 //  - compute: `layout(local_size_x_id = 0, local_size_y_id = 1, local_size_z_id = 2) in;` (spec constants 0..2).
+//    LDS/STS use a `shared uint` word array sized by key->shared_memory, with atomic sub-word writes.
 //  - extensions: GL_EXT_shader_explicit_arithmetic_types_int64 (64-bit carry / address math -> shaderInt64),
 //    GL_KHR_shader_subgroup_basic/_shuffle/_shuffle_relative (SHFL, FSWZADD lane: fragment/compute subgroup
 //    support), GL_EXT_texture_shadow_lod (explicit-LOD array / cube shadow lookups).
@@ -45,6 +46,7 @@ typedef struct {
                             // after flip_y: keys without it hash as before - shader caches stay valid.)
     uint32_t vs_out_mask;   // fragment: varyings the vertex shader provides
     uint8_t glsl;           // emit Vulkan GLSL (see the contract above) instead of MSL
+    uint32_t shared_memory; // compute: bytes shared by a workgroup, from the NVN control block
 } ShaderKey;
 
 typedef struct {

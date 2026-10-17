@@ -142,6 +142,7 @@ jobs:
           python -m venv build/jump-test-env
           build/jump-test-env/Scripts/python.exe -m pip install -q lz4 unicorn capstone
           build/jump-test-env/Scripts/python.exe tools/test_guest_jump.py
+          GLSLC=glslc build/jump-test-env/Scripts/python.exe tools/test_shader_shared.py
       # (GLSL only: the script's MSL comparison needs a reference commit that isn't in the history any more; REF=HEAD
       # just satisfies it. The GLSL half - every fuzzed translation compiles and validates - is the check)
       - name: Shader translator fuzz (GLSL)

@@ -78,6 +78,7 @@ typedef struct {
     bool glsl;               // emit Vulkan GLSL: dialect-specific constructs here, the rest via glsl_rewrite()
     bool uses_gmem_store;    // STG present: the gmem buffer is not readonly
     uint32_t cbuf_need[18];  // highest constant vec4 index + 1 per cbuf (array size of the GLSL block)
+    uint32_t shared_words;  // LDS/STS workgroup storage, separate from thread-private local memory
 } Ctx;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
@@ -1615,6 +1616,47 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             }
         }
         sp(&c->body, "    }\n");
+    } else if (OPM(0xef48000000000000ull, 0xfff8000000000000ull) || OPM(0xef58000000000000ull, 0xfff8000000000000ull)) {  // LDS / STS
+        bool store = bits(w, 52, 1);
+        int size = (int)bits(w, 48, 3);
+        uint32_t bytes = c->key ? c->key->shared_memory : 0;
+        if (c->stage != STAGE_COMPUTE || !bytes || bytes > 96 * 1024 || size > 6) {
+            fail(c, "shared memory stage/size unsupported (%u bytes, access %d)", bytes, size);
+        } else {
+            c->shared_words = (bytes + 3) / 4;
+            int nw = size == 5 ? 2 : size == 6 ? 4 : 1;
+            uint32_t off = (uint32_t)sbits(w, 20, 24);
+            sp(&c->body, "    { uint sa = %s + %uu; uint si = sa >> 2;\n", R(a), off);
+            if (size < 4) sp(&c->body, "      uint sh = (sa & %uu) * 8u;\n", size < 2 ? 3u : 2u);
+            for (int k = 0; k < nw; k++) {
+                int r = d + k < RZ ? d + k : RZ;
+                if (!store && r == RZ) break;
+                sp(&c->body, "      { uint i = si + %du;\n", k);
+                if (!store) {
+                    c->reg_used[r] = 1;
+                    if (c->glsl) sp(&c->body, "        uint v = i < %uu ? atomicAdd(smem[i], 0u) : 0u;\n", c->shared_words);
+                    else sp(&c->body, "        uint v = i < %uu ? atomic_load_explicit(&smem[i], memory_order_relaxed) : 0u;\n", c->shared_words);
+                    static const char *const ext[] = {"(v >> sh) & 0xFFu", "uint(int(char((v >> sh) & 0xFFu)))",
+                        "(v >> sh) & 0xFFFFu", "uint(int(short((v >> sh) & 0xFFFFu)))", "v", "v", "v"};
+                    sp(&c->body, "        r%d = %s;\n", r, ext[size]);
+                } else {
+                    sp(&c->body, "        if (i < %uu) {\n", c->shared_words);
+                    if (size >= 4) {
+                        if (c->glsl) sp(&c->body, "          atomicExchange(smem[i], %s);\n", R(r));
+                        else sp(&c->body, "          atomic_store_explicit(&smem[i], %s, memory_order_relaxed);\n", R(r));
+                    } else {
+                        uint32_t mask = size < 2 ? 0xFFu : 0xFFFFu;
+                        sp(&c->body, "          uint mask = 0x%xu << sh; uint v = (%s << sh) & mask;\n", mask, R(r));
+                        // Neighboring lanes may write different bytes of the same word. Preserve their writes.
+                        if (c->glsl) sp(&c->body, "          uint old = atomicAdd(smem[i], 0u); for (;;) { uint seen = atomicCompSwap(smem[i], old, (old & ~mask) | v); if (seen == old) break; old = seen; }\n");
+                        else sp(&c->body, "          uint old = atomic_load_explicit(&smem[i], memory_order_relaxed); while (!atomic_compare_exchange_weak_explicit(&smem[i], &old, (old & ~mask) | v, memory_order_relaxed, memory_order_relaxed)) {}\n");
+                    }
+                    sp(&c->body, "        }\n");
+                }
+                sp(&c->body, "      }\n");
+            }
+            sp(&c->body, "    }\n");
+        }
     } else if (OPM(0xef10000000000000ull, 0xfff8000000000000ull)) {  // SHFL
         int mode = (int)bits(w, 30, 2);
         char bb[32];
@@ -1866,6 +1908,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     int set = stage == STAGE_FRAGMENT ? 1 : 0;
     Str s = {0};
     sp(&s, "%s", glsl_prelude);
+    if (c->shared_words) sp(&s, "shared uint smem[%u];\n", c->shared_words);
     for (int i = 0; i < 18; i++) {
         if (!(info->cbuf_mask & (1u << i))) continue;
         uint32_t n = info->cbuf_size[i] / 16;
@@ -2174,6 +2217,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         if (c->pred_used[i]) sp(&s, "  bool p%d = false;\n", i);
     if (c->uses_cc) sp(&s, "  uint cc = 0; bool ccz = false, ccs = false;\n");
     if (c->uses_local) sp(&s, "  uint lmem[%d] = {};\n", LMEM_WORDS);
+    if (c->shared_words) sp(&s, "  threadgroup atomic_uint smem[%u];\n", c->shared_words);
     if (dbg) sp(&s, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
     if (any_branch) {
         sp(&s, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0; uint pbk[16]; uint pbk_n = 0; uint pcnt[16]; uint pcnt_n = 0;\n");

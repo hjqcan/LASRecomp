@@ -1344,12 +1344,15 @@ static void bind_cbufs(int stage, ShaderInfo *si) {
 // few hardware cbuf slots, so the compiler reads the rest through global memory), 0x310 + 16*i
 // storage buffers; each table entry is {addr_lo, addr_hi, size, 0}.
 typedef struct { id<MTLComputePipelineState> pipe; ShaderInfo *si; uint32_t local[3]; bool failed; } CsProg;
-static NSMutableDictionary *g_cs_progs;  // code address -> CsProg
+static NSMutableDictionary *g_cs_progs;  // code address + compute configuration -> CsProg
 
 static CsProg *compute_program(NvnProgram *p) {
     NvnShaderStage *ss = &p->stages[5];
     if (!ss->code_addr) return NULL;
-    NSValue *key = [NSValue valueWithPointer:(void *)(uintptr_t)ss->code_addr];
+    struct { uint64_t addr; uint32_t config[4]; } cache_key = {ss->code_addr, {1, 1, 1, 0}};
+    if (ss->control) memcpy(cache_key.config, ss->control + 0x748, sizeof cache_key.config);
+    for (int i = 0; i < 3; i++) if (!cache_key.config[i]) cache_key.config[i] = 1;
+    NSData *key = [NSData dataWithBytes:&cache_key length:sizeof cache_key];
     NSMutableDictionary *progs = g_cs_progs;
     if (!progs) progs = g_cs_progs = [NSMutableDictionary new];
     NSValue *v = progs[key];
@@ -1359,12 +1362,10 @@ static CsProg *compute_program(NvnProgram *p) {
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
     ShaderKey k = {0};
+    k.shared_memory = cache_key.config[3];
     cp->si = maxwell_translate((const uint8_t *)(uintptr_t)ss->code_addr, ss->const_offset ? ss->const_offset : 0x10000, STAGE_COMPUTE, &k);
     if (!cp->si->msl) { LOG("[compute] translate failed: %s (code %llx)\n", cp->si->error, ss->code_addr); cp->failed = true; return NULL; }
-    for (int i = 0; i < 3; i++) {
-        cp->local[i] = ss->control ? *(const uint32_t *)(ss->control + 0x748 + 4 * i) : 1;
-        if (!cp->local[i]) cp->local[i] = 1;
-    }
+    memcpy(cp->local, cache_key.config, sizeof cp->local);
     NSError *err = nil;
     id<MTLLibrary> lib = TIMED_COMPILE([dev newLibraryWithSource:@(cp->si->msl) options:nil error:&err]);
     id<MTLFunction> f = lib ? [lib newFunctionWithName:@"main0"] : nil;
