@@ -10,12 +10,14 @@
 #include "../hle.h"
 #include "../settings.h"
 #include "../ipc.h"
+#include "audio_biquad.h"
 
 // ------------------------------------------------------------------ audren: a CPU mixer modelled on
 // Ryujinx's AudioRenderer (VoiceState / DataSourceHelper / StateUpdater, copies in notes/ryujinx_audio).
 // Voices decode PCM16 / ADPCM wave buffers, resample to 48 kHz, and mix into their destination mix's
 // buffers; sub mixes route into their destination; the final mix feeds the device sink, which we
-// downmix to stereo and push to an SDL audio stream. Effects and splitters are not implemented.
+// downmix to stereo and push to an SDL audio stream. Reverb and biquad effects
+// are handled below; additional effects and splitter routing remain incomplete.
 #define WB_COUNT 4
 #define MIXBUF_MAX 24
 #define HIST 4
@@ -414,15 +416,21 @@ struct Effect {
     int32_t mix_id;
     uint32_t order;
     Reverb rv;
+    AudioBiquad bq;
 };
 
 // Effect slot update from EffectInParameterVersion1 (0xC0 bytes: type, is_new, enabled, mix, buffers, order, data).
 static void effect_update(Effect *fx, const uint8_t *e) {
+    bool new_type = fx->type != e[0];
     if (fx->type != e[0]) memset(&fx->rv.p, 0, sizeof fx->rv.p), fx->rv.ready = 0;
     fx->type = e[0];
     fx->enabled = e[2];
     memcpy(&fx->mix_id, e + 4, 4);
     memcpy(&fx->order, e + 0x18, 4);
+    if (fx->type == 6) {
+        audio_biquad_update(&fx->bq, e + 0x20, new_type || e[1]);
+        return;
+    }
     if (fx->type != 4) return;
     const uint8_t *d = e + 0x20;
     uint16_t ch_max, ch;
@@ -451,6 +459,10 @@ static void apply_effects(Renderer *r, int32_t mix_id, Mix *m) {
     for (uint32_t order = 0; order < r->effects; order++) {
         for (uint32_t i = 0; i < r->effects; i++) {
             Effect *fx = &r->fx[i];
+            if (fx->type == 6 && fx->mix_id == mix_id && fx->order == order) {
+                audio_biquad_process(&fx->bq, m->buf, m->bufs, N, fx->enabled);
+                continue;
+            }
             if (fx->type != 4 || fx->mix_id != mix_id || fx->order != order || !fx->rv.ready) continue;
             int ch = fx->rv.p.ch;
             float *in[6], *out[6];
@@ -862,7 +874,7 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
         const uint8_t *v = vin + i * 0x170;
         if (v[9]) update_voice(r, &r->voice[i], v, op + o);
     }
-    // effects (not processed): report them as enabled/disabled per request
+    // Effect state and parameters, consumed by the mixer under the same lock.
     const uint8_t *ein = vin + voices_sz;
     oh[5] = neffects * 0x10;
     for (uint32_t i = 0; i < neffects && o + 0x10 <= out->size; i++, o += 0x10) {
@@ -872,7 +884,7 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
         static uint32_t seen_types;
         if (e[0] && e[0] < 32 && !(seen_types & (1u << e[0]))) {
             seen_types |= 1u << e[0];
-            LOG("[audren] effect type %u used%s: slot %u mix %d enabled %u\n", e[0], e[0] == 4 ? "" : " (not implemented)", i,
+            LOG("[audren] effect type %u used%s: slot %u mix %d enabled %u\n", e[0], (e[0] == 4 || e[0] == 6) ? "" : " (not implemented)", i,
                 *(const int32_t *)(e + 4), e[2]);
         }
         if (e[0] && getenv("LARECOMP_AUDIO_LOG")) {

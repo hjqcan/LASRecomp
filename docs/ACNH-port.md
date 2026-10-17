@@ -55,6 +55,12 @@ font first. The local `ngc` fallback handles UTF-8/UTF-16 input and basic text
 checks; it does not include Nintendo's system dictionary or claim matching
 online filtering. Network play and amiibo functionality are not implemented.
 
+Audio effect 6 supports the legacy signed Q14 biquad parameters, per-channel
+state, reset and disabled-effect copies. Its parameter layout follows the
+[published reverse-engineered ABI](https://git.axenov.dev/Museum/ryujinx/src/commit/6aef27166101a0f733f9bfdfeb268fdc45048550/Ryujinx.Audio.Renderer/Parameter/Effect/BiquadFilterEffectParameter.cs).
+Impulse-response tests check continuity across renderer packets and bounds.
+Auxiliary-buffer, delay, reverb-3D and splitter support are still incomplete.
+
 NVN recorders use private host arenas and compact allocation budgets, avoiding
 inflated guest heap requirements and shared scratch-memory races. Completed
 control-memory handles own immutable lists. Referenced lists are retained through
