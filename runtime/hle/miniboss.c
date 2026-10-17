@@ -17,7 +17,7 @@
 void guest_call(Cpu *c, uint64_t addr);
 uint64_t doorjump_player(uint64_t frame);  // PlayerCollision component: position at +0x80
 
-#define PLAYER_STATUS_PTR (GA_PLAYER_STATUS_PTR)  // PlayerStatus*: current level name at +0
+// GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
 
 // per class: vtable, its state machine's change(sm, state) (+0xd current state, +0xe previous; states 0x30 apart
 // from +0x40: ctx, enter, exec, exit member functions), the state machine's offset in the actor, idle state, fight
@@ -30,14 +30,14 @@ typedef struct {
     uint64_t vt, chg; uint32_t sm, pos; uint8_t idle, fight; const char *name; uint8_t rest, then, at_once; uint32_t start;
 } Kind;
 static const Kind g_kinds[] = {
-    {GA_HINOX_VTABLE, GA_HINOX_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Hinox", 0xff},  // 0x53: 10 = request HinoxStart
+    {GA_HINOX_VTABLE, GA_HINOX_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Hinox", 0xff},                          // 0x53: 10 = request HinoxStart
     // (found 2026-10-12 with tools placing each one on Field_13D: LARECOMP_MB_SCAN_NAME / _FORCE)
-    {GA_SMASHER_VTABLE, GA_SMASHER_CHANGE_STATE, 0x1110, 0x260, 0, 1, "Smasher", 0xff},       // 0x5c (+ iron ball)
-    {GA_AVALAUNCH_VTABLE, GA_AVALAUNCH_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Avalaunch", 0xff},      // 0x60
+    {GA_SMASHER_VTABLE, GA_SMASHER_CHANGE_STATE, 0x1110, 0x260, 0, 1, "Smasher", 0xff},                   // 0x5c (+ iron ball)
+    {GA_AVALAUNCH_VTABLE, GA_AVALAUNCH_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Avalaunch", 0xff},              // 0x60
     {GA_ROLLING_BONES_VTABLE, GA_ROLLING_BONES_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Rolling Bones", 0xff},  // 0x51 (+ spike bar)
-    {GA_GOHMA_VTABLE, GA_GOHMA_CHANGE_STATE, 0x1200, 0x260, 13, 0, "Gohma", 0xff},        // 0x5a (heads for Link: GOHMA_*)
-    {GA_BLAINO_VTABLE, GA_BLAINO_CHANGE_STATE, 0x11a0, 0x260, 10, 1, "Blaino", 5},          // 0x5f (5: after a knock-out)
-    {GA_CUE_BALL_VTABLE, GA_CUE_BALL_CHANGE_STATE, 0xff0, 0x260, 0, 3, "Cue Ball", 0xff},       // 0x58 (+ a rail fitted)
+    {GA_GOHMA_VTABLE, GA_GOHMA_CHANGE_STATE, 0x1200, 0x260, 13, 0, "Gohma", 0xff},                        // 0x5a (heads for Link: GOHMA_*)
+    {GA_BLAINO_VTABLE, GA_BLAINO_CHANGE_STATE, 0x11a0, 0x260, 10, 1, "Blaino", 5},                        // 0x5f (5: after a knock-out)
+    {GA_CUE_BALL_VTABLE, GA_CUE_BALL_CHANGE_STATE, 0xff0, 0x260, 0, 3, "Cue Ball", 0xff},                 // 0x58 (+ a rail fitted)
     // 0x57: 0 = under the sand until his screen's event (AreaEventBox - not copied) runs his start; back in 0, again
     {GA_LANMOLA_VTABLE, GA_LANMOLA_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Lanmola", 0, 0, 0, (GA_LANMOLA_START - MAIN_BASE)},
     // 0x59: 12 = hidden until his room's event (AreaEventBox - not copied: intro, music) drops him in; 13 shows him
@@ -164,7 +164,7 @@ static void force_tick(Cpu *c, uint64_t frame) {
     if (at == -2) {
         at = -1;
         const char *e = ENV("LARECOMP_MB_FORCE");
-        unsigned long long smo = 0, ch = 0x3bfc60;
+        unsigned long long smo = 0, ch = GA_HINOX_CHANGE_STATE - MAIN_BASE;
         if (e && sscanf(e, "%ld:%llx:%d:%llx", &at, &smo, &state, &ch) >= 3) sm = smo, chg = MAIN_BASE + ch;
         else at = -1;
     }
@@ -268,7 +268,7 @@ static bool wall_at(float x, float z) {  // (Gohma's body around (x, z) touches 
 }
 int rt_gohma_free(void) {
     extern const char *rando_seed_dir(void);
-    uint64_t ps = LD64(PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     return rando_seed_dir() && ps && !strcmp((const char *)(uintptr_t)ps, "Field");
 }
 
@@ -366,7 +366,7 @@ void miniboss_tick(Cpu *c, uint64_t frame) {
     force_tick(c, frame);
     extern const char *rando_seed_dir(void);
     if (!rando_seed_dir()) return;  // (only seeds put mini-bosses on the Field)
-    uint64_t ps = LD64(PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     if (!ps || strcmp((const char *)(uintptr_t)ps, "Field")) return;  // (dungeon arenas start their own)
     uint64_t pc = doorjump_player(frame);
     if (!pc) return;

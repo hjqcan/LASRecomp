@@ -26,8 +26,8 @@ int kernel_data_regions(uint64_t *addr, uint64_t *size, int max);
 const char *souls_at(int i, int *kind, bool *owned);  // runtime/hle/souls.c
 }
 
-#define SAVE (GA_LIVE_SAVE)
-#define EVENT_FLAGS (SAVE + 0x5DC0)
+
+#define EVENT_FLAGS (GA_LIVE_SAVE + 0x5DC0)
 
 static volatile uint64_t g_map_frame, g_map_opened;
 static volatile int g_map_zoomed;  // the player zoomed the map (right stick): markers would no longer line up
@@ -207,8 +207,8 @@ static bool eval(const std::vector<int32_t> &rpn) {
 }
 
 static void inventory(void) {
-    uint32_t items = LD32(SAVE + 0x5568), keyitems = LD32(SAVE + 0x556C);
-    uint8_t upg = LD8(SAVE + 0x555C), songs = LD8(SAVE + 0x555B);
+    uint32_t items = LD32(GA_LIVE_SAVE + 0x5568), keyitems = LD32(GA_LIVE_SAVE + 0x556C);
+    uint8_t upg = LD8(GA_LIVE_SAVE + 0x555C), songs = LD8(GA_LIVE_SAVE + 0x555B);
     auto b = [](uint32_t v, int i) { return (int)((v >> i) & 1); };
     give("sword", b(items, 0) + (b(items, 0) && b(upg, 0)));
     give("shield", b(items, 1) + (b(items, 1) && b(upg, 1)));
@@ -222,7 +222,7 @@ static void inventory(void) {
         {"full-moon-cello", 7}, {"conch-horn", 8}, {"sea-lilys-bell", 9}, {"surf-harp", 10}, {"wind-marimba", 11},
         {"coral-triangle", 12}, {"evening-calm-organ", 13}, {"thunder-drum", 14}, {"mushroom", 15}};
     for (auto &x : ki) give(x.n, b(keyitems, x.bit));
-    give("shell-sensor", LD8(SAVE + 0x556E) & 1);
+    give("shell-sensor", LD8(GA_LIVE_SAVE + 0x556E) & 1);
     give("song-ballad", b(songs, 0));
     give("song-mambo", b(songs, 1));
     give("song-soul", b(songs, 2));
@@ -231,15 +231,15 @@ static void inventory(void) {
     give("powder-capacity", b(upg, 3));
     give("bomb-capacity", b(upg, 4));
     give("arrow-capacity", b(upg, 5));
-    give("golden-leaf", __builtin_popcount(LD8(SAVE + 0x5582) & 0x1F));
-    give("seashell", __builtin_popcountll(LD64(SAVE + 0x5548) & ((1ull << 50) - 1)));
+    give("golden-leaf", __builtin_popcount(LD8(GA_LIVE_SAVE + 0x5582) & 0x1F));
+    give("seashell", __builtin_popcountll(LD64(GA_LIVE_SAVE + 0x5548) & ((1ull << 50) - 1)));
     static const struct { const char *tok, *flag; int slot; } trade[] = {
         {"yoshi-doll", "TradeYoshiDollGet", 1}, {"ribbon", "TradeRibbonGet", 2}, {"dog-food", "TradeDogFoodGet", 3},
         {"bananas", "TradeBananasGet", 4}, {"stick", "TradeStickGet", 5}, {"honeycomb", "TradeHoneycombGet", 6},
         {"pineapple", "TradePineappleGet", 7}, {"hibiscus", "TradeHibiscusGet", 8}, {"letter", "TradeLetterGet", 9},
         {"broom", "TradeBroomGet", 10}, {"fishing-hook", "TradeFishingHookGet", 11}, {"necklace", "TradeNecklaceGet", 12},
         {"mermaid-scale", "TradeMermaidsScaleGet", 13}, {"magnifying-lens", "", 14}};
-    int held = LD8(SAVE + 0x555A);
+    int held = LD8(GA_LIVE_SAVE + 0x555A);
     for (auto &t : trade) {
         auto f = g_flag_idx.find(t.flag);
         give(t.tok, held == t.slot || (f != g_flag_idx.end() && flag_set(f->second)));
@@ -262,7 +262,7 @@ static void inventory(void) {
     static const char *dn[] = {"D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8"};
     for (int d = 0; d < 9; d++) {  // dungeon records: dungeon n = record 2(n-1), Color Dungeon = 18
         int rec = d < 8 ? 2 * d : 18;
-        uint64_t p = SAVE + 0xE0 + 0x10ull * rec;
+        uint64_t p = GA_LIVE_SAVE + 0xE0 + 0x10ull * rec;
         char name[32];
         snprintf(name, sizeof name, "key-%s", d < 8 ? dn[d] : "D0");
         give(name, LD8(p));

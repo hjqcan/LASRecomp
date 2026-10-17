@@ -80,6 +80,16 @@ class AdapterContract(unittest.TestCase):
             with (root / 'tools/patches.py').open('ab') as stream: stream.write(b'\n# changed LAS patch\n')
             self.assertNotEqual(las_before, code_identity(las, las.releases[0], root))
             self.assertEqual(acnh_before, code_identity(acnh, acnh.releases[0], root))
+            # Upstream split runtime-only addresses out of the generator's patch table.
+            runtime_table = root / 'runtime/game_addresses/runtime_v1_0_0.h'
+            runtime_table.write_text('// runtime-only address change\n', encoding='utf-8')
+            las_after_patch = code_identity(las, las.releases[0], root)
+            runtime_table.write_text('// another runtime-only address change\n', encoding='utf-8')
+            self.assertEqual(las_after_patch, code_identity(las, las.releases[0], root))
+            with (root / 'runtime/game_addresses/patches_v1_0_0.h').open('ab') as stream:
+                stream.write(b'\n// changed LAS patch address\n')
+            self.assertNotEqual(las_after_patch, code_identity(las, las.releases[0], root))
+            self.assertEqual(acnh_before, code_identity(acnh, acnh.releases[0], root))
             with (root / 'tools/patches.py').open('rb') as stream: normalized = stream.read().replace(b'\r\n', b'\n')
             changed = code_identity(las, las.releases[0], root)
             (root / 'tools/patches.py').write_bytes(normalized.replace(b'\n', b'\r\n'))

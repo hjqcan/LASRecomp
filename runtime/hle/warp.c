@@ -137,7 +137,7 @@ static void warp_test(uint64_t frame) {
     if (next) next++;
 }
 
-#define PROCESS_REQUEST (GA_LEVEL_REQUEST_SITE)  // performs a pending level-jump request (x0 = request)
+// GA_LEVEL_REQUEST_SITE: performs a pending level-jump request (x0 = request)
 
 // LARECOMP_DUMP_MEM=<frame>:<main offset>:<deref offsets, '+'-separated or ->:<bytes>  e.g. 4400:1cb9fb8:0+8:0x2000
 // -> build/memdump.bin (test hook: [[main+off]+0]+8 ...)
@@ -231,7 +231,7 @@ void warp_game_tick(Cpu *c) {
     uint64_t saved[31], sp = c->sp, pc = c->pc;
     memcpy(saved, c->x, sizeof saved);
     c->x[0] = req;
-    guest_call(c, PROCESS_REQUEST);
+    guest_call(c, GA_LEVEL_REQUEST_SITE);
     memcpy(c->x, saved, sizeof saved);
     c->sp = sp;
     c->pc = pc;
@@ -239,7 +239,7 @@ void warp_game_tick(Cpu *c) {
 
 // ---- give item (game thread): main+0x7e18b0 = AddItem(itemId, count, index, autoEquip), the call behind the
 // Inventory.AddItemByKey event action (itemId = row of datasheets/Items.gsheet, e.g. 78 PanelDungeonPiece).
-#define ADD_ITEM (GA_ADD_ITEM)
+
 static int g_give_id, g_give_count, g_give_index;
 
 void give_item_request(int id, int count, int index) {
@@ -707,7 +707,7 @@ void give_item_tick(Cpu *c, uint64_t frame) {
                 uint64_t saved[31];
                 memcpy(saved, c->x, sizeof saved);
                 c->x[0] = (uint64_t)id; c->x[1] = (uint64_t)cnt; c->x[2] = (uint64_t)(int64_t)idx; c->x[3] = (uint64_t)equip;
-                guest_call(c, ADD_ITEM);
+                guest_call(c, GA_ADD_ITEM);
                 memcpy(c->x, saved, sizeof saved);
                 LOG("[give] item %d x%d (index %d)\n", id, cnt, idx);
             }
@@ -740,7 +740,7 @@ void give_item_tick(Cpu *c, uint64_t frame) {
         uint64_t saved[31];
         memcpy(saved, c->x, sizeof saved);
         c->x[0] = (uint64_t)g_give_id; c->x[1] = (uint64_t)g_give_count; c->x[2] = (uint64_t)(int64_t)g_give_index; c->x[3] = 0;
-        guest_call(c, ADD_ITEM);
+        guest_call(c, GA_ADD_ITEM);
         memcpy(c->x, saved, sizeof saved);
         LOG("[give] item %d x%d (index %d)\n", g_give_id, g_give_count, g_give_index);
     }

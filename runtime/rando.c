@@ -7,6 +7,7 @@
 // Code patches: gen.py compiled every variant of every patched instruction in (tools/rando/patch_variants.json);
 // rando_word() tells the generated code which one the seed uses (0 = the original instruction).
 #include "rando.h"
+#include "game_addresses.h"
 
 #include <dirent.h>
 #include <pthread.h>

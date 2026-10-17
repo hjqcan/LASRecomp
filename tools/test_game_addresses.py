@@ -25,7 +25,10 @@ ROOT = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--compare-generated', type=Path, nargs=2, metavar=('BEFORE', 'AFTER'))
 args = parser.parse_args()
-values = load_table(TABLE_PATH)
+patch_values = load_table(TABLE_PATH)
+runtime_values = load_table(ROOT/'runtime/game_addresses/runtime_v1_0_0.h')
+assert not patch_values.keys() & runtime_values.keys(), 'Define each address in one header'
+values = patch_values | runtime_values
 assert len(values) == len(set(values.values())), 'Use the existing name for shared addresses'
 fixture = json.loads((ROOT/'tools/tests/patches_v1_0_0.json').read_text())
 assert set(PATCHES) == {int(a, 16) for a in fixture['patches']}
@@ -62,7 +65,7 @@ with tempfile.TemporaryDirectory() as tmp:
     # Same resource location used by tools/lasgen.spec in the frozen helper.
     bundled = tmp/'bundle/runtime/game_addresses'
     bundled.mkdir(parents=True)
-    shutil.copyfile(TABLE_PATH, bundled/'v1_0_0.h')
+    shutil.copyfile(TABLE_PATH, bundled/TABLE_PATH.name)
     check = ('import sys; sys._MEIPASS=sys.argv[1]; sys.path.insert(0,sys.argv[2]); '
              'from game_addresses import ADDRESS; print(ADDRESS.HAS_ITEM)')
     output = subprocess.check_output([sys.executable, '-c', check, str(tmp/'bundle'), str(ROOT/'tools')])
@@ -81,7 +84,7 @@ with tempfile.TemporaryDirectory() as tmp:
 # bases/range checks are runtime layout constants, not addresses of game objects.
 strip_c = re.compile(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"', re.S)
 for path in (ROOT/'runtime').rglob('*'):
-    if path.suffix not in ('.c', '.h', '.mm') or path.parent.name == 'game_addresses':
+    if path.suffix not in ('.c', '.h', '.m', '.mm', '.cpp') or path.parent.name == 'game_addresses':
         continue
     code = strip_c.sub('', path.read_text(encoding='utf-8'))
     assert set(re.findall(r'\bGA_([A-Z][A-Z0-9_]*)\b', code)) <= values.keys(), str(path)
@@ -89,6 +92,13 @@ for path in (ROOT/'runtime').rglob('*'):
         assert int(match[1], 16) in (0x7000000000, 0x7004000000), str(path)
     assert not re.search(r'(?:MAIN_BASE|SDK_BASE)\s*\+\s*0x[0-9a-fA-F]+', code), str(path)
 tree = ast.parse((ROOT/'tools/patches.py').read_text(encoding='utf-8'))
+used = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == 'A'}
+used.update(re.findall(r'@([A-Z][A-Z0-9_]*)@', (ROOT/'tools/patches.py').read_text(encoding='utf-8')))
+for filename, alias in [('game_versions.py', 'A'), ('research_instrument.py', 'ADDRESS')]:
+    consumer = ast.parse((ROOT/'tools'/filename).read_text(encoding='utf-8'))
+    used.update(n.attr for n in ast.walk(consumer) if isinstance(n, ast.Attribute)
+                and isinstance(n.value, ast.Name) and n.value.id == alias)
+assert used == patch_values.keys(), 'Keep runtime-only entries out of the generated-code table'
 docstring = tree.body[0].value
 for node in ast.walk(tree):
     if isinstance(node, ast.Constant) and node is not docstring:
@@ -106,4 +116,4 @@ if args.compare_generated:
     before, after = map(hashes, args.compare_generated)
     assert before == after, 'Generated file names or contents changed'
     print(f'{len(before)} generated C files are byte-identical')
-print(f'{len(values)} shared addresses, {len(PATCHES)} patch outputs and {len(HOOKS)} hooks passed')
+print(f'{len(patch_values)} patch addresses, {len(runtime_values)} runtime constants, {len(PATCHES)} patch outputs and {len(HOOKS)} hooks passed')
