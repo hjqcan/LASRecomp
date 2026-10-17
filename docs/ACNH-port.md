@@ -59,7 +59,18 @@ Audio effect 6 supports the legacy signed Q14 biquad parameters, per-channel
 state, reset and disabled-effect copies. Its parameter layout follows the
 [published reverse-engineered ABI](https://git.axenov.dev/Museum/ryujinx/src/commit/6aef27166101a0f733f9bfdfeb268fdc45048550/Ryujinx.Audio.Renderer/Parameter/Effect/BiquadFilterEffectParameter.cs).
 Impulse-response tests check continuity across renderer packets and bounds.
-Auxiliary-buffer, delay, reverb-3D and splitter support are still incomplete.
+Legacy splitter updates retain unchanged destinations, route each voice channel
+to its destination stride, and order submixes across fan-out connections. The
+protocol and routing semantics follow the public
+[splitter state](https://git.axenov.dev/Museum/ryujinx/src/commit/f3b0b4831c323a20393aa0388f947317354372b7/Ryujinx.Audio/Renderer/Server/Splitter/SplitterDestination.cs)
+and [command generator](https://source.hodakov.me/hdkv/yuzu/src/commit/d379fdd5b689e2cec95476bf1336e7b55d348959/src/audio_core/command_generator.cpp).
+`tools/test_audio_splitter.c` covers partial updates, padding, invalid packets
+and volume ramps. With `-DTEST_AUDIO_RENDERER` and the runtime build headers,
+it additionally feeds synthetic PCM through the actual voice/submix mixer,
+checking stereo destination strides and existing direct routes. Local captures
+from the game validate the packet layout but are not repository fixtures.
+Auxiliary-buffer, delay and reverb-3D effects remain incomplete. This routing
+implementation covers the legacy destination format, not REV12 biquads.
 
 NVN recorders use private host arenas and compact allocation budgets, avoiding
 inflated guest heap requirements and shared scratch-memory races. Completed
