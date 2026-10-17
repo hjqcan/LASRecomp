@@ -74,7 +74,8 @@ def main():
         copy(root/'third_party/fonts'/folder/license_name, folder+'-LICENSE.txt')
     for name in ('README.md', 'LICENSE', 'CONTRIBUTING.md'):
         copy(root/name, name)
-    for name in ('enhanced.md', 'enhanced-beta5.1-validation.md', 'enhanced-beta5.2-validation.md', 'NSZ-and-v110.md',
+    for name in ('enhanced.md', 'enhanced-beta5.1-validation.md', 'enhanced-beta5.2-validation.md',
+                 'enhanced-beta5.3-validation.md', 'NSZ-and-v110.md',
                  'photo-mods-randomizer.md', 'photo-mode.md', 'resource-mods.md',
                  'multi-game.md', 'adapter-development.md', 'ACNH-port.md', 'pokemon-za-port.md',
                  'local-coop.md', 'workshop.md', 'enhanced-stage34-validation.md',

@@ -2,6 +2,10 @@
 
 This is the independently maintained edition in [hjqcan/LASRecomp](https://github.com/hjqcan/LASRecomp/tree/enhanced). Download Windows builds from [the fork releases](https://github.com/hjqcan/LASRecomp/releases). Enhanced builds use their own update channel.
 
+**Enhanced Beta 5.3 now supports Animal Crossing: New Horizons 1.0.0 on Windows.**
+**增强版 Beta 5.3 现已支持《集合啦！动物森友会》1.0.0（Windows 测试版）。**
+Normal installation is enabled for this base release; updates and DLC remain unsupported.
+
 ## Branch policy / 分支维护规则
 
 `main` and `beta_5` mirror upstream. `enhanced` merges upstream `beta_5` fixes and retains the fork's features. Features accepted upstream can use the upstream implementation after checking that no enhanced behavior is lost. Features upstream does not accept remain maintained here. Existing upstream PR branches are independent and are never rewritten as part of enhanced synchronization.
@@ -41,7 +45,10 @@ The [fourth research round](research-fourth-round.md) separates startup seed inp
 
 [Store tracing](research-store-tracing.md) builds an optional diagnostic library to locate differences in observed RNG writes, with explicit source coverage, buffer limits and state-chain validation.
 
-The [Enhanced Beta 5.2 validation record](enhanced-beta5.2-validation.md) lists release checks and remaining limits. The [Beta 5.1 record](enhanced-beta5.1-validation.md) retains the earlier acceptance evidence, including the save-mount concurrency fix.
+The [Enhanced Beta 5.3 validation record](enhanced-beta5.3-validation.md) covers
+ACNH acceptance and the latest two-version LAS regression. The
+[Beta 5.2 record](enhanced-beta5.2-validation.md) and
+[Beta 5.1 record](enhanced-beta5.1-validation.md) retain the earlier enhanced-feature checks.
 
 [Multi-game development](multi-game.md) now includes the shared module runtime,
 reviewed per-game adapter definitions, catalog-generated installation selection,
@@ -51,26 +58,26 @@ the previous installation. ABI 4 requires a one-time game-library rebuild while
 preserving saves and launch IDs. ACNH 1.0.0 is enabled as a Windows beta after
 local island, day-rollover, save/reopen and extended-play checks; see
 [its validation record and limits](ACNH-port.md). Other development adapters
-remain unavailable for normal installation. Beta 5.2
-also includes shared audio effects, guest nonlocal-return handling, compute
+remain unavailable for normal installation. The shared runtime
+also includes audio effects, guest nonlocal-return handling, compute
 workgroup memory and screen-attachment scaling fixes. Vulkan prepares shaders
 ahead of use and shares identical stages while preserving every required draw.
 Unseen variants can still require first-use waits.
 
 ## Windows quick start / Windows 使用说明
 
-When upgrading from Beta 5.1, preserve the existing game installations, saves,
-seeds and settings. The new shared runtime rebuilds incompatible game libraries
-once; completed compilation can be cancelled and resumed.
+When upgrading, preserve the existing game installations, saves, seeds and
+settings. The launcher rebuilds a game library when its runtime or generator
+identity has changed; completed compilation can be cancelled and resumed.
 
-从 Beta 5.1 升级时保留现有游戏目录、存档、种子和设置。新版运行时需要重新编译一次不兼容的游戏库，编译可取消后续编。
+升级时保留现有游戏目录、存档、种子和设置。运行时或生成器标识变化时，启动器会重新编译游戏库，编译可取消后续编。
 
 1. Extract the entire ZIP into a writable folder. Run `lasrecomp.exe`. Windows 10+ x64, an AVX2 CPU and a Vulkan 1.3 graphics driver are required. No separate Python or compiler installation is needed.
-2. Choose a game version and open **Game Files**. Select your extracted files or your own base archive. Add the supported update archive for v1.1.0; encrypted inputs need your local keys.
+2. Open **Game Files** and select your extracted files or your own base archive. The launcher identifies the supported game and version from its executable modules. Add the supported update archive for Link's Awakening 1.1.0; encrypted inputs need your local keys. ACNH supports the 1.0.0 base release only.
 3. Inspect the selection, import, then build. Allow at least 20 GiB of free space. The first compilation takes several minutes; cancelling preserves completed work.
-4. Start Vanilla or generate a fresh seed for the selected version. Keep saves with their original version. F1 opens settings, F2 enters photo mode and F12 saves a photo.
+4. Start the selected game, or use its generated desktop shortcut next time. Keep saves with their original game/version. Link's Awakening also supports version-specific randomizer seeds and its existing enhanced features.
 
-完整解压 ZIP 到可写目录，双击 `lasrecomp.exe`。选择游戏版本，在“游戏文件”中提供自己的已提取文件或 NSP/NSZ/XCI/XCZ 本体包；v1.1.0 另选更新包。加密内容需要自己的本地密钥。检查选择后导入并编译，首次编译可取消后续编。请预留至少 20 GiB 空间。两个版本使用独立存档；随机种子也各自保存进度。F1 打开设置，F2 照片模式，F12 保存照片。
+完整解压 ZIP 到可写目录，双击 `lasrecomp.exe`。在“游戏文件”中提供自己的已提取文件或 NSP/NSZ/XCI/XCZ 本体包，启动器自动识别支持的游戏和版本。《织梦岛》1.1.0 另选支持的更新包；《动物森友会》目前仅支持 1.0.0 本体。加密内容需要自己的本地密钥。检查选择后导入并编译，首次编译可取消后续编。请预留至少 20 GiB 空间。完成后可通过对应桌面图标直接启动；每个游戏、版本和随机种子使用独立存档。
 
 v1.1.0 Randomizer remains experimental: generation/startup checks do not establish full playthrough or parity of every option. Native macOS/Linux gameplay and Metal rendering are not certified by this Windows prerelease. Report fork-specific problems in [fork issues](https://github.com/hjqcan/LASRecomp/issues), including version, seed/settings and logs.
 

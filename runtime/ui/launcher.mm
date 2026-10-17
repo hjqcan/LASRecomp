@@ -99,8 +99,8 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 // it): enhanced-beta<n>.<revision> for this fork. A test build (a pre-release for a few players to try a fix)
 // is test-<name>: the start screen says "Test build <name>", and it previews LARECOMP_TEST_OF - the update check
 // offers that release (or a later one) as soon as it's out, so its players move to it.
-#define LARECOMP_VERSION "enhanced-beta5.2"
-#define LARECOMP_TEST_OF "enhanced-beta5.2"
+#define LARECOMP_VERSION "enhanced-beta5.3"
+#define LARECOMP_TEST_OF "enhanced-beta5.3"
 
 // ------------------------------------------------------------------ update check
 // The start screen asks GitHub for the project's releases once per launch (a background curl, which macOS and
