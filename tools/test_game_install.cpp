@@ -51,6 +51,8 @@ int main(int argc, char **argv) {
     } else if (!strcmp(mode, "clone")) {
         assert(game_install_resolve(root, resolved, sizeof resolved, why, sizeof why));
         ok = game_install_clone(install, resolved, why, sizeof why);
+    } else if (!strcmp(mode, "resume-clone")) {
+        ok = game_install_resume_clone(install, why, sizeof why);
     } else if (!strcmp(mode, "lock")) {
         puts("locked"); fflush(stdout); getchar();
     }

@@ -456,6 +456,8 @@ static void *extract_thread(void *) {
                 if (!game_install_clone(install, g_root.c_str(), why, sizeof why)) {
                     set_job("Could not prepare the game installation.", true, why); goto done;
                 }
+            } else if (!game_install_resume_clone(install, why, sizeof why)) {
+                set_job("Could not resume the game installation copy.", true, why); goto done;
             }
         } else if (is_archive(src)) {
             set_job(update.empty() ? "Importing the base game..." : "Importing the base game and update...");
@@ -1358,6 +1360,16 @@ extern "C" const char *launcher_run(const char *root) {
             g_auto_update = false;
         }
         was_busy = busy;
+
+        // SDL's ImGui backend reports a zero display size while minimized.
+        // Keep processing setup completion and events, but do not lay out
+        // zero-size InvisibleButtons or acquire a drawable in that state.
+        int layout_width = 0, layout_height = 0;
+        SDL_GetWindowSize(win, &layout_width, &layout_height);
+        if ((SDL_GetWindowFlags(win) & SDL_WINDOW_MINIMIZED) || layout_width <= 0 || layout_height <= 0) {
+            SDL_Delay(16);
+            continue;
+        }
 
 #ifdef __APPLE__
         int w, h;
