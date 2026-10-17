@@ -353,18 +353,18 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     char work[1100], tmp[1100];
     snprintf(work, sizeof work, "%s" SEP ".gamebuild", game_dir);
     snprintf(tmp, sizeof tmp, "%s" SEP "%s.tmp", work, GAMELIB_NAME);
-    char input_paths[TITLE_MAX_MODULES+4][1100], spec[4096];
+    char input_paths[TITLE_MAX_MODULES+5][1100], spec[4096];
     for (unsigned i=0;i<module_count;i++)
         snprintf(input_paths[i],sizeof input_paths[i],"%s" SEP "exefs" SEP "%s",game_dir,profile->modules[i].name);
-    const char *headers[] = {"cpu.h", "simd.h", "simd_fp.h", "gamelib.h"};
-    for (int i = 0; i < 4; ++i) snprintf(input_paths[i+module_count], sizeof input_paths[i+module_count], "%s" SEP "%s", t.inc, headers[i]);
+    const char *headers[] = {"cpu.h", "simd.h", "simd_fp.h", "gamelib.h", "guest_jump.h"};
+    for (int i = 0; i < 5; ++i) snprintf(input_paths[i+module_count], sizeof input_paths[i+module_count], "%s" SEP "%s", t.inc, headers[i]);
     // Generator changes should rebuild only chunks whose C changed, as in the existing incremental builder.
     // Compiler/header/flag changes invalidate every object; entry always rebuilds because it embeds GAMELIB_ID.
-    const char *inputs[] = {input_paths[module_count], input_paths[module_count+1], input_paths[module_count+2], input_paths[module_count+3], t.cc};
+    const char *inputs[] = {input_paths[module_count], input_paths[module_count+1], input_paths[module_count+2], input_paths[module_count+3], input_paths[module_count+4], t.cc};
     snprintf(spec, sizeof spec, "LASBUILD5\n%s\n%s\n%s\n%s\nzig=%d pointer=%d\n%s:%s\n", GAMELIB_BASE_ID,
              GAMELIB_CFLAGS, GAMELIB_SHARED, t.cc, t.zig, (int)sizeof(void *),profile->key,profile->version);
     if (o->progress) o->progress(0, "Checking completed build files...");
-    BuildCache *cache = build_cache_open(game_dir, spec, inputs, 5, why, why_size);
+    BuildCache *cache = build_cache_open(game_dir, spec, inputs, 6, why, why_size);
     if (!cache) return false;
     char entry_header[1200];
     snprintf(entry_header,sizeof entry_header,"%s" SEP "gamelib_modules.inc",work);

@@ -164,6 +164,16 @@ Tests cover local/UTC round trips, a leap-day midnight boundary, dates beyond
 
 ## Verification gate
 
+The JPEG encoder's error recovery uses guest `setjmp`/`longjmp`. The generator
+recognizes named entry points and AArch64 PLT calls and keeps a host checkpoint
+in each caller. After the guest restores its own registers, dispatch unwinds the
+host stack and resumes at the original call's continuation. Checkpoints survive
+tail transitions between generated fragments and are retired on return, thread
+exit or reboot. No JPEG return values or game progress flags are replaced.
+`tools/test_guest_jump.py` compiles synthetic callers and checks nested unwinds,
+same-PC frames with different stacks, thread isolation, reused buffers, RET-based
+longjmp implementations, and calls at fragment boundaries.
+
 Vulkan screen attachments include ACNH's uncompressed R8/R16F/RG16F buffers,
 not just textures with the compression hint. A captured 720p frame had a 960x540
 color attachment beside 640x360 depth; the clipped image produced a rectangular

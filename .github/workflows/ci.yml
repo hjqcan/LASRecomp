@@ -75,6 +75,7 @@ jobs:
         run: |
           python3 -m venv tools/venv && tools/venv/bin/pip install -q unicorn capstone lz4
           tools/venv/bin/python tools/test_simd.py --encodings 3000 --cases 4 --jobs "$(nproc)"
+          tools/venv/bin/python tools/test_guest_jump.py
 
   macos:
     runs-on: macos-15
@@ -136,6 +137,11 @@ jobs:
           clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe
           build/test-thread-stack.exe
           sh tools/test_vk_texture_scale.sh
+      - name: Recompiled guest nonlocal returns
+        run: |
+          python -m venv build/jump-test-env
+          build/jump-test-env/Scripts/python.exe -m pip install -q lz4 unicorn capstone
+          build/jump-test-env/Scripts/python.exe tools/test_guest_jump.py
       # (GLSL only: the script's MSL comparison needs a reference commit that isn't in the history any more; REF=HEAD
       # just satisfies it. The GLSL half - every fuzzed translation compiles and validates - is the check)
       - name: Shader translator fuzz (GLSL)

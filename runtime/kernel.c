@@ -6,6 +6,7 @@
 
 #include "hle.h"
 #include "kernel.h"
+#include "guest_jump.h"
 #include "research.h"
 #ifdef _WIN32
 #include "platform/windows_threads.h"
@@ -216,6 +217,7 @@ static void *thread_main(void *arg) {
     crash_handler_install();
     rt_set_fpcr(0);
     if (!setjmp(t->unwind)) guest_call(&t->cpu, t->entry);
+    rt_guest_jump_reset(&t->cpu);
     pthread_mutex_lock(&g_klock);
     t->finished = true;
     kernel_signal(&t->obj);

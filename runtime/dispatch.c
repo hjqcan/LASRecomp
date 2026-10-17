@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "gamelib.h"
+#include "guest_jump.h"
 #include "hle.h"
 
 typedef struct { const uint64_t *addrs; const GuestFn *fns; uint64_t count, lo, hi; } FnTable;
@@ -181,6 +182,7 @@ static GuestFn dispatch_slow(Cpu *c) {
 
 // Always tail-calls, so chains of indirect jumps don't grow the host stack.
 void rt_dispatch(Cpu *c) {
+    if (__builtin_expect(rt_guest_jump_head != NULL, 0)) rt_guest_jump_resume(c);
     unsigned h = (unsigned)(c->pc >> 2) & (DCACHE - 1);
     GuestFn f = dcache[h].addr == c->pc ? dcache[h].fn : dispatch_slow(c);
     __attribute__((musttail)) return f(c);
