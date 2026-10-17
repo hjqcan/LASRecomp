@@ -29,7 +29,7 @@ This is the independently maintained edition in [hjqcan/LASRecomp](https://githu
 
 See [import and versions](NSZ-and-v110.md), [photo/mod/randomizer details](photo-mods-randomizer.md), [mod format](resource-mods.md) and [workshop/replay/performance](workshop.md).
 
-The workshop, extended photo controls, mod presets and frame captures are development additions after the published Beta 5.1 package. Their scope and checks are recorded in [third/fourth-round validation](enhanced-stage34-validation.md). The [local companion co-op prototype](local-coop.md) adds same-PC Link + BowWow play in isolated 1.0.0 sessions. High-refresh simulation, deterministic game replay and online co-op remain research work.
+Enhanced Beta 5.2 includes the workshop, extended photo controls, mod presets and frame captures. Their scope and checks are recorded in [third/fourth-round validation](enhanced-stage34-validation.md). The [local companion co-op prototype](local-coop.md) adds same-PC Link + BowWow play in isolated 1.0.0 sessions. High-refresh simulation, deterministic game replay and online co-op remain research work.
 
 The subsequent [research probes](research-capture.md) now measure final HID input, clock behavior and scene camera matrices in isolated saves. See the [2026-10-17 findings](research-findings-2026-10-17.md) for actual dual-version replay divergence and presentation-mode controls.
 
@@ -41,7 +41,7 @@ The [fourth research round](research-fourth-round.md) separates startup seed inp
 
 [Store tracing](research-store-tracing.md) builds an optional diagnostic library to locate differences in observed RNG writes, with explicit source coverage, buffer limits and state-chain validation.
 
-The [Enhanced Beta 5.1 validation record](enhanced-beta5.1-validation.md) lists actual checks and remaining limits, including the save-mount concurrency fix found during release testing.
+The [Enhanced Beta 5.2 validation record](enhanced-beta5.2-validation.md) lists release checks and remaining limits. The [Beta 5.1 record](enhanced-beta5.1-validation.md) retains the earlier acceptance evidence, including the save-mount concurrency fix.
 
 [Multi-game development](multi-game.md) now includes the shared module runtime,
 reviewed per-game adapter definitions, catalog-generated installation selection,
@@ -49,10 +49,19 @@ release-scoped cache identities and Windows desktop shortcuts. Managed setup
 imports and builds a candidate before atomically selecting it; failed builds keep
 the previous installation. ABI 4 requires a one-time game-library rebuild while
 preserving saves and launch IDs. ACNH remains a development adapter with normal
-installation disabled until its gameplay/save acceptance gates pass. These source
-changes do not themselves publish a new prerelease.
+installation disabled until its gameplay/save acceptance gates pass. Beta 5.2
+also includes shared audio effects, guest nonlocal-return handling, compute
+workgroup memory and screen-attachment scaling fixes. Vulkan prepares shaders
+ahead of use and shares identical stages while preserving every required draw.
+Unseen variants can still require first-use waits.
 
 ## Windows quick start / Windows 使用说明
+
+When upgrading from Beta 5.1, preserve the existing game installations, saves,
+seeds and settings. The new shared runtime rebuilds incompatible game libraries
+once; completed compilation can be cancelled and resumed.
+
+从 Beta 5.1 升级时保留现有游戏目录、存档、种子和设置。新版运行时需要重新编译一次不兼容的游戏库，编译可取消后续编。
 
 1. Extract the entire ZIP into a writable folder. Run `lasrecomp.exe`. Windows 10+ x64, an AVX2 CPU and a Vulkan 1.3 graphics driver are required. No separate Python or compiler installation is needed.
 2. Choose a game version and open **Game Files**. Select your extracted files or your own base archive. Add the supported update archive for v1.1.0; encrypted inputs need your local keys.

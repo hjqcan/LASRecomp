@@ -29,6 +29,10 @@ def main():
     version = version_line.split('"')[1]
     if not version.startswith('enhanced-'):
         raise RuntimeError('Expected an enhanced version')
+    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
+    source_dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True).strip())
+    if source_dirty:
+        raise RuntimeError('Commit reviewed source changes before packaging a release')
     # Check the actual redistributed binary, not the build machine's import libs.
     import os
     with os.add_dll_directory(str(args.dlls.resolve())):
@@ -70,17 +74,22 @@ def main():
         copy(root/'third_party/fonts'/folder/license_name, folder+'-LICENSE.txt')
     for name in ('README.md', 'LICENSE', 'CONTRIBUTING.md'):
         copy(root/name, name)
-    for name in ('enhanced.md', 'enhanced-beta5.1-validation.md', 'NSZ-and-v110.md',
+    for name in ('enhanced.md', 'enhanced-beta5.1-validation.md', 'enhanced-beta5.2-validation.md', 'NSZ-and-v110.md',
                  'photo-mods-randomizer.md', 'photo-mode.md', 'resource-mods.md',
-                 'multi-game.md', 'adapter-development.md', 'ACNH-port.md'):
+                 'multi-game.md', 'adapter-development.md', 'ACNH-port.md',
+                 'local-coop.md', 'workshop.md', 'enhanced-stage34-validation.md',
+                 'research-capture.md', 'research-findings-2026-10-17.md',
+                 'research-update-boundary.md', 'research-update-validation-2026-10-17.md',
+                 'research-semantic-observations.md', 'research-fourth-round.md', 'research-store-tracing.md'):
         copy(root/'docs'/name, 'docs/'+name)
     copy(root/'docs/enhanced.md', 'START-HERE-使用说明.md')
     copy(root/'examples/mods/template', 'examples/mods/template')
+    copy(root/'examples/workshop/leave-house.laschallenge', 'examples/workshop/leave-house.laschallenge')
     copy(root/'fonts/README.md', 'fonts/README.md')
     copy(root/'third_party/release-licenses', 'licenses')
     files = sorted(p for p in stage.rglob('*') if p.is_file())
-    banned = {'.gamebuild', 'extracted', 'games', 'save', 'photos', 'prod.keys', 'title.keys',
-              'lasgame.dll', 'lasrecomp.log', 'larecomp.ini', 'romfs.bin'}
+    banned = {'.gamebuild', 'extracted', 'games', 'save', 'saves', 'seeds', 'photos', 'prod.keys', 'title.keys',
+              'lasgame.dll', 'lasrecomp.log', 'larecomp.ini', 'settings.ini', 'romfs.bin', 'exefs', 'romfs'}
     records = []
     for path in files:
         rel = path.relative_to(stage)
@@ -89,8 +98,6 @@ def main():
         with path.open('rb') as stream:
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
         records.append(dict(path=rel.as_posix(), bytes=path.stat().st_size, sha256=digest))
-    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
-    source_dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True).strip())
     manifest = dict(version=version, commit=commit, ffmpeg_license=license_text,
                     source_dirty=source_dirty,
                     ffmpeg_configuration_without_build_prefix=re.sub(r'--prefix=\S+\s*', '', configuration),
