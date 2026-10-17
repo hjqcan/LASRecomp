@@ -323,7 +323,7 @@ class Lifter:
                 return Insn('op', '/* hint */')
             if crn == 3 and op1 == 3 and rt == 31:  # barriers
                 if op2 == 2:
-                    return Insn('op', 'c->excl_addr = ~0ull;')
+                    return Insn('op', 'excl_clear(c);')
                 return Insn('op', '__atomic_thread_fence(__ATOMIC_SEQ_CST);')
             raise Unsupported(f'pstate/system {w:08x}')
         if op0 == 1:  # SYS
@@ -389,7 +389,23 @@ class Lifter:
         nbits = 8 << size
         addr = XS(rn)
         if o1:
-            raise Unsupported('exclusive pair / CAS')
+            if o2 or size < 2:
+                raise Unsupported('CAS / CASP')
+            rt2 = bits(w, 10, 5)
+            width = 32 if size == 2 else 64
+            if L:
+                # Equal destinations are constrained-unpredictable. Choose the
+                # permitted undefined-instruction behavior, including XZR/XZR.
+                if rs != 31 or rt == rt2:
+                    raise Unsupported('invalid exclusive pair load')
+                typ = 'uint64_t' if width == 32 else '__uint128_t'
+                return Insn('op', f'{{ {typ} pair = ldxp{width}(c, {addr}); '
+                            f'{set_reg(size == 3, rt, "pair")} '
+                            f'{set_reg(size == 3, rt2, f"pair >> {width}")} }}')
+            if rs in (rt, rt2) or (rs == rn and rn != 31):
+                raise Unsupported('invalid exclusive pair store overlap')
+            return Insn('op', f'{{ uint32_t st = stxp{width}(c, {addr}, {X(rt)}, {X(rt2)}); '
+                        f'{set_reg(0, rs, "st")} }}')
         if o2 == 0:
             if L:
                 return Insn('op', set_reg(1, rt, f'ldx{nbits}(c, {addr})'))

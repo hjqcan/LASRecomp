@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "capabilities": {
+    "cpu.exclusive_pairs": {"status": "partial", "variants": ["value_cas"], "limits": "32/64-bit register pairs use atomic compare-and-swap with address/size reservations. Like single-register exclusives, identical-value ABA writes are not detected; CAS/CASP and MTE are not provided by this capability.", "tests": ["tools/test_exclusive_pairs.py", "tools/test_frozen_adapters.py"]},
     "module_tables": {"status": "implemented", "variants": ["4"], "tests": ["tools/test_title_profile.py"]},
     "gpu.pool_mapping": {"status": "partial", "variants": ["full_alias"], "limits": "Sparse mapping and rebinding remain unsupported.", "tests": ["tools/test_nvn_pool_mapping.c"]},
     "services.network": {"status": "partial", "variants": ["offline"], "limits": "Offline service responses only; online play is unavailable.", "tests": []},

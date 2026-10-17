@@ -53,21 +53,49 @@ The NCZ table interpretation was checked against the
 
 ## Compatibility work still required
 
-Base generation emits unsupported-instruction traps at 13,672 main-module
+The initial base generation emitted unsupported-instruction traps at 13,672 main-module
 sites: 1,862 `LDXP`, 3,642 `STXP`, 3,316 `LDAXP`, and 4,852 `STLXP` sites.
-The SDK also has one `STG` site. Update main reports 13,881 unsupported sites.
+The SDK also has one `STG` site. Initial update main reported 13,881 unsupported sites.
 These are static generation observations; gameplay reachability has not been
 established. Successful C compilation includes those explicit traps and does
 not establish executable compatibility.
 
-The shared CPU currently supports single-register exclusive accesses and
-rejects exclusive pairs. Pair support needs independent tests for reservations,
-contention, memory ordering, operand aliasing and both 32/64-bit register forms
-on supported hosts. The SDK memory-tagging instruction needs a separately
-reviewed runtime policy. Replacing these operations with unprotected stores or
-silently ignoring them is not a compatibility fix.
+The subsequent shared-CPU change implements `LDXP`, `LDAXP`, `STXP` and `STLXP`
+for both register widths, with address/width reservations and atomic 64/128-bit
+compare-and-swap stores. Fresh full generation reports **zero unsupported main
+instructions** for both inputs: base now has 929 chunks, update 966; function
+counts remain unchanged. The SDK memory-tagging instruction still needs a
+separately reviewed runtime policy or reachability evidence. Its observed code
+is guarded; it has not been silently ignored or declared safe.
 
-After CPU support, review the module layout and initialization, NVN version,
+`tools/test_exclusive_pairs.py` passes 128 Unicorn differential sequences,
+four-thread counter/complement contention tests for both widths, an
+acquire/release handoff, read-only loads, alignment faults, register aliases,
+SP/zero operands, CLREX and reservation width/address failures. Existing
+single-register success/failure behavior is also covered. Frozen-helper tests
+exercise the actual pair decoder. Windows Clang and packaged Zig both compile
+and execute the helpers; the packaged DLL link recipe resolves 128-bit CAS
+without a separate atomic library. Cross-compiled AArch64 Clang output uses
+native LL/SC. Actual macOS/Linux execution still requires CI validation; it
+was not performed on this Windows host.
+
+The full Windows runtime builds, base main chunks 000/464/928 compile with the
+packaged compiler, and native nonlocal-return, adapter identity and production
+build/cancel/resume/publication tests pass. A complete Z-A game library and
+startup/gameplay/save checks remain outstanding.
+
+Reservations retain the runtime's existing **value-based** model: a write that
+restores identical bits (ABA) is not detected. This limitation is recorded in
+`cpu.exclusive_pairs` as `value_cas`; it is not a complete hardware reservation
+model. The CPU structure still occupies 1024 bytes with unchanged existing
+field/register offsets. New reservation fields consume reserved padding. Common
+code/header identities change, so existing game libraries require rebuilding;
+save identities and the module-table ABI remain unchanged.
+
+The implementation follows the pair access and atomic-store requirements in
+the [Arm instruction reference](https://documentation-service.arm.com/static/67e40f3398aa3c3b6eea6a85).
+
+Next review the module layout and initialization, NVN version,
 RomFS rules, required HLE/services and update assembly. Only then register a
 development adapter and proceed to complete linking, strict startup diagnostics,
 graphics/audio/controls, saving and reopening, repeated starts and extended play.
@@ -88,5 +116,6 @@ python tools/test_nsp_import.py -v
 python tools/test_xci_import.py -v
 python tools/test_game_catalog.py -v
 python tools/test_adapter_contract.py -v
+python tools/test_exclusive_pairs.py -v
 python tools/test_frozen_adapters.py <fresh-lasgen-executable>
 ```

@@ -47,7 +47,9 @@ with tempfile.TemporaryDirectory(prefix='frozen-adapters-', dir=io_path(tempfile
         struct.pack_into('<I', raw, 0x60+i*4, 0x40)
     struct.pack_into('<16I', raw, 0x100, *([0xd65f03c0]*16))
     struct.pack_into('<II', raw, 0x100, 0x94000008, 0x100)
-    struct.pack_into('<II', raw, 0x120, 0x52800020, 0xd65f03c0)
+    # LDAXP x0,x1,[x2]; STLXP w3,x0,x1,[x2]; RET exercises the pair decoder
+    # inside the shipped executable, not just the source Python interpreter.
+    struct.pack_into('<III', raw, 0x120, 0xc87f8440, 0xc8238440, 0xd65f03c0)
     raw[0x140:0x144] = b'MOD0'
     struct.pack_into('<6i', raw, 0x144, 0x100, 0x140, 0x140, -0x100, -0x100, 0)
     source = root / 'synthetic-main'; source.write_bytes(raw)
@@ -60,4 +62,6 @@ with tempfile.TemporaryDirectory(prefix='frozen-adapters-', dir=io_path(tempfile
     assert compiled.returncode == 0, compiled.stdout + compiled.stderr
     assert 'main_fn_count = 1' in (generated / 'main_table.c').read_text()
     assert release.main_build_id in (generated / 'main_table.c').read_text()
+    emitted = (generated / 'main_000.c').read_text()
+    assert 'ldxp64(c,' in emitted and 'stxp64(c,' in emitted and 'rt_udf(' not in emitted
     print('PASS: frozen catalog, both imports, full receipts, real ARM64 generation and mismatched-helper rejection')
