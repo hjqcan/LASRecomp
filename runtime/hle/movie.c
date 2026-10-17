@@ -110,15 +110,21 @@ HLE_FUNC("_ZNK5movie9MediaData8FindRectEPKcPiS3_S3_S3_", md_find_rect) {
     c->x[0] = 1;
 }
 
-// ------------------------------------------------------------------ Buffer (opaque, <= 0x40 bytes)
+// ------------------------------------------------------------------ Buffer (0x40-byte public ABI)
+// Some callers inline Base/Data/Size instead of calling exported methods. Keep
+// these offsets identical for both supported multimedia SDKs.
 typedef struct {
-    uint64_t base, capacity;
     int32_t offset, size;
-    int64_t i64;
-    uint32_t u32;
     int32_t i32;
+    uint32_t u32;
+    uint8_t owned, reserved[7];
+    uint64_t capacity;
+    int64_t i64;
+    uint64_t base, nvn_device, nvn_sync;
 } MBuffer;
-_Static_assert(sizeof(MBuffer) <= 0x40, "movie::Buffer size");
+_Static_assert(sizeof(MBuffer) == 0x40, "movie::Buffer size");
+_Static_assert(offsetof(MBuffer, capacity) == 0x18 && offsetof(MBuffer, base) == 0x28,
+               "movie::Buffer inline accessors");
 #define BUF(x) ((MBuffer *)(uintptr_t)(x))
 
 HLE_FUNC("_ZN5movie6BufferC1Ev", buf_ctor) { memset(BUF(c->x[0]), 0, sizeof(MBuffer)); }
