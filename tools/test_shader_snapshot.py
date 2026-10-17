@@ -41,7 +41,8 @@ int main(void) {
 '''
 with tempfile.TemporaryDirectory(prefix='las-shader-snapshot-') as folder:
     folder=Path(folder); src=folder/'snapshot.c'; src.write_text(harness)
-    compiler=shlex.split(os.environ.get('CC','cc'))
+    # The NVN headers include the runtime's Clang vector builtins.
+    compiler=shlex.split(os.environ.get('CC','clang'))
     for name,inputs in [('snapshot',[src,root/'runtime/nvn/maxwell/translate.c']),
                         ('prefetch',[root/'tools/test_shader_prefetch.c'])]:
         exe=folder/(name+('.exe' if os.name=='nt' else ''))

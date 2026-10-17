@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(prefix='las-shader-gpu-') as folder:
         except (FileNotFoundError,subprocess.CalledProcessError):
             shaderc=['-lshaderc']
         libs=['-lvulkan',*shaderc]
-    subprocess.run([*shlex.split(os.environ.get('CC','cc')),'-std=gnu11','-O2','-pthread',
+    subprocess.run([*shlex.split(os.environ.get('CC','clang')),'-std=gnu11','-O2','-pthread',
                     str(root/'tools/test_shader_prepare_gpu.c'),str(root/'runtime/nvn/vulkan/shaders.c'),
                     str(root/'runtime/nvn/vulkan/shader_jobs.c'),*libs,'-o',str(exe)],check=True)
     subprocess.run([str(exe)],cwd=folder,check=True,timeout=60)
