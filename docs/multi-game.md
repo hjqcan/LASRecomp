@@ -206,3 +206,14 @@ wait that exhausts the ten-second GPU limit terminates without cleanup. The
 regression executes these production paths with a mocked driver, including
 non-returning wait/query calls. This closes the observed protection gap; the
 underlying rendering/submission stall and sunset lighting remain under investigation.
+
+Recovery boot then read all five saved data files and stopped at SyncWait
+submission 9. A CPU-only reproduction exposed a sequence error at the first
+eight-slot ring wrap: the next slot retained `main_begun` from its previous
+generation, so an empty queue fence named submission 9 while the empty submit
+path produced no submission. Fence generation now checks the slot's sequence,
+and slot initialization/begun publication/ring advancement share its lock. The
+test fails against the old implementation and passes across repeated wraps,
+pending uploads, main buffers, and empty fences. The previous indefinite wait
+could therefore wait for work that did not exist; this is separate from proving
+every reported host stall has the same cause.

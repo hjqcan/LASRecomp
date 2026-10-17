@@ -252,8 +252,10 @@ static Sub *sub(void) {
         }
         for (int i = 0; i < s->npools; i++) vkResetDescriptorPool(g_vk.dev, s->pools[i], 0);
         s->cur_pool = 0;
-        s->seq = submit_seq + 1;
+        pthread_mutex_lock(&seq_lock);
         s->main_begun = s->upload_begun = false;
+        s->seq = submit_seq + 1;
+        pthread_mutex_unlock(&seq_lock);
     }
     return s;
 }
@@ -267,7 +269,9 @@ static void begin_cb(VkCommandBuffer *cb, bool *begun) {
     }
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     VK_CHECK(vkBeginCommandBuffer(*cb, &bi));
+    pthread_mutex_lock(&seq_lock);
     *begun = true;
+    pthread_mutex_unlock(&seq_lock);
 }
 
 static void gp_mark(VkCommandBuffer cb, const char *fmt, ...);
@@ -417,8 +421,8 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     }
     pthread_mutex_lock(&seq_lock);
     submit_seq++;
-    pthread_mutex_unlock(&seq_lock);
     cur_sub = (cur_sub + 1) % SUBS;
+    pthread_mutex_unlock(&seq_lock);
     stat_flushes++;
     cum_submits++;
     ring_retire();
@@ -444,7 +448,13 @@ void renderer_sync(void) {
 
 uint64_t renderer_fence_seq(void) {
     pthread_mutex_lock(&seq_lock);
-    uint64_t q = submit_seq + (subs[cur_sub].main_begun || subs[cur_sub].upload_begun ? 1 : 0);
+    Sub *s = &subs[cur_sub];
+    // After a ring wrap this slot still carries the previous generation's
+    // begun flags until sub() starts a new recording. An empty QueueFenceSync
+    // must name the last real submission, not a future value that submit's
+    // empty-work fast path will never signal.
+    bool pending = s->seq == submit_seq + 1 && (s->main_begun || s->upload_begun);
+    uint64_t q = submit_seq + (pending ? 1 : 0);
     pthread_mutex_unlock(&seq_lock);
     return q;
 }
