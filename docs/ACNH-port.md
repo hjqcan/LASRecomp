@@ -173,6 +173,9 @@ exit or reboot. No JPEG return values or game progress flags are replaced.
 `tools/test_guest_jump.py` compiles synthetic callers and checks nested unwinds,
 same-PC frames with different stacks, thread isolation, reused buffers, RET-based
 longjmp implementations, and calls at fragment boundaries.
+The observed portrait failure returns `-65`; the game's caller then reduces JPEG
+quality and retries. The host checkpoint preserves this guest return value rather
+than replacing it with the host `setjmp` result.
 
 Vulkan screen attachments include ACNH's uncompressed R8/R16F/RG16F buffers,
 not just textures with the compression hint. A captured 720p frame had a 960x540

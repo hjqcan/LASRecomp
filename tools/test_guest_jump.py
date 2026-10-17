@@ -53,7 +53,7 @@ static void deep(Cpu *c) {
     if (setjmp(inner->host)) abort();
     // Same continuation PC in another guest frame must not catch the outer jump.
     rt_guest_jump_mark(inner, 0x2000, saved_sp-16, saved_pc);
-    c->sp=saved_sp; c->pc=c->x[30]=saved_pc; c->x[19]=saved_r19; c->x[0]=7;
+    c->sp=saved_sp; c->pc=c->x[30]=saved_pc; c->x[19]=saved_r19; c->x[0]=0xffffffbfull;
     f_7008000200(c);
     reached_after_jump++;
     abort();
@@ -66,7 +66,7 @@ static void *worker(void *unused) {
     for (int i=0; i<200; i++) {
         Cpu c={0}; c.sp=0x8000; c.x[0]=0x1000; c.x[19]=0x12345678;
         f_7008000000(&c);
-        assert(c.x[0]==7 && c.x[2]==42 && c.x[19]==0x12345678 && c.sp==0x8000);
+        assert(c.x[0]==0xffffffbfull && c.x[2]==42 && c.x[19]==0x12345678 && c.sp==0x8000);
         assert(!rt_guest_jump_head && !reached_after_jump);
     }
     return NULL;
