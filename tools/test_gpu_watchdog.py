@@ -13,6 +13,9 @@ if platform is None:
     raise SystemExit('Vulkan watchdog test requires Windows or Linux')
 host = (root / f'runtime/platform/{platform}.c').read_text(encoding='utf-8')
 terminate = re.search(r'void plat_terminate\(int status\) \{[^}]+\}', host).group()
+device = (root / 'runtime/nvn/vulkan/device.c').read_text(encoding='utf-8')
+idle = device[device.index('static VkResult wait_device_idle('):device.index('\nstatic void recreate_swapchain(')]
+shutdown = device[device.index('static void quick_exit_handler('):device.index('\nvoid ui_window_init(')]
 harness = r'''
 #define _POSIX_C_SOURCE 200809L
 #include "platform.h"
@@ -47,7 +50,19 @@ void plat_sleep_until_ns(uint64_t until) {
     }
 }
 static void delay(unsigned ms) { plat_sleep_until_ns(plat_now_ns() + (uint64_t)ms * 1000000); }
-''' + terminate + r'''
+typedef int VkResult;
+enum { VK_SUCCESS = 0, VK_ERROR_DEVICE_LOST = -4 };
+static struct { int dev; } g_vk;
+static int scenario, exit_status;
+int plat_exit_status(void) { return exit_status; }
+static VkResult vkDeviceWaitIdle(int device) {
+    (void)device;
+    if (scenario == 6) delay(3000);
+    return scenario == 5 ? VK_ERROR_DEVICE_LOST : VK_SUCCESS;
+}
+static void vk_pipeline_cache_save(void) { puts("pipeline cache saved"); }
+#define LOG(...) fprintf(stderr, __VA_ARGS__)
+''' + terminate + '\n' + idle + '\n' + shutdown + r'''
 static void cleanup(void) { puts("GPU cleanup entered"); fflush(stdout); }
 static void *quick_calls(void *arg) {
     (void)arg;
@@ -67,7 +82,7 @@ static void *blocked_call(void *arg) {
 }
 int main(int argc, char **argv) {
     if (argc != 2) return 99;
-    int scenario = atoi(argv[1]);
+    scenario = atoi(argv[1]);
     atexit(cleanup);
     if (scenario == 0) {
         // Reusing slots from many different threads must not exhaust the table.
@@ -91,6 +106,11 @@ int main(int argc, char **argv) {
         vk_watchdog_end(inner);
         delay(3000);
         vk_watchdog_end(outer);
+    } else if (scenario >= 4 && scenario <= 7) {
+        g_vk.dev = 1;
+        exit_status = scenario == 7 ? 7 : 0;
+        atexit(quick_exit_handler);
+        return 0;
     } else return 99;
     puts("completed normally");
     return 0;
@@ -112,4 +132,15 @@ with tempfile.TemporaryDirectory(prefix='gpu-watchdog-') as temp:
         else:
             assert run.returncode == 1 and expected in run.stderr, run
             assert not run.stdout, run  # no caller continuation or atexit cleanup
-print('PASS: cancelled/reused guards, blocked main/worker calls, concurrency, nested calls, and immediate failure termination')
+    for scenario in (4, 5, 6, 7):
+        run = subprocess.run([str(exe), str(scenario)], capture_output=True, text=True, timeout=8)
+        assert run.returncode == {4: 0, 5: 1, 6: 1, 7: 7}[scenario], run
+        if scenario in (4, 7):
+            assert run.stdout.strip() == 'pipeline cache saved', run
+        else:
+            assert not run.stdout, run
+        if scenario == 5:
+            assert 'GPU idle wait failed' in run.stderr, run
+        if scenario == 6:
+            assert 'vkDeviceWaitIdle (exit)' in run.stderr, run
+print('PASS: cancelled/reused guards, blocked main/worker calls, concurrency, nesting, and real shutdown success/error/stall paths')
