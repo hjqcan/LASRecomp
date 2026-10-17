@@ -14,9 +14,10 @@ volatile int g_inject_plus;
 uint64_t input_buttons_now(void) { return 0; }
 bool rando_romfs_override(const char *p, char *o, size_t n) { (void)p; (void)o; (void)n; return false; }
 bool mods_romfs_override(const char *p, char *o, size_t n) { (void)p; (void)o; (void)n; return false; }
+static unsigned texture_uploads;
 void renderer_upload_rgba(NvnTexture *t, const void *p, uint32_t w, uint32_t h, uint32_t s) {
-    (void)t; (void)p; (void)w; (void)h; (void)s;
-    assert(!"unexpected texture output in copy-mode test");
+    assert(t==(NvnTexture *)(uintptr_t)0x1234 && p && w==4 && h==2 && s==16);
+    texture_uploads++;
 }
 
 static void test_decoder_copy(void) {
@@ -50,6 +51,13 @@ static void test_decoder_copy(void) {
     assert(c.x[0]==0 && b.size==4 && !memcmp(dst+8,"abcd",4) && dst[12]==0xa5);
     d.out_size[0]=0; c.x[0]=(uintptr_t)object; dec_get_output_buffer(&c);
     assert(c.x[0]==0 && b.size==0 && b.base==(uintptr_t)(dst+8));
+    // Existing NVN texture output must retain the eight-byte handle range.
+    NvnTexture *texture=(NvnTexture *)(uintptr_t)0x1234;
+    d.video=true; d.output_format=3; d.out_size[0]=256*17;
+    b=(MBuffer){.base=(uintptr_t)&texture,.capacity=8,.size=8};
+    c.x[0]=(uintptr_t)object; dec_get_output_buffer(&c);
+    assert(c.x[0]==0 && b.size==8 && b.base==(uintptr_t)&texture && texture_uploads==1);
+    sws_freeContext(d.sws); free(d.rgba);
 }
 
 int main(int argc, char **argv) {
