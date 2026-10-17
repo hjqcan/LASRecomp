@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import replace
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -28,7 +29,7 @@ class CatalogTests(unittest.TestCase):
             self.write_modules(game)
             plan = inspect_exefs(self.root)
             self.assertEqual(plan['game_id'], game.id)
-            self.assertEqual(plan['installable'], game.id == 'las')
+            self.assertEqual(plan['installable'], game.id in ('las', 'acnh'))
             self.assertEqual(plan['generator_profile'], 'las' if game.id == 'las' else 'generic')
         self.write_modules(get_game('acnh'))
         plan = inspect_exefs(self.root)
@@ -60,7 +61,9 @@ class CatalogTests(unittest.TestCase):
 
     def test_development_gate_precedes_filesystem_changes(self):
         destination = self.root / 'new-parent' / 'game'
-        with self.assertRaisesRegex(ValueError, 'in development'):
+        game = get_game('acnh')
+        development = replace(game, releases=tuple(replace(r, status='development', installable=False) for r in game.releases))
+        with patch('import_game.get_game', return_value=development), self.assertRaisesRegex(ValueError, 'in development'):
             import_game(self.root / 'missing.nsz', None, destination, game_id='acnh')
         self.assertFalse(destination.parent.exists())
 
@@ -74,7 +77,7 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Unsupported content version'):
             validate_metadata(dict(metadata, title_id=game.update_id, role='update', content_version=65536), game=game)
 
-    def test_archive_inspection_reports_development_without_installing(self):
+    def test_archive_inspection_reports_available_beta_without_installing(self):
         game = get_game('acnh')
         archive = self.root / 'example.nsz'
         xml = f'<ContentMeta><Type>Application</Type><Id>{game.application_id}</Id><Version>0</Version></ContentMeta>'
@@ -83,12 +86,12 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(info['game_id'], 'acnh')
         self.assertEqual(info['game_version'], '1.0.0')
         self.assertEqual(info['metadata_source'], 'XML (unverified)')
-        self.assertFalse(info['installable'])
+        self.assertTrue(info['installable'])
         self.assertEqual(list(self.root.iterdir()), [archive])
         # The file picker no longer needs a manually selected title.
         self.assertEqual(inspect_package(archive)['game_id'], 'acnh')
 
-    def test_metadata_free_auto_detection_and_development_import(self):
+    def test_metadata_free_auto_detection_and_default_acnh_import(self):
         game = get_game('acnh')
         files = {m.name: synthetic_nso(m.build_id) for m in game.releases[0].modules}
         files.update({'rtld': b'fixture loader', 'main.npdm': b'fixture metadata'})
@@ -104,11 +107,8 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(info['metadata_source'], 'ExeFS')
         self.assertEqual(info['main_build_id_full'], game.releases[0].main_build_id)
         output = self.root / 'managed' / 'acnh'
-        with redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, 'in development'):
-            import_game(archive, None, output)
-        self.assertFalse(output.parent.exists())
         with patch('import_game.shutil.disk_usage', return_value=SimpleNamespace(free=100 << 30)), redirect_stdout(io.StringIO()):
-            result = import_game(archive, None, output, allow_development=True)
+            result = import_game(archive, None, output)
         self.assertEqual(result['game_id'], 'acnh')
         self.assertEqual((output / 'romfs/Movie/example.bin').read_bytes(), b'original')
         self.assertEqual(inspect_exefs(output / 'exefs')['game_id'], 'acnh')

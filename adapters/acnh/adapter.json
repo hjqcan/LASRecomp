@@ -37,8 +37,8 @@
       "version": "1.0.0",
       "role": "base",
       "content_version": 0,
-      "status": "development",
-      "installable": false,
+      "status": "beta",
+      "installable": true,
       "content": {
         "minimum_files": 66790,
         "image_satisfies_count": true

@@ -1,8 +1,9 @@
 # Animal Crossing: New Horizons port
 
-The shared enhanced runtime is being adapted to the base release
-of Animal Crossing: New Horizons (program ID `01006F8002326000`). It is an active
-port, not a verified playable release. No game code, extracted files, fonts,
+The shared enhanced runtime supports Animal Crossing: New Horizons 1.0.0
+(program ID `01006F8002326000`) as a Windows beta. Normal archive setup is enabled
+for this exact base release after the local acceptance checks recorded below.
+Updates and DLC are not qualified. No game code, extracted files, fonts,
 generated C, compiled game library, or saves belong in commits.
 
 ## Module layout
@@ -363,8 +364,33 @@ its own deadline. LAS retains its existing VI-event/frame-mode pacing.
 `tools/test_nvn_present_interval.py` runs the production NVN entry points with a
 controlled clock, covering intervals, changes, rendering time, stalls, late
 wakes, clock rollback and the LAS path. The old presentation path fails this
-regression. Gameplay acceptance must use the corrected presentation path.
+regression. A subsequent 568.8-second desktop run used the correction, loaded
+the saved island, walked outside, opened and closed the inventory, entered and
+left the tent, and completed Save and End. Indoor and outdoor presentation
+remained about 29.7-29.8 FPS. All four save commits completed, the process exited
+normally, and the files passed all 24 checksums.
 
-Still required: broader island controls, graphics and audio correctness, day
-rollover, further repeated starts, and an extended gameplay run. Update and DLC compatibility remain
-separate follow-up work after the base game passes these checks.
+## Windows beta acceptance, 2026-10-18
+
+The packaged frozen generator and bundled Zig compiler rebuilt all 729 ACNH
+objects, validated the completed installation and published its desktop
+shortcut. The tests used Windows 11 and an Intel Arc Pro 140T Vulkan GPU, strict
+HLE/IPC diagnostics, default shader preparation and independent save copies.
+
+Before the interval correction, a 48.2-minute desktop session loaded an existing
+island, exercised outdoor movement, crossed 05:00 into the next game day,
+completed Nook's morning broadcast, rendered the new rain weather, read mail,
+entered and left the player's tent and resident services, advanced NPC dialogue,
+and entered the airport. It completed 15 multi-commits including manual Save and
+End, exited normally and passed all 24 save checksums. A later desktop launch
+read that progress successfully. This run established scene/save stability and
+exposed the presentation issue; the corrected pacing was checked separately as
+described above.
+
+Real complete imports used locally supplied NSZ archives. NSP, NSZ, XCI and XCZ
+parsing, automatic identity selection, encrypted sections, counter boundaries
+and rejection of mixed or unsupported modules also have synthetic regression
+coverage. The ACNH import regression now succeeds without a development
+override. These checks do not certify every commercial archive or every game
+scene. Full-game progression, additional hardware/platforms, updates and DLC
+remain further compatibility work. Online play and amiibo are unavailable.

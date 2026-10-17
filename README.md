@@ -4,6 +4,13 @@
 
 This fork maintains all enhancements on `enhanced`, while `main` and `beta_5` mirror upstream. Upstream project information follows; report enhanced-edition issues to [this fork](https://github.com/hjqcan/LASRecomp/issues).
 
+The current enhanced source supports separate installations and desktop shortcuts
+for Link's Awakening 1.0.0/1.1.0 and Animal Crossing: New Horizons 1.0.0
+(Windows beta). The launcher identifies supported releases from NSP, NSZ, XCI
+and XCZ archives, imports them and builds their native game libraries.
+See [multi-game setup](docs/multi-game.md) and the
+[ACNH validation and limits](docs/ACNH-port.md).
+
 > [!IMPORTANT]
 > **This project was made almost exclusively with AI.** Nearly all of the code, tooling, reverse engineering and
 > documentation in this repository was written by and will be maintained by an AI (Anthropic's Claude, through Claude Code),

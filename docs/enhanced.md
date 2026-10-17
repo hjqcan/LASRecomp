@@ -13,7 +13,7 @@ This is the independently maintained edition in [hjqcan/LASRecomp](https://githu
 | Feature | Scope |
 | --- | --- |
 | Game setup | Extracted folders, NSP, NSZ, XCI and XCZ base archives, optional supported update archives, local keys, read-only selection inspection |
-| Versions | Build-ID checks, v1.0.0 and v1.1.0 installations, separate saves, libraries and compilation caches |
+| Versions | Link's Awakening 1.0.0/1.1.0 and Animal Crossing: New Horizons 1.0.0 (Windows beta), exact Build-ID checks, separate saves, libraries and compilation caches |
 | UI | English, Simplified Chinese and Traditional Chinese settings; upstream language/font fixes; CRLF settings and HK/MO/Hant locale handling |
 | Compilation | Cancel/resume, SHA-256 source/object receipts, split compiler/generator identities, safe library publication, Windows per-helper job objects |
 | Saves | Atomic file commits including extended flags, automatic/manual snapshots after commit, 20-snapshot retention, validated launcher restore, separation by installation and randomizer seed |
@@ -48,8 +48,10 @@ reviewed per-game adapter definitions, catalog-generated installation selection,
 release-scoped cache identities and Windows desktop shortcuts. Managed setup
 imports and builds a candidate before atomically selecting it; failed builds keep
 the previous installation. ABI 4 requires a one-time game-library rebuild while
-preserving saves and launch IDs. ACNH remains a development adapter with normal
-installation disabled until its gameplay/save acceptance gates pass. Beta 5.2
+preserving saves and launch IDs. ACNH 1.0.0 is enabled as a Windows beta after
+local island, day-rollover, save/reopen and extended-play checks; see
+[its validation record and limits](ACNH-port.md). Other development adapters
+remain unavailable for normal installation. Beta 5.2
 also includes shared audio effects, guest nonlocal-return handling, compute
 workgroup memory and screen-attachment scaling fixes. Vulkan prepares shaders
 ahead of use and shares identical stages while preserving every required draw.
