@@ -351,6 +351,20 @@ island and in the title scene. The HDR level-four red peak fell from about 54 to
 2.4 while the sharp sun remained in level zero. These captures establish the
 sunset-feedback regression, not full graphics compatibility.
 
+Extended acceptance exposed a separate timing issue: ACNH requests NVN present
+interval 2, but the runtime had stored that value without waiting on it. Fast
+indoor scenes consequently presented at 80-90 FPS. Positive intervals on generic
+adapters now pace presentation against the guest's 60 Hz display; interval 2
+requests 30 FPS. The interval interpretation is also documented by
+[FPSLocker](https://github.com/masagrator/FPSLocker#usage).
+The deadline includes rendering time and starts again from the actual present
+time after a stall or a late wake, without catch-up bursts. Each window keeps
+its own deadline. LAS retains its existing VI-event/frame-mode pacing.
+`tools/test_nvn_present_interval.py` runs the production NVN entry points with a
+controlled clock, covering intervals, changes, rendering time, stalls, late
+wakes, clock rollback and the LAS path. The old presentation path fails this
+regression. Gameplay acceptance must use the corrected presentation path.
+
 Still required: broader island controls, graphics and audio correctness, day
 rollover, further repeated starts, and an extended gameplay run. Update and DLC compatibility remain
 separate follow-up work after the base game passes these checks.
