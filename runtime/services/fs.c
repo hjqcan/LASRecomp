@@ -7,7 +7,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #ifdef _WIN32
+#pragma push_macro("IN")
+#pragma push_macro("OUT")
 #include <windows.h>
+#pragma pop_macro("OUT") // keep windows.h's parameter markers out of the IPC helpers
+#pragma pop_macro("IN")
 #endif
 
 #include <pthread.h>
@@ -517,6 +521,7 @@ static void sync_dir_of(const char *path) {
 static int replace_file(const char *from, const char *to) {
 #ifdef _WIN32
     if (MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return 0;
+    LOG("[save] replace %s failed (Windows error %lu)\n", to, (unsigned long)GetLastError());
     errno = EIO;
     return -1;
 #else
@@ -581,8 +586,10 @@ static bool commit(HostFs *fs) {
 }
 typedef struct { DIR *d; char path[1024]; int mode; } HostDir;
 
+// nn::fs closes its files before Commit; an open pending file blocks replacement on Windows.
 static void host_file_close(Service *s) {
     HostFile *f = s->state;
+    if (!f) return;
     if (f->writable && fsync(f->fd)) LOG("[save] flush failed on close: %s (%s)\n", f->path, strerror(errno));
     close(f->fd);
     free(f);
@@ -591,7 +598,8 @@ static void host_file_close(Service *s) {
 
 static void host_directory_close(Service *s) {
     HostDir *d = s->state;
-    closedir(d->d);
+    if (!d) return;
+    if (d->d) closedir(d->d);
     free(d);
     s->state = NULL;
 }

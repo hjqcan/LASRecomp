@@ -13,7 +13,8 @@ extends the flag bitfield (runtime/hle/flags_ext.c, turned on by the seed's `fla
 Logic: LAS's break-bush (sword | powders | bracelet | bombs | rod | boomerang) AND the logic regions of the bush's
 screen. A screen's regions come from the LAS locations on it (location_rooms.json) and the house / cave doors on it
 (entrance_data.yml); a screen with neither takes the regions of the nearest screens that have some - all of them
-must be reachable (conservative: a bush never counts as reachable before the player can get there).
+must be reachable (conservative: a bush never counts as reachable before the player can get there). A bush in a
+pocket of its screen (POCKETS: behind pits / a rock / a crystal) also needs what that pocket's LAS check needs.
 """
 import glob
 import json
@@ -80,7 +81,7 @@ def scan(romfs, leb, pits=False, open_mabe=False):
                 any(abs(x - a.posX) < 0.1 and abs(z - a.posZ) < 0.1 for x, z in tips)
             gone = open_mabe and a.key in OPEN_MABE_REMOVED
             if len(out) < limit and (not only or room_name in only.split(',')) and (pits or not pit) and not gone:
-                out.append({'level': 'Field', 'room': room_name, 'key': a.key, 'n': n})
+                out.append({'level': 'Field', 'room': room_name, 'key': a.key, 'n': n, 'tile': _tile(room_name, a)})
             n += 1
     return out
 
@@ -88,6 +89,40 @@ def scan(romfs, leb, pits=False, open_mabe=False):
 def _screen_pos(room):
     m = re.match(r'Field_(\d\d)([A-P])$', room)
     return (int(m.group(1)), ord(m.group(2)) - ord('A')) if m else None
+
+
+def _tile(room, actor):
+    """The screen tile (0-79, row-major, as digs.py numbers them) an actor stands on, None off the screen."""
+    pos = _screen_pos(room)
+    if pos is None:
+        return None
+    tx, tz = int((actor.posX - pos[1] * 15.0) // 1.5), int((actor.posZ - (pos[0] - 1) * 12.0) // 1.5)
+    return tz * 10 + tx if 0 <= tx < 10 and 0 <= tz < 8 else None
+
+
+def _cols(rows, cols, skip=()):
+    return frozenset(r * 10 + c for r in rows for c in cols) - set(skip)
+
+
+# Pockets: parts of a screen walled off from the rest by pits, rocks or crystals, where LAS's own check there needs
+# the item that gets Link in (issue #81: a bush next to the Tail Key chest counted as open once the woods were - it
+# held the shovel, and the only ways across the pits, feather / rooster / powder, were all buried). A bush or dig
+# tile in a pocket needs that check's condition too. Tiles from each screen's grid (pits / collision around the check).
+POCKETS = {
+    'Field_05B': ('powders | rooster | feather', _cols(range(2, 8), range(0, 7), skip=(50, 60))),  # woods-north-chest
+    'Field_05H': ('feather | hookshot | rooster', _cols([1], range(2, 6))),                      # north-wasteland
+    'Field_08B': ('bracelet', _cols([4, 5], range(2, 6)) | _cols([6], range(3, 7))),             # woods-south-chest
+    'Field_02I': ('bracelet & break-crystal', _cols(range(2, 6), range(4, 7))),                  # taltal-east-left-chest
+    # taltal-ledge-chest: the walled courtyard from the cave door (tile 1) down the corridor (col 3) to the chest
+    'Field_02N': ('bombs', _cols([0], [1]) | _cols(range(1, 4), range(1, 4)) | _cols([4, 5], [3]) | _cols([6], [3, 4])
+                  | _cols([7], range(3, 6))),
+}
+
+
+def pocket_condition(room, tile):
+    """What it takes to stand on a tile beyond a screen's own regions (None: nothing more)."""
+    cond, tiles = POCKETS.get(room, (None, ()))
+    return cond if tile in tiles else None
 
 
 def screen_regions():
@@ -136,7 +171,7 @@ def add_to_logic(bushes, logic_defs, item_defs, traps='none', rng=None):
         if not regs:
             continue
         name = location_name(b)
-        cond = pots._and(*regs[1:], 'break-bush')
+        cond = pots._and(*regs[1:], pocket_condition(b['room'], b.get('tile')), 'break-bush')
         logic_defs[name] = {'type': 'item', 'subtype': 'standing', 'content': 'rupee-5', 'region': regs[0],
                             'spoiler-region': spoiler_of.get(regs[0], 'mabe-village'), 'condition-basic': cond}
         locs[name] = b

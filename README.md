@@ -28,6 +28,7 @@ native Windows, macOS and Linux application.
 > [!NOTE]
 > **No game files are included.** LAS Recomp needs your own legally obtained copy of *Link's Awakening*:
 > extracted **v1.0.0 / v1.1.0** game files, or a base **NSP / NSZ / XCI / XCZ** with an optional **v1.1.0 update**. Encrypted content uses your own local keys.
+> For extracted files, select the game folder containing `exefs` and `romfs`.
 > Both versions support Vanilla mode. v1.1.0 Randomizer support is experimental and requires newly generated, version-specific seeds.
 > See [archive import, saves and v1.1.0 support](docs/NSZ-and-v110.md) for accepted builds and input limitations.
 > Instructions on how to obtain game files will **NOT** be provided.
