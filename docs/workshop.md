@@ -64,6 +64,8 @@ The synthetic test covers challenge transitions, malformed presets/route data, s
 
 ## Further research
 
+Developer-only [isolated HID/timing/camera captures](research-capture.md) now provide repeatable experiments and explicit divergence reports. They are separate from the route viewer and never enable during ordinary play.
+
 Higher refresh rates need separation of simulation, input, animation and rendering clocks. The existing `runtime/hle/framepace.c` experiments do not fix fixed-step walking. Next checks should compare movement distances, collision outcomes, animation lengths, audio and timers over the same route at several presentation rates before exposing a setting.
 
 Deterministic replay requires capturing a starting state, random-number state, asynchronous events and simulation-tick inputs. Observed presentation samples are insufficient. A useful next milestone is an explicit state checksum per simulation tick with a controlled replay harness.

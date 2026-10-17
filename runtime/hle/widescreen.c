@@ -8,6 +8,7 @@
 
 #include "../hle.h"
 #include "../settings.h"
+#include "../research.h"
 
 #define BACKDROP_HASHES 0x71fe31bbf03c3515ull
 
@@ -149,6 +150,7 @@ void widescreen_scene_ubo(const float *u, uint64_t size) {
     uint64_t f = renderer_present_count();
     if (size != 320 || g_vp_frame == f) return;  // (the frame's first scene draw)
     if (u[12] != 0 || u[13] != 0 || u[14] != 0 || u[15] != 1 || u[30] != -1 || u[31] != 0) return;  // perspective
+    research_camera(f,u);
     memcpy(g_vp, u + 32, sizeof g_vp);
     g_vp_frame = f;
 }

@@ -541,7 +541,7 @@ void backend_present(NvnTexture *t) {
         bool shot = win_shot && (long)total_frames + 1 == win_shot;
         vk_frame_end(photo_path ? photo_path : shot ? (getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/window.png") : NULL);
         if (photo_path) photo_mode_capture_done();
-        if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) { fflush(stderr); _exit(0); }
+        if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) { extern void research_finish(void); research_finish(); fflush(stderr); _exit(0); }
     } else {
         renderer_submit();
     }
@@ -620,7 +620,7 @@ void backend_present(NvnTexture *t) {
                  (unsigned long long)total_frames);
         renderer_save_texture_tex(b, path);
         // a series (SCREENSHOT_FROM) runs on until LARECOMP_WINDOW_SHOT exits
-        if (getenv("LARECOMP_EXIT_AFTER_SHOT") && !shot_from) { fflush(stderr); _exit(0); }
+        if (getenv("LARECOMP_EXIT_AFTER_SHOT") && !shot_from) { extern void research_finish(void); research_finish(); fflush(stderr); _exit(0); }
     }
     double now = SDL_GetTicks() / 1000.0;
     static double fps_iv = -1, prev_present, max_gap;

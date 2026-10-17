@@ -14,6 +14,7 @@
 #include "../nvn/nvn.h"
 #include "../nvn/renderer.h"
 #include "../settings.h"
+#include "../research.h"
 #include "../input_bind.h"
 
 enum {
@@ -495,6 +496,11 @@ static void fill_state(Cpu *c) {
         int32_t st[4] = {lx, ly, rx, ry};
         b = pets_menu_input(b, st);
         lx = st[0], ly = st[1], rx = st[2], ry = st[3];
+    }
+    if (title_is_las() && research_active()) {
+        extern uint64_t renderer_present_count(void);
+        int32_t axes[4]={lx,ly,rx,ry};research_input(renderer_present_count(),&b,axes);
+        lx=axes[0];ly=axes[1];rx=axes[2];ry=axes[3];
     }
     *(uint64_t *)(s + 8) = b;
     { extern void workshop_game_tick(uint64_t frame,uint64_t buttons,int lx,int ly,int rx,int ry);

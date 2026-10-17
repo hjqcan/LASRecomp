@@ -14,6 +14,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: python tools/test_workshop.py
+      - run: python tools/test_research.py
+      - run: python tools/test_research_analyze.py
   windows:
     runs-on: windows-latest
     defaults:
@@ -27,3 +29,5 @@ jobs:
           update: true
           install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-python
       - run: CC=gcc CXX=g++ python tools/test_workshop.py
+      - run: CXX=g++ python tools/test_research.py
+      - run: python tools/test_research_analyze.py
