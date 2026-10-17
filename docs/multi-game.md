@@ -187,3 +187,12 @@ callers can recycle in-flight resources. This path bypasses the normal renderer
 shutdown, whose device-idle wait is unbounded. The injected timeout regression
 uses no GPU and verifies that neither caller continuation nor GPU cleanup runs;
 it does not establish that the original driver hang is fixed.
+
+An independent CPU thread also monitors submission, presentation, image acquire,
+and device-idle calls. If a driver call does not return within 20 seconds of
+awake time, it records the operation and submission number and terminates the
+process without querying or cleaning up the GPU. Windows sleep and hibernation
+are excluded from this clock. Window-image acquisition uses a finite wait and
+minimized windows are skipped. Mocked blocking calls test cancellation, thread
+and slot reuse, simultaneous calls, nesting and termination without exit handlers;
+no real driver hang is deliberately induced by these tests.

@@ -49,6 +49,7 @@ static void rt_fatal_msg(const char *fmt, ...) {
 void vk_devlost_dump(void) { puts("device dump"); }
 static void vk_device_fault_report(void) { puts("fault report"); }
 #define FATAL(...) do { rt_fatal_msg(__VA_ARGS__); exit(7); } while (0)
+#define VK_WATCHDOG(operation, sequence, statement) do { statement; } while (0)
 ''' + terminate + '\n' + wait + r'''
 static void cleanup(void) { puts("GPU cleanup entered"); fflush(stdout); }
 int main(int argc, char **argv) {

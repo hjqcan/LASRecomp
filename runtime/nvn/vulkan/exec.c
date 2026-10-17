@@ -19,6 +19,7 @@
 #include "../../kernel.h"
 #include "shaders.h"
 #include "shader_jobs.h"
+#include "gpu_watchdog.h"
 #include "vk.h"
 #include "../renderer.h"
 #include "../render_control.h"
@@ -88,7 +89,8 @@ void vk_wait_seq(uint64_t seq) {
     VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_vk.timeline,
                               .pValues = &seq};
     uint64_t t0 = SDL_GetTicksNS();
-    VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 10ull * 1000000000ull);
+    VkResult r;
+    VK_WATCHDOG("vkWaitSemaphores", seq, r = vkWaitSemaphores(g_vk.dev, &wi, 10ull * 1000000000ull));
     stat_wait_ns += SDL_GetTicksNS() - t0;
     cum_wait += SDL_GetTicksNS() - t0;
     wait_account(SDL_GetTicksNS() - t0);
@@ -405,7 +407,8 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     {
         PROF_T0();
         dl_note("submit %llu", (unsigned long long)submit_seq + 1);
-        VkResult sr = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE);
+        VkResult sr;
+        VK_WATCHDOG("vkQueueSubmit2", submit_seq + 1, sr = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE));
         if (sr == VK_ERROR_DEVICE_LOST) vk_devlost_dump();
         VK_CHECK(sr);
         PROF_ADD(prof_submit);

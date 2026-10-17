@@ -13,6 +13,7 @@
 #include "../../settings.h"
 #include "../../ui/menu.h"
 #include "vk.h"
+#include "gpu_watchdog.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 
@@ -345,8 +346,14 @@ static void create_swapchain(void) {
     }
 }
 
+static VkResult wait_device_idle(const char *operation) {
+    VkResult result;
+    VK_WATCHDOG(operation, 0, result = vkDeviceWaitIdle(g_vk.dev));
+    return result;
+}
+
 static void recreate_swapchain(void) {
-    vkDeviceWaitIdle(g_vk.dev);
+    VK_CHECK(wait_device_idle("vkDeviceWaitIdle (resize)"));
     create_swapchain();
 }
 
@@ -387,10 +394,20 @@ static void image_barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, V
 typedef struct { uint32_t image; VkSemaphore acquired; bool ok; } Frame;
 static Frame cur_frame;
 
+static VkResult acquire_frame_image(VkSemaphore semaphore, uint32_t *image) {
+    VkResult result;
+    // An occluded surface may not provide an image yet. Return to the event loop
+    // periodically instead of treating that legitimate wait as a stalled driver.
+    VK_WATCHDOG("vkAcquireNextImageKHR", 0,
+                result = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 1000000000ull, semaphore, VK_NULL_HANDLE, image));
+    return result;
+}
+
 // Acquire the next window image and begin rendering into it (cleared to `clear`). Returns false when there is
 // nothing to draw into (minimised window).
 bool vk_frame_begin(const float clear[4]) {
     cur_frame.ok = false;
+    if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) return false;
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
     if (!w || !h) return false;  // minimised
@@ -403,12 +420,12 @@ bool vk_frame_begin(const float clear[4]) {
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
     WAITING(vk_wait_seq(slot_seq[slot]));
     VkResult r;
-    WAITING(r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image));
+    WAITING(r = acquire_frame_image(acquire_sem[slot], &cur_frame.image));
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
-        WAITING(r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE,
-                                          &cur_frame.image));
+        WAITING(r = acquire_frame_image(acquire_sem[slot], &cur_frame.image));
     }
+    if (r == VK_TIMEOUT || r == VK_NOT_READY) return false;
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { LOG("[vk] acquire failed: %d\n", r); return false; }
     cur_frame.acquired = acquire_sem[slot];
     slot_seq[slot] = vk_pending_seq();
@@ -477,7 +494,7 @@ void vk_frame_end(const char *shot_path) {
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done_sem[img],
                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
     VkResult r;
-    WAITING(r = vkQueuePresentKHR(g_vk.queue, &pi));
+    WAITING(VK_WATCHDOG("vkQueuePresentKHR", seq, r = vkQueuePresentKHR(g_vk.queue, &pi)));
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreate_swapchain();
     cur_frame.ok = false;
     if (shot_path) {
@@ -685,16 +702,22 @@ static void quick_exit_handler(void) {
     static int trace = -1;
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
     if (trace) LOG("[vk] exit: waiting for the GPU\n");
+    int status = plat_exit_status();
     if (g_vk.dev) {
-        vkDeviceWaitIdle(g_vk.dev);
-        if (trace) LOG("[vk] exit: saving the pipeline cache\n");
-        vk_pipeline_cache_save();
+        VkResult result = wait_device_idle("vkDeviceWaitIdle (exit)");
+        if (result == VK_SUCCESS) {
+            if (trace) LOG("[vk] exit: saving the pipeline cache\n");
+            vk_pipeline_cache_save();
+        } else {
+            LOG("[vk] exit: GPU idle wait failed (%d); skipping pipeline cache\n", result);
+            if (!status) status = 1;
+        }
     }
     if (trace) LOG("[vk] exit: terminating\n");
     fflush(stdout);
     fflush(stderr);
 #if defined(_WIN32) || defined(__linux__)
-    plat_terminate(plat_exit_status());
+    plat_terminate(status);
 #endif
 }
 
@@ -740,7 +763,7 @@ void backend_init(void) {
 // ---- in-place reboot (runtime/main.c teardown; main thread, guest threads stopped)
 void backend_reset(void) {
     if (!g_vk.dev) return;
-    vkDeviceWaitIdle(g_vk.dev);
+    VK_CHECK(wait_device_idle("vkDeviceWaitIdle (reset)"));
     extern void vk_textures_reset(void);
     extern void vk_exec_reset(void);
     vk_textures_reset();
