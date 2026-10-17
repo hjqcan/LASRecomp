@@ -34,6 +34,12 @@ also needs `romfs/Movie/OpeningMovie.webm` from the same local data.
 Both path-only and client-reader movie source overloads open local files;
 failed source changes clear old tracks and packets. `tools/test_movie_source.c`
 uses a synthetic PCM/WAV fixture to check both overloads and error cleanup.
+The public movie buffer layout supports the game's inline base/size accessors.
+Copy-mode output preserves the caller's allocation: PCM is copied into it,
+and NV12 format 4 strips the host decoder's row and plane padding. Replacing
+the buffer's base pointer left the game's upload allocation empty. The output
+size and alignment query writes two 32-bit integers. Synthetic tests check
+the retained pointer, tight NV12 rows, undersized-buffer rejection and canaries.
 The executable/library filenames currently retain their inherited LAS names.
 
 Run `build/lasrecomp.exe extracted --play` with an isolated `LARECOMP_DATA_ROOT`

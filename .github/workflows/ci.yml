@@ -95,7 +95,7 @@ jobs:
           build/test-time.exe
           clang -std=gnu11 -O1 -DTEST_AUDIO_RENDERER tools/test_audio_splitter.c -o build/test-audio-renderer.exe
           build/test-audio-renderer.exe
-          clang -std=gnu11 -O1 tools/test_movie_source.c -lavformat -lavcodec -lavutil -o build/test-movie-source.exe
+          clang -std=gnu11 -O1 tools/test_movie_source.c -lavformat -lavcodec -lavutil -lswscale -o build/test-movie-source.exe
           mkdir -p build/movie-source-test
           build/test-movie-source.exe build/movie-source-test
           clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe
