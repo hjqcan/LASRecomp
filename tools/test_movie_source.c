@@ -15,6 +15,11 @@ uint64_t input_buttons_now(void) { return 0; }
 bool rando_romfs_override(const char *p, char *o, size_t n) { (void)p; (void)o; (void)n; return false; }
 bool mods_romfs_override(const char *p, char *o, size_t n) { (void)p; (void)o; (void)n; return false; }
 static unsigned texture_uploads;
+static bool gpu_upload;
+bool renderer_upload_nv12(NvnTexture *t, const void *p, uint32_t w, uint32_t h, uint32_t stride, uint32_t uv_off) {
+    assert(t==(NvnTexture *)(uintptr_t)0x1234 && p && w==4 && h==2 && stride==256 && uv_off==4096);
+    return gpu_upload;
+}
 void renderer_upload_rgba(NvnTexture *t, const void *p, uint32_t w, uint32_t h, uint32_t s) {
     assert(t==(NvnTexture *)(uintptr_t)0x1234 && p && w==4 && h==2 && s==16);
     texture_uploads++;
@@ -56,6 +61,8 @@ static void test_decoder_copy(void) {
     d.video=true; d.output_format=3; d.out_size[0]=256*17;
     b=(MBuffer){.base=(uintptr_t)&texture,.capacity=8,.size=8};
     c.x[0]=(uintptr_t)object; dec_get_output_buffer(&c);
+    assert(c.x[0]==0 && b.size==8 && b.base==(uintptr_t)&texture && texture_uploads==1);
+    gpu_upload=true; c.x[0]=(uintptr_t)object; dec_get_output_buffer(&c);
     assert(c.x[0]==0 && b.size==8 && b.base==(uintptr_t)&texture && texture_uploads==1);
     sws_freeContext(d.sws); free(d.rgba);
 }

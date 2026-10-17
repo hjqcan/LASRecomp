@@ -776,6 +776,7 @@ static void dec_get_output_buffer(Cpu *c) {
         if (gpu < 0) gpu = !getenv("LARECOMP_MOVIE_CPU_CONVERT");
         if (gpu && renderer_upload_nv12(t, d->out_mem[i], (uint32_t)w, (uint32_t)h, (uint32_t)d->stride,
                                         (uint32_t)(d->stride * ((h + 15) & ~15)))) {
+            b->size = 8;
             c->x[0] = 0;
             return;
         }
