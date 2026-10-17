@@ -1,6 +1,7 @@
 // Developer-only observations and final HID-input playback. Never enabled for normal play.
 #include "../research.h"
 #include "../research_update.h"
+#include "../research_seed.h"
 #include "../gameversion.h"
 #include "../platform.h"
 #include <algorithm>
@@ -22,9 +23,11 @@ namespace fs=std::filesystem;
 namespace {
 struct Row { ResearchInput input{}; RouteSample state{}; uint64_t frame,ns,timers,vsyncs,digest=0; uint32_t interval; bool observed=false; };
 struct Camera { uint64_t frame,ns;std::array<float,48> matrices; };
-struct Phase { ResearchPhaseSample sample;uint64_t ns,digest,polls,timers,vsyncs;int kind;bool before; };
+struct Phase { ResearchPhaseSample sample;uint64_t ns,digest,polls,timers,vsyncs;int kind;bool before;ResearchIoStats io; };
 struct External { int kind;uint64_t pc,index,value,ns;uint32_t thread;size_t updates;bool ready; };
 std::mutex lock;
+std::mutex io_lock;
+ResearchIoStats io_stats{};
 std::atomic<bool> enabled;
 std::atomic<uint64_t> timer_calls,period{16666667};
 std::atomic<uint32_t> last_interval;
@@ -50,6 +53,18 @@ extern "C" volatile uint64_t g_vsync_count;
 extern "C" bool research_active(void) { return enabled.load(std::memory_order_relaxed); }
 extern "C" bool research_phases_active(void) { return research_active()&&phase_capture; }
 extern "C" bool research_semantics_active(void) { return research_active()&&semantics; }
+extern "C" uint64_t research_elapsed_ns(void) { return plat_now_ns()-start_ns; }
+extern "C" bool research_io_begin(void) {
+    if(!research_semantics_active())return false;
+    std::lock_guard<std::mutex> guard(io_lock);++io_stats.started;return true;
+}
+extern "C" void research_io_end(int64_t bytes) {
+    std::lock_guard<std::mutex> guard(io_lock);++io_stats.completed;
+    if(bytes<0)++io_stats.failed;else io_stats.bytes+=(uint64_t)bytes;
+}
+extern "C" ResearchIoStats research_io_snapshot(void) {
+    std::lock_guard<std::mutex> guard(io_lock);return io_stats;
+}
 extern "C" void research_external(int kind,uint64_t pc,uint32_t thread,uint64_t index,uint64_t value) {
     if(!research_semantics_active())return;
     std::lock_guard<std::mutex> guard(lock);if(!research_semantics_active())return;
@@ -68,7 +83,7 @@ extern "C" bool research_boot(const char *root,const char *save,char *why,size_t
     const char *record=getenv("LARECOMP_RESEARCH_CAPTURE"),*tape=getenv("LARECOMP_RESEARCH_REPLAY"),*rate=getenv("LARECOMP_RESEARCH_HZ");
     const char *phase_option=getenv("LARECOMP_RESEARCH_PHASES");
     const char *semantics_option=getenv("LARECOMP_RESEARCH_SEMANTICS");
-    if (!record&&!tape&&!rate&&!phase_option&&!semantics_option&&!research_update_configured()) return true;
+    if (!record&&!tape&&!rate&&!phase_option&&!semantics_option&&!getenv("LARECOMP_RESEARCH_STARTUP_SEED")&&!research_update_configured()) return true;
     try {
         if ((!record&&!tape)||(record&&tape)||!save||!*save) throw std::runtime_error("Research needs exactly one capture/replay mode and an isolated workshop save.");
         if(record&&strcmp(record,"1"))throw std::runtime_error("Research capture must be explicitly set to 1.");
@@ -80,6 +95,7 @@ extern "C" bool research_boot(const char *root,const char *save,char *why,size_t
         if(!research_update_boot(id,tape,update_error,sizeof update_error))throw std::runtime_error(update_error);
         if(semantics_option&&(strcmp(semantics_option,"1")||!research_update_active()))
             throw std::runtime_error("Semantic observations require update mode and an explicit value of 1.");
+        if(!research_seed_boot(semantics_option!=nullptr,update_error,sizeof update_error))throw std::runtime_error(update_error);
         int hz=60;
         if(rate) { if(strcmp(rate,"30")&&strcmp(rate,"60")&&strcmp(rate,"120")) throw std::runtime_error("Research frequency must be 30, 60 or 120 Hz.");hz=atoi(rate); }
         replay.clear();
@@ -92,6 +108,7 @@ extern "C" bool research_boot(const char *root,const char *save,char *why,size_t
         if(!fs::create_directory(path)) throw std::runtime_error("Research output directory already exists or is unavailable.");
         directory=path.u8string();build_id=id;replaying=tape!=nullptr;replay_at=0;
         semantics=semantics_option!=nullptr;external_truncated=false;external.clear();
+        {std::lock_guard<std::mutex> guard(io_lock);io_stats={};}
         if(semantics)external.reserve(64);
         phase_capture=phase_option!=nullptr||research_update_active();phases_truncated=false;phases.clear();
         if(phase_capture)phases.reserve(16000);
@@ -126,11 +143,14 @@ extern "C" void research_state(const RouteSample *sample,const void *fields,size
 extern "C" void research_phase(int phase,bool before,const ResearchPhaseSample *sample,const void *fields,size_t size) {
     if(!research_phases_active()||phase<0||phase>=RESEARCH_PHASE_COUNT)return;
     std::lock_guard<std::mutex> guard(lock);if(!research_active())return;
+    std::array<unsigned char,0x259> copy;
+    if(research_semantics_active()&&fields&&size==copy.size()){memcpy(copy.data(),fields,size);fields=copy.data();}
     uint64_t hash=fields&&size?digest(fields,size):0;
     uint64_t ns=sample->state.now_ns-start_ns,timers=timer_calls.load(),vsyncs=__atomic_load_n(&g_vsync_count,__ATOMIC_RELAXED);
-    if(phase==RESEARCH_PHASE_UPDATE)research_update_phase(before,sample,hash,ns,timers,vsyncs);
+    ResearchDetails details{research_io_snapshot(),fields,size};
+    if(phase==RESEARCH_PHASE_UPDATE)research_update_phase(before,sample,hash,ns,timers,vsyncs,&details);
     if(phases.size()>=120000){phases_truncated=true;return;}
-    phases.push_back({*sample,ns,hash,rows.size(),timers,vsyncs,phase,before});
+    phases.push_back({*sample,ns,hash,rows.size(),timers,vsyncs,phase,before,details.io});
 }
 extern "C" void research_camera(uint64_t frame,const float *matrices) {
     if(!research_active())return;
@@ -160,14 +180,17 @@ extern "C" void research_finish(void) {
         for(const auto &c:cameras){camera<<c.frame<<','<<c.ns;for(float f:c.matrices)camera<<','<<f;camera<<'\n';}
         if(phase_capture) {
             std::ofstream output(root/"phases.csv",std::ios::binary);output.imbue(std::locale::classic());output<<std::setprecision(9);
-            output<<"event,phase,before,thread,frame,elapsed_ns,counter,delta,blocked,object,caller,observed,playing,level,hp,position,x,y,z,save_digest,poll_count,timer_calls,vsyncs\n";
+            output<<"event,phase,before,thread,frame,elapsed_ns,counter,delta,blocked,object,caller,observed,playing,level,hp,position,x,y,z,save_digest,poll_count,timer_calls,vsyncs,rng_observed,rng0,rng1,rng2,rng3,io_started,io_completed,io_bytes,io_failed\n";
             for(size_t i=0;i<phases.size();++i){const auto &p=phases[i];const auto &a=p.sample;const auto &s=a.state;
                 output<<i<<','<<p.kind<<','<<p.before<<','<<a.thread<<','<<s.frame<<','<<p.ns<<','<<a.counter<<','<<a.delta<<','<<a.blocked<<','<<a.object<<','<<a.caller
                       <<','<<a.observed<<','<<s.playing<<','<<s.level<<','<<s.hp<<','<<s.position<<','<<s.x<<','<<s.y<<','<<s.z<<','<<p.digest
-                      <<','<<p.polls<<','<<p.timers<<','<<p.vsyncs<<'\n';}
+                      <<','<<p.polls<<','<<p.timers<<','<<p.vsyncs<<','<<a.rng_observed;
+                for(auto v:a.rng)output<<','<<v;
+                output<<','<<p.io.started<<','<<p.io.completed<<','<<p.io.bytes<<','<<p.io.failed<<'\n';}
             output.close();if(!output)throw std::runtime_error("Phase export could not be completed.");
         }
         if(semantics) {
+            if(!research_seed_export(directory.c_str(),why,sizeof why))throw std::runtime_error(why);
             std::ofstream output(root/"external.csv",std::ios::binary);output.imbue(std::locale::classic());
             output<<"event,kind,pc,thread,index,value,elapsed_ns,completed_updates,gate_ready\n";
             for(size_t i=0;i<external.size();++i){const auto &e=external[i];

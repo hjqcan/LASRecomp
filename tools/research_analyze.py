@@ -8,6 +8,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from research_semantics import actor_comparison, actor_report, external_comparison, external_report, rng_comparison, rng_report, rng_state
+from research_causality import byte_comparison, loading_report, save_windows, seed_report
 
 
 def matrix_product(a, b):
@@ -72,9 +73,9 @@ def phase_report(rows):
     return result
 
 
-def load_csv(path, limit):
-    if path.stat().st_size > 32 * 1024 * 1024:
-        raise ValueError('Research CSV exceeds 32 MiB')
+def load_csv(path, limit, max_bytes=32 * 1024 * 1024):
+    if path.stat().st_size > max_bytes:
+        raise ValueError('Research CSV exceeds its byte limit')
     with path.open(newline='', encoding='utf-8') as stream:
         rows = []
         for row in csv.DictReader(stream):
@@ -133,7 +134,8 @@ def pose_comparison(a, b):
             key = 'update' if 'update' in x and 'update' in y else 'poll'
             first = {'comparison_index': i, f'left_{key}': int(x[key]), f'right_{key}': int(y[key]), 'distance': distance}
     return {'available_pairs': count, 'max_position_difference': maximum, 'first_position_difference': first,
-            'note': 'Only compares available positions in the same level; the raw save-region digest may include non-gameplay fields.'}
+            'note': 'Only compares available positions in the same level. Availability is an observer flag, not proof of active gameplay; '
+                    'blocked transitions may expose zero or stale positions. The raw save-region digest may include non-gameplay fields.'}
 
 
 def timing(rows):
@@ -249,14 +251,22 @@ def analyze(left, right=None):
     a = observations(a_folder)
     result = {'left': timing(a), 'left_camera': camera_report(load_csv(a_folder / 'camera.csv', 12000)),
               'scope': 'HID-poll observations and selected serialized save fields; not full simulation state'}
-    if (a_folder / 'phases.csv').exists():
-        result['left_phases'] = phase_report(load_csv(a_folder / 'phases.csv', 120000))
+    a_phases = load_csv(a_folder / 'phases.csv', 120000, 64*1024*1024) if (a_folder / 'phases.csv').exists() else []
+    if a_phases:
+        result['left_phases'] = phase_report(a_phases)
     a_updates = None
+    a_windows = None
     if (a_folder / 'updates.csv').exists():
         a_updates = observations(a_folder, 'updates.csv', 'update')
         result['left_updates'] = update_timing(a_updates)
         result['left_rng'] = rng_report(a_updates)
         result['left_start_state'] = start_state(a_folder / 'start-state.ini')
+        result['left_loading'] = loading_report(a_updates)
+        if (a_folder / 'seed-events.csv').exists():
+            result['left_seed'] = seed_report(load_csv(a_folder / 'seed-events.csv', 128), a_phases, result['left_start_state'])
+        if (a_folder / 'save-windows.csv').exists():
+            a_windows = save_windows(load_csv(a_folder / 'save-windows.csv', 12001), a_updates, result['left_start_state'])
+            result['left_save_windows'] = {'samples_including_start': len(a_windows), 'available': sum(x is not None for x in a_windows)}
         if (a_folder / 'inputs.lastape').exists():
             result['left_motion_segments'] = input_motion_segments(a_updates, inputs(a_folder)[2])
     a_external = load_csv(a_folder / 'external.csv', 4096) if (a_folder / 'external.csv').exists() else None
@@ -287,8 +297,9 @@ def analyze(left, right=None):
             if a_external is not None:
                 result['external_comparison'] = external_comparison(a_external, b_external)
         result['right_camera'] = camera_report(load_csv(b_folder / 'camera.csv', 12000))
-        if (b_folder / 'phases.csv').exists():
-            result['right_phases'] = phase_report(load_csv(b_folder / 'phases.csv', 120000))
+        b_phases = load_csv(b_folder / 'phases.csv', 120000, 64*1024*1024) if (b_folder / 'phases.csv').exists() else []
+        if b_phases:
+            result['right_phases'] = phase_report(b_phases)
         result['poll_alignment'] = divergence(a, b)
         a_play = next((i for i, r in enumerate(a) if r['playing'] == '1'), len(a))
         b_play = next((i for i, r in enumerate(b) if r['playing'] == '1'), len(b))
@@ -299,6 +310,14 @@ def analyze(left, right=None):
             result['right_updates'] = update_timing(b_updates)
             result['right_rng'] = rng_report(b_updates)
             result['right_start_state'] = start_state(b_folder / 'start-state.ini')
+            result['right_loading'] = loading_report(b_updates)
+            if (b_folder / 'seed-events.csv').exists():
+                result['right_seed'] = seed_report(load_csv(b_folder / 'seed-events.csv', 128), b_phases, result['right_start_state'])
+            if (b_folder / 'save-windows.csv').exists():
+                b_windows = save_windows(load_csv(b_folder / 'save-windows.csv', 12001), b_updates, result['right_start_state'])
+                result['right_save_windows'] = {'samples_including_start': len(b_windows), 'available': sum(x is not None for x in b_windows)}
+                if a_windows is not None:
+                    result['save_byte_comparison'] = byte_comparison(a_windows, b_windows, a_external or [], b_external or [])
             result['right_motion_segments'] = input_motion_segments(b_updates, b_inputs)
             if a_updates is not None:
                 result['update_alignment'] = divergence(a_updates, b_updates, 'updates')
@@ -312,10 +331,18 @@ def analyze(left, right=None):
                         'raw_region_digest_match': x['save_digest'] == y['save_digest'],
                         'rng_match': rng_state(x) == rng_state(y) if rng_state(x) is not None and rng_state(y) is not None else None,
                         'note': 'This subset does not establish equality of the complete process state.'}
+                if 'left_seed' in result and 'right_seed' in result:
+                    x, y = result['left_seed'], result['right_seed']
+                    n, m = x.get('inferred_initial_to_gate_advances'), y.get('inferred_initial_to_gate_advances')
+                    result['seed_comparison'] = {
+                        'same_effective_seed': x.get('effective_seed') == y.get('effective_seed') if 'effective_seed' in x and 'effective_seed' in y else None,
+                        'same_original_return': x.get('original_return') == y.get('original_return') if 'original_return' in x and 'original_return' in y else None,
+                        'inferred_gate_consumption_difference': m-n if n is not None and m is not None else None,
+                        'note': 'A fixed seed is one controlled input; other initialization and loading can still differ.'}
         result['deterministic_replay'] = 'not_established' # Even matching this subset cannot certify the whole simulation.
         if 'update_alignment' in result:
             differences = []
-            for key in ('update_alignment', 'rng_comparison', 'actor_comparison'):
+            for key in ('update_alignment', 'rng_comparison', 'actor_comparison', 'save_byte_comparison'):
                 item = result.get(key, {}).get('first_difference')
                 if item is not None:
                     differences.append({'observation': key, 'detail': item})

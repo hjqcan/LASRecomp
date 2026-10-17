@@ -16,7 +16,8 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run(shlex.split(os.environ.get('CXX', 'clang++')) + [
         '-std=c++17', '-Wall', '-Wextra', '-Iruntime', '-x', 'c++',
         'tools/test_research_runtime.cpp', 'runtime/ui/research_tape.mm', 'runtime/ui/research.mm',
-        'runtime/ui/research_update.mm', 'runtime/research_gate.c',
+        'runtime/ui/research_update.mm', 'runtime/ui/research_seed.mm',
+        'runtime/research_gate.c', 'runtime/research_seed.c',
         '-o', str(runtime)], cwd=ROOT, check=True)
     subprocess.run([str(runtime), str(root / 'runtime-fixtures')], check=True)
     update = root / ('update.exe' if os.name == 'nt' else 'update')
@@ -30,3 +31,9 @@ with tempfile.TemporaryDirectory() as tmp:
         '-std=c++17', '-Wall', '-Wextra', '-Iruntime', '-x', 'c++',
         'tools/test_research_actors.cpp', 'runtime/research_actors.c', '-o', str(actors)], cwd=ROOT, check=True)
     subprocess.run([str(actors)], check=True)
+    seed = root / ('seed.exe' if os.name == 'nt' else 'seed')
+    subprocess.run(shlex.split(os.environ.get('CXX', 'clang++')) + [
+        '-std=c++17', '-Wall', '-Wextra', '-Iruntime', '-x', 'c++',
+        'tools/test_research_seed.cpp', 'runtime/ui/research_seed.mm', 'runtime/research_seed.c',
+        'runtime/research_sites.c', '-o', str(seed)], cwd=ROOT, check=True)
+    subprocess.run([str(seed), str(root / 'seed-fixtures')], check=True)

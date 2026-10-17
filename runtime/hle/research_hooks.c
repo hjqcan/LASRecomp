@@ -4,11 +4,19 @@
 #include "../gameversion.h"
 #include "../rt.h"
 #include "../research_actors.h"
+#include "../research_seed.h"
 #include <math.h>
 #include <string.h>
 
 static const uint64_t sites[RESEARCH_PHASE_COUNT]={GA_RESEARCH_UPDATE,GA_RESEARCH_INPUT,GA_RESEARCH_TASK,GA_RESEARCH_TIMER};
 static GuestFn original[RESEARCH_PHASE_COUNT];
+static GuestFn original_time;
+static void observe_time(Cpu *c) {
+    uint64_t caller=c->x[30],argument=c->x[0];
+    original_time(c); // Preserve the actual clock operation and its other effects.
+    bool startup=caller==GA_RESEARCH_SEED_CALLSITE+8&&argument==0;
+    c->x[0]=research_seed_time(c->x[0],startup,caller,kernel_current_thread_handle());
+}
 static bool heap_read(void *context,uint64_t address,void *out,size_t size) {
     uint64_t limit=*(const uint64_t *)context;
     if(address<HEAP_BASE||address>limit||size>limit-address)return false;
@@ -65,6 +73,15 @@ bool research_hooks_init(char *why,size_t cap) {
             if(cap)snprintf(why,cap,"Research RNG instruction/data guard failed.");
             return false;
         }
+        uint64_t site=loader_find_symbol("time");
+        original_time=dispatch_lookup(site);
+        if(site!=GA_RESEARCH_TIME_ENTRY||!original_time||
+           !research_time_site_matches((const void *)(uintptr_t)site,60)||
+           !research_seed_site_matches(game_version_current()==GAME_110,(const void *)(uintptr_t)GA_RESEARCH_SEED_CALLSITE,24)||
+           !research_seed_initializer_matches((const void *)(uintptr_t)GA_RESEARCH_SEED_INITIALIZER,168)) {
+            if(cap)snprintf(why,cap,"Research startup-seed caller/initializer/SDK guard failed.");
+            return false;
+        }
     }
     for(int i=0;i<RESEARCH_PHASE_COUNT;++i) {
         uint64_t site=game_main_address(sites[i]);
@@ -78,6 +95,7 @@ bool research_hooks_init(char *why,size_t cap) {
 }
 GuestFn research_dispatch_override(uint64_t addr) {
     if(!research_phases_active())return NULL;
+    if(research_semantics_active()&&addr==GA_RESEARCH_TIME_ENTRY)return observe_time;
     uint64_t canonical=game_canonical_address(addr);
     for(int i=0;i<RESEARCH_PHASE_COUNT;++i)if(canonical==sites[i])return wrappers[i];
     return NULL;

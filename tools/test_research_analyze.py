@@ -4,6 +4,7 @@ from pathlib import Path
 from research_analyze import camera_report, divergence, input_motion_segments, inputs, matrix_product, phase_report, pose_comparison, timing, update_timing
 from research_run import scenario_movement, scenario_transition, update_driver
 from research_semantics import actor_comparison, actor_report, rng_comparison, rng_distance, rng_next, rng_report, rng_state, external_comparison, external_report
+from research_causality import byte_comparison, fnv64, loading_report, save_windows, seed_initial, seed_report
 
 
 class ResearchAnalysis(unittest.TestCase):
@@ -179,6 +180,44 @@ class ResearchAnalysis(unittest.TestCase):
         self.assertTrue(report['house_to_field_observed'])
         self.assertEqual(report['field_position_samples'], 2)
         self.assertFalse(scenario_transition(rows[:2])['house_to_field_observed'])
+
+    def test_seed_and_boot_consumption(self):
+        initial = seed_initial(0)
+        self.assertEqual(initial, (308695721, 3216456777, 3964979509, 1318340232))
+        event = dict(event='0', startup='1', caller='1', thread='2', elapsed_ns='0', original='123', effective='0',
+                     **{'initial'+str(i): str(x) for i, x in enumerate(initial)})
+        point = dict(phase='0', before='1', elapsed_ns='1', counter='0', rng_observed='1',
+                     **{'rng'+str(i): str(x) for i, x in enumerate(initial)})
+        gate = dict(point, **{'rng'+str(i): str(x) for i, x in enumerate(rng_next(initial))})
+        report = seed_report([event], [point], gate)
+        self.assertEqual(report['inferred_initial_to_first_advances'], 0)
+        self.assertEqual(report['inferred_initial_to_gate_advances'], 1)
+        with self.assertRaises(ValueError):
+            seed_report([dict(event, startup='0')], [point], gate)
+
+    def test_save_window_integrity_and_clock_candidates(self):
+        a, b = bytearray(0x259), bytearray(0x259)
+        a[8:16] = (1700000000).to_bytes(8, 'little')
+        b[8:16] = (1700000100).to_bytes(8, 'little')
+        a, b = bytes(a), bytes(b)
+        rows = [dict(update=str(i-1), available='1', hex=a.hex()) for i in range(2)]
+        states = [dict(save_digest=str(fnv64(a)))]
+        self.assertEqual(save_windows(rows, states, states[0]), [a, a])
+        with self.assertRaises(ValueError):
+            save_windows([rows[0], dict(rows[1], hex=b.hex())], states, states[0])
+        report = byte_comparison([a, a], [a, b], [dict(kind='1', value='1700000000')], [dict(kind='1', value='1700000100')])
+        self.assertEqual(report['first_difference']['update'], 0)
+        self.assertIn({'save_offset': '0x5390', 'bytes': 8}, report['first_difference']['clock_value_candidates'])
+
+    def test_romfs_and_level_timing(self):
+        rows = [dict(self.sample(i), update=str(i), level='House' if i == 0 else 'Field',
+                     io_started=str(i), io_completed=str(max(0, i-1)), io_bytes='0', io_failed='0') for i in range(3)]
+        rows[1]['position'] = '0'
+        report = loading_report(rows)
+        self.assertEqual(report['peak_observed_reads_in_flight'], 1)
+        self.assertEqual(report['level_entries'][1]['first_position_update'], 2)
+        with self.assertRaises(ValueError):
+            loading_report([dict(rows[0], io_completed='1')])
 
 
 if __name__ == '__main__':

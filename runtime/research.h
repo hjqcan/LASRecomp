@@ -25,6 +25,11 @@ bool research_boot(const char *game_root,const char *isolated_save,char *why,siz
 bool research_active(void);
 bool research_phases_active(void);
 bool research_semantics_active(void);
+uint64_t research_elapsed_ns(void);
+typedef struct { uint64_t started,completed,bytes,failed; } ResearchIoStats;
+bool research_io_begin(void);
+void research_io_end(int64_t bytes);
+ResearchIoStats research_io_snapshot(void);
 enum { RESEARCH_EXTERNAL_ENTROPY, RESEARCH_EXTERNAL_CLOCK };
 void research_external(int kind,uint64_t pc,uint32_t thread,uint64_t index,uint64_t value);
 bool research_rng_site_matches(const void *bytes,size_t size);

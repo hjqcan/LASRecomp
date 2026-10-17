@@ -3,6 +3,7 @@
 #include "../research_gate.h"
 #include "../research_actors.h"
 #include <atomic>
+#include <array>
 #include <charconv>
 #include <cstdio>
 #include <cstdlib>
@@ -18,7 +19,8 @@
 
 namespace fs=std::filesystem;
 namespace {
-struct Point { ResearchPhaseSample sample{};uint64_t digest=0,ns=0,timers=0,vsyncs=0; };
+struct Point { ResearchPhaseSample sample{};uint64_t digest=0,ns=0,timers=0,vsyncs=0;ResearchIoStats io{}; };
+struct RawWindow { bool available=false;std::array<unsigned char,0x259> bytes{}; };
 struct Update { Point before,after;ResearchInput input{};size_t polls=0; };
 struct ActorRow { size_t update;char level[64];ResearchActorSnapshot snapshot; };
 std::mutex update_lock;
@@ -28,6 +30,8 @@ ResearchUpdateStatus status{};
 std::vector<ResearchInput> source;
 std::vector<Update> updates;
 std::vector<ActorRow> actor_rows;
+std::vector<RawWindow> windows;
+RawWindow initial_window;
 Point entry,origin;
 ResearchInput latched{};
 size_t limit,cycle_polls,total_callbacks;
@@ -48,13 +52,26 @@ size_t number(const char *key,size_t fallback,size_t maximum,size_t minimum=0) {
 void fail(const char *why){if(error.empty())error=why;status.integrity_error=true;done=true;cycle_recording=false;}
 void stream_setup(std::ofstream &stream){stream.imbue(std::locale::classic());stream<<std::setprecision(9);}
 void stream_close(std::ofstream &stream){stream.close();require(bool(stream),"Update research export failed.");}
+RawWindow window(const ResearchDetails *details) {
+    RawWindow out;
+    if(details&&details->fields&&details->size==out.bytes.size()) {
+        memcpy(out.bytes.data(),details->fields,out.bytes.size());out.available=true;
+    }
+    return out;
+}
+void write_window(std::ofstream &out,int64_t index,const RawWindow &value) {
+    static const char hex[]="0123456789abcdef";
+    out<<index<<','<<value.available<<',';
+    if(value.available)for(auto byte:value.bytes)out<<hex[byte>>4]<<hex[byte&15];
+    out<<'\n';
+}
 }
 extern "C" bool research_update_configured(void){for(auto key:keys)if(getenv(key))return true;return false;}
 extern "C" bool research_update_active(void){return active.load(std::memory_order_relaxed);}
 extern "C" bool research_update_done(void){return done.load(std::memory_order_relaxed);}
 extern "C" bool research_update_boot(const char *id,const char *replay,char *why,size_t cap) {
     std::lock_guard<std::mutex> guard(update_lock);
-    active=false;done=false;status={};source.clear();updates.clear();actor_rows.clear();error.clear();gate={};depth=0;
+    active=false;done=false;status={};source.clear();updates.clear();actor_rows.clear();windows.clear();initial_window={};error.clear();gate={};depth=0;
     owner_set=cycle_recording=input_latched=false;cycle_polls=total_callbacks=0;entry={};origin={};latched={};
     try {
         const char *boundary=getenv(keys[0]);
@@ -93,10 +110,10 @@ extern "C" void research_update_input(uint64_t *buttons,int32_t axes[4]) {
     }
     *buttons=latched.buttons;memcpy(axes,latched.axes,sizeof latched.axes);++cycle_polls;
 }
-extern "C" void research_update_phase(bool before,const ResearchPhaseSample *sample,uint64_t digest,uint64_t ns,uint64_t timers,uint64_t vsyncs) {
+extern "C" void research_update_phase(bool before,const ResearchPhaseSample *sample,uint64_t digest,uint64_t ns,uint64_t timers,uint64_t vsyncs,const ResearchDetails *details) {
     if(!research_update_active())return;
     std::lock_guard<std::mutex> guard(update_lock);
-    Point point{*sample,digest,ns,timers,vsyncs};
+    Point point{*sample,digest,ns,timers,vsyncs,details?details->io:ResearchIoStats{}};
     if(before) {
         if(++depth!=1){fail("Nested update callbacks");return;}
         if(owner_set&&owner!=sample->thread){fail("Update callback moved between guest threads");return;}
@@ -105,7 +122,7 @@ extern "C" void research_update_phase(bool before,const ResearchPhaseSample *sam
         if(done)return;
         bool was_ready=gate.ready;
         if(research_gate_step(&gate,&sample->state,sample->observed,sample->blocked!=0)) {
-            if(!was_ready){origin=point;status.ready=true;fprintf(stderr,"[research] update start gate ready at counter %u (%s)\n",sample->counter,sample->state.level);}
+            if(!was_ready){origin=point;initial_window=window(details);status.ready=true;fprintf(stderr,"[research] update start gate ready at counter %u (%s)\n",sample->counter,sample->state.level);}
             cycle_recording=true;
         }
         return;
@@ -116,6 +133,7 @@ extern "C" void research_update_phase(bool before,const ResearchPhaseSample *sam
     if((uint32_t)(sample->counter-entry.sample.counter)!=1){fail("Update counter did not advance exactly once");return;}
     if(cycle_recording) {
         if(!input_latched){fail("Captured update had no primary-controller poll");return;}
+        if(sample->rng_observed)windows.push_back(window(details));
         if(sample->rng_observed&&updates.size()%10==0) {
             ActorRow row{};row.update=updates.size();memcpy(row.level,sample->state.level,sizeof row.level);
             row.snapshot.issue=RESEARCH_ACTORS_UNREADABLE;
@@ -148,13 +166,14 @@ extern "C" bool research_update_export(const char *directory,const char *id,char
             stream_close(start);
         }
         std::ofstream output(root/"updates.csv",std::ios::binary);stream_setup(output);
-        output<<"update,frame,elapsed_ns,timer_calls,vsyncs,observed,playing,level,hp,position,x,y,z,save_digest,counter_before,counter_after,delta,blocked,hid_polls,rng_before_observed,rng_observed";
+        output<<"update,frame,elapsed_ns,timer_calls,vsyncs,observed,playing,level,hp,position,x,y,z,save_digest,counter_before,counter_after,delta,blocked,hid_polls,io_started,io_completed,io_bytes,io_failed,rng_before_observed,rng_observed";
         for(const char *prefix:{"rng_before","rng"})for(int i=0;i<4;++i)output<<','<<prefix<<i;
         output<<'\n';
         std::vector<ResearchInput> inputs;inputs.reserve(updates.size());
         for(size_t i=0;i<updates.size();++i){const auto &u=updates[i];const auto &a=u.after.sample;const auto &s=a.state;
             output<<i<<','<<s.frame<<','<<u.after.ns<<','<<u.after.timers<<','<<u.after.vsyncs<<','<<a.observed<<','<<s.playing<<','<<s.level<<','<<s.hp
                   <<','<<s.position<<','<<s.x<<','<<s.y<<','<<s.z<<','<<u.after.digest<<','<<u.before.sample.counter<<','<<a.counter<<','<<a.delta<<','<<a.blocked<<','<<u.polls
+                  <<','<<u.after.io.started<<','<<u.after.io.completed<<','<<u.after.io.bytes<<','<<u.after.io.failed
                   <<','<<u.before.sample.rng_observed<<','<<a.rng_observed;
             for(auto v:u.before.sample.rng)output<<','<<v;
             for(auto v:a.rng)output<<','<<v;
@@ -162,6 +181,13 @@ extern "C" bool research_update_export(const char *directory,const char *id,char
             inputs.push_back(u.input);
         }
         stream_close(output);
+        if(!windows.empty()) {
+            require(windows.size()==updates.size(),"Incomplete save-window observations.");
+            std::ofstream bytes(root/"save-windows.csv",std::ios::binary);stream_setup(bytes);
+            bytes<<"update,available,hex\n";write_window(bytes,-1,initial_window);
+            for(size_t i=0;i<windows.size();++i)write_window(bytes,(int64_t)i,windows[i]);
+            stream_close(bytes);
+        }
         if(!actor_rows.empty()) {
             std::ofstream index(root/"actor-samples.csv",std::ios::binary),actors(root/"actors.csv",std::ios::binary);
             stream_setup(index);stream_setup(actors);

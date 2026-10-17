@@ -2,6 +2,8 @@
 
 The [update-boundary experiment](research-update-boundary.md) compared a player/save subset. A new read-only probe exposes differences that subset could miss. It is a developer tool, disabled in ordinary play, and does not restore state, replace random values or implement network play.
 
+The [fourth research round](research-fourth-round.md) adds startup-source tracing, byte-level save observations and RomFS read counters, with a separate opt-in control for the one startup seed input. Default semantic observation remains read-only.
+
 ## Evidence and scope
 
 Local inspection of both recognized executables found a four-word global state at `main+0x1c341f8`. Instructions at `main+0x2a5f8` calculate that address, read its words and apply the xorshift128 shifts 11, 8 and 19. The 40-byte instruction span and the four initial data words are identical in 1.0.0 and 1.1.0. Startup code calls imported `time(NULL)` and passes its result to the state initializer at `main+0xa3f0`. This identifies one RNG state; it does not establish that every game subsystem uses it or that every subsequent difference is caused by the startup seed.

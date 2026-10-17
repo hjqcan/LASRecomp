@@ -58,12 +58,16 @@ int main(int argc,char **argv){
     env("LARECOMP_RESEARCH_SEMANTICS","2");assert(!research_boot("game",save.c_str(),why,sizeof why));
     env("LARECOMP_RESEARCH_SEMANTICS","1");assert(research_boot("game",save.c_str(),why,sizeof why));
     assert(research_semantics_active());
+    assert(research_io_begin());auto io=research_io_snapshot();assert(io.started==1&&io.completed==0);
+    research_io_end(123);assert(research_io_begin());research_io_end(-1);
+    io=research_io_snapshot();assert(io.started==2&&io.completed==2&&io.bytes==123&&io.failed==1);
     research_external(RESEARCH_EXTERNAL_ENTROPY,123,4,2,987);
     ResearchPhaseSample point{};point.state=sample;point.state.now_ns=plat_now_ns();point.observed=true;point.rng_observed=true;
     point.rng[0]=123;point.rng[1]=456;point.rng[2]=789;point.rng[3]=42;
-    research_phase(RESEARCH_PHASE_UPDATE,true,&point,fields,sizeof fields);
+    unsigned char raw[0x259]={};raw[4]=0xab;
+    research_phase(RESEARCH_PHASE_UPDATE,true,&point,raw,sizeof raw);
     research_input(11,&buttons,axes);++point.counter;point.rng[3]=43;
-    research_phase(RESEARCH_PHASE_UPDATE,false,&point,fields,sizeof fields);
+    research_phase(RESEARCH_PHASE_UPDATE,false,&point,raw,sizeof raw);
     research_external(RESEARCH_EXTERNAL_CLOCK,456,4,0,123456);
     for(int i=0;i<4095;++i)research_external(RESEARCH_EXTERNAL_ENTROPY,123,4,2,987);
     research_finish();
@@ -72,6 +76,8 @@ int main(int argc,char **argv){
     assert(read(root/"semantics/research/start-state.ini").find("rng3=42\n")!=std::string::npos);
     assert(read(root/"semantics/research/updates.csv").find(",1,1,123,456,789,42,123,456,789,43\n")!=std::string::npos);
     assert(read(root/"semantics/research/external.csv").find("0,0,123,4,2,987,")!=std::string::npos);
+    assert(read(root/"semantics/research/save-windows.csv").find("-1,1,00000000ab")!=std::string::npos);
     assert(!research_semantics_active());
+    assert(!research_io_begin());
     std::cout<<"Research boot gates, clock reset, capture, replay and neutral EOF passed\n";
 }

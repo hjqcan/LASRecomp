@@ -23,7 +23,7 @@ This is the independently maintained edition in [hjqcan/LASRecomp](https://githu
 | Challenge workshop | Shareable destination/time/damage rules, isolated save snapshots, result and observed-route recording |
 | Route viewer | Local CSV loading, playback/scrubbing, per-level X/Z map, health and controller samples |
 | Performance | Bounded gameplay frame-interval captures, CSV export, percentile and 1% low statistics |
-| Research tools | Isolated HID/update input capture, observed start gates, RNG/NPC/clock/callback observations, scene-transition scripts, camera checks and explicit divergence reports; disabled in ordinary play |
+| Research tools | Isolated HID/update input capture, observed start gates, RNG/NPC/clock/callback observations, optional startup-seed control, save-byte/I/O comparison, scene-transition scripts and explicit divergence reports; disabled in ordinary play |
 | Addresses | Canonical v1.0.0 address table, checked updated-executable relocation, instruction guards |
 
 See [import and versions](NSZ-and-v110.md), [photo/mod/randomizer details](photo-mods-randomizer.md), [mod format](resource-mods.md) and [workshop/replay/performance](workshop.md).
@@ -35,6 +35,8 @@ The subsequent [research probes](research-capture.md) now measure final HID inpu
 [Update-dispatch experiments](research-update-boundary.md) add a guarded update boundary and repeatable capture counts while retaining explicit state-comparison limits.
 
 [Semantic observations](research-semantic-observations.md) expose RNG and placed-actor differences that matching player positions can miss, and extend the input scenario across scene transitions.
+
+The [fourth research round](research-fourth-round.md) separates startup seed input from RNG consumption and compares exact save-window bytes and observed loading activity in both supported versions.
 
 The [Enhanced Beta 5.1 validation record](enhanced-beta5.1-validation.md) lists actual checks and remaining limits, including the save-mount concurrency fix found during release testing.
 

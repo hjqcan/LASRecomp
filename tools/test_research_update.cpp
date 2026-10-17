@@ -61,8 +61,8 @@ int main(int argc,char **argv){
     env("LARECOMP_RESEARCH_UPDATES","3");env("LARECOMP_RESEARCH_DRIVER",tape.c_str());
     assert(research_update_boot(id,nullptr,why,sizeof why));
     ResearchPhaseSample point{};point.thread=1;point.observed=true;point.state=s;point.state.playing=false;point.delta=1.0f/60;
-    auto begin=[&](){research_update_phase(true,&point,111,point.counter*1000000ull,1,2);};
-    auto end=[&](){++point.counter;research_update_phase(false,&point,222,point.counter*1000000ull,1,2);};
+    auto begin=[&](){research_update_phase(true,&point,111,point.counter*1000000ull,1,2,nullptr);};
+    auto end=[&](){++point.counter;research_update_phase(false,&point,222,point.counter*1000000ull,1,2,nullptr);};
     uint64_t buttons=4;int32_t axes[4]={};begin();research_update_input(&buttons,axes);assert(buttons==4);end();
     point.state.playing=true;point.state.position=false;begin();research_update_input(&buttons,axes);assert(buttons==0);end();
     point.state.position=true;
@@ -82,12 +82,12 @@ int main(int argc,char **argv){
     assert(read(export_path/"start-state.ini").find("counter=4\n")!=std::string::npos);
     assert(read(export_path/"update-summary.ini").find("completed=1\n")!=std::string::npos);
     env("LARECOMP_RESEARCH_DRIVER",nullptr);assert(research_update_boot(id,tape.c_str(),why,sizeof why));
-    begin();point.counter+=2;research_update_phase(false,&point,0,0,0,0);
+    begin();point.counter+=2;research_update_phase(false,&point,0,0,0,0,nullptr);
     assert(research_update_status().integrity_error&&research_update_done());
     env("LARECOMP_RESEARCH_WARMUP","0");env("LARECOMP_RESEARCH_STABLE","1");env("LARECOMP_RESEARCH_UPDATES","1");
     assert(research_update_boot(id,nullptr,why,sizeof why));begin();buttons=4;research_update_input(&buttons,axes);buttons=8;research_update_input(&buttons,axes);assert(buttons==4);end();
     assert(research_update_status().completed);
-    assert(research_update_boot(id,nullptr,why,sizeof why));begin();research_update_phase(true,&point,0,0,0,0);assert(research_update_status().integrity_error);
+    assert(research_update_boot(id,nullptr,why,sizeof why));begin();research_update_phase(true,&point,0,0,0,0,nullptr);assert(research_update_status().integrity_error);
     assert(research_update_boot(id,nullptr,why,sizeof why));begin();buttons=4;research_update_input(&buttons,axes);end();
     env("LARECOMP_RESEARCH_UPDATES","2");assert(research_update_boot(id,nullptr,why,sizeof why));begin();buttons=4;research_update_input(&buttons,axes);end();
     research_update_input(&buttons,axes);assert(research_update_status().integrity_error);

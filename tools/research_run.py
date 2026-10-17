@@ -125,6 +125,7 @@ def main():
     p.add_argument('--pace', choices=('on', 'off'), default='on', help='Existing Vulkan frame-pacing heuristic')
     p.add_argument('--phases', action='store_true', help='Observe verified LAS update/input/task/timer callbacks')
     p.add_argument('--semantics', action='store_true', help='Read the guarded global RNG state and selected clock/entropy returns (update mode)')
+    p.add_argument('--startup-seed', type=int, help='Controlled experiment: replace only the verified startup RNG time(NULL) return (uint32)')
     p.add_argument('--boundary', choices=('hid', 'update'), default='hid')
     p.add_argument('--scenario', choices=tuple(SCENARIOS), default='house', help='Update-indexed input driver; house-exit adds an exit and field movement')
     p.add_argument('--updates', type=int, help='Exact captured updates; default 2400 for house, 4800 for house-exit')
@@ -139,6 +140,8 @@ def main():
         args.frames = 9000 if args.scenario == 'house-exit' else 5700
     if args.semantics and args.boundary != 'update':
         p.error('--semantics requires --boundary update')
+    if args.startup_seed is not None and (not args.semantics or not 0 <= args.startup_seed <= 0xffffffff):
+        p.error('--startup-seed requires --semantics and a uint32 value')
     if args.scenario != 'house' and args.boundary != 'update':
         p.error('--scenario requires --boundary update')
     if not args.save_copy.is_dir():
@@ -166,7 +169,8 @@ def main():
                                        'updates': args.updates, 'start_level': args.start_level,
                                        'warmup': args.warmup, 'stable': args.stable}
         if args.semantics:
-            fingerprint['semantic_probe'] = 'las_rng_actors_v1'
+            fingerprint['semantic_probe'] = 'las_seed_fields_io_v2'
+            fingerprint['startup_seed'] = args.startup_seed
     tape = None
     if args.replay:
         previous = args.replay.resolve()
@@ -196,6 +200,8 @@ def main():
         env['LARECOMP_RESEARCH_PHASES'] = '1'
     if args.semantics:
         env['LARECOMP_RESEARCH_SEMANTICS'] = '1'
+    if args.startup_seed is not None:
+        env['LARECOMP_RESEARCH_STARTUP_SEED'] = str(args.startup_seed)
     if args.boundary == 'update':
         env.update(LARECOMP_RESEARCH_BOUNDARY='update', LARECOMP_RESEARCH_START_LEVEL=args.start_level,
                    LARECOMP_RESEARCH_WARMUP=str(args.warmup), LARECOMP_RESEARCH_STABLE=str(args.stable),
@@ -231,6 +237,7 @@ def main():
               'pacing_requested': args.pace, 'phases_requested': args.phases or args.boundary == 'update',
               'input_boundary': args.boundary,
               'semantics_requested': args.semantics,
+              'startup_seed_requested': args.startup_seed,
               'source_unchanged': fingerprint['save'] == tree(save) == tree(output / 'source-save/save_0'),
               'passed': False, 'deterministic_replay': 'not_established'}
     log_text = (output / 'runtime.log').read_text(encoding='utf-8', errors='replace')
@@ -259,12 +266,17 @@ def main():
                                 int(update['captured_updates']) == int(update['source_consumed']) == args.updates and
                                 (folders[0] / 'inputs.lastape').is_file())
             if args.semantics:
+                report['seed'] = ini(folders[0] / 'seed-summary.ini')
+                seed = report['seed']
                 report['passed'] = (report['passed'] and report['capture'].get('semantics') == '1' and
                                     report['capture'].get('external_truncated') == '0' and
                                     len(update_rows) == args.updates and
                                     all(r.get('rng_before_observed') == r.get('rng_observed') == '1' for r in update_rows) and
                                     (folders[0] / 'external.csv').is_file() and (folders[0] / 'actor-samples.csv').is_file() and
-                                    (folders[0] / 'actors.csv').is_file())
+                                    (folders[0] / 'actors.csv').is_file() and (folders[0] / 'save-windows.csv').is_file() and
+                                    seed['startup_calls'] == '1' and seed['truncated'] == '0' and
+                                    seed['controlled'] == str(int(args.startup_seed is not None)) and
+                                    (args.startup_seed is None or int(seed['configured_seed']) == args.startup_seed))
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2), flush=True)
     if not report['passed']:
