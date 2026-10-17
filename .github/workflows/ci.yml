@@ -62,6 +62,10 @@ jobs:
           build/test-audio-aux
       - name: Shader scheduling policy regression
         run: python3 tools/test_shader_policy.py
+      - name: SIMD rounding and host-state isolation
+        run: |
+          clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -lm -o build/test-simd-rounding
+          build/test-simd-rounding
       - name: Save commit and enhanced backup integration
         run: python3 tools/test_save_commit.py
       - name: Game address table tests
@@ -145,6 +149,9 @@ jobs:
           build/jump-test-env/Scripts/python.exe -m pip install -q lz4 unicorn capstone
           build/jump-test-env/Scripts/python.exe tools/test_guest_jump.py
           GLSLC=glslc build/jump-test-env/Scripts/python.exe tools/test_shader_shared.py
+          clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -o build/test-simd-rounding.exe
+          build/test-simd-rounding.exe
+          build/jump-test-env/Scripts/python.exe tools/test_simd.py --encodings 4000 --cases 8 --jobs 4 --no-validity
       # (GLSL only: the script's MSL comparison needs a reference commit that isn't in the history any more; REF=HEAD
       # just satisfies it. The GLSL half - every fuzzed translation compiles and validates - is the check)
       - name: Shader translator fuzz (GLSL)

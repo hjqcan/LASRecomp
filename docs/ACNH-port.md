@@ -164,6 +164,18 @@ Tests cover local/UTC round trips, a leap-day midnight boundary, dates beyond
 
 ## Verification gate
 
+Windows samples in the island scene identified repeated x87 environment saves
+and restores in the generated module's CRT rounding functions. The x86-64 SIMD
+lowering now changes the SSE MXCSR rounding bits directly, leaving exception
+flags, masks, denormal controls and x87 state intact. Other hosts keep the C
+fenv path. Guest FZ handling, NaNs, directed rounding and tiny-result checks are
+unchanged. `tools/test_simd_rounding.c` checks host restoration and independent
+threads; a Cortex-A57 differential run passed 95,988 cases across 8,000 encodings.
+With the packaged Zig compiler, a one-million-operation FZ microbenchmark took
+0.197 seconds before and 0.0063 seconds after, with identical result bits. This
+microbenchmark is not an in-game frame-rate result; the rebuilt game still needs
+that measurement.
+
 Compute LDS/STS instructions use workgroup storage on Vulkan and Metal. NVN's
 control block supplies its byte size at `0x754`, after the three local dimensions.
 Tracing the original parser and compute setup confirmed that this field reaches
