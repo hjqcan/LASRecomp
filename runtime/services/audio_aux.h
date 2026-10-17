@@ -44,7 +44,9 @@ static inline void audio_aux_store(uint8_t *header, unsigned offset, uint32_t va
     __atomic_store_n((uint32_t *)(header + 0x40 + offset), value, __ATOMIC_RELEASE);
 }
 static inline int32_t audio_aux_pcm(float sample) {
-    float value = sample * 32768.f;  // our mixer is normalized; guest auxiliary samples use signed PCM units
+    // The mixer holds PCM magnitudes in floats; only the final device sink
+    // normalizes by 32768. Guest auxiliary rings use the same units as int32.
+    float value = sample;
     if (!isfinite(value)) return 0;
     if (value >= 2147483648.f) return INT32_MAX;
     if (value <= -2147483648.f) return INT32_MIN;
@@ -83,7 +85,7 @@ static inline bool audio_aux_process(AudioAux *a, float *buffers, uint32_t buffe
         for (uint32_t s = 0; s < samples; s++) {
             int32_t value = audio_aux_pcm(input[s]);
             memcpy(send + 0x80 + (size_t)at * 4, &value, 4);
-            input[s] = value / 32768.f;
+            input[s] = (float)value;
             if (++at == a->capacity) at = 0;
         }
     }
@@ -92,7 +94,7 @@ static inline bool audio_aux_process(AudioAux *a, float *buffers, uint32_t buffe
         float *output = buffers + (size_t)a->output[c] * samples;
         for (uint32_t s = 0; s < samples; s++) {
             int32_t value; memcpy(&value, receive + 0x80 + (size_t)at * 4, 4);
-            output[s] = value / 32768.f;
+            output[s] = (float)value;
             if (++at == a->capacity) at = 0;
         }
     }

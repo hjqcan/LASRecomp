@@ -102,12 +102,18 @@ bypass and effect retirement.
 Audio effect 2 exchanges signed integer PCM through the game's auxiliary send
 and return rings. The runtime retains attached audio memory-pool ranges, checks
 each ring against them, transfers all planar channels, and publishes frame
-offsets once per block. It converts between the host mixer's normalized samples
-and the guest's integer PCM units. Disabled effects reset DSP offsets and copy
+offsets once per block. The host mixer already holds PCM magnitudes in floats;
+auxiliary exchange only converts their numeric representation to/from int32.
+Normalization to the device's [-1,1] range happens once, at the final sink.
+Disabled effects reset DSP offsets and copy
 their input while preserving CPU headers and loss counters. Layout and protocol
 follow the public [auxiliary-buffer implementation](https://git.axenov.dev/Museum/ryujinx/src/commit/dde9bb5c69d2e1a70df82af8accd3d01fb94b78d/Ryujinx.Audio/Renderer/Dsp/Command/AuxiliaryBufferCommand.cs).
 Tests cover ring wrapping, PCM conversion, frame offsets, pool attach/detach,
-canaries, invalid ranges and the production mixer's effect dispatch. Actual
+canaries, invalid ranges and the production mixer's effect dispatch. A full
+decoder/auxiliary/sink regression checks audible amplitude: 8192 PCM units must
+remain 0.25 at the device. It also applies a guest limiter before returning audio.
+This catches the extra 32768 conversion that made island audio nearly silent
+while the movie's separate output remained audible. Actual
 island audio still needs listening and capture validation. This routing
 implementation covers the legacy destination format, not REV12 biquads.
 

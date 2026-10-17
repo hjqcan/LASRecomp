@@ -123,14 +123,53 @@ static void delay_mixer_test(void) {
     memset(delay,0,sizeof delay);delay[0]=2;delay[1]=1;delay[2]=1;u32(delay+4,4);u32(delay+0x18,1);
     delay[0x20+24]=1;u32(delay+0x20+48,1);u32(delay+0x20+56,8);
     u64(delay+0x20+64,(uintptr_t)send);u64(delay+0x20+80,(uintptr_t)receive);
-    effect_update(&fx[0],delay,0x38564552);memset(samples,0,8*sizeof(float));samples[0]=1;
-    apply_effects(&r,4,&mix);assert(send[32]==16384 && samples[4]==.125f && !fx[0].aux_invalid);
+    effect_update(&fx[0],delay,0x38564552);memset(samples,0,8*sizeof(float));samples[0]=16384;
+    apply_effects(&r,4,&mix);assert(send[32]==8192 && samples[4]==4096 && !fx[0].aux_invalid);
     assert(send[17]==4 && receive[16]==4);
     delay[2]=0;effect_update(&fx[0],delay,0x38564552);r.pool_count=0;
     memset(samples,0,8*sizeof(float));samples[0]=1;apply_effects(&r,4,&mix);assert(samples[4]==.5f);
     puts("PASS: production effect dispatch, ordered biquad/delay chain, mix selection, bypass and slot retirement");
     puts("PASS: production reverb3d dispatch, global reverb setting and slot retirement");
     puts("PASS: production auxiliary-buffer dispatch, guest PCM exchange and detached bypass");
+}
+
+static void auxiliary_sink_level_test(void) {
+    enum { N=4, CAP=2*N };
+    Renderer r={.sample_rate=48000,.sample_count=N,.voices=1,.nmix=1,.effects=1,
+                .sink_used=1,.sink_inputs=2,.sink_input={0,1}};
+    Voice voice={.in_use=1,.is_new=1,.chans=1,.fmt=2,.rate=48000,.pitch=1,
+                 .volume=1,.wb_count=1,.mix_id=0,.splitter_id=UINT32_MAX};
+    int16_t pcm[64];for(unsigned i=0;i<64;i++)pcm[i]=8192;
+    voice.wb[0]=(WaveBuf){.addr=(uintptr_t)pcm,.size=sizeof pcm,.end=64,.loop=1,.loop_count=-1};
+    ChanState cs={0};ChanRes cr={0};cr.mix[0]=cr.prev[0]=cr.mix[1]=cr.prev[1]=1;
+    float samples[24*N]={0},stereo[2*N];
+    Mix mix={.used=1,.volume=1,.bufs=2,.dest=INT32_MAX,.dest_splitter=UINT32_MAX,.buf=samples};
+    Effect fx={0};uint8_t effect[0xc0]={2,1,0};
+    uint32_t send[32+CAP]={0},receive[32+CAP]={0};
+    AudioAuxPool pools[2]={{(uintptr_t)send,sizeof send},{(uintptr_t)receive,sizeof receive}};
+    effect[0x20]=0;effect[0x21]=1;effect[0x20+24]=0;effect[0x20+25]=1;
+    u32(effect+0x20+48,2);u32(effect+0x20+56,CAP);
+    u64(effect+0x20+64,(uintptr_t)send);u64(effect+0x20+80,(uintptr_t)receive);
+    effect_update(&fx,effect,0x38564552);
+    r.voice=&voice;r.chst=&cs;r.chres=&cr;r.mix=&mix;r.fx=&fx;r.pools=pools;r.pool_count=2;
+    render_frame(&r,stereo);render_frame(&r,stereo); // warm the resampler with the effect bypassed
+    for(unsigned i=0;i<2*N;i++)assert(stereo[i]==.25f);
+    fx.enabled=1;
+    render_frame(&r,stereo);
+    // The guest sees signed PCM magnitudes, not normalized floats or PCM multiplied again.
+    for(unsigned i=0;i<CAP;i++)assert((int32_t)send[32+i]==8192);
+    // Simulate the game's auxiliary processing, including its 0.71875 limiter.
+    for(unsigned i=0;i<CAP;i++) {
+        int32_t value=(int32_t)send[32+i];
+        if(value>23552)value=23552;if(value<-23552)value=-23552;
+        memcpy(receive+32+i,&value,4);
+    }
+    render_frame(&r,stereo);
+    for(unsigned i=0;i<2*N;i++)assert(stereo[i]==.25f);
+    for(unsigned i=0;i<CAP;i++)receive[32+i]=23552;
+    render_frame(&r,stereo);
+    for(unsigned i=0;i<2*N;i++)assert(stereo[i]==.71875f);
+    puts("PASS: decoded PCM -> auxiliary guest ring -> final SDL float sink keeps full audible amplitude");
 }
 #endif
 
@@ -159,6 +198,7 @@ int main(int argc, char **argv) {
     audio_split_free(&s);
 #ifdef TEST_AUDIO_RENDERER
     mixer_test(packet,size);
+    auxiliary_sink_level_test();
     delay_mixer_test();
 #endif
     // Optional local captures exercise the real ABI without checking game data
