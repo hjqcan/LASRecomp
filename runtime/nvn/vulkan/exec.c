@@ -627,8 +627,9 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
 
 // ================================================================== worker threads (shader / pipeline builds)
 // First-use compiles run off the render thread; draws needing them are skipped until ready (as on Metal).
-// First-use work must finish before execution: a skipped draw can be a one-time
-// LUT, shadow or resource initialization. =0 retains the old skip mode for diagnostics.
+// LAS keeps its established asynchronous path. Other adapters wait by default:
+// a skipped draw can be a one-time LUT, shadow or resource initialization.
+// LARECOMP_SYNC_SHADERS=0/1 explicitly overrides either title's default.
 typedef struct Job { void (*fn)(void *); void *arg; struct Job *next; } Job;
 static Job *jobs_head, *jobs_tail;
 static pthread_mutex_t jobs_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -650,9 +651,13 @@ static void *worker(void *a) {
 }
 
 static bool sync_shaders(void) {
-    static int v = -1;
-    if (v < 0) { const char *e=getenv("LARECOMP_SYNC_SHADERS"); v=!e || atoi(e)!=0; }
-    return v;
+    static int override = -2;
+    if (override == -2) {
+        const char *e = getenv("LARECOMP_SYNC_SHADERS");
+        override = e ? atoi(e) != 0 : -1;
+    }
+    // The launcher can switch titles without restarting the host process.
+    return override < 0 ? !title_is_las() : override != 0;
 }
 
 // Shader translation: one dedicated thread (the translator isn't re-entrant - translate.c's RSC2 string ring - and

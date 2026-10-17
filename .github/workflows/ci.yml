@@ -52,6 +52,8 @@ jobs:
         run: make -j"$(nproc)" build/lasrecomp DEPS="$HOME/sdl3"
       - name: Settings regression tests
         run: python3 tools/test_settings.py
+      - name: Shader scheduling policy regression
+        run: python3 tools/test_shader_policy.py
       - name: Save commit and enhanced backup integration
         run: python3 tools/test_save_commit.py
       - name: Game address table tests
