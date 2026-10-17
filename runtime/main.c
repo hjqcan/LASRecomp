@@ -46,6 +46,31 @@ static void rtld_init_main(Cpu *c) {
     for (unsigned i=1;i<p->module_count;i++) module_init(c,&g_modules[p->init_order[i]]);
 }
 
+// Newer SDKs accept a third callback, invoked after nnMain returns and before
+// nninitFinalizeSdkModule/nnosQuickExit. Module DT_FINI owns its fini array, just
+// as DT_INIT owns the constructor array; the fallback walks it in reverse.
+static void rtld_fini_modules(Cpu *c) {
+    const TitleProfile *p = title_profile_current();
+    for (unsigned i = p->module_count; i > 0; i--) {
+        Module *m = &g_modules[p->init_order[i - 1]];
+        if (m->fini) guest_call(c, m->fini);
+        else for (uint64_t j = m->fini_array_sz / 8; j > 0; j--) {
+            uint64_t fn = ((uint64_t *)m->fini_array)[j - 1];
+            if (fn) guest_call(c, fn);
+        }
+    }
+}
+
+static uint64_t sdk_start_entry(bool *has_finalizer) {
+    uint64_t start = loader_find_symbol("_ZN2nn4init5StartEmmPFvvES2_");
+    *has_finalizer = false;
+    if (!start) {
+        start = loader_find_symbol("_ZN2nn4init5StartEmmPFvvES2_S2_");
+        *has_finalizer = start != 0;
+    }
+    return start;
+}
+
 // Claim the guest address range before anything else can map there. The host allocator places
 // regions at random addresses in the same window; on a collision, re-exec for a fresh layout.
 __attribute__((constructor(101))) static void reserve_guest_space(void) {
@@ -194,12 +219,14 @@ static void boot(const char *root) {
     }
     LOG("main thread: prio %d, stack 0x%x\n", prio, stack_size);
 
-    uint64_t start = loader_find_symbol("_ZN2nn4init5StartEmmPFvvES2_");
+    bool has_finalizer;
+    uint64_t start = sdk_start_entry(&has_finalizer);
     if (!start) FATAL("nn::init::Start not found\n");
     uint64_t init_fn = hle_register("<rtld_init_sdk>", rtld_init_sdk);
-    uint64_t fini_fn = hle_register("<rtld_init_main>", rtld_init_main);
+    uint64_t main_init_fn = hle_register("<rtld_init_main>", rtld_init_main);
+    uint64_t fini_fn = has_finalizer ? hle_register("<rtld_fini_modules>", rtld_fini_modules) : 0;
     KThread *t = kernel_create_main_thread(start, stack_size, prio);
-    kernel_run_main(t, t->handle, 0, init_fn, fini_fn);  // nn::init::Start(thread_handle, args_region, init, fini)
+    kernel_run_main(t, t->handle, 0, init_fn, main_init_fn, fini_fn);
 }
 
 int main(int argc, char **argv) {

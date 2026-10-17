@@ -5,7 +5,32 @@ import lz4.block
 
 DT_NULL, DT_NEEDED, DT_PLTRELSZ, DT_HASH, DT_STRTAB, DT_SYMTAB, DT_RELA, DT_RELASZ = 0, 1, 2, 4, 5, 6, 7, 8
 DT_STRSZ, DT_JMPREL, DT_RELACOUNT = 10, 23, 0x6FFFFFF9
+DT_RELRSZ, DT_RELR, DT_RELRENT = 35, 36, 37
 R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT, R_AARCH64_RELATIVE = 257, 1025, 1026, 1027
+
+
+def relr_relocations(image, table, size, entry_size):
+    """Expand ELF64 packed relative offsets without modifying their addends."""
+    if entry_size != 8 or table % 8 or size % 8 or not 0 <= table <= len(image) or not 0 <= size <= len(image) - table:
+        raise ValueError('Invalid RELR table range or entry size')
+    sites, cursor = [], None
+    for p in range(table, table + size, 8):
+        entry, = struct.unpack_from('<Q', image, p)
+        if not entry & 1:
+            sites.append(entry)
+            cursor = entry + 8
+        else:
+            if cursor is None or cursor > (1 << 64) - 1 - 63 * 8:
+                raise ValueError('Invalid RELR bitmap without a bounded address')
+            sites.extend(cursor + (bit - 1) * 8 for bit in range(1, 64) if entry >> bit & 1)
+            cursor += 63 * 8
+    result = []
+    for at in sites:
+        if at > len(image) - 8 or (at < table + size and table < at + 8):
+            raise ValueError('Invalid RELR relocation target')
+        addend, = struct.unpack_from('<q', image, at)
+        result.append((at, R_AARCH64_RELATIVE, 0, addend))
+    return result
 
 
 class Nso:
@@ -70,6 +95,11 @@ class Nso:
                 value, size = struct.unpack_from('<QQ', self.image, o + 8)
                 self.syms.append((self.cstr(strtab + name), info, shndx, value, size))
         self.relocs = []
+        relr_tags = (DT_RELR, DT_RELRSZ, DT_RELRENT)
+        if any(tag in dyn for tag in relr_tags):
+            if not all(tag in dyn for tag in relr_tags):
+                raise ValueError('Incomplete RELR dynamic tags')
+            self.relocs.extend(relr_relocations(self.image, *(dyn[tag] for tag in relr_tags)))
         for base_tag, size_tag in ((DT_RELA, DT_RELASZ), (DT_JMPREL, DT_PLTRELSZ)):
             if base_tag in dyn:
                 b, n = dyn[base_tag], dyn[size_tag] // 24

@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from game_catalog import GAMES, get_game, inspect_exefs
+from game_catalog import ADAPTERS, GAMES, get_game, inspect_exefs, load_games
 from game_versions import VERSIONS
 from import_game import find_exefs, import_game, inspect_package, main, validate_metadata
 from containers import View
@@ -30,6 +30,8 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(plan['game_id'], game.id)
             self.assertEqual(plan['installable'], game.id == 'las')
             self.assertEqual(plan['generator_profile'], 'las' if game.id == 'las' else 'generic')
+        self.write_modules(get_game('acnh'))
+        plan = inspect_exefs(self.root)
         self.assertEqual(plan['init_order'], ('sdk', 'subsdk0', 'main'))
         self.assertEqual([m['base'] for m in plan['modules']], ['0x7000000000', '0x7004000000', '0x7006000000'])
 
@@ -130,8 +132,37 @@ class CatalogTests(unittest.TestCase):
         output = io.StringIO()
         with redirect_stdout(output):
             self.assertEqual(main(['--catalog']), 0)
-        self.assertEqual([g['id'] for g in json.loads(output.getvalue())['games']], ['las', 'acnh'])
+        self.assertEqual([g['id'] for g in json.loads(output.getvalue())['games']], [game.id for game in GAMES])
         self.assertEqual({r.main_build_id[:40]: r.version for r in get_game().releases}, VERSIONS)
+
+    def test_za_requires_development_virtual_memory_and_nvn55(self):
+        game = get_game('pokemon_za'); release = game.releases[0]
+        self.assertEqual((release.runtime['nvn_major'],release.runtime['nvn_minor']),(55,15))
+        self.assertEqual([m.base for m in release.modules],[0x7000000000,0x7008000000])
+        self.assertFalse(release.installable)
+        output=self.root/'untouched'/'game'
+        with self.assertRaisesRegex(ValueError,'in development'):
+            import_game(self.root/'missing.nsz',None,output,game_id=game.id)
+        self.assertFalse(output.parent.exists())
+        descriptor=self.root/'adapters/pokemon_za/adapter.json';descriptor.parent.mkdir(parents=True)
+        data=json.loads((ADAPTERS/'pokemon_za/adapter.json').read_text(encoding='utf8'))
+        data['releases'][0].update(status='beta',installable=True)
+        descriptor.write_text(json.dumps(data),encoding='utf8')
+        with self.assertRaisesRegex(ValueError,'unavailable core capability'):load_games(descriptor.parent.parent)
+        core=json.loads((ADAPTERS/'core-capabilities.json').read_text(encoding='utf8'))
+        core_file=descriptor.parent.parent/'core-capabilities.json'
+        # Either missing feature independently prevents promoting this release.
+        for available,variant in (('gpu.api','nvn55'),('kernel.virtual_memory','dynamic_physical')):
+            enabled=json.loads(json.dumps(core))
+            enabled['capabilities'][available]['variants'].append(variant)
+            core_file.write_text(json.dumps(enabled),encoding='utf8')
+            with self.subTest(available=available),self.assertRaisesRegex(ValueError,'unavailable core capability'):
+                load_games(descriptor.parent.parent)
+        data['releases'][0].update(status='development',installable=False)
+        for invalid in (0,-1,'55',True):
+            data['runtime']['nvn_major']=invalid;descriptor.write_text(json.dumps(data),encoding='utf8')
+            with self.subTest(value=invalid),self.assertRaisesRegex(ValueError,'runtime configuration'):
+                load_games(descriptor.parent.parent)
 
 
 if __name__ == '__main__':

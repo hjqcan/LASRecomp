@@ -85,6 +85,8 @@ jobs:
           python3 -m venv tools/venv && tools/venv/bin/pip install -q unicorn capstone lz4
           tools/venv/bin/python tools/test_simd.py --encodings 3000 --cases 4 --jobs "$(nproc)"
           tools/venv/bin/python tools/test_guest_jump.py
+          tools/venv/bin/python tools/test_exclusive_pairs.py
+          tools/venv/bin/python tools/test_relr.py
 
   macos:
     runs-on: macos-15
@@ -96,6 +98,12 @@ jobs:
         run: make -j"$(sysctl -n hw.ncpu)" build/lasrecomp
       - name: Settings regression tests
         run: python3 tools/test_settings.py
+      - name: Exclusive pairs and native contention
+        run: |
+          python3 -m venv build/exclusive-test-env
+          build/exclusive-test-env/bin/pip install -q unicorn lz4
+          build/exclusive-test-env/bin/python tools/test_exclusive_pairs.py
+          build/exclusive-test-env/bin/python tools/test_relr.py
       - name: Save commit and enhanced backup integration
         run: python3 tools/test_save_commit.py
       - name: Game address table tests
@@ -158,6 +166,8 @@ jobs:
           "$test_python" -m venv build/jump-test-env
           build/jump-test-env/Scripts/python.exe -m pip install -q lz4 unicorn capstone
           build/jump-test-env/Scripts/python.exe tools/test_guest_jump.py
+          build/jump-test-env/Scripts/python.exe tools/test_exclusive_pairs.py
+          build/jump-test-env/Scripts/python.exe tools/test_relr.py
           GLSLC=glslc build/jump-test-env/Scripts/python.exe tools/test_shader_shared.py
           clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -o build/test-simd-rounding.exe
           build/test-simd-rounding.exe

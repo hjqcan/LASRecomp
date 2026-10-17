@@ -22,6 +22,7 @@
 #define R_INVALID_ADDRESS 0xCC01
 #define R_NOT_FOUND 0xF201
 #define R_INVALID_ENUM 0xF001
+#define R_INVALID_COMBINATION 0xE801
 #define R_OUT_OF_RESOURCE 0xD001
 
 #define PSEUDO_THREAD 0xFFFF8000u
@@ -273,8 +274,9 @@ KThread *kernel_create_main_thread(uint64_t entry, uint64_t stack_size, int prio
     return t;
 }
 
-void kernel_run_main(KThread *t, uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3) {
+void kernel_run_main(KThread *t, uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3, uint64_t x4) {
     t->cpu.x[0] = x0; t->cpu.x[1] = x1; t->cpu.x[2] = x2; t->cpu.x[3] = x3;
+    t->cpu.x[4] = x4;
     thread_start(t);  // the host main thread goes on to run the window event loop
 }
 
@@ -822,6 +824,10 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         case 16: case 17: v = 0; break;
         case 18: v = title_profile_current()->program_id; break;
         case 20: v = 0; break;
+        case 28:  // AliasRegionExtraSize (18.0.0+): this host layout adds no extra reservation.
+            if (x[3] != 0) r = R_INVALID_COMBINATION;
+            else if ((uint32_t)x[2] != PSEUDO_PROCESS) r = R_INVALID_HANDLE;
+            break;
         default: r = R_INVALID_ENUM; LOG("[kernel] GetInfo unknown id %u/%llu\n", id0, x[3]);
         }
         x[0] = r;

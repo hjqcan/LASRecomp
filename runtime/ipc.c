@@ -73,6 +73,7 @@ SERVICE("sm:", sm_handler) {
     case 0:  // RegisterClient
         break;
     case 1: {  // GetServiceHandle(name)
+        if (req->data_size < 8) { resp->result = 0xE801; break; }
         char name[9] = {0};
         memcpy(name, req->data, 8);
         LOG("[sm] GetService %s\n", name);
@@ -100,19 +101,27 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
     IpcReq req = {0};
     IpcResp resp = {0};
     req.type = msg[0] & 0xFFFF;
+    bool tipc = req.type >= 15;
     int nx = (msg[0] >> 16) & 0xF, na = (msg[0] >> 20) & 0xF, nb = (msg[0] >> 24) & 0xF;
+    int nw = msg[0] >> 28;
     uint32_t raw_words = msg[1] & 0x3FF;
     uint32_t cflags = (msg[1] >> 10) & 0xF;
+    if (nx > 8 || na > 8 || nb > 8 || nw > 8 || cflags > 10) return 0xE801;
+    if (tipc && (nx || cflags || sess->domain)) return 0xE801;
     uint32_t *p = msg + 2;
     if (msg[1] & 0x80000000u) {
         uint32_t hd = *p++;
         if (hd & 1) { req.pid = p[0] | ((uint64_t)p[1] << 32); p += 2; }
         req.ncopy = (hd >> 1) & 0xF;
         req.nmove = (hd >> 5) & 0xF;
-        if (req.ncopy > 8 || req.nmove > 8) return 0xE401;
+        if (req.ncopy > 8 || req.nmove > 8) return 0xE801;
         for (int i = 0; i < req.ncopy; i++) req.copy_handles[i] = *p++;
         for (int i = 0; i < req.nmove; i++) req.move_handles[i] = *p++;
     }
+    // A TIPC payload has no 16-byte alignment or CMIF header. It must fit the
+    // kernel TLS command buffer together with its handles and HIPC descriptors.
+    if (tipc && (uint64_t)(p - msg) + 2 * nx + 3 * (na + nb + nw) + raw_words > 0x100 / 4)
+        return 0xE801;
     for (int i = 0; i < nx; i++, p += 2) {
         req.x[i].addr = p[1] | ((uint64_t)((p[0] >> 12) & 0xF) << 32) | ((uint64_t)((p[0] >> 6) & 0x7) << 36);
         req.x[i].size = p[0] >> 16;
@@ -128,6 +137,11 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
         req.b[i].addr = buf_addr(p);
     }
     req.nb = nb;
+    for (int i = 0; i < nw; i++, p += 3) {
+        req.w[i].size = p[0] | ((uint64_t)((p[2] >> 24) & 0xF) << 32);
+        req.w[i].addr = buf_addr(p);
+    }
+    req.nw = nw;
     uint32_t *raw = p;
     // raw data is aligned to 16 bytes relative to the message start
     uint32_t *aligned = (uint32_t *)(((uintptr_t)raw + 15) & ~(uintptr_t)15);
@@ -141,14 +155,19 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
         req.nc = ncd;
     }
 
-    if (req.type == 2) {  // close
+    if (req.type == 2 || req.type == 15) {  // CMIF / TIPC close
         LOG("[ipc] close session %s (handle %x)\n", sess->svc->name, handle);
         if (!sess->domain) service_release(sess->svc);  // (a domain's objects stay: closed one by one)
         return 0;
     }
     uint8_t *payload = (uint8_t *)aligned;
     bool dom = false;  // response is domain-wrapped
-    if (req.type == 4 || req.type == 6) {
+    if (req.type >= 16) {
+        req.cmd = req.type - 16;
+        req.data = (uint8_t *)raw;
+        req.data_size = raw_words * 4;
+        sess->svc->handler(sess->svc, &req, &resp);
+    } else if (req.type == 4 || req.type == 6) {
         if (sess->domain) {
             dom = true;
             uint8_t dcmd = payload[0];
@@ -223,9 +242,20 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
     }
 
 write_response:;
+    if (resp.ncopy < 0 || resp.ncopy > 8 || resp.nmove < 0 || resp.nmove > 8 ||
+        resp.nobjects < 0 || resp.nobjects > 8 || resp.data_size > sizeof resp.data ||
+        (!dom && resp.nmove + resp.nobjects > 8)) return 0xE801;
+    if (tipc) {
+        unsigned moves = resp.nmove + resp.nobjects;
+        unsigned handles = (resp.ncopy || moves) ? 1 + resp.ncopy + moves : 0;
+        if (2 + handles + 1 + (resp.data_size + 3) / 4 > 0x100 / 4) return 0xE801;
+    }
     // returned objects: domain objects or new sessions
     uint32_t domain_out[8];
     int ndomain_out = 0;
+    // TIPC clients consume returned object sessions before explicit move handles.
+    if (tipc && resp.nobjects)
+        memmove(resp.move_handles + resp.nobjects, resp.move_handles, resp.nmove * sizeof(uint32_t));
     for (int i = 0; i < resp.nobjects; i++) {
         if (dom) {
             int id = 1;
@@ -234,15 +264,16 @@ write_response:;
             service_retain(resp.objects[i]);
             domain_out[ndomain_out++] = id;
         } else {
-            resp.move_handles[resp.nmove++] = session_new(resp.objects[i]);
+            resp.move_handles[tipc ? i : resp.nmove] = session_new(resp.objects[i]);
+            resp.nmove++;
         }
     }
     memset(msg, 0, 0x100);
     uint32_t *w = msg;
     int has_handles = resp.ncopy || resp.nmove;
-    uint32_t payload_words = 4 + (resp.data_size + 3) / 4;   // SFCO header + data
+    uint32_t payload_words = (tipc ? 1 : 4) + (resp.data_size + 3) / 4;
     if (dom) payload_words += 4 + ndomain_out;
-    uint32_t raw_size = payload_words + 4;  // + alignment padding
+    uint32_t raw_size = payload_words + (tipc ? 0 : 4);  // CMIF alignment padding only
     w[0] = 0;  // type 0 response
     w[1] = raw_size | (has_handles ? 0x80000000u : 0);
     uint32_t *q = w + 2;
@@ -251,7 +282,12 @@ write_response:;
         for (int i = 0; i < resp.ncopy; i++) *q++ = resp.copy_handles[i];
         for (int i = 0; i < resp.nmove; i++) *q++ = resp.move_handles[i];
     }
-    uint32_t *out = (uint32_t *)(((uintptr_t)q + 15) & ~(uintptr_t)15);
+    uint32_t *out = tipc ? q : (uint32_t *)(((uintptr_t)q + 15) & ~(uintptr_t)15);
+    if (tipc) {
+        out[0] = resp.result;
+        memcpy(out + 1, resp.data, resp.data_size);
+        return 0;
+    }
     if (dom) {
         out[0] = ndomain_out;
         out += 4;

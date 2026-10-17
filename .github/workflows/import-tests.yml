@@ -34,6 +34,7 @@ jobs:
       - run: python tools/adapter.py check
       - run: python tools/test_adapter_contract.py -v
       - run: python tools/test_adapter_doctor.py -v
+      - run: python tools/test_adapter_probe.py -v
       - run: python tools/test_game_install.py
       - run: python tools/test_exit_status.py
       - if: runner.os != 'macOS'
@@ -43,6 +44,9 @@ jobs:
       - if: runner.os != 'macOS'
         run: python tools/test_gpu_fence_wait.py
       - run: python tools/test_title_profile.py
+      - run: python tools/test_sdk_start.py
+      - run: python tools/test_kernel_info.py
+      - run: python tools/test_tipc.py
       - run: python tools/test_game_profiles.py
       - run: python tools/test_save_multicommit.py
       - run: python tools/test_fence_sequence.py

@@ -16,9 +16,10 @@ static uint64_t next_debug_id = 1;
 // ================================================================== device
 // NVNdeviceInfo -> value
 static uint32_t device_integer(uint32_t which) {
+    if (which == 0) return title_profile_current()->nvn_major ? title_profile_current()->nvn_major : 53;
     if (which == 1) return title_profile_current()->nvn_minor;
     static const uint32_t v[] = {
-        [0] = 53, [1] = 207,           // baseline; newer adapter minor version above
+        [0] = 53, [1] = 207,           // baseline; adapter API version overrides above
         [2] = 14, [3] = 65536, [4] = 256, [5] = 8, [6] = 16, [7] = 4, [8] = 16, [9] = 32,
         [10] = 16, [11] = 4, [12] = 4, [13] = 4, [14] = 16, [15] = 32, [16] = 32,
         [17] = 256, [18] = 256,        // reserved texture / sampler descriptors

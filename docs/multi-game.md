@@ -136,6 +136,9 @@ Failure preservation keeps the older files intact for their compatible runtime.
 
 See [adapter development](adapter-development.md) for schema checks, guarded
 patches, scaffolding and missing-capability diagnostics.
+The [Pokemon Legends: Z-A probe](pokemon-za-port.md) records third-title archive
+and generation results, including unresolved CPU requirements; it is not a
+playable catalog entry.
 
 ## Desktop launch
 
