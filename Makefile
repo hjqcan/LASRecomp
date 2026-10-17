@@ -40,13 +40,15 @@ GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibi
 
 # The game code (made by `make gen` from your own game files) is its own library next to the app (runtime/gamelib.h);
 # the app itself holds none of it
-# (strip: with no generated code the space between the two would be all that's left, and $(if) takes a lone space as
-# true. No comment after the value: make keeps the spaces before it)
-GEN_SRC  := $(strip $(wildcard $(GEN)/main/*.c) $(wildcard $(GEN)/sdk/*.c))
+GAME_DIR ?= extracted
+GAME_MODULES ?= main sdk
+-include $(GEN)/modules.mk
+# strip keeps an empty module list false in the app-only build below.
+GEN_SRC  := $(strip $(foreach mod,$(GAME_MODULES),$(wildcard $(GEN)/$(mod)/*.c)))
 GEN_OBJ  := $(patsubst %.c,$(B)/obj/%.o,$(patsubst $(GEN)/%,%,$(GEN_SRC))) $(B)/obj/tools/gamelib_entry.o
 RT_SRC   := $(wildcard runtime/*.c) $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
             $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c
-RT_HDRS  := $(wildcard runtime/*.h runtime/game_addresses/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
+RT_HDRS  := $(wildcard runtime/*.h runtime/game_addresses/*.h runtime/services/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
             $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h)
 UI_SRC   := $(wildcard runtime/ui/*.mm)
 UI_OBJ   := $(patsubst runtime/%.mm,$(B)/rt/%.o,$(UI_SRC))
@@ -112,7 +114,7 @@ endif
 
 # GAMELIB_ID: what the game code library is built from (the generator, the headers it is compiled against, the
 # flags). A library with another id is rebuilt by the start screen, never loaded.
-GAMELIB_SRCS := tools/game_addresses.py runtime/game_addresses/v1_0_0.h tools/gen.py tools/game_versions.py tools/rando_profiles.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py \
+GAMELIB_SRCS := tools/game_catalog.py runtime/title_catalog.inc runtime/title_profile.h tools/game_addresses.py runtime/game_addresses/v1_0_0.h tools/gen.py tools/game_versions.py tools/rando_profiles.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py \
                 tools/simd_c.py tools/rando/patch_variants.json tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
                 runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h
 GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
@@ -133,9 +135,9 @@ $(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h $(if $(wildcard $(GEN)/research-stores.js
 	@mkdir -p $(dir $@)
 	@$(CC) $(GENFLAGS) -c $< -o $@
 
-$(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS) Makefile
+$(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS) Makefile $(GEN)/gamelib_modules.inc
 	@mkdir -p $(dir $@)
-	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_ID)"' -c $< -o $@
+	$(CC) $(GENFLAGS) -I$(GEN) -DGAMELIB_ID='"$(GAMELIB_ID)"' -c $< -o $@
 $(B)/rt/gamelib.o: $(GAMELIB_SRCS) Makefile
 $(B)/rt/gamelib.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"'
 # the start screen's build of it (runtime/gamebuild.c) uses the same flags
@@ -178,7 +180,7 @@ $(GAMELIB): $(GEN_OBJ) | $(EXE)
 	$(CC) $(GAMELIB_LDFLAGS) -o $@.tmp $^
 	mv -f $@.tmp $@
 	echo $(GAMELIB_ID) > $@.id
-	sed -n 's/^const char main_build_id\[\] = "\([0-9a-f]*\)";.*/\1/p' $(GEN)/main/main_table.c >> $@.id
+	sed -n 's/^const char main_build_id_full\[\] = "\([0-9a-f]*\)";.*/\1/p' $(GEN)/main/main_table.c >> $@.id
 
 $(B)/rt/ui/%.o: runtime/ui/%.mm $(RT_HDRS)
 	@mkdir -p $(dir $@)
@@ -200,8 +202,12 @@ $(B)/imgui/imgui_impl_metal.o: $(IMGUI)/backends/imgui_impl_metal.mm
 PY := $(firstword $(wildcard tools/venv/bin/python) $(wildcard tools/venv/Scripts/python.exe))
 
 gen:
-	cd tools && ../$(PY) gen.py sdk ../extracted/exefs/sdk 0x7004000000 ../$(GEN)/sdk --hle ../runtime/hle/hle_symbols.txt $(GENSIMD)
-	cd tools && ../$(PY) gen.py main ../extracted/exefs/main 0x7000000000 ../$(GEN)/main $(GENSIMD)
+	$(PY) tools/gen_game.py --game-dir $(GAME_DIR) --outdir $(GEN) $(GENSIMD)
+
+$(GEN)/gamelib_modules.inc: tools/game_catalog.py tools/gen_game.py
+	$(PY) tools/gen_game.py --game-dir $(GAME_DIR) --outdir $(GEN) --metadata-only
+
+$(B)/rt/title_profile.o: runtime/title_catalog.inc
 
 gen-objs: $(GEN_OBJ)
 

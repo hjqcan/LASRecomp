@@ -487,11 +487,26 @@ typedef struct { char root[1024]; bool is_save; } HostFs;
 static void backup_save(HostFs *fs, const char *reason) {
     if (!fs->is_save) return;  // SD card commits are not game saves
     char why[512];
-    if (!save_backup_create(fs->root, reason, game_version_name(game_version_current()), true, why, sizeof why))
+    if (!save_backup_create(fs->root, reason, title_profile_current()->version, true, why, sizeof why))
         LOG("[save-backup] %s\n", why); // backup failure never prevents the game from saving
 }
-typedef struct { int fd; char path[1100]; } HostFile;
+typedef struct { int fd; bool writable; char path[1100]; } HostFile;
 typedef struct { DIR *d; char path[1024]; int mode; } HostDir;
+
+static void host_file_close(Service *s) {
+    HostFile *f = s->state;
+    if (f->writable && fsync(f->fd)) LOG("[save] flush failed on close: %s (%s)\n", f->path, strerror(errno));
+    close(f->fd);
+    free(f);
+    s->state = NULL;
+}
+
+static void host_directory_close(Service *s) {
+    HostDir *d = s->state;
+    closedir(d->d);
+    free(d);
+    s->state = NULL;
+}
 
 static const char *in_path(IpcReq *req, int i) {
     if (i < req->nx) return (const char *)(uintptr_t)req->x[i].addr;
@@ -499,8 +514,19 @@ static const char *in_path(IpcReq *req, int i) {
     return "";
 }
 
-static void host_path(HostFs *fs, const char *p, char *out, size_t n) {
-    snprintf(out, n, "%s%s%s", fs->root, p[0] == '/' ? "" : "/", p);
+static bool host_path(HostFs *fs, const char *p, char *out, size_t n) {
+    // Guest paths stay within the mounted save filesystem, including on Windows.
+    if (strnlen(p, 1024) == 1024 || strchr(p, ':') || strchr(p, '\\')) return false;
+    for (const char *q = p; *q;) {
+        while (*q == '/') q++;
+        const char *end = strchr(q, '/');
+        size_t len = end ? (size_t)(end - q) : strlen(q);
+        if (len == 2 && q[0] == '.' && q[1] == '.') return false;
+        if (!end) break;
+        q = end;
+    }
+    int len = snprintf(out, n, "%s%s%s", fs->root, p[0] == '/' ? "" : "/", p);
+    return len >= 0 && (size_t)len < n;
 }
 
 static uint32_t errno_result(void) {
@@ -516,14 +542,12 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
     case 0: {  // Read(option, offset, size) -> B
         int64_t off = IN(int64_t, 8), size = IN(int64_t, 16);
         IpcBuf *b = out_buf(req, 0);
+        if (!b || off < 0 || size < 0) { resp->result = MAKE_RESULT(2, 6001); break; }
         if ((uint64_t)size > b->size) size = (int64_t)b->size;
         ssize_t n = pread(f->fd, (void *)(uintptr_t)b->addr, (size_t)size, off);
-        if (strstr(f->path, "savedata")) {
+        if (n < 0) resp->result = errno_result();
+        if (getenv("ACNH_LOG_SAVE")) {
             LOG("[save] read %s off %lld size %lld -> guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)b->addr);
-            extern void save_editor_file_read(const char *path, uint64_t addr, int64_t off, int64_t size);
-            save_editor_file_read(f->path, b->addr, off, n);
-            extern void flags_ext_save_read(const char *path, uint64_t addr, int64_t off, int64_t size);
-            flags_ext_save_read(f->path, b->addr, off, n);
         }
         OUT(int64_t, 0) = n < 0 ? 0 : n;
         resp_size(resp, 8);
@@ -532,16 +556,20 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
     case 1: {  // Write(option, offset, size) <- A
         int64_t off = IN(int64_t, 8), size = IN(int64_t, 16);
         IpcBuf *a = in_buf(req, 0);
-        if (strstr(f->path, "savedata"))
+        if (!a || off < 0 || size < 0 || (uint64_t)size > a->size) { resp->result = MAKE_RESULT(2, 6001); break; }
+        if (getenv("ACNH_LOG_SAVE"))
             LOG("[save] write %s off %lld size %lld <- guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)a->addr);
-        if (pwrite(f->fd, (void *)(uintptr_t)a->addr, (size_t)size, off) < 0) resp->result = errno_result();
-        else if (strstr(f->path, "savedata")) {
-            extern void flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size);
-            flags_ext_save_written(f->path, a->addr, off, size);
+        int64_t done = 0;
+        while (done < size) {
+            ssize_t n = pwrite(f->fd, (void *)(uintptr_t)(a->addr + done), (size_t)(size - done), off + done);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) { if (!n) errno = EIO; resp->result = errno_result(); break; }
+            done += n;
         }
+        if (!resp->result && (IN(uint32_t, 0) & 1) && fsync(f->fd)) resp->result = errno_result();
         break;
     }
-    case 2: fsync(f->fd); break;
+    case 2: if (fsync(f->fd)) resp->result = errno_result(); break;
     case 3: if (ftruncate(f->fd, IN(int64_t, 0))) resp->result = errno_result(); break;
     case 4: {
         struct stat sb;
@@ -621,7 +649,7 @@ static int rm_rf(const char *p, bool keep_root) {
 static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     HostFs *fs = s->state;
     char p[2048], p2[2048];
-    host_path(fs, in_path(req, 0), p, sizeof p);
+    if (!host_path(fs, in_path(req, 0), p, sizeof p)) { resp->result = MAKE_RESULT(2, 6001); return; }
     switch (req->cmd) {
     case 0: {  // CreateFile(option, size)
         int fd = open(p, O_CREAT | O_EXCL | O_RDWR, 0644);
@@ -635,7 +663,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     case 3: if (rmdir(p)) resp->result = errno_result(); break;
     case 4: if (rm_rf(p, false)) resp->result = errno_result(); break;
     case 5: case 6:
-        host_path(fs, in_path(req, 1), p2, sizeof p2);
+        if (!host_path(fs, in_path(req, 1), p2, sizeof p2)) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (rename(p, p2)) resp->result = errno_result();
         break;
     case 7: {  // GetEntryType
@@ -651,8 +679,11 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         if (fd < 0) { resp->result = errno_result(); break; }
         HostFile *f = calloc(1, sizeof *f);
         f->fd = fd;
+        f->writable = (mode & 2) != 0;
         strlcpy(f->path, p, sizeof f->path);
-        ipc_return_object(resp, service_new("IFile", file, f));
+        Service *obj = service_new("IFile", file, f);
+        obj->on_close = host_file_close;
+        ipc_return_object(resp, obj);
         break;
     }
     case 9: {  // OpenDirectory(mode)
@@ -662,7 +693,9 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         hd->d = d;
         hd->mode = (int)IN(uint32_t, 0);
         snprintf(hd->path, sizeof hd->path, "%s", p);
-        ipc_return_object(resp, service_new("IDirectory", directory, hd));
+        Service *obj = service_new("IDirectory", directory, hd);
+        obj->on_close = host_directory_close;
+        ipc_return_object(resp, obj);
         break;
     }
     case 10: backup_save(fs, "Automatic save"); break;  // Commit: all files in this save are complete
@@ -676,13 +709,19 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
 static Service *open_host_fs(const char *sub) {
     HostFs *fs = calloc(1, sizeof *fs);
     g_save_dir = game_profile_save_dir(game_profile_active());
+    if (!title_is_las() && game_profile_active() != GAME_PROFILE_ACNH) {
+        static char title_save[160];
+        const TitleProfile *p=title_profile_current();
+        snprintf(title_save,sizeof title_save,"save/%016llx/%s",(unsigned long long)p->program_id,p->modules[0].build_id);
+        g_save_dir=title_save;
+    }
     if (getenv("LARECOMP_SAVE_DIR")) g_save_dir = getenv("LARECOMP_SAVE_DIR");  // test runs use a scratch copy
     else if (rando_seed_dir()) {  // each randomizer seed has its own save slots
         static char seed_save[600];
         snprintf(seed_save, sizeof seed_save, "%s/save", rando_seed_dir());
         g_save_dir = seed_save;
     }
-    if (workshop_save_dir()) g_save_dir = workshop_save_dir();
+    if (title_is_las() && workshop_save_dir()) g_save_dir = workshop_save_dir();
     snprintf(fs->root, sizeof fs->root, "%s/%s", g_save_dir, sub);
     fs->is_save = !strncmp(sub, "save_", 5);
     char cmd[1200];

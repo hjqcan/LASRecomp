@@ -2,19 +2,22 @@
 // NVN objects, builders, and state objects (everything except command recording).
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "../kernel.h"
 #include "nvn.h"
 
 void renderer_sync(void);
+void renderer_submit(void);
 
 static uint64_t next_debug_id = 1;
 
 // ================================================================== device
 // NVNdeviceInfo -> value
 static uint32_t device_integer(uint32_t which) {
+    if (which == 1) return title_is_las() ? 207 : 312;
     static const uint32_t v[] = {
-        [0] = 53, [1] = 207,           // API version
+        [0] = 53, [1] = 207,           // baseline; newer adapter minor version above
         [2] = 14, [3] = 65536, [4] = 256, [5] = 8, [6] = 16, [7] = 4, [8] = 16, [9] = 32,
         [10] = 16, [11] = 4, [12] = 4, [13] = 4, [14] = 16, [15] = 32, [16] = 32,
         [17] = 256, [18] = 256,        // reserved texture / sampler descriptors
@@ -71,7 +74,7 @@ NVN(nvnDeviceRegisterFastClearColori) { RET(1); }
 NVN(nvnDeviceRegisterFastClearColorui) { RET(1); }
 NVN(nvnDeviceRegisterFastClearDepth) { RET(1); }
 NVN(nvnDeviceApplyDeferredFinalizes) { (void)c; }
-NVN(nvnDeviceFinalizeCommandHandle) { (void)c; }
+NVN(nvnDeviceFinalizeCommandHandle) { renderer_sync(); nvn_command_handle_destroy(A(1)); }
 NVN(nvnDeviceIsExternalDebuggerAttached) { RET(0); }
 NVN(nvnDeviceWalkDebugDatabase) { (void)c; }
 
@@ -116,38 +119,70 @@ NVN(nvnQueueResetMemoryUsageCounts) { (void)c; }
 NVN(nvnQueueSubmitCommands) {
     int n = (int)A(1);
     const uint64_t *handles = AP(2);
-    for (int i = 0; i < n; i++) backend_execute(handles[i]);
+    for (int i = 0; i < n; i++) {
+        void *list = nvn_command_list_acquire(handles[i]);
+        backend_execute(nvn_command_list_records(list));
+        nvn_command_list_release(list);
+    }
 }
-NVN(nvnQueueFlush) { (void)c; }
+NVN(nvnQueueFlush) { (void)c; renderer_submit(); }
 NVN(nvnQueueFinish) { (void)c; renderer_sync(); }
 
+static pthread_mutex_t sync_lock = PTHREAD_MUTEX_INITIALIZER;
+static NvnSync *new_sync(void) {
+    NvnSync *s = calloc(1, sizeof *s);
+    if (!s) FATAL("nvn: sync allocation failed\n");
+    pthread_cond_init(&s->submitted, NULL);
+    return s;
+}
 static NvnSync *sync_of(uint64_t guest) {
     NvnSync *s = HOST(NvnSync, guest);
-    if (!s) { s = calloc(1, sizeof *s); SET_HOST(guest, s); }
+    if (!s) { s = new_sync(); SET_HOST(guest, s); }
     return s;
 }
 uint64_t renderer_fence_seq(void);
 void renderer_wait_seq(uint64_t seq);
-NVN(nvnQueueFenceSync) { NvnSync *s = sync_of(A(1)); s->signaled = 1; s->seq = renderer_fence_seq(); }
-void nvn_sync_set_seq(uint64_t guest, uint64_t seq) { NvnSync *s = sync_of(guest); s->signaled = 1; s->seq = seq; }
-NVN(nvnQueueWaitSync) { RET(1); }
+void nvn_sync_arm(uint64_t guest) {
+    pthread_mutex_lock(&sync_lock);
+    NvnSync *s = sync_of(guest); s->armed = true; s->signaled = false; s->seq = 0;
+    pthread_mutex_unlock(&sync_lock);
+}
+void nvn_sync_set_seq(uint64_t guest, uint64_t seq) {
+    pthread_mutex_lock(&sync_lock);
+    NvnSync *s = sync_of(guest); s->seq = seq; s->armed = s->signaled = true;
+    pthread_cond_broadcast(&s->submitted);
+    pthread_mutex_unlock(&sync_lock);
+}
+NVN(nvnQueueFenceSync) { nvn_sync_set_seq(A(1), renderer_fence_seq()); renderer_submit(); }
+NVN(nvnQueueWaitSync) { renderer_wait_seq(sync_of(A(1))->seq); RET(1); }
 
 // ================================================================== sync / event
-NVN(nvnSyncInitialize) { SET_HOST(A(0), calloc(1, sizeof(NvnSync))); RET(1); }
-NVN(nvnSyncFinalize) { free(HOST(NvnSync, A(0))); SET_HOST(A(0), 0); }
+NVN(nvnSyncInitialize) { SET_HOST(A(0), new_sync()); RET(1); }
+NVN(nvnSyncFinalize) { NvnSync *s = HOST(NvnSync, A(0)); pthread_cond_destroy(&s->submitted); free(s); SET_HOST(A(0), 0); }
 NVN(nvnSyncSetDebugLabel) { (void)c; }
 void renderer_flush(void);
-NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
-    static int flush = -1;
-    static uint64_t n;
-    if (flush < 0) flush = getenv("LARECOMP_SYNC_FLUSH") ? 1 : 0;
-    if (getenv("LARECOMP_LOG_SYNC") && n++ % 60 == 0) LOG("[nvn] SyncWait #%llu (lr %llx)\n", (unsigned long long)n, c->x[30]);
-    static int whole = -1;  // LARECOMP_SYNC_ALL=1: old behaviour, wait for all submitted work
-    if (whole < 0) whole = getenv("LARECOMP_SYNC_ALL") ? 1 : 0;
-    if (flush) renderer_flush();
-    else if (whole) renderer_sync();
-    else renderer_wait_seq(sync_of(A(0))->seq);  // only the submission that holds this fence
-    RET(0);
+NVN(nvnSyncWait) {
+    uint64_t timeout = A(1), begin = plat_now_ns();
+    pthread_mutex_lock(&sync_lock);
+    NvnSync *s = sync_of(A(0));
+    // A newly initialized sync has no pending fence. LAS polls these before
+    // their first use; only a recorded but unpublished fence must wait.
+    if (!s->armed) { pthread_mutex_unlock(&sync_lock); RET(0); return; }
+    while (!s->signaled) {
+        uint64_t elapsed = plat_now_ns() - begin;
+        if (elapsed >= timeout) { pthread_mutex_unlock(&sync_lock); RET(2); return; }
+        uint64_t wait = timeout - elapsed;
+        if (wait > 50000000) wait = 50000000;
+        struct timespec until; clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_nsec += (long)wait;
+        if (until.tv_nsec >= 1000000000) { until.tv_sec++; until.tv_nsec -= 1000000000; }
+        pthread_cond_timedwait(&s->submitted, &sync_lock, &until);
+        if (g_rt_unwind) { pthread_mutex_unlock(&sync_lock); RET(3); return; }
+    }
+    uint64_t seq = s->seq;
+    pthread_mutex_unlock(&sync_lock);
+    uint64_t elapsed = plat_now_ns() - begin;
+    RET(renderer_wait_seq_timeout(seq, elapsed < timeout ? timeout - elapsed : 0));
 }
 NVN(nvnSyncCreateGLSync) { RET(0); }
 NVN(nvnSyncInitializeFromFencedGLSync) { RET(0); }
@@ -188,10 +223,16 @@ NVN(nvnMemoryPoolInitialize) {
     p->storage = G(uint64_t, A(1), 0x10);
     p->size = G(uint64_t, A(1), 0x18);
     p->flags = G(uint32_t, A(1), 8);
+    if (!p->storage && ENV("LARECOMP_DEBUG_POOLS")) LOG("[nvn] pool without CPU storage: object %llx size %llx flags %x lr %llx\n",
+                         (unsigned long long)A(0), (unsigned long long)p->size, p->flags, (unsigned long long)c->x[30]);
     SET_HOST(A(0), p);
     RET(1);
 }
-NVN(nvnMemoryPoolFinalize) { free(HOST(NvnPool, A(0))); SET_HOST(A(0), 0); }
+NVN(nvnMemoryPoolFinalize) {
+    NvnPool *pool = HOST(NvnPool, A(0));
+    if (pool->command_storage) { renderer_sync(); nvn_command_pool_destroy(pool); }
+    free(pool); SET_HOST(A(0), 0);
+}
 NVN(nvnMemoryPoolSetDebugLabel) { (void)c; }
 NVN(nvnMemoryPoolMap) { RET(HOST(NvnPool, A(0))->storage); }
 NVN(nvnMemoryPoolGetBufferAddress) { RET(HOST(NvnPool, A(0))->storage); }  // GPU address == CPU address
@@ -202,7 +243,32 @@ NVN(nvnMemoryPoolFlushMappedRange) {
     backend_pool_written(p->storage + A(1), A(2));
 }
 NVN(nvnMemoryPoolInvalidateMappedRange) { (void)c; }
-NVN(nvnMemoryPoolMapVirtual) { RET(1); }
+NVN(nvnMemoryPoolMapVirtual) {
+    // Full-pool aliases keep the runtime's GPU-address == host-address model.
+    // ACNH binds its transient render-target pool once to a physical pool.
+    // Do not silently accept sparse mappings or rebind existing addresses.
+    NvnPool *dst = HOST(NvnPool, A(0));
+    if (!A(1)) { RET(1); return; }
+    if (!dst || !(dst->flags & 0x200) || A(1) != 1 || !A(2)) { RET(0); return; }
+    const uint8_t *request = AP(2);
+    uint64_t physical, physical_offset, virtual_offset, size;
+    memcpy(&physical, request, 8); memcpy(&physical_offset, request + 8, 8);
+    memcpy(&virtual_offset, request + 16, 8); memcpy(&size, request + 24, 8);
+    NvnPool *src = physical ? HOST(NvnPool, physical) : NULL;
+    if (!src || !(src->flags & 0x100) || !src->storage || virtual_offset || size != dst->size ||
+        physical_offset > src->size || size > src->size - physical_offset ||
+        physical_offset > UINT64_MAX - src->storage) {
+        LOG("[nvn] unsupported virtual pool mapping: offset %llx size %llx\n",
+            (unsigned long long)virtual_offset, (unsigned long long)size);
+        RET(0); return;
+    }
+    uint64_t address = src->storage + physical_offset;
+    if (dst->storage && dst->storage != address) { RET(0); return; }
+    dst->storage = address;
+    LOG("[nvn] mapped virtual pool %llx to %llx (%llx bytes)\n",
+        (unsigned long long)A(0), (unsigned long long)address, (unsigned long long)size);
+    RET(1);
+}
 
 // ================================================================== buffers
 // Builder: device@0 pool@8 offset@0x10 size@0x18. Buffer: address@0 pool@8 offset@0x10 size@0x18 id@0x20
@@ -352,6 +418,10 @@ static NvnTexture *texture_from_builder(uint64_t b) {
     t->pool = pool ? HOST(NvnPool, pool) : NULL;
     t->pool_offset = G(uint64_t, b, 0x40);
     t->addr = t->pool ? t->pool->storage + t->pool_offset : 0;
+    if (t->pool && !t->pool->storage && ENV("LARECOMP_DEBUG_POOLS"))
+        LOG("[nvn] unbacked texture: %ux%u format %x flags %x pool %llx offset %llx pool flags %x\n",
+            t->width, t->height, t->format, t->flags, (unsigned long long)pool,
+            (unsigned long long)t->pool_offset, t->pool->flags);
     builder_layout(b, &t->layout);
     t->debug_id = next_debug_id++;
     return t;

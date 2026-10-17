@@ -5,12 +5,14 @@ from pathlib import Path
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from unittest.mock import patch
+from types import SimpleNamespace
 
 from game_catalog import GAMES, get_game, inspect_exefs
 from game_versions import VERSIONS
 from import_game import find_exefs, import_game, inspect_package, main, validate_metadata
 from containers import View
-from test_import_game import pfs_files, synthetic_nso
+from test_import_game import pfs_files, synthetic_nso, synthetic_romfs, ncz
 
 
 class CatalogTests(unittest.TestCase):
@@ -81,6 +83,35 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(info['metadata_source'], 'XML (unverified)')
         self.assertFalse(info['installable'])
         self.assertEqual(list(self.root.iterdir()), [archive])
+        # The file picker no longer needs a manually selected title.
+        self.assertEqual(inspect_package(archive)['game_id'], 'acnh')
+
+    def test_metadata_free_auto_detection_and_development_import(self):
+        game = get_game('acnh')
+        files = {m.name: synthetic_nso(m.build_id) for m in game.releases[0].modules}
+        files.update({'rtld': b'fixture loader', 'main.npdm': b'fixture metadata'})
+        exefs = pfs_files(files)
+        romfs = synthetic_romfs('Movie')
+        # A misleading filename must not select LAS or an update.
+        archive = self.root / 'Zelda v1.1.0.nsz'
+        archive.write_bytes(pfs_files({'program.ncz': ncz(bytes(romfs) + exefs, sections=[
+            (0x4000, len(romfs)), (0x4000 + len(romfs), len(exefs))])}))
+        with redirect_stdout(io.StringIO()):
+            info = inspect_package(archive)
+        self.assertEqual((info['game_id'], info['game_version'], info['role']), ('acnh', '1.0.0', 'base'))
+        self.assertEqual(info['metadata_source'], 'ExeFS')
+        self.assertEqual(info['main_build_id_full'], game.releases[0].main_build_id)
+        output = self.root / 'managed' / 'acnh'
+        with redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, 'in development'):
+            import_game(archive, None, output)
+        self.assertFalse(output.parent.exists())
+        with patch('import_game.shutil.disk_usage', return_value=SimpleNamespace(free=100 << 30)), redirect_stdout(io.StringIO()):
+            result = import_game(archive, None, output, allow_development=True)
+        self.assertEqual(result['game_id'], 'acnh')
+        self.assertEqual((output / 'romfs/Movie/example.bin').read_bytes(), b'original')
+        self.assertEqual(inspect_exefs(output / 'exefs')['game_id'], 'acnh')
+        with redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, 'No unique supported'):
+            inspect_package(archive, game=get_game('las'))
 
     def test_archive_module_identity_checks_all_modules(self):
         game = get_game('acnh')

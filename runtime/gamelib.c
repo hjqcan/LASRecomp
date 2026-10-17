@@ -32,9 +32,10 @@ static bool id_matches(const char *lib, const char *game_dir) {
     if (!build || !game_dir) return false;
     *build++ = 0;
     id[strcspn(id, "\r")] = 0;
-    char main_path[1100], current_id[41];
+    char main_path[1100], current_id[65], why[256];
     snprintf(main_path, sizeof main_path, "%s/exefs/main", game_dir);
-    return !strcmp(id, GAMELIB_ID) && game_build_id(main_path, current_id) && !strcmp(build, current_id);
+    return !strcmp(id, GAMELIB_ID) && title_build_id(main_path, current_id) && !strcmp(build, current_id) &&
+           title_profile_validate(game_dir, why, sizeof why);
 }
 
 static bool exists(const char *p) {
@@ -56,7 +57,11 @@ static int candidates(const char *game_dir, char out[3][1100]) {
 }
 
 bool gamelib_present(const char *game_dir) {
-    if (g_tables) return true;
+    if (g_tables) {
+        char why[256];
+        const TitleProfile *p=title_profile_validate(game_dir,why,sizeof why);
+        return p && !strcmp(g_tables->modules[0].build_id,p->modules[0].build_id);
+    }
     char c[3][1100];
     int n = candidates(game_dir, c);
     for (int i = 0; i < n; i++)
@@ -80,11 +85,26 @@ static const GameLibTables *open_lib(const char *path, const char *game_dir) {
         snprintf(g_error, sizeof g_error, "%s was built for another version", path);
         return NULL;  // (left loaded: nothing of it runs)
     }
-    char main_path[1100], current_id[41];
-    snprintf(main_path, sizeof main_path, "%s/exefs/main", game_dir);
-    if (!t->main_build_id || !game_build_id(main_path, current_id) || strcmp(t->main_build_id, current_id)) {
-        snprintf(g_error, sizeof g_error, "%s was built for a different game executable", path);
-        return NULL;
+    const TitleProfile *p=title_profile_validate(game_dir,g_error,sizeof g_error);
+    if (!p) return NULL;
+    if (!t->game_id || !t->version || strcmp(t->game_id,p->key) || strcmp(t->version,p->version) ||
+        t->adapter_revision!=p->adapter_revision || t->module_count!=p->module_count || !t->modules) {
+        snprintf(g_error,sizeof g_error,"The game library belongs to another adapter or version"); return NULL;
+    }
+    for (unsigned i=0;i<p->module_count;i++) {
+        const GameLibModule *m=&t->modules[i]; const TitleModule *expected=&p->modules[i];
+        if (!m->name || strcmp(m->name,expected->name) || m->base!=expected->base ||
+            !m->build_id || strcmp(m->build_id,expected->build_id) || !m->addrs || !m->fns || !m->count ||
+            !*m->count || *m->count>UINT64_C(10000000)) {
+            snprintf(g_error,sizeof g_error,"Invalid compiled module: %s",expected->name); return NULL;
+        }
+        uint64_t end=i+1<p->module_count?p->modules[i+1].base:HLE_BASE;
+        for (uint64_t j=0;j<*m->count;j++) {
+            if (!m->fns[j] || (m->addrs[j]&3) || m->addrs[j]<m->base || m->addrs[j]>=end ||
+                (j && m->addrs[j]<=m->addrs[j-1])) {
+                snprintf(g_error,sizeof g_error,"Invalid function table: %s",expected->name); return NULL;
+            }
+        }
     }
     typedef const char *(*ResearchStoresEntry)(void);
 #ifdef _WIN32
@@ -104,6 +124,10 @@ static const GameLibTables *open_lib(const char *path, const char *game_dir) {
 }
 
 bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
+    if (g_tables && !gamelib_present(game_dir)) {
+        snprintf(why,why_size,"Start a new process to switch to another game installation");
+        return false;
+    }
     static bool tried;
     if (!tried) {
         tried = true;
@@ -119,8 +143,8 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
                 continue;
             }
             g_tables = open_lib(c[i], game_dir);
-            if (g_tables) LOG("[gamelib] %s (%llu + %llu functions)\n", c[i], (unsigned long long)*g_tables->main_count,
-                              (unsigned long long)*g_tables->sdk_count);
+            if (g_tables) LOG("[gamelib] %s (%u modules, %s %s)\n", c[i], g_tables->module_count,
+                              g_tables->game_id,g_tables->version);
         }
     }
     if (!g_tables && why) snprintf(why, why_size, "%s", g_error);

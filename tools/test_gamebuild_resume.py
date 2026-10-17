@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+from game_catalog import get_game
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -66,7 +67,8 @@ with tempfile.TemporaryDirectory() as temporary:
     (resources/'runtime/hle/hle_symbols.txt').write_text('fixture\n')
     main = bytearray(0x60); main[:4] = b'NSO0'; main[0x40:0x54] = bytes.fromhex('ae16f71e002af8cb059a9a74c4d90f34ba984892')
     (game/'exefs/main').write_bytes(main)
-    (game/'exefs/sdk').write_bytes(b'fixture sdk')
+    sdk=bytearray(0x60);sdk[:4]=b'NSO0';sdk[0x40:0x60]=bytes.fromhex(get_game().releases[0].modules[1].build_id)
+    (game/'exefs/sdk').write_bytes(sdk)
     generator = tmp/'generator.py'; generator.write_text(GENERATOR)
     cc = shlex.split(os.environ.get('CC','clang'))
     cxx = shlex.split(os.environ.get('CXX','clang++'))
@@ -79,7 +81,7 @@ with tempfile.TemporaryDirectory() as temporary:
         subprocess.run(cc+[str(stub),'-shared','-Wl,--out-implib,'+str(resources/'build/lasrecomp.dll.a'),
                            '-o',str(tmp/'stub.dll')],check=True)
     objects=[]
-    for source in ('runtime/gamebuild.c','runtime/gameversion.c'):
+    for source in ('runtime/gamebuild.c','runtime/gameversion.c','runtime/title_profile.c'):
         obj=tmp/(Path(source).stem+'.o'); objects.append(str(obj))
         subprocess.run(cc+['-std=gnu11','-fPIC','-Iruntime','-DGAMELIB_ID="cache-fixture"',
                            '-DGAMELIB_CFLAGS="-O0 -fPIC"','-DGAMELIB_SHARED="-shared"',
@@ -177,7 +179,25 @@ with tempfile.TemporaryDirectory() as temporary:
         (resources/'runtime/cpu.h').write_text('/* changed header */\n')
         assert run(),why.value
         assert len(generators())==2 and len(compiles())==9
-        print('Build scheduler: cancellation/resume, one-object repair, source repair, failed compile/link preservation and input invalidation passed')
+        las_output=output
+        las_hash=hashlib.sha256(las_output.read_bytes()).digest()
+        game=tmp/'acnh'; (game/'exefs').mkdir(parents=True)
+        for module in get_game('acnh').releases[0].modules:
+            header=bytearray(0x60);header[:4]=b'NSO0';header[0x40:0x60]=bytes.fromhex(module.build_id)
+            (game/'exefs'/module.name).write_bytes(header)
+        work=game/'.gamebuild'
+        assert run(),why.value
+        assert len(generators())==3 and len(compiles())==13
+        assert all(a[a.index('--profile')+1]=='generic' for a in generators())
+        assert (work/'subsdk0_table.o').exists()
+        assert run() and len(compiles())==1 and not generators(),why.value
+        output=next(p for p in game.glob('lasgame.*') if p.suffix!='.id')
+        acnh_hash=hashlib.sha256(output.read_bytes()).digest()
+        sdk=bytearray((game/'exefs/sdk').read_bytes());sdk[-1]=1;(game/'exefs/sdk').write_bytes(sdk)
+        assert not run() and b'sdk' in why.value and not launched
+        assert hashlib.sha256(output.read_bytes()).digest()==acnh_hash
+        assert hashlib.sha256(las_output.read_bytes()).digest()==las_hash
+        print('Build scheduler: cancel/resume, repair, failure preservation, input invalidation, three-module build and title isolation passed')
     finally:
         for pid in list(processes): kill(pid)
         if os.name=='nt':

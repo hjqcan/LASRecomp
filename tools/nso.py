@@ -14,6 +14,7 @@ class Nso:
         assert raw[:4] == b'NSO0', path
         flags = struct.unpack_from('<I', raw, 0xC)[0]
         self.build_id = raw[0x40:0x60].rstrip(b'\0').hex()
+        self.build_id_full = raw[0x40:0x60].hex()
         segs = []
         for i in range(3):
             file_off, mem_off, dec_size = struct.unpack_from('<III', raw, 0x10 + i * 0x10)

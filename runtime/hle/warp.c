@@ -87,7 +87,7 @@ void warp_request(const char *level, const char *locator) {
 int g_start_screen;  // runtime/ui/launcher.mm: the start screen is up - before the first boot nothing is loaded here
 
 int game_in_play(void) {
-    if (g_start_screen) return 0;
+    if (!title_is_las() || g_start_screen) return 0;
     uint64_t gm = LD64(GA_GAME_MGR);
     return gm && LD64(gm + 0x4b8) != 0;
 }
@@ -182,6 +182,7 @@ static void crash_test(uint64_t frame) {
 
 void warp_frame(uint64_t frame) {
     g_frame_now = frame;
+    if (!title_is_las()) return;
     crash_test(frame);
     { extern void shader_tour_tick(uint64_t); shader_tour_tick(frame); }
     warp_test(frame);
