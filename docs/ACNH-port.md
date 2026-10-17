@@ -314,7 +314,7 @@ a Unix timestamp in 2000-2100 only with an explicit `LARECOMP_SAVE_DIR`. Use a
 separate copy of the save for these tests. It advances the guest clock from that
 instant without changing the host clock. Normal launches retain host time.
 With that isolated save, `LARECOMP_SHADER_OVERRIDE_DIR` can also replace a
-translated fragment shader from `<hex-code-address>_fs.glsl` for translator
+translated graphics shader from `<hex-code-address>_fs.glsl` or `_vs.glsl` for translator
 comparisons. Overrides must preserve the translated descriptor bindings and
 interface locations; they are ignored without an explicit save directory.
 Keep captured game shaders outside the repository.
