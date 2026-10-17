@@ -75,7 +75,7 @@ with tempfile.TemporaryDirectory() as temp:
     generator = root / 'generate.c'
     generator.write_text(GENERATOR)
     executable = root / ('generate.exe' if os.name == 'nt' else 'generate')
-    subprocess.run(cc + ['-std=c11', '-Iruntime/nvn/maxwell', str(generator),
+    subprocess.run(cc + ['-std=gnu11', '-Iruntime/nvn/maxwell', str(generator),
                         'runtime/nvn/maxwell/translate.c', *([] if os.name == 'nt' else ['-lm']), '-o', str(executable)],
                    cwd=ROOT, check=True)
     for index, (base, displacement, count) in enumerate(cases):

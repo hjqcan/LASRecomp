@@ -44,12 +44,13 @@ class AdapterContract(unittest.TestCase):
         assignment = next(line for line in lines if line.startswith('GAMELIB_SRCS :=')).split(':=', 1)[1]
         while assignment.endswith('\\'): assignment = assignment[:-1] + next(lines)
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp); (root / 'Makefile').write_text(makefile, encoding='utf-8')
+            root = Path(tmp).resolve(); (root / 'Makefile').write_text(makefile, encoding='utf-8')
+            (root / 'identity.mk').write_text('print-cache-id: ; @echo $(GAMELIB_ID)\n', encoding='utf-8')
             for name in set(assignment.split()) | {'tools/game_catalog.py', 'runtime/title_catalog.inc', 'tools/fetch_zig.sh', 'runtime/ui/launcher.mm'}:
                 target = root / name; target.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / name, target)
             def identity():
-                return subprocess.check_output(['make', '--no-print-directory', '-s', '--eval',
-                    'print-cache-id: ; @echo $(GAMELIB_ID)', 'print-cache-id'], cwd=root, text=True).strip()
+                return subprocess.check_output(['make', '--no-print-directory', '-s', '-f', 'Makefile',
+                    '-f', 'identity.mk', 'print-cache-id'], cwd=root, text=True).strip()
             before = identity(); self.assertRegex(before, r'^[0-9a-f]{16}$')
             (root / 'adapters/new-title').mkdir(parents=True)
             (root / 'adapters/new-title/adapter.json').write_text('{}')
@@ -97,7 +98,7 @@ class AdapterContract(unittest.TestCase):
 
     def test_third_adapter_drives_native_content_slots_and_save_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp); adapters = root / 'adapters'; shutil.copytree(ADAPTERS, adapters)
+            root = Path(tmp).resolve(); adapters = root / 'adapters'; shutil.copytree(ADAPTERS, adapters)
             data = json.loads((ADAPTERS / 'acnh/adapter.json').read_text())
             data.update(id='fixture', name='Synthetic title', application_id='0100000000000010', order=100, romfs_roots=['Data'])
             data['releases'][0]['modules'][0]['build_id'] = 'ed' * 32

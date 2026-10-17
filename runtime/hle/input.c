@@ -32,6 +32,7 @@ static uint8_t keys_down[SDL_SCANCODE_COUNT];
 static SDL_Gamepad *pad;
 static SDL_Gamepad *pad2;
 static bool second_focused=true;
+static bool second_text_key;
 static _Atomic int64_t sampling;
 
 // Host keys / buttons held by a test script (LARECOMP_HOST_INPUT, input_frame): they go through the bindings
@@ -58,8 +59,10 @@ static void recompute_second(void) {
     coop_host_input(x,y,attack);
 }
 bool input_second_event(const SDL_Event *event) {
-    if(!coop_active())return false;
-    if(event->type==SDL_EVENT_KEY_DOWN||event->type==SDL_EVENT_KEY_UP)return coop_key(event->key.scancode);
+    if(!coop_active()){second_text_key=false;return false;}
+    if(event->type==SDL_EVENT_KEY_DOWN){second_text_key=coop_key(event->key.scancode);return second_text_key;}
+    if(event->type==SDL_EVENT_KEY_UP)return coop_key(event->key.scancode);
+    if(event->type==SDL_EVENT_TEXT_INPUT&&second_text_key)return true;
     if(!pad2)return false;
     SDL_JoystickID id=SDL_GetGamepadID(pad2);
     if(event->type==SDL_EVENT_GAMEPAD_AXIS_MOTION)return event->gaxis.which==id;
@@ -224,7 +227,7 @@ void input_handle_event(const SDL_Event *e) {
         recompute_pad();
         break;
     case SDL_EVENT_WINDOW_FOCUS_LOST:
-        second_focused=false;input_reset();break;
+        second_focused=false;second_text_key=false;input_reset();break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
         second_focused=true;recompute_second();break;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:

@@ -59,6 +59,9 @@ int main(void){
     SDL_Event e={0};e.type=SDL_EVENT_GAMEPAD_BUTTON_DOWN;e.gbutton.which=two;
     assert(input_second_event(&e));e.gbutton.which=one;assert(!input_second_event(&e));
     e.type=SDL_EVENT_KEY_DOWN;e.key.scancode=SDL_SCANCODE_KP_0;assert(input_second_event(&e));
+    e.type=SDL_EVENT_TEXT_INPUT;assert(input_second_event(&e)); // no P2 digit in P1's name field
+    e.type=SDL_EVENT_KEY_DOWN;e.key.scancode=SDL_SCANCODE_W;assert(!input_second_event(&e));
+    e.type=SDL_EVENT_TEXT_INPUT;assert(!input_second_event(&e));
     e.type=SDL_EVENT_WINDOW_FOCUS_LOST;input_handle_event(&e);recompute_pad();assert(!second_x&&!second_attack);
     e.type=SDL_EVENT_WINDOW_FOCUS_GAINED;input_handle_event(&e);assert(second_x==24000&&second_attack);
     SDL_DetachVirtualJoystick(one);e.type=SDL_EVENT_GAMEPAD_REMOVED;e.gdevice.which=one;input_handle_event(&e);
