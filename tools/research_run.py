@@ -12,6 +12,7 @@ import shutil
 import stat
 import subprocess
 from game_versions import game_version
+from research_stores import manifest_read, trace_read
 
 SCENARIO_DIRECTIONS = ((1200, 0, -32767, 19), (1250, 32767, 0, 18),
                        (1300, 0, 32767, 17), (1350, -32767, 0, 16))
@@ -112,7 +113,7 @@ def scenario_transition(rows):
             'note': 'Observed level names and available positions; does not certify completed loading or combat.'}
 
 
-def main():
+def main(extra_env=None, argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--exe', type=Path, required=True)
     p.add_argument('--game', type=Path, required=True)
@@ -126,6 +127,9 @@ def main():
     p.add_argument('--phases', action='store_true', help='Observe verified LAS update/input/task/timer callbacks')
     p.add_argument('--semantics', action='store_true', help='Read the guarded global RNG state and selected clock/entropy returns (update mode)')
     p.add_argument('--startup-seed', type=int, help='Controlled experiment: replace only the verified startup RNG time(NULL) return (uint32)')
+    p.add_argument('--store-window', help='Observe selected generated stores during captured updates START:END (end exclusive)')
+    p.add_argument('--store-manifest', type=Path, help='research-stores.json from the separately instrumented library source')
+    p.add_argument('--store-capacity', type=int, default=65536, help='Maximum recorded writes, 1-262144')
     p.add_argument('--boundary', choices=('hid', 'update'), default='hid')
     p.add_argument('--scenario', choices=tuple(SCENARIOS), default='house', help='Update-indexed input driver; house-exit adds an exit and field movement')
     p.add_argument('--updates', type=int, help='Exact captured updates; default 2400 for house, 4800 for house-exit')
@@ -133,7 +137,7 @@ def main():
     p.add_argument('--warmup', type=int, default=240, help='Minimum consecutive valid updates at the start gate')
     p.add_argument('--stable', type=int, default=60, help='Consecutive equal player-position/health observations')
     p.add_argument('--frames', type=int, help='Presentation fallback limit; default 5700 for house, 9000 for house-exit')
-    args = p.parse_args()
+    args = p.parse_args(argv)
     if args.updates is None:
         args.updates = 4800 if args.scenario == 'house-exit' else 2400
     if args.frames is None:
@@ -142,6 +146,16 @@ def main():
         p.error('--semantics requires --boundary update')
     if args.startup_seed is not None and (not args.semantics or not 0 <= args.startup_seed <= 0xffffffff):
         p.error('--startup-seed requires --semantics and a uint32 value')
+    store_window = None
+    if args.store_window:
+        match = re.fullmatch(r'(\d+):(\d+)', args.store_window)
+        if not match or not args.semantics or not args.store_manifest:
+            p.error('--store-window requires START:END, --semantics and --store-manifest')
+        store_window = list(map(int, match.groups()))
+        if not 0 <= store_window[0] < store_window[1] <= args.updates or not 1 <= args.store_capacity <= 262144:
+            p.error('Store window or capacity exceeds its bounds')
+    if args.store_manifest and not args.semantics:
+        p.error('--store-manifest requires --semantics')
     if args.scenario != 'house' and args.boundary != 'update':
         p.error('--scenario requires --boundary update')
     if not args.save_copy.is_dir():
@@ -161,6 +175,14 @@ def main():
     with (game / 'exefs/main').open('rb') as f:
         build_id = f.read(0x60)[0x40:0x54].hex()
     version = game_version(build_id)
+    manifest_id = None
+    if args.store_manifest:
+        try:
+            manifest, manifest_id = manifest_read(args.store_manifest)
+        except (OSError, ValueError, KeyError) as error:
+            p.error(str(error))
+        if manifest['build_id'] != build_id:
+            p.error('Store manifest belongs to a different game executable')
     settings = 'language = en-US\nfullscreen = 0\nmenu_tip_seen = 1\naspect_asked = 1\n'
     fingerprint = {'runtime': sha(exe), 'library': sha(library), 'build_id': build_id,
                    'save': tree(save), 'settings': hashlib.sha256(settings.encode()).hexdigest()}
@@ -171,6 +193,10 @@ def main():
         if args.semantics:
             fingerprint['semantic_probe'] = 'las_seed_fields_io_v2'
             fingerprint['startup_seed'] = args.startup_seed
+    if manifest_id:
+        fingerprint['store_trace'] = {'manifest': manifest_id, 'window': store_window, 'capacity': args.store_capacity}
+    if extra_env:
+        fingerprint['extension_environment'] = extra_env
     tape = None
     if args.replay:
         previous = args.replay.resolve()
@@ -202,6 +228,9 @@ def main():
         env['LARECOMP_RESEARCH_SEMANTICS'] = '1'
     if args.startup_seed is not None:
         env['LARECOMP_RESEARCH_STARTUP_SEED'] = str(args.startup_seed)
+    if store_window:
+        env.update(LARECOMP_RESEARCH_STORE_FROM=str(store_window[0]), LARECOMP_RESEARCH_STORE_TO=str(store_window[1]),
+                   LARECOMP_RESEARCH_STORE_MAX=str(args.store_capacity))
     if args.boundary == 'update':
         env.update(LARECOMP_RESEARCH_BOUNDARY='update', LARECOMP_RESEARCH_START_LEVEL=args.start_level,
                    LARECOMP_RESEARCH_WARMUP=str(args.warmup), LARECOMP_RESEARCH_STABLE=str(args.stable),
@@ -222,6 +251,8 @@ def main():
                                 '3000:A:8,3100:A:8,3200:A:8,3300:STICK_DOWN:180,' +
                                 ','.join(f'{f}:A:8' for f in range(3400, 4400, 100)) +
                                 ',4400:STICK_DOWN:180,4700:STICK_RIGHT:180,5000:STICK_UP:180')
+    if extra_env:
+        env.update(extra_env)
     options = {}
     if os.name == 'nt':
         startup = subprocess.STARTUPINFO()
@@ -277,6 +308,17 @@ def main():
                                     seed['startup_calls'] == '1' and seed['truncated'] == '0' and
                                     seed['controlled'] == str(int(args.startup_seed is not None)) and
                                     (args.startup_seed is None or int(seed['configured_seed']) == args.startup_seed))
+                if store_window:
+                    try:
+                        shutil.copyfile(args.store_manifest, folders[0]/'stores-manifest.json')
+                        report['stores'] = ini(folders[0]/'stores-summary.ini')
+                        report['store_diagnostics'] = trace_read(folders[0], update_rows)[0]
+                        report['passed'] = (report['passed'] and report['stores']['manifest'] == manifest_id and
+                                            report['stores']['recording_complete'] == '1' and
+                                            report['store_diagnostics']['observed_recording_complete'])
+                    except (OSError, ValueError, KeyError) as error:
+                        report['stores_error'] = str(error)
+                        report['passed'] = False
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2), flush=True)
     if not report['passed']:

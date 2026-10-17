@@ -1,7 +1,8 @@
-"""Read the same 1.0.0 address table the C/C++ runtime includes.
+"""Read the 1.0.0 patch-address table also included by the C/C++ runtime.
 
 The header is the authoritative data; no generated copy or Python address list
-needs updating alongside it. Game-version selection remains unchanged.
+needs updating alongside it. Runtime-only constants are kept in a separate header
+so adding one does not invalidate generated code. Game-version selection remains unchanged.
 """
 from pathlib import Path
 import re
@@ -24,7 +25,7 @@ def load_table(path):
 
 
 _root = Path(sys._MEIPASS) if hasattr(sys, '_MEIPASS') else Path(__file__).resolve().parent.parent
-TABLE_PATH = _root / 'runtime/game_addresses/v1_0_0.h'
+TABLE_PATH = _root / 'runtime/game_addresses/patches_v1_0_0.h'
 ADDRESS = SimpleNamespace(**load_table(TABLE_PATH))
 
 

@@ -9,6 +9,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from research_semantics import actor_comparison, actor_report, external_comparison, external_report, rng_comparison, rng_report, rng_state
 from research_causality import byte_comparison, loading_report, save_windows, seed_report
+from research_stores import trace_read, comparison as store_comparison
 
 
 def matrix_product(a, b):
@@ -256,12 +257,16 @@ def analyze(left, right=None):
         result['left_phases'] = phase_report(a_phases)
     a_updates = None
     a_windows = None
+    a_stores = None
     if (a_folder / 'updates.csv').exists():
         a_updates = observations(a_folder, 'updates.csv', 'update')
         result['left_updates'] = update_timing(a_updates)
         result['left_rng'] = rng_report(a_updates)
         result['left_start_state'] = start_state(a_folder / 'start-state.ini')
         result['left_loading'] = loading_report(a_updates)
+        a_stores = trace_read(a_folder, a_updates)
+        if a_stores is not None:
+            result['left_store_trace'] = a_stores[0]
         if (a_folder / 'seed-events.csv').exists():
             result['left_seed'] = seed_report(load_csv(a_folder / 'seed-events.csv', 128), a_phases, result['left_start_state'])
         if (a_folder / 'save-windows.csv').exists():
@@ -311,6 +316,11 @@ def analyze(left, right=None):
             result['right_rng'] = rng_report(b_updates)
             result['right_start_state'] = start_state(b_folder / 'start-state.ini')
             result['right_loading'] = loading_report(b_updates)
+            b_stores = trace_read(b_folder, b_updates)
+            if b_stores is not None:
+                result['right_store_trace'] = b_stores[0]
+                if a_stores is not None:
+                    result['store_comparison'] = store_comparison(a_stores, b_stores)
             if (b_folder / 'seed-events.csv').exists():
                 result['right_seed'] = seed_report(load_csv(b_folder / 'seed-events.csv', 128), b_phases, result['right_start_state'])
             if (b_folder / 'save-windows.csv').exists():

@@ -33,6 +33,7 @@ extern "C" {
 #include "../performance.h"
 #include "../game_profiles.h"
 void input_reset(void);
+extern "C" bool input_second_event(const SDL_Event *);
 void save_editor_draw(float scale);  // save_editor.mm
 void save_backups_draw(float scale, bool in_game);
 extern "C" int game_in_play(void);  // hle/warp.c
@@ -157,6 +158,7 @@ static bool capturing() { return g_open.load() || g_kbd.load() == 1 || photo_mod
 extern "C" bool menu_input_captured(void) { return capturing(); }
 
 bool menu_handle_event(const SDL_Event *e) {
+    if(input_second_event(e))return false;
     static bool back_down, start_down;
     if (g_open.load() && bind_capture_event(e)) return true;  // Controls tab waiting for a new binding: it takes the press
     if (e->type == SDL_EVENT_KEY_DOWN) g_last_pad = false;
@@ -707,7 +709,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     static const int order[] = {8, 0, 1, 6, 7, 10, 11, 12, 13, 3, 5, 4, 2, 9};  // existing IDs stay stable for test hooks
                                                                 // Cheats, Warp, Save Editor, Quit (ids stay: test hooks)
     for (int i : order)  // (Quit: in game only - the start screen has its own QUIT, and an eleventh tab cut names short)
-        if (((title_is_las() && (in_game || game_profile_active() != GAME_PROFILE_ACNH)) || i == 8 || i == 0 || i == 1 || i == 9 || i == 13) && (i != 9 || !prelaunch)) tabs[ntabs++] = {names[i], i, in_game || (i != 4 && i != 5)};
+        if (((title_is_las() && (in_game || game_profile_las_extensions(game_profile_active()))) || i == 8 || i == 0 || i == 1 || i == 9 || i == 13) && (i != 9 || !prelaunch)) tabs[ntabs++] = {names[i], i, in_game || (i != 4 && i != 5)};
     int cur = 0;  // g_tab / g_tab_request hold ids
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
     if (!tabs[cur].on) cur = 0;

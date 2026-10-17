@@ -2,6 +2,7 @@
 #include "../research_update.h"
 #include "../research_gate.h"
 #include "../research_actors.h"
+#include "../research_stores.h"
 #include <atomic>
 #include <array>
 #include <charconv>
@@ -124,6 +125,7 @@ extern "C" void research_update_phase(bool before,const ResearchPhaseSample *sam
         if(research_gate_step(&gate,&sample->state,sample->observed,sample->blocked!=0)) {
             if(!was_ready){origin=point;initial_window=window(details);status.ready=true;fprintf(stderr,"[research] update start gate ready at counter %u (%s)\n",sample->counter,sample->state.level);}
             cycle_recording=true;
+            if(sample->rng_observed)research_stores_boundary(true,updates.size(),sample->thread,sample->rng);
         }
         return;
     }
@@ -133,6 +135,7 @@ extern "C" void research_update_phase(bool before,const ResearchPhaseSample *sam
     if((uint32_t)(sample->counter-entry.sample.counter)!=1){fail("Update counter did not advance exactly once");return;}
     if(cycle_recording) {
         if(!input_latched){fail("Captured update had no primary-controller poll");return;}
+        if(sample->rng_observed)research_stores_boundary(false,updates.size(),sample->thread,sample->rng);
         if(sample->rng_observed)windows.push_back(window(details));
         if(sample->rng_observed&&updates.size()%10==0) {
             ActorRow row{};row.update=updates.size();memcpy(row.level,sample->state.level,sizeof row.level);

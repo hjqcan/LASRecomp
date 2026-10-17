@@ -17,9 +17,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Windows native-test compiler
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          pacboy: clang:p lld:p
+      - name: Use the app's UCRT64 compiler and pthread headers
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: cygpath -w /ucrt64/bin >> "$GITHUB_PATH"
       - run: python -m pip install zstandard==0.25.0 cryptography==50.0.2
       - run: python tools/test_import_game.py -v
       - run: python tools/test_game_catalog.py -v
+      - run: python tools/adapter.py check
+      - run: python tools/test_adapter_contract.py -v
+      - run: python tools/test_game_install.py
       - run: python tools/test_title_profile.py
       - run: python tools/test_game_profiles.py
       - run: python tools/test_shader_ldc.py

@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run(shlex.split(os.environ.get('CXX', 'clang++')) + [
         '-std=c++17', '-Wall', '-Wextra', '-Iruntime', '-x', 'c++',
         'tools/test_research_runtime.cpp', 'runtime/ui/research_tape.mm', 'runtime/ui/research.mm',
-        'runtime/ui/research_update.mm', 'runtime/ui/research_seed.mm',
+        'runtime/ui/research_update.mm', 'runtime/ui/research_seed.mm', 'runtime/ui/research_stores.mm',
         'runtime/research_gate.c', 'runtime/research_seed.c',
         '-o', str(runtime)], cwd=ROOT, check=True)
     subprocess.run([str(runtime), str(root / 'runtime-fixtures')], check=True)
@@ -37,3 +37,13 @@ with tempfile.TemporaryDirectory() as tmp:
         'tools/test_research_seed.cpp', 'runtime/ui/research_seed.mm', 'runtime/research_seed.c',
         'runtime/research_sites.c', '-o', str(seed)], cwd=ROOT, check=True)
     subprocess.run([str(seed), str(root / 'seed-fixtures')], check=True)
+    stores = root / ('stores.exe' if os.name == 'nt' else 'stores')
+    subprocess.run(shlex.split(os.environ.get('CXX', 'clang++')) + [
+        '-std=c++17', '-Wall', '-Wextra', '-Iruntime', '-x', 'c++',
+        'tools/test_research_stores.cpp', 'runtime/ui/research_stores.mm', '-o', str(stores)], cwd=ROOT, check=True)
+    subprocess.run([str(stores), str(root / 'store-fixtures')], check=True)
+    probe = root / ('probe.exe' if os.name == 'nt' else 'probe')
+    # cpu.h uses the same Clang builtins as actual generated game code.
+    subprocess.run(shlex.split(os.environ.get('PROBE_CC', 'clang')) + [
+        '-std=c11', '-Wall', '-Wextra', '-Iruntime', 'tools/test_research_store_probe.c', '-o', str(probe)], cwd=ROOT, check=True)
+    subprocess.run([str(probe)], check=True)

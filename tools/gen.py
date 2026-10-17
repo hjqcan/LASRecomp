@@ -705,6 +705,9 @@ def main():
     ap.add_argument('--hle')
     ap.add_argument('--profile', choices=('las', 'generic'), default='las',
                     help='generic never applies Link\'s Awakening address patches')
+    ap.add_argument('--adapter', help='Reviewed title adapter selected by the build planner')
+    ap.add_argument('--release', help='Reviewed adapter release')
+    ap.add_argument('--adapter-id', help='Expected code identity; rejects mismatched helper/runtime packages')
     ap.add_argument('--chunk', type=int, default=1500)  # functions per file at most
     ap.add_argument('--chunk-bytes', type=int, default=1500000)  # and about this much C (even compile times)
     ap.add_argument('--chunk-map', help='JSON list of fixed chunk start addresses for incremental regeneration')
@@ -721,6 +724,19 @@ def main():
 
     t0 = time.time()
     m = Module(args.name, args.nso, args.base, args.simd)
+    if args.adapter or args.release or args.adapter_id:
+        if not (args.adapter and args.release and args.adapter_id):
+            ap.error('--adapter, --release and --adapter-id must be supplied together')
+        from game_catalog import get_game, code_identity
+        from adapter_patches import apply_instruction_patches
+        game = get_game(args.adapter)
+        release = next((r for r in game.releases if r.version == args.release), None)
+        expected = next((item for item in release.modules if item.name == args.name), None) if release else None
+        if not expected or expected.build_id != m.nso.build_id_full or expected.base != args.base or args.profile != game.generator_profile:
+            ap.error('The module does not match the reviewed adapter plan')
+        if code_identity(game, release) != args.adapter_id:
+            ap.error('The generator and runtime have different adapter/code-generation inputs; update them together')
+        apply_instruction_patches(m, release)
     if args.name == "main" and args.profile == 'las':
         m.game_version = game_version(m.nso.build_id)
         HOOKS = hook_table(HOOKS, m)

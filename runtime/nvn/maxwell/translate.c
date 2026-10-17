@@ -122,6 +122,13 @@ static const char *pred(Ctx *c, int p, bool neg, char *buf) {
 #define P(p, n) pred(c, (p), (n), alloca(16))
 
 static const char *cbuf_ref(Ctx *c, int idx, int64_t off, const char *dyn, char *buf) {
+    // A signed LDC displacement with RZ has no base to offset it. GLSL cannot
+    // represent a negative constant array index; diagnose this unsupported case
+    // instead of returning shader source which is guaranteed to fail compilation.
+    if (c->glsl && !dyn && off < 0) {
+        fail(c, "negative static cbuf address");
+        strcpy(buf, "0u"); return buf;
+    }
     c->info->cbuf_mask |= 1u << idx;
     if (off + 16 > (int64_t)c->info->cbuf_size[idx]) c->info->cbuf_size[idx] = (uint32_t)((off + 16 + 255) & ~255);
     if (dyn) c->info->cbuf_dynamic |= 1u << idx;

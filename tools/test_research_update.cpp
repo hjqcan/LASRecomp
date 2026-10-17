@@ -11,6 +11,7 @@
 #include <vector>
 namespace fs=std::filesystem;
 extern "C" void research_read_actors(ResearchActorSnapshot *out){*out={};out->complete=true;}
+extern "C" void research_stores_boundary(bool,size_t,uint32_t,const uint32_t[4]){}
 static void env(const char *key,const char *value){
 #ifdef _WIN32
     _putenv_s(key,value?value:"");

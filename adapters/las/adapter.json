@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "id": "las",
+  "name": "The Legend of Zelda: Link's Awakening",
+  "application_id": "01006bb00c6f0000",
+  "order": 0,
+  "generator_profile": "las",
+  "adapter_revision": 1,
+  "romfs_roots": [
+    "region_common"
+  ],
+  "init_order": [
+    "sdk",
+    "main"
+  ],
+  "runtime": {
+    "nvn_minor": 207,
+    "heap_scale": 4,
+    "features": [
+      "las_extensions"
+    ]
+  },
+  "requirements": {
+    "module_tables": "4",
+    "gpu.pool_mapping": "full_alias",
+    "services.network": "offline"
+  },
+  "acceptance": [
+    "startup",
+    "controls",
+    "graphics-audio",
+    "save-reopen",
+    "repeated-start",
+    "extended-play"
+  ],
+  "releases": [
+    {
+      "version": "1.0.0",
+      "role": "base",
+      "content_version": 0,
+      "status": "beta",
+      "installable": true,
+      "content": {
+        "minimum_files": 3836,
+        "image_satisfies_count": false
+      },
+      "installation": {
+        "directory": "games/v1.0.0",
+        "save_directory": "save/v1.0.0",
+        "label": "Link's Awakening 1.0.0",
+        "setting": "1.0.0",
+        "legacy_enum": "BASE",
+        "legacy_index": 1
+      },
+      "modules": [
+        {
+          "name": "main",
+          "build_id": "ae16f71e002af8cb059a9a74c4d90f34ba984892000000000000000000000000",
+          "base": "0x7000000000",
+          "hle": false
+        },
+        {
+          "name": "sdk",
+          "build_id": "3ae34e689d7a35f13cbf42bfd672af8b5eb64a9d000000000000000000000000",
+          "base": "0x7004000000",
+          "hle": true
+        }
+      ]
+    },
+    {
+      "version": "1.1.0",
+      "role": "update",
+      "content_version": 131072,
+      "status": "beta",
+      "installable": true,
+      "content": {
+        "minimum_files": 3836,
+        "image_satisfies_count": false
+      },
+      "installation": {
+        "directory": "games/v1.1.0",
+        "save_directory": "save/v1.1.0",
+        "label": "Link's Awakening 1.1.0",
+        "setting": "1.1.0",
+        "legacy_enum": "UPDATED",
+        "legacy_index": 2
+      },
+      "modules": [
+        {
+          "name": "main",
+          "build_id": "909e904af78ac1b8deefe97ab2ccdb51968f0ec7000000000000000000000000",
+          "base": "0x7000000000",
+          "hle": false
+        },
+        {
+          "name": "sdk",
+          "build_id": "3ae34e689d7a35f13cbf42bfd672af8b5eb64a9d000000000000000000000000",
+          "base": "0x7004000000",
+          "hle": true
+        }
+      ]
+    }
+  ]
+}

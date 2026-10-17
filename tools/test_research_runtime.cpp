@@ -17,6 +17,8 @@ uint64_t plat_now_ns(void){static uint64_t now=1000000000;return now+=1000000;}
 bool game_build_id(const char *,char out[41]){strcpy(out,id);return readable;}
 GameVersion game_version_id(const char *){return known?GAME_100:GAME_UNSUPPORTED;}
 void research_read_actors(ResearchActorSnapshot *out){*out={};out->complete=true;}
+const char *gamelib_research_stores(void){return nullptr;}
+uint32_t kernel_current_thread_handle(void){return 1;}
 }
 static void env(const char *key,const char *value){
 #ifdef _WIN32

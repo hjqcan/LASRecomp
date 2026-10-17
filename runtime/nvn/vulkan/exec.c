@@ -10,6 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef __linux__
+#include <errno.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 #include "../../kernel.h"
 #include "shaders.h"
@@ -2034,6 +2039,100 @@ static bool gmem_import(uint64_t size) {
     gmem_size = size;
     LOG("[vk] guest heap imported for shader global memory: %llu MB\n", (unsigned long long)(size >> 20));
     return true;
+}
+
+// Linux, AMD (RADV): the import above is a userptr buffer, and amdgpu checks every page of a userptr buffer again on
+// each submission - 3.2 GB of heap, ~45 ms of driver time a frame on a ROG Ally X, Steam Deck, Radeon laptops (issues
+// #40, #51). Here the heap is instead allocated by the driver (cached system memory, exported as a dma-buf) and that
+// memory is mapped at HEAP_BASE before the game starts, so the GPU sees an ordinary buffer. Called from boot (main.c)
+// on the main thread before any guest thread exists; a reboot frees it with gmem_buf (vk_exec_reset) and the guest
+// window's reset unmaps it, so the next boot gets fresh zeroed memory. Costs: the whole HEAP_MAX is committed once the
+// GPU first uses it, and Linux write tracking can't watch this mapping (the heap is then re-checked like on Beta 4).
+// Nothing writes the heap before boot (the start screen doesn't use guest memory): the mapping replaces it unseen.
+// Default on for RADV; LARECOMP_VK_HEAP_DMABUF=0 off, =1 on any Linux driver with dma-buf export.
+void backend_guest_heap_prepare(void) {
+#ifdef __linux__
+    if (gmem_buf || !g_vk.dev || !g_vk.dmabuf || getenv("LARECOMP_VK_NO_GMEM")) return;
+    const char *e = getenv("LARECOMP_VK_HEAP_DMABUF");
+    if (e ? !atoi(e) : !strstr(g_vk.props.deviceName, "RADV")) return;
+    const uint64_t size = HEAP_MAX;
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+    const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                       VK_MEMORY_PROPERTY_HOST_CACHED_BIT;  // (cached: the game's CPU work runs in it)
+    int type = -1;
+    for (uint32_t i = 0; i < mp.memoryTypeCount && type < 0; i++)
+        if ((mp.memoryTypes[i].propertyFlags & want) == want && mp.memoryHeaps[mp.memoryTypes[i].heapIndex].size >= size)
+            type = (int)i;
+    if (type < 0) { LOG("[vk] heap as driver memory: no cached host-visible memory type\n"); return; }
+    VkExternalMemoryBufferCreateInfo eb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+                                           .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &eb, .size = size,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT};
+    VkBuffer buf;
+    if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) { LOG("[vk] heap as driver memory: buffer failed\n"); return; }
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(g_vk.dev, buf, &req);
+    if (!(req.memoryTypeBits & (1u << type))) {
+        LOG("[vk] heap as driver memory: memory type %d not allowed for the buffer\n", type);
+        vkDestroyBuffer(g_vk.dev, buf, NULL);
+        return;
+    }
+    VkMemoryDedicatedAllocateInfo ded = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, .buffer = buf};
+    VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, .pNext = &ded,
+                                     .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &ex, .allocationSize = req.size,
+                               .memoryTypeIndex = (uint32_t)type};
+    VkDeviceMemory mem;
+    VkResult r = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
+    if (r != VK_SUCCESS) { LOG("[vk] heap as driver memory: allocation failed (%d)\n", r); vkDestroyBuffer(g_vk.dev, buf, NULL); return; }
+    PFN_vkGetMemoryFdKHR get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryFdKHR");
+    VkMemoryGetFdInfoKHR fi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = mem,
+                               .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    int fd = -1;
+    const char *why = NULL;
+    if (!get_fd || get_fd(g_vk.dev, &fi, &fd) != VK_SUCCESS || fd < 0) why = "no dma-buf for it";
+    // First mapped anywhere, to know the driver lets it be mapped at all: MAP_FIXED unmaps what's at HEAP_BASE before
+    // the driver is asked, so a refusal there would leave the heap unmapped (review of 2c27f3d)
+    if (!why) {
+        void *probe = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (probe == MAP_FAILED) why = strerror(errno);
+        else munmap(probe, size);
+    }
+    if (!why && mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) !=
+                    (void *)(uintptr_t)HEAP_BASE) {
+        why = strerror(errno);
+        // (the old mapping is gone: plain zeroed memory again, registered for write tracking like a reboot's)
+        if (!plat_reset_guest(HEAP_BASE, HEAP_BASE + size)) FATAL("cannot restore the guest heap mapping\n");
+    }
+    if (fd >= 0) close(fd);  // (the mapping keeps the dma-buf)
+    VkResult br = why ? VK_SUCCESS : vkBindBufferMemory(g_vk.dev, buf, mem, 0);
+    if (!why && br != VK_SUCCESS) {
+        why = "binding failed";
+        if (!plat_reset_guest(HEAP_BASE, HEAP_BASE + size)) FATAL("cannot restore the guest heap mapping\n");
+    }
+    if (why) {
+        LOG("[vk] heap as driver memory: mapping at %llx failed (%s): the heap is shared as before\n",
+            (unsigned long long)HEAP_BASE, why);
+        vkDestroyBuffer(g_vk.dev, buf, NULL);
+        vkFreeMemory(g_vk.dev, mem, NULL);
+        return;
+    }
+    // the game expects a zeroed heap; the kernel hands out zeroed pages, but 8 spread pages are checked to be sure
+    static const uint8_t zero_page[4096];
+    for (int i = 0; i < 8; i++)
+        if (memcmp((const void *)(uintptr_t)(HEAP_BASE + size / 8 * i), zero_page, sizeof zero_page)) {
+            LOG("[vk] heap as driver memory: not zeroed, clearing it\n");
+            memset((void *)(uintptr_t)HEAP_BASE, 0, size);
+            break;
+        }
+    gmem_buf = buf;
+    gmem_mem = mem;
+    gmem_size = size;
+    LOG("[vk] guest heap as driver memory (dma-buf, memory type %d): %llu MB at %llx - all of it is held in system memory "
+        "once the GPU first uses it\n", type, (unsigned long long)(size >> 20), (unsigned long long)HEAP_BASE);
+#endif
 }
 
 static uint64_t gmem_tried;  // heap size the import was last attempted for (gmem_info imports / re-imports)

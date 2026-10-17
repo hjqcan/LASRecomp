@@ -16,11 +16,12 @@ This is the independently maintained edition in [hjqcan/LASRecomp](https://githu
 | Versions | Build-ID checks, v1.0.0 and v1.1.0 installations, separate saves, libraries and compilation caches |
 | UI | English, Simplified Chinese and Traditional Chinese settings; upstream language/font fixes; CRLF settings and HK/MO/Hant locale handling |
 | Compilation | Cancel/resume, SHA-256 source/object receipts, split compiler/generator identities, safe library publication, Windows per-helper job objects |
-| Saves | Automatic/manual snapshots, 20-snapshot retention, validated launcher restore, separation by installation and randomizer seed |
+| Saves | Atomic file commits including extended flags, automatic/manual snapshots after commit, 20-snapshot retention, validated launcher restore, separation by installation and randomizer seed |
 | Photos | F2 freeze, aspect-ratio crops, composition guides, color presets/contrast/vignette, F12 PNG plus settings recipe, Vulkan and Metal implementations |
 | Resource mods | Local pack import, metadata, version-specific enable lists, shareable version-checked presets, conflict paths, save backup before selection changes |
 | Randomizer | Existing upstream options plus experimental version-specific v1.1.0 generation and validated patches/event adaptation |
 | Challenge workshop | Shareable destination/time/damage rules, isolated save snapshots, result and observed-route recording |
+| Local co-op prototype | Vanilla 1.0.0 Link + player-controlled BowWow, separate P2 input, native movement/combat and isolated saves |
 | Route viewer | Local CSV loading, playback/scrubbing, per-level X/Z map, health and controller samples |
 | Performance | Bounded gameplay frame-interval captures, CSV export, percentile and 1% low statistics |
 | Research tools | Isolated HID/update input capture, observed start gates, RNG/NPC/clock/callback observations, optional startup-seed control, save-byte/I/O comparison, scene-transition scripts and explicit divergence reports; disabled in ordinary play |
@@ -28,7 +29,7 @@ This is the independently maintained edition in [hjqcan/LASRecomp](https://githu
 
 See [import and versions](NSZ-and-v110.md), [photo/mod/randomizer details](photo-mods-randomizer.md), [mod format](resource-mods.md) and [workshop/replay/performance](workshop.md).
 
-The workshop, extended photo controls, mod presets and frame captures are development additions after the published Beta 5.1 package. Their scope and checks are recorded in [third/fourth-round validation](enhanced-stage34-validation.md). High-refresh simulation, deterministic game replay and real-time co-op remain research work.
+The workshop, extended photo controls, mod presets and frame captures are development additions after the published Beta 5.1 package. Their scope and checks are recorded in [third/fourth-round validation](enhanced-stage34-validation.md). The [local companion co-op prototype](local-coop.md) adds same-PC Link + BowWow play in isolated 1.0.0 sessions. High-refresh simulation, deterministic game replay and online co-op remain research work.
 
 The subsequent [research probes](research-capture.md) now measure final HID input, clock behavior and scene camera matrices in isolated saves. See the [2026-10-17 findings](research-findings-2026-10-17.md) for actual dual-version replay divergence and presentation-mode controls.
 
@@ -38,12 +39,18 @@ The subsequent [research probes](research-capture.md) now measure final HID inpu
 
 The [fourth research round](research-fourth-round.md) separates startup seed input from RNG consumption and compares exact save-window bytes and observed loading activity in both supported versions.
 
+[Store tracing](research-store-tracing.md) builds an optional diagnostic library to locate differences in observed RNG writes, with explicit source coverage, buffer limits and state-chain validation.
+
 The [Enhanced Beta 5.1 validation record](enhanced-beta5.1-validation.md) lists actual checks and remaining limits, including the save-mount concurrency fix found during release testing.
 
-[Multi-game development](multi-game.md) records the shared-core/adapters direction.
-The importer now uses a title catalog with full module Build-ID checks. ACNH is
-registered for development inspection only; its runtime integration, a game
-library screen and automatic desktop shortcuts are not released features.
+[Multi-game development](multi-game.md) now includes the shared module runtime,
+reviewed per-game adapter definitions, catalog-generated installation selection,
+release-scoped cache identities and Windows desktop shortcuts. Managed setup
+imports and builds a candidate before atomically selecting it; failed builds keep
+the previous installation. ABI 4 requires a one-time game-library rebuild while
+preserving saves and launch IDs. ACNH remains a development adapter with normal
+installation disabled until its gameplay/save acceptance gates pass. These source
+changes do not themselves publish a new prerelease.
 
 ## Windows quick start / Windows 使用说明
 

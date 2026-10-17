@@ -1,4 +1,5 @@
 #include "../workshop.h"
+#include "../coop.h"
 #include "../game_profiles.h"
 #include "../gameversion.h"
 #include "../gamelib.h"
@@ -30,7 +31,7 @@ std::atomic<int> damage_override;
 std::string selected_root, selected_seed, armed_root, armed_seed, run_dir, save_dir, message, pending_config, pending_route;
 ChallengeConfig draft={"leave-house","1.0.0","Field",300,1,false,false}, config;
 ChallengeState state;
-bool armed,booted,dirty,assisted;
+bool armed,booted,dirty,assisted,draft_coop;
 std::vector<RouteSample> route, replay;
 uint64_t last_sample;
 float replay_time;
@@ -51,7 +52,7 @@ void flush_run() {
 }
 void disarm() {
     if (armed) { state.status=CHALLENGE_CANCELLED; dirty=true; flush_run(); }
-    armed=false; save_dir.clear();
+    armed=false; save_dir.clear();coop_request(false);
 }
 bool arm(char *why,size_t cap) {
     auto version=game_version_file((selected_root+"/exefs/main").c_str());
@@ -64,6 +65,7 @@ bool arm(char *why,size_t cap) {
     if (!workshop_prepare_run(rt_data_root(),source.c_str(),&config,directory,sizeof directory,why,cap)) return false;
     run_dir=directory; save_dir=run_dir+"/save"; armed_root=selected_root; armed_seed=selected_seed;
     armed=true; route.clear(); route.reserve(12000); last_sample=0; assisted=false; tool_used=false; dirty=false; draft=config; challenge_begin(&state);
+    coop_request(draft_coop&&!strcmp(config.game_version,"1.0.0")&&selected_seed.empty());
     return true;
 }
 void load_replay(const std::string &path) {
@@ -167,7 +169,7 @@ extern "C" void workshop_frame(uint64_t) {
 extern "C" void workshop_reset(void) {
     std::lock_guard<std::mutex> guard(lock);
     if (booted && (state.status==CHALLENGE_WAITING||state.status==CHALLENGE_RUNNING)) { state.status=CHALLENGE_CANCELLED; dirty=true; }
-    flush_run(); observing=false;overlay=false;damage_override=0;booted=false;save_dir.clear();
+    flush_run(); observing=false;overlay=false;damage_override=0;booted=false;save_dir.clear();coop_request(false);
 }
 extern "C" bool workshop_overlay_wanted(void) { return overlay.load(); }
 extern "C" void workshop_overlay(float scale) {
@@ -176,6 +178,7 @@ extern "C" void workshop_overlay(float scale) {
     ImGui::SetNextWindowPos(ImVec2(display.x-20*scale,display.y-20*scale),ImGuiCond_Always,ImVec2(1,1));
     ImGui::SetNextWindowBgAlpha(.75f);
     ImGui::Begin("##challenge-status",NULL,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoInputs|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoFocusOnAppearing);
+    if(coop_active())ImGui::TextUnformatted(ui_tr("Local co-op: BowWow is controlled by player 2."));
     ImGui::Text("%s",ui_tr(status_name(state.status))); ImGui::Text("%s: %.1f / %d s",config.name,state.elapsed,config.seconds);
     ImGui::Text("%s: %s",ui_tr("Goal level"),config.goal_level); ImGui::End();
 }
@@ -211,6 +214,10 @@ extern "C" void workshop_draw(float scale,bool in_game) {
     ImGui::SliderInt(ui_label("Time limit (seconds)").c_str(),&draft.seconds,10,3600);
     ImGui::SliderInt(ui_label("Challenge damage multiplier").c_str(),&draft.damage,1,8);
     ImGui::Checkbox(ui_label("Fail on health loss").c_str(),&draft.no_hit); ImGui::SameLine(); ImGui::Checkbox(ui_label("Challenge one-hit KO").c_str(),&draft.ohko);
+    ImGui::BeginDisabled(strcmp(draft.game_version,"1.0.0")||!selected_seed.empty());
+    ImGui::Checkbox(ui_label("Local companion co-op (1.0.0 prototype)").c_str(),&draft_coop);
+    ImGui::EndDisabled();
+    if(draft_coop)ImGui::TextWrapped("%s",ui_tr("Player 1: normal controls. Player 2: second gamepad (left stick / south button), or numpad 8/4/5/6 and 0. BowWow uses the game's companion combat rules. Shared camera and the host's isolated save."));
     if (ImGui::Button(ui_label("Save challenge").c_str())) {
         char why[512];
         auto path=std::filesystem::u8path(rt_data_root())/"workshop"/"presets"/(std::string(draft.name)+".laschallenge");
@@ -228,6 +235,7 @@ extern "C" void workshop_draw(float scale,bool in_game) {
     }
     if (armed && ImGui::Button(ui_label("Disarm challenge").c_str())) disarm();
     if (booted) {
+        if(coop_active())ImGui::TextUnformatted(ui_tr("Local co-op: BowWow is controlled by player 2."));
         ImGui::Text("%s  %.1f s",ui_tr(status_name(state.status)),state.elapsed);
         ImGui::Text("%s: %s",ui_tr("Goal level"),config.goal_level);
         if (state.reason) {

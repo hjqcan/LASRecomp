@@ -7,7 +7,10 @@
 const char *g_romfs_dir;
 int rt_romfs_files;
 const TitleProfile *title_profile_current(void) { abort(); }
-bool title_is_las(void) { abort(); }
+bool title_is_las(void) { return false; }
+void save_editor_file_read(const char *path, uint64_t addr, int64_t off, int64_t size) { abort(); }
+void flags_ext_save_read(const char *path, uint64_t addr, int64_t off, int64_t size, bool pending) { abort(); }
+void flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size, bool pending) { abort(); }
 int game_profile_active(void) { abort(); }
 const char *game_profile_save_dir(int profile) { abort(); }
 const char *workshop_save_dir(void) { abort(); }
@@ -18,6 +21,8 @@ bool romfs_layout(const char *p, RomfsLayout *l, char *why, size_t n) { abort();
 const char *rando_seed_dir(void) { abort(); }
 bool rando_romfs_override(const char *p, char *out, size_t n) { abort(); }
 void romfs_file_read_hook(const char *p) { abort(); }
+bool research_io_begin(void) { abort(); }
+void research_io_end(int64_t bytes) { abort(); }
 void rt_fatal_msg(const char *fmt, ...) { abort(); }
 void rt_fatal_trace(void) { abort(); }
 bool rt_fault_watch(uint64_t a, uint64_t pc) { return false; }

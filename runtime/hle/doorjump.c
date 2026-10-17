@@ -20,8 +20,8 @@
 #include "../hle.h"
 #include "../rando.h"
 
-#define PLAYER_STATUS_PTR (GA_PLAYER_STATUS_PTR)  // PlayerStatus*: current level name at +0
-#define PLAYER_COLLISION_VT (GA_PLAYER_COLLISION_VT)
+// GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
+
 
 typedef struct { char level[40]; int col, row; char side; int own, partner, still; int tcol, trow; char tside; float depth;
                  int pair; float height; } Jump;  // height: floor where Link lands (Chaos; <-90 = keep his)  // pair: Chaos doorway pair (both directions share it), -1 = a neighbour jump
@@ -109,7 +109,7 @@ RT_ON_RESET(doorjump_reset) {
 }
 
 static int is_player_collision(uint64_t p) {
-    return LD64(p) == PLAYER_COLLISION_VT && LD64(p + 8) == p &&
+    return LD64(p) == GA_PLAYER_COLLISION_VT && LD64(p + 8) == p &&
            !memcmp((const void *)(uintptr_t)(p + 0x18), "PlayerCollision", 16);
 }
 
@@ -117,7 +117,7 @@ static int is_player_collision(uint64_t p) {
 // player can stay in freed memory looking valid) and when the cached pointer goes stale. Several candidates:
 // log them all (LARECOMP_DOORJUMP_LOG) and take the last one found (newest allocation is the live one - checked).
 static uint64_t find_player(uint64_t frame) {
-    uint64_t ps = LD64(PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     const char *lv = ps ? (const char *)(uintptr_t)ps : "";
     if (strncmp(g_player_level, lv, sizeof g_player_level - 1) || g_player_rescan) {  // new level: rescan once settled
         g_player_rescan = 0;
@@ -135,7 +135,7 @@ static uint64_t find_player(uint64_t frame) {
     int nr = kernel_data_regions(ra, rs, 64), n = 0;
     for (int r = 0; r < nr; r++)
         for (uint64_t k = 0; k + 0x100 <= rs[r]; k += 16)
-            if (LD64(ra[r] + k) == PLAYER_COLLISION_VT && is_player_collision(ra[r] + k)) {
+            if (LD64(ra[r] + k) == GA_PLAYER_COLLISION_VT && is_player_collision(ra[r] + k)) {
                 const float *p = (const float *)(uintptr_t)(ra[r] + k + 0x80);
                 if (ENV("LARECOMP_DOORJUMP_LOG"))
                     LOG("[doorjump] candidate %llx (%.2f, %.2f, %.2f) parent %llx\n", (unsigned long long)(ra[r] + k),
@@ -276,7 +276,7 @@ static void place_tick(uint64_t frame) {
         }
     }
     if (at < 0 || done || (long)frame < at) return;
-    uint64_t ps = LD64(PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     const char *lv = ps ? (const char *)(uintptr_t)ps : "";
     if (strncmp(level, lv, sizeof level - 1)) { strlcpy(level, lv, sizeof level); since = frame; return; }
     if (frame - since < 60) return;
@@ -312,10 +312,10 @@ void doorjump_tick(uint64_t frame) {
     }
     if (!g_njumps) return;
     if (ENV("LARECOMP_DOORJUMP_TEST")) {
-        uint64_t ps0 = LD64(PLAYER_STATUS_PTR);
+        uint64_t ps0 = LD64(GA_PLAYER_STATUS_PTR);
         if (ps0) test_tick(frame, find_player(frame), (const char *)(uintptr_t)ps0);
     }
-    uint64_t ps = LD64(PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     const char *lv = ps ? (const char *)(uintptr_t)ps : "";
     int any = 0;
     for (int i = 0; i < g_njumps && !any; i++) any = !strcmp(g_jumps[i].level, lv);

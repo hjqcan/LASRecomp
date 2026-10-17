@@ -8,6 +8,7 @@
 #include "gameversion.h"
 #include "game_profiles.h"
 #include "game_shortcut.h"
+#include "game_install.h"
 #include "mods.h"
 #include "photo.h"
 #include "workshop.h"
@@ -153,6 +154,15 @@ static void boot(const char *root) {
     snprintf(npdm_path, sizeof npdm_path, "%s/main.npdm", exefs);
     if (!g_romfs_dir) g_romfs_dir = strdup(romfs);
 
+#ifdef __linux__
+    {   // the window and graphics device first (normally made by the start screen or ui_run), so the guest heap can be
+        // the driver's memory before any game thread runs (runtime/nvn/vulkan/exec.c backend_guest_heap_prepare)
+        extern void ui_window_init(void);
+        extern void backend_guest_heap_prepare(void);
+        ui_window_init();
+        backend_guest_heap_prepare();
+    }
+#endif
     if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
     char main_path[1100];
     snprintf(main_path, sizeof main_path, "%s/main", exefs);
@@ -169,6 +179,7 @@ static void boot(const char *root) {
     kernel_init();
     dispatch_init();
     if (title_is_las() && !research_hooks_init(why, sizeof why)) FATAL("%s\n", why);
+    { extern bool coop_boot(char *,size_t); if (!coop_boot(why,sizeof why)) FATAL("%s\n",why); }
 
     uint32_t stack_size = 0x100000;
     int prio = 44;
@@ -208,7 +219,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--create-shortcut")) create_shortcut = true;
         else if (!strcmp(argv[i], "--game")) {
             if (++i >= argc || (launch_profile = game_profile_from_id(argv[i])) < 0) {
-                fprintf(stderr, "Unknown game installation. Use las/1.0.0, las/1.1.0 or acnh/1.0.0.\n"); return 2;
+                fprintf(stderr, "Unknown game installation. Available launch IDs:\n");
+                for (int p = 1; p < GAME_PROFILE_COUNT; ++p) fprintf(stderr, "  %s\n", game_profile_id(p));
+                return 2;
             }
         } else if (!strcmp(argv[i], "--data-root")) {
             if (++i >= argc) { fprintf(stderr, "--data-root needs a folder path.\n"); return 2; }
@@ -221,11 +234,16 @@ int main(int argc, char **argv) {
     settings_load();
     if (launch_profile >= 0) root = game_profile_dir(launch_profile);
     if (!root) root = game_profile_dir(g_settings.game_profile);
+    static char installed_root[2048];
+    char install_error[512];
+    if (game_install_resolve(root, installed_root, sizeof installed_root, install_error, sizeof install_error)) root = installed_root;
+    else { fprintf(stderr, "%s\n", install_error); skip_launcher = false; }
     if (create_shortcut) {
         char shortcut[2048], why[512];
         if (!game_shortcut_create(root, shortcut, sizeof shortcut, why, sizeof why)) { fprintf(stderr, "%s\n", why); return 1; }
         printf("%s\n", shortcut); return 0;
     }
+    if (skip_launcher && !gamelib_present(root)) skip_launcher = false;
     for (bool title = !skip_launcher;;) {
         if (title) {  // start screen (runtime/ui/launcher.mm): game files setup, seed choice, settings
             extern const char *launcher_run(const char *root);
