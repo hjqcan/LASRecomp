@@ -7,12 +7,13 @@ import struct
 import sys
 import tempfile
 from game_catalog import GAMES, catalog, code_identity
+from host_paths import io_path, logical_path
 from test_import_game import pfs_files, synthetic_nso, synthetic_romfs, ncz
 
 helper = Path(sys.argv[1]).resolve()
 actual = json.loads(subprocess.check_output([str(helper), '--import-nsz', '--catalog'], text=True, encoding='utf-8'))
 assert actual == json.loads(json.dumps(catalog())), 'Frozen helper contains stale adapter data'
-with tempfile.TemporaryDirectory(prefix='frozen-adapters-') as temporary:
+with tempfile.TemporaryDirectory(prefix='frozen-adapters-', dir=io_path(tempfile.gettempdir())) as temporary:
     root = Path(temporary)
     for game in GAMES:
         release = next(r for r in game.releases if r.role == 'base')
@@ -26,8 +27,9 @@ with tempfile.TemporaryDirectory(prefix='frozen-adapters-') as temporary:
         inspected = subprocess.run(command + ['--inspect', '--gui-summary'], capture_output=True, encoding='utf-8')
         assert inspected.returncode == 0, inspected.stdout + inspected.stderr
         assert game.id in inspected.stdout
-        output = root / game.id
-        imported = subprocess.run(command + ['--output', str(output), '--allow-development'], capture_output=True, encoding='utf-8')
+        output = root / ('nested-' + 'x'*90) / ('candidate-' + 'y'*90) / game.id
+        assert len(str(output / 'romfs' / game.romfs_roots[0] / 'example.bin')) > 260
+        imported = subprocess.run(command + ['--output', str(logical_path(output)), '--allow-development'], capture_output=True, encoding='utf-8')
         assert imported.returncode == 0, imported.stdout + imported.stderr
         manifest = json.loads((output / 'import-manifest.json').read_text())
         assert manifest['game_id'] == game.id and manifest['code_identity'] == code_identity(game, release)

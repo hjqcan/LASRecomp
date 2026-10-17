@@ -6,6 +6,7 @@ import random
 import struct
 import tempfile
 import unittest
+import shutil
 from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ import zstandard
 from import_game import View, PatchView, pfs_entries, decompress_ncz, import_game, extract_romfs, romfs_header
 from game_versions import BASE, BASE_ID, UPDATE_ID, address, game_version, patch_word, patch_table
 from game_catalog import get_game
+from host_paths import io_path
 
 
 def pfs(names):
@@ -234,6 +236,18 @@ class InstallTests(unittest.TestCase):
 
     def resource(self):
         return (self.output / 'romfs/region_common/example.bin').read_bytes()
+
+    def test_deep_candidate_import_and_replace(self):
+        deep = self.root / ('managed-' + 'x'*80) / ('candidate-' + 'y'*100)
+        self.output = deep / 'content'
+        self.assertGreater(len(str(self.output / 'romfs/region_common/example.bin')), 260)
+        self.addCleanup(shutil.rmtree, io_path(self.root / ('managed-' + 'x'*80)))
+        self.assertEqual(self.install()['game_version'], '1.0.0')
+        self.assertEqual(io_path(self.output / 'romfs/region_common/example.bin').read_bytes(), b'original')
+        self.assertEqual(self.install(True, True)['game_version'], '1.1.0')
+        self.assertEqual(io_path(self.output / 'romfs/region_common/example.bin').read_bytes(), b'changed!')
+        self.assertFalse(list(io_path(deep).glob('.las-import-*')))
+        self.assertFalse(list(io_path(deep).glob('*.previous-*')))
 
     def test_base_then_update_replaces_old_code_and_preserves_sources(self):
         hashes = [hashlib.sha256(p.read_bytes()).digest() for p in (self.base, self.update)]

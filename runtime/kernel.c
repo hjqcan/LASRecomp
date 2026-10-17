@@ -629,7 +629,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         x[0] = R_OK;
         x[1] = 0;
         break;
-    case 0x07: LOG("ExitProcess\n"); exit(0);
+    case 0x07: LOG("ExitProcess\n"); plat_exit(0);
     case 0x08: {  // CreateThread(_, entry, arg, stack_top, prio, core)
         KThread *t = thread_new(x[1], x[2], x[3], (int)x[4], (int)(int32_t)x[5]);
         t->handle = kernel_new_handle(&t->obj);

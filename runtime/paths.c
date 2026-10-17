@@ -74,7 +74,7 @@ static bool writable(const char *dir) {
 static void fail(const char *msg) {
     fprintf(stderr, "%s\n", msg);
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "LAS Recomp", msg, NULL);
-    exit(1);
+    plat_exit(1);
 }
 
 static bool g_dev;  // the data root is the starting folder because it has extracted/ (a source checkout)

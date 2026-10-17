@@ -23,6 +23,7 @@ import zstandard
 from game_catalog import GAMES, catalog, get_game, game_for_application, game_for_build, code_identity
 from nca import Keyset, Nca, parse_cnmt, ticket_key
 from containers import View, safe_name, pfs_entries, open_container
+from host_paths import io_path
 
 CHUNK = 8 << 20
 MAX_IMAGE = 16 << 30
@@ -465,6 +466,10 @@ def extract_romfs(view, offset, header, destination):
 
 def import_game(base_path, update_path, output, replace=False, keys_path=None, title_keys_path=None, expected_version=None,
                 game_id=None, allow_development=False):
+    base_path, output = io_path(base_path), io_path(output)
+    update_path = io_path(update_path) if update_path else None
+    keys_path = io_path(keys_path) if keys_path else None
+    title_keys_path = io_path(title_keys_path) if title_keys_path else None
     keys = Keyset(keys_path, title_keys_path)
     game = get_game(game_id) if game_id and game_id != 'auto' else None
     if game is None:

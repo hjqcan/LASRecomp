@@ -4,13 +4,16 @@ from pathlib import Path
 import shlex
 import subprocess
 import tempfile
+import hashlib
+from host_paths import io_path, logical_path
 
 ROOT = Path(__file__).resolve().parents[1]
-with tempfile.TemporaryDirectory(prefix='installation-') as temporary:
-    root = Path(temporary).resolve()
+with tempfile.TemporaryDirectory(prefix='installation-', dir=io_path(tempfile.gettempdir())) as temporary:
+    root = logical_path(temporary).resolve()
     executable = root / ('install.exe' if os.name == 'nt' else 'install')
     subprocess.run(shlex.split(os.environ.get('CXX', 'clang++')) + ['-std=c++17', '-DGAME_INSTALL_TESTING',
-        '-x', 'c++', str(ROOT / 'runtime/ui/game_install.mm'), str(ROOT / 'tools/test_game_install.cpp'), '-o', str(executable)], check=True)
+        '-x', 'c++', str(ROOT / 'runtime/ui/game_install.mm'), str(ROOT / 'runtime/ui/title_content.mm'),
+        str(ROOT / 'tools/test_game_install.cpp'), '-o', str(executable)], check=True)
     slot = root / 'slot'; slot.mkdir(); (slot / 'content').write_text('legacy')
     def run(mode, *args, code=0, crash=None):
         env = dict(os.environ)
@@ -69,12 +72,29 @@ with tempfile.TemporaryDirectory(prefix='installation-') as temporary:
         assert (outside / 'keep').read_text() == 'untouched'
         unsafe.unlink()
     # Cloning an active installation keeps empty directories and independent source bytes.
+    third = Path(run('stage', 'long-path')); run('complete')
     (third / 'exefs').mkdir(); (third / 'exefs/main').write_text('original module')
     (third / 'romfs/Empty').mkdir(parents=True)
+    # Candidate depth pushes ordinary game asset paths beyond MAX_PATH, even
+    # when the installation slot itself is a normal short path.
+    deep = Path('romfs/Empty') / ('directory-' + 'x'*80) / ('asset-' + 'y'*100 + '.bin')
+    assert len(str(third / deep)) > 260
+    io_path(third / deep).parent.mkdir(parents=True)
+    io_path(third / deep).write_bytes(b'long asset')
+    run('publish') # hashing the full candidate must include the long asset
+    tree = hashlib.sha256()
+    native = io_path(third)
+    for name in sorted(p.relative_to(native).as_posix() for p in native.rglob('*')
+                       if p.is_file() and p.name != 'installation-receipt'):
+        tree.update(name.encode('utf-8') + b'\0')
+        tree.update(hashlib.sha256((native / name).read_bytes()).hexdigest().encode('ascii'))
+    assert (third / 'installation-receipt').read_text().splitlines()[2] == tree.hexdigest()
+    run('content')
     clone = Path(run('clone'))
     assert (clone / 'romfs/Empty').is_dir()
     (clone / 'exefs/main').write_text('changed candidate')
     assert (third / 'exefs/main').read_text() == 'original module'
+    assert io_path(clone / deep).read_bytes() == b'long asset'
     run('clear'); assert Path(run('resolve')) == slot
     assert (slot / 'content').read_text() == 'legacy' and (outside / 'keep').read_text() == 'untouched'
     # A first install has no launchable generation until publication, and remains resumable.

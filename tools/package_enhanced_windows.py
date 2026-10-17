@@ -24,7 +24,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True, help='New staging/output directory')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    version_line = next(line for line in (root/'runtime/ui/launcher.mm').read_text().splitlines()
+    version_line = next(line for line in (root/'runtime/ui/launcher.mm').read_text(encoding='utf-8').splitlines()
                         if line.startswith('#define LARECOMP_VERSION '))
     version = version_line.split('"')[1]
     if not version.startswith('enhanced-'):
@@ -71,7 +71,8 @@ def main():
     for name in ('README.md', 'LICENSE', 'CONTRIBUTING.md'):
         copy(root/name, name)
     for name in ('enhanced.md', 'enhanced-beta5.1-validation.md', 'NSZ-and-v110.md',
-                 'photo-mods-randomizer.md', 'photo-mode.md', 'resource-mods.md'):
+                 'photo-mods-randomizer.md', 'photo-mode.md', 'resource-mods.md',
+                 'multi-game.md', 'adapter-development.md', 'ACNH-port.md'):
         copy(root/'docs'/name, 'docs/'+name)
     copy(root/'docs/enhanced.md', 'START-HERE-使用说明.md')
     copy(root/'examples/mods/template', 'examples/mods/template')
@@ -89,7 +90,9 @@ def main():
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
         records.append(dict(path=rel.as_posix(), bytes=path.stat().st_size, sha256=digest))
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
+    source_dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True).strip())
     manifest = dict(version=version, commit=commit, ffmpeg_license=license_text,
+                    source_dirty=source_dirty,
                     ffmpeg_configuration_without_build_prefix=re.sub(r'--prefix=\S+\s*', '', configuration),
                     files=records)
     (stage/'package-manifest.json').write_text(json.dumps(manifest, indent=2)+'\n', encoding='utf-8')

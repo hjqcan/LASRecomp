@@ -1,4 +1,5 @@
 #include "../runtime/game_install.h"
+#include "../runtime/title_profile.h"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -34,6 +35,15 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "resolve")) {
         if (!game_install_resolve(root, resolved, sizeof resolved, why, sizeof why)) { fprintf(stderr, "%s\n", why); return 1; }
         puts(resolved); return 0;
+    }
+    if (!strcmp(mode, "content")) {
+        assert(game_install_resolve(root, resolved, sizeof resolved, why, sizeof why));
+        TitleProfile profile = {}; profile.romfs_roots[0] = "Empty"; profile.romfs_root_count = 1;
+        profile.minimum_files = 1; int count = -1;
+        bool ok = title_content_validate(&profile, (fs::u8path(resolved) / "romfs").u8string().c_str(),
+                                         false, &count, why, sizeof why);
+        if (!ok) fprintf(stderr, "%s\n", why);
+        return ok && count == 1 ? 0 : 1;
     }
     if (!strcmp(mode, "pending")) return game_install_pending(root) ? 0 : 1;
     if (!strcmp(mode, "clear")) return game_install_clear(root, why, sizeof why) ? 0 : 1;

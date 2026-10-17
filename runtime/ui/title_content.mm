@@ -1,4 +1,5 @@
 #include "../title_profile.h"
+#include "host_path.h"
 #include <filesystem>
 #include <cstdio>
 namespace fs = std::filesystem;
@@ -6,7 +7,7 @@ namespace fs = std::filesystem;
 extern "C" bool title_content_root(const TitleProfile *p, const char *romfs) {
     if (!p || !romfs) return false;
     try {
-        const auto root = fs::u8path(romfs);
+        const auto root = host_path::io(fs::u8path(romfs));
         for (unsigned i = 0; i < p->romfs_root_count; ++i)
             if (!fs::is_directory(root / fs::u8path(p->romfs_roots[i]))) return false;
         return p->romfs_root_count > 0;
@@ -22,7 +23,7 @@ extern "C" bool title_content_validate(const TitleProfile *p, const char *romfs,
     try {
         if (*count < 0) {
             *count = 0;
-            for (auto i = fs::recursive_directory_iterator(fs::u8path(romfs)); i != fs::recursive_directory_iterator(); ++i) {
+            for (auto i = fs::recursive_directory_iterator(host_path::io(fs::u8path(romfs))); i != fs::recursive_directory_iterator(); ++i) {
                 if (i.depth() > 32 || i->is_symlink()) {
                     snprintf(why, size, "Unsupported linked or deeply nested game data"); return false;
                 }

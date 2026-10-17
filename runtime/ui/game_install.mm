@@ -1,5 +1,6 @@
 #include "../game_install.h"
 #include "cache_sha256.h"
+#include "host_path.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -112,7 +113,7 @@ void owner(const fs::path &meta) {
 }
 std::unique_ptr<GameInstall> acquire(const char *slot) {
     auto install = std::make_unique<GameInstall>();
-    install->slot = fs::absolute(fs::u8path(slot)).lexically_normal();
+    install->slot = host_path::io(fs::u8path(slot));
     install->meta = install->slot / ".installations";
     plain(install->meta);
     fs::create_directories(install->meta);
@@ -155,7 +156,7 @@ void fail(char *why, size_t size, const std::exception &error) { snprintf(why, s
 }
 extern "C" bool game_install_resolve(const char *slot, char *out, size_t size, char *why, size_t cap) {
     try {
-        fs::path root = fs::absolute(fs::u8path(slot)).lexically_normal();
+        fs::path root = host_path::io(fs::u8path(slot));
         const auto meta = root / ".installations";
         if (fs::exists(meta / "current")) {
             owner(meta);
@@ -166,14 +167,14 @@ extern "C" bool game_install_resolve(const char *slot, char *out, size_t size, c
                      "The published installation receipt is missing or invalid");
             }
         }
-        std::string path = root.u8string();
+        std::string path = host_path::logical(root).u8string();
         need(path.size() < size, "Installation path is too long");
         snprintf(out, size, "%s", path.c_str()); return true;
     } catch (const std::exception &error) { fail(why, cap, error); return false; }
 }
 extern "C" bool game_install_pending(const char *slot) {
     try {
-        auto meta = fs::absolute(fs::u8path(slot)) / ".installations";
+        auto meta = host_path::io(fs::u8path(slot)) / ".installations";
         if (!fs::exists(meta)) return false;
         owner(meta);
         auto pending = pointer(meta, "pending");
@@ -183,8 +184,8 @@ extern "C" bool game_install_pending(const char *slot) {
 extern "C" bool game_install_pending_path(const char *slot, char *out, size_t size) {
     try {
         if (!game_install_pending(slot)) return false;
-        auto meta = fs::absolute(fs::u8path(slot)) / ".installations";
-        auto path = (meta / pointer(meta, "pending") / "content").u8string();
+        auto meta = host_path::io(fs::u8path(slot)) / ".installations";
+        auto path = host_path::logical(meta / pointer(meta, "pending") / "content").u8string();
         if (path.size() >= size) return false;
         snprintf(out, size, "%s", path.c_str()); return true;
     } catch (...) { return false; }
@@ -204,14 +205,14 @@ extern "C" GameInstall *game_install_begin(const char *slot, bool fresh, char *w
         }
         install->candidate = install->meta / name / "content";
         fs::create_directories(install->candidate);
-        install->path = install->candidate.u8string();
+        install->path = host_path::logical(install->candidate).u8string();
         return install.release();
     } catch (const std::exception &error) { fail(why, cap, error); return nullptr; }
 }
 extern "C" const char *game_install_candidate(GameInstall *install) { return install->path.c_str(); }
 extern "C" bool game_install_clone(GameInstall *install, const char *source, char *why, size_t cap) {
     try {
-        fs::path root = fs::absolute(fs::u8path(source)).lexically_normal(); plain(root);
+        fs::path root = host_path::io(fs::u8path(source)); plain(root);
         need(root != install->candidate, "Cannot clone an installation onto itself");
         for (const char *name : {"exefs", "romfs", "romfs.bin", "icon.ico", "import-manifest.json", ".gamebuild"}) {
             auto path = root / name; plain(path);
@@ -220,13 +221,13 @@ extern "C" bool game_install_clone(GameInstall *install, const char *source, cha
                 fs::create_directories(install->candidate / name);
                 for (const auto &item : fs::recursive_directory_iterator(path)) {
                     need(!link(item.path()), "Unsafe installation content");
-                    if (item.is_directory()) fs::create_directories(install->candidate / item.path().lexically_relative(root));
+                    if (item.is_directory()) fs::create_directories(install->candidate / host_path::relative(item.path(), root));
                 }
             }
             auto entries = fs::is_directory(path) ? files(path) : std::vector<fs::path>{path};
             for (const auto &file : entries) {
                 if (file.filename() == ".lock" || file.extension() == ".tmp" || file.extension() == ".writing") continue;
-                auto relative = file.lexically_relative(root), target = install->candidate / relative;
+                auto relative = host_path::relative(file, root), target = install->candidate / relative;
                 plain(target); fs::create_directories(target.parent_path());
                 fs::copy_file(file, target, fs::copy_options::overwrite_existing);
             }
@@ -240,7 +241,7 @@ extern "C" bool game_install_publish(GameInstall *install, const char *id, GameI
         if (!validate || !validate(install->path.c_str(), why, cap)) return false;
         CacheSha256 tree;
         for (const auto &path : files(install->candidate)) {
-            auto relative = path.lexically_relative(install->candidate).generic_u8string();
+            auto relative = host_path::relative(path, install->candidate).generic_u8string();
             if (relative.rfind(".gamebuild/", 0) == 0 || relative == "installation-receipt") continue;
             auto hash = digest(path); tree.add(relative.data(), relative.size() + 1); tree.add(hash.data(), hash.size());
         }
@@ -256,7 +257,7 @@ extern "C" bool game_install_publish(GameInstall *install, const char *id, GameI
 extern "C" void game_install_close(GameInstall *install) { delete install; }
 extern "C" bool game_install_clear(const char *slot, char *why, size_t cap) {
     try {
-        const auto meta = fs::absolute(fs::u8path(slot)) / ".installations"; plain(meta);
+        const auto meta = host_path::io(fs::u8path(slot)) / ".installations"; plain(meta);
         if (!fs::exists(meta)) return true;
         auto install = acquire(slot);
         std::vector<fs::path> owned;

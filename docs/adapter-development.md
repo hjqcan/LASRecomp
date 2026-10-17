@@ -47,6 +47,7 @@ python tools/adapter.py check --write
 python tools/adapter.py check
 python tools/adapter.py doctor --game example
 python tools/adapter.py doctor --game-dir <local-installation> --log <local-runtime-log>
+python tools/adapter.py doctor --game-dir <managed-slot> --pending
 ```
 
 `check --write` generates `runtime/title_catalog.inc` and
@@ -60,6 +61,12 @@ local installation it checks every module identity. With a log it extracts missi
 HLE/IPC calls, without treating log content as instructions. Use
 `LARECOMP_STRICT_HLE=1` and `LARECOMP_STRICT_IPC=1` during port diagnostics to stop
 at missing implementations. The old `ACNH_STRICT_*` names remain aliases.
+
+For a managed slot, the doctor follows the published installation record and
+checks its receipt against the identified game/version. `--pending` explicitly
+selects the unfinished candidate instead; its report labels that state and does
+not present it as an installed or playable version. Legacy extracted folders
+remain accepted. Reading a record does not lock out atomic publication.
 
 ## Guarded instruction patches
 
@@ -132,3 +139,28 @@ The installation publisher currently retains previous generations and copies
 data/cache during a rebuild. Account for that temporary/retained disk usage;
 automatic reclamation and a rollback UI are future work. Desktop link tests use
 a scratch desktop. These engineering checks do not certify a new playable game.
+
+## Packaged Windows setup with local game data
+
+Use a freshly built package and a new data directory to exercise the same launcher
+workers that players use. This opt-in check requires your own supported base
+archive; use `--update` for an adapted update and `--keys` / `--title-keys` only
+when your encrypted content needs them:
+
+```text
+python tools/validate_packaged_setup.py --app "<unpacked-package>" --game las/1.0.0 --base "<base.nsz>" --data-root "<new-test-folder>" --cancel-after 30 --minimized
+```
+
+The test rejects an existing data directory, clears runtime/tool overrides,
+imports with the bundled helper, cancels compilation and resumes the same
+candidate with the bundled compiler. `--minimized` checks that background setup
+continues when the window has no drawable UI area. Omit `--cancel-after` to run
+without an intentional interruption. It checks the exit status, publication
+record, module/library identities and presence of one shortcut in a scratch
+desktop inside the test directory. It writes logs and `setup-validation.json`,
+including failures, and retains the candidate for investigation or manual resume.
+It never changes the system long-path setting or installs keys into the package.
+
+This is installation evidence only: opening the shortcut, interacting with the
+game and saving/reopening still require separate recorded checks. A zero exit
+code without a `READY` result and a valid publication record does not pass.

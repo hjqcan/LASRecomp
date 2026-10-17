@@ -54,14 +54,14 @@ __attribute__((constructor(101))) static void reserve_guest_space(void) {
     int n = tries ? atoi(tries) : 0;
     if (n >= 20) {
         fprintf(stderr, "FATAL: guest address range %llx-%llx is not free\n", GUEST_LO, GUEST_HI);
-        exit(1);
+        plat_exit(1);
     }
     char buf[16];
     snprintf(buf, sizeof buf, "%d", n + 1);
     setenv("LARECOMP_REEXEC", buf, 1);
     plat_exec(NULL);
     perror("re-exec");
-    exit(1);
+    plat_exit(1);
 }
 
 // ------------------------------------------------------------------ boot / in-place reboot
@@ -114,7 +114,7 @@ void backend_clear_window(void);      // a black frame while the game is down
 static void reboot_idle(void) {  // (main thread, while guest threads stop) keep the window alive
     SDL_Event e;
     while (SDL_PollEvent(&e))
-        if (e.type == SDL_EVENT_QUIT) { LOG("window closed\n"); exit(0); }
+        if (e.type == SDL_EVENT_QUIT) { LOG("window closed\n"); plat_exit(0); }
 }
 
 static void teardown(void) {

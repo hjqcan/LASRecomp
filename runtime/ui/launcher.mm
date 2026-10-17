@@ -1221,6 +1221,7 @@ extern "C" const char *launcher_run(const char *root) {
     if (getenv("LARECOMP_LAUNCHER_BUILD_ONLY")) setup_source = ""; // run the normal resume action, without reimporting
     bool exit_after_setup = setup_source != NULL;  // (test) set up, log the result, exit
     if (!setup_source) setup_source = SDL_getenv("LARECOMP_LAUNCHER_SETUP");
+    if (getenv("LARECOMP_LAUNCHER_MINIMIZED")) SDL_MinimizeWindow(win); // background setup regression
     if (setup_source) {
         // Automated imports use the same progress screen as interactive setup.
         // Pumping events alone leaves a black window throughout recompilation.
@@ -1231,7 +1232,7 @@ extern "C" const char *launcher_run(const char *root) {
         pthread_t th;
         if (pthread_create(&th, NULL, extract_thread, NULL)) {
             fprintf(stderr, "[launcher] could not start setup thread\n");
-            exit(1);
+            plat_exit(1);
         }
         pthread_detach(th);
     }
@@ -1285,7 +1286,7 @@ extern "C" const char *launcher_run(const char *root) {
         while (SDL_PollEvent(&e)) {
             if (page == SETTINGS && bind_capture_event(&e)) continue;  // (waiting for a new binding: controls_ui.mm)
             if (!launcher_pad_event(e)) ImGui_ImplSDL3_ProcessEvent(&e);
-            if (e.type == SDL_EVENT_QUIT) exit(exit_after_setup ? 1 : 0);
+            if (e.type == SDL_EVENT_QUIT) plat_exit(exit_after_setup ? 1 : 0);
         }
         // extraction finished: re-check, load the background
         pthread_mutex_lock(&g_lock);
@@ -1344,7 +1345,8 @@ extern "C" const char *launcher_run(const char *root) {
         }
         if (exit_after_setup && !busy) {
             fprintf(stderr, "[launcher] setup: %s -> %s\n", g_job.c_str(), check_game_files(g_root).empty() ? "READY" : "NOT READY");
-            exit(setup_failed || !check_game_files(g_root).empty() ? 1 : 0);
+            if (!g_job_hint.empty()) fprintf(stderr, "[launcher] details: %s\n", g_job_hint.c_str());
+            plat_exit(setup_failed || !check_game_files(g_root).empty() ? 1 : 0);
         }
         static bool was_busy;
         if (was_busy && !busy && !inspection) {
@@ -1359,6 +1361,11 @@ extern "C" const char *launcher_run(const char *root) {
         }
         was_busy = busy;
 
+        // SDL reports a zero ImGui display size while minimized even when the
+        // Vulkan swapchain retains its old extent. Keep polling the worker and
+        // events, but do not acquire a frame or create zero-sized UI controls.
+        ImGui_ImplSDL3_NewFrame();
+        if (io.DisplaySize.x <= 0 || io.DisplaySize.y <= 0) { SDL_Delay(16); continue; }
 #ifdef __APPLE__
         int w, h;
         SDL_GetWindowSizeInPixels(win, &w, &h);
@@ -1388,7 +1395,6 @@ extern "C" const char *launcher_run(const char *root) {
             if (!vk_frame_begin(clear_col)) { SDL_Delay(16); continue; }
             ImGui_ImplVulkan_NewFrame();
 #endif
-            ImGui_ImplSDL3_NewFrame();
             // the backend (manual mode, no gamepads of its own) clears HasGamepad every frame, and ImGui then drops the
             // controller presses launcher_pad_event fed in and turns gamepad navigation off: set it again while a
             // controller is connected
@@ -1544,7 +1550,7 @@ extern "C" const char *launcher_run(const char *root) {
                     if (menu_item("SET UP GAME FILES", !busy)) page = SETUP;
                 }
                 ImGui::SetCursorPosX(x0);
-                if (menu_item("QUIT", true)) exit(0);
+                if (menu_item("QUIT", true)) plat_exit(0);
                 g_menu_gap = 0.35f;
             } else if (page == SETTINGS) {
                 // the in-game menu's tabs (runtime/ui/menu.mm), in a window like the in-game one; tabs that need a
@@ -2001,13 +2007,13 @@ extern "C" const char *launcher_run(const char *root) {
             if (shot) {
                 [cb waitUntilCompleted];
                 save_png(shot, getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/launcher.png");
-                exit(0);
+                plat_exit(0);
             }
 #else
             ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)vk_frame_cmd());
             bool shot = shot_at && ++frame == shot_at;
             vk_frame_end(shot ? getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/launcher.png" : NULL);
-            if (shot) exit(0);
+            if (shot) plat_exit(0);
 #endif
         }
     }

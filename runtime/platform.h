@@ -41,8 +41,10 @@ void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync
 void plat_init(void);                                // first thing in main()
 bool plat_exe_path(char *buf, size_t size);
 void plat_exec(char *const argv[]);  // replace the process (NULL = same command line); returns only on failure
+void plat_exit(int status) __attribute__((noreturn)); // run cleanup and preserve status through renderer shutdown
+int plat_exit_status(void);
 #if defined(_WIN32) || defined(__linux__)
-void plat_terminate(void);  // end the process now, skipping DLL teardown (exit status 0)
+void plat_terminate(int status);  // end the process now, skipping DLL teardown
 #endif
 
 // Child processes (seed generator, game-file extraction). stdout + stderr go to log_path (NULL = /dev/null).

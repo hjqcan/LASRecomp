@@ -3,6 +3,8 @@ import argparse
 import json
 from pathlib import Path
 import re
+import stat
+from host_paths import io_path, logical_path, read_shared
 from game_catalog import (ADAPTERS, ROOT, GAMES, catalog, get_game, inspect_exefs, load_games,
                           read_build_id, render_c_catalog, render_installations, code_identity)
 
@@ -19,6 +21,42 @@ def report(game):
                 releases=[dict(version=r.version, status=r.status, installable=r.installable, requirements=capabilities(r),
                                code_identity=code_identity(game, r)) for r in game.releases],
                 evidence='Declared requirements and test recipes; this command does not certify gameplay or run the listed tests.')
+
+
+def installation_root(directory, pending=False):
+    """Follow the native publisher's records; never infer readiness from a candidate."""
+    root = io_path(directory).absolute()
+    meta = root / '.installations'
+    name = 'pending' if pending else 'current'
+    record = meta / name
+    result = dict(state='legacy', slot=str(logical_path(root)))
+    if not record.exists() and not pending:
+        if (meta / 'pending').exists() and not (root / 'exefs/main').exists():
+            raise ValueError('No published installation yet; use doctor --pending --game-dir to inspect the candidate')
+        return root, result
+    def plain(path):
+        for part in (path, *path.parents):
+            info = part.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                raise ValueError('Installation records cannot follow links or reparse points')
+    plain(record)
+    plain(meta / 'owner')
+    if read_shared(meta / 'owner') != b'LASINSTALL2\n':
+        raise ValueError('Unknown installation metadata')
+    match = re.fullmatch(rb'LASINSTALL2\n(build-[0-9a-f-]{1,73})\n', read_shared(record))
+    if not match: raise ValueError('Invalid installation pointer')
+    generation = match[1].decode('ascii')
+    if pending and (meta / 'current').exists():
+        plain(meta / 'current')
+        if read_shared(meta / 'current') == read_shared(record):
+            raise ValueError('This candidate is already published; omit --pending')
+    selected = meta / generation / 'content'
+    plain(selected)
+    if not selected.is_dir(): raise ValueError('Installation content directory is missing')
+    if not pending: plain(selected / 'installation-receipt')
+    result.update(state='pending' if pending else 'published', generation=generation,
+                  content=str(logical_path(selected)))
+    return selected, result
 
 
 def scaffold(args):
@@ -54,6 +92,7 @@ def main(argv=None):
     doctor = commands.add_parser('doctor', help='Report exact adapter requirements and missing runtime calls')
     doctor.add_argument('--game', default='las')
     doctor.add_argument('--game-dir', type=Path)
+    doctor.add_argument('--pending', action='store_true', help='Inspect an unpublished managed candidate, without certifying it')
     doctor.add_argument('--log', type=Path)
     new = commands.add_parser('scaffold', help='Inventory local NSOs into a template that requires explicit review')
     new.add_argument('--id', required=True); new.add_argument('--name', required=True)
@@ -75,10 +114,18 @@ def main(argv=None):
                     if release.installable and any(not c['available'] for c in capabilities(release)):
                         raise ValueError(f'{game.id} {release.version}: an installable release requires unavailable core capabilities')
         else:
-            plan = inspect_exefs(args.game_dir / 'exefs') if args.game_dir else None
+            if args.pending and not args.game_dir: raise ValueError('--pending requires --game-dir')
+            selected, installation = installation_root(args.game_dir, args.pending) if args.game_dir else (None, None)
+            plan = inspect_exefs(selected / 'exefs') if selected else None
             game = get_game(plan['game_id'] if plan else args.game)
             result = report(game)
-            if plan: result['module_plan'] = plan
+            if plan:
+                if installation['state'] == 'published':
+                    receipt = read_shared(selected / 'installation-receipt').decode('utf-8').splitlines()
+                    if len(receipt) != 3 or receipt[:2] != ['LASRECEIPT1', plan['game_id']+'/'+plan['version']] or not re.fullmatch('[0-9a-f]{64}', receipt[2]):
+                        raise ValueError('The published installation receipt is missing or mismatched')
+                result['module_plan'] = plan
+                result['installation'] = installation
             if args.log:
                 # Only diagnostic records, not arbitrary instructions or full player logs.
                 records = args.log.read_text(encoding='utf-8', errors='replace').splitlines()

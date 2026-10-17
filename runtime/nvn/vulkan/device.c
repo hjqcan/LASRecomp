@@ -690,7 +690,7 @@ static void quick_exit_handler(void) {
     fflush(stdout);
     fflush(stderr);
 #if defined(_WIN32) || defined(__linux__)
-    plat_terminate();
+    plat_terminate(plat_exit_status());
 #endif
 }
 
@@ -758,7 +758,7 @@ int ui_run(void) {
         while (SDL_WaitEventTimeout(&e, 16)) {
             if (e.type == SDL_EVENT_QUIT) {
                 LOG("window closed\n");
-                exit(0);
+                plat_exit(0);
             }
             extern bool input_user_blocked(const SDL_Event *e);
             if (input_user_blocked(&e)) continue;  // scripted test runs: the real keyboard / mouse / pads do nothing (as metal.m)

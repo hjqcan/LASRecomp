@@ -455,5 +455,5 @@ bool plat_remove_tree(const char *dir) {
     return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
 }
 
-// End the process at once, skipping DLL teardown (from an atexit handler, after flushing). Exit status 0.
-void plat_terminate(void) { TerminateProcess(GetCurrentProcess(), 0); }
+// End the process at once, skipping DLL teardown (from an atexit handler, after flushing).
+void plat_terminate(int status) { TerminateProcess(GetCurrentProcess(), (UINT)status); }
