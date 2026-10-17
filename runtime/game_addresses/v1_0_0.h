@@ -88,6 +88,8 @@
 #define GA_EMPTY_HANDLER_CATCH              UINT64_C(0x700108de00)
 
 // Runtime globals and functions
+#define GA_DELEGATE_JOB_VTABLE_LIVE         UINT64_C(0x7001c51308)
+#define GA_DELEGATE_JOB_VTABLE_BASE         UINT64_C(0x7001c51358)
 #define GA_CHAMBER_MGR                      UINT64_C(0x7001cb9fb8)
 #define GA_CHAMBER_CTOR                     UINT64_C(0x7000cdf1c0)
 #define GA_CHAMBER_PREPARE                  UINT64_C(0x7000ce34b0)

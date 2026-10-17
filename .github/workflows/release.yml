@@ -1,0 +1,299 @@
+# LAS Recomp's release builds: the macOS arm64 .dmg (make dmg), the Windows x64 .zip (make dist) and the Linux
+# x86_64 / aarch64 AppImages (make appimage), each from the same commit, put on a DRAFT GitHub release with their
+# sha256s. It never publishes: a person reads the draft, writes the notes and publishes it. None of the files holds
+# game code or game files (the start screen builds the game code from the player's own game files); every build
+# checks that before its upload.
+# Run: gh workflow run release.yml --ref beta_5 -f tag=beta_5 -f ref=beta_5
+#   (--ref: the branch whose copy of this file runs - GitHub dispatches by name only from the default branch's copy,
+#   so until this file is on main, name a branch that has it)
+#   tag: the release tag; must equal LARECOMP_VERSION (runtime/ui/launcher.mm) at ref - the file names come from it.
+#   ref: branch or commit to build (default: the dispatching branch's head).
+# Dry run of this workflow itself: a tag starting with ci-test- may differ from LARECOMP_VERSION (the files keep its
+# name); its draft is a prerelease, as for test-<name> builds.
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (= LARECOMP_VERSION at ref; ci-test-*: dry run)'
+        required: true
+      ref:
+        description: 'Branch or commit to build (default: the dispatching ref)'
+        required: false
+        default: ''
+permissions:
+  contents: read
+concurrency:  # (one run per tag at a time; a second waits instead of racing the first's draft)
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.v.outputs.sha }}
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      # (the inputs go through env, never into the script text)
+      - name: Tag = LARECOMP_VERSION
+        id: v
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ $TAG =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::tag '$TAG': letters, digits, . _ - only"; exit 1; }
+          SHA=$(git rev-parse HEAD)
+          VERSION=$(sed -n 's/^#define LARECOMP_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
+          if [ "$VERSION" != "$TAG" ]; then
+            if [[ $TAG == ci-test-* ]]; then
+              echo "::warning::dry run: tag $TAG, LARECOMP_VERSION $VERSION (the files are named after $VERSION)"
+            else
+              echo "::error::LARECOMP_VERSION at $SHA is '$VERSION', not '$TAG': set it in runtime/ui/launcher.mm first"
+              exit 1
+            fi
+          fi
+          # an existing tag must already point at this commit (a draft's tag is only made when it is published)
+          if TAGGED=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" -q .sha 2>/dev/null); then
+            [ "$TAGGED" = "$SHA" ] || { echo "::error::tag $TAG exists at $TAGGED, not at $SHA"; exit 1; }
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "$TAG: $SHA, LARECOMP_VERSION $VERSION"
+
+  macos:
+    needs: check
+    runs-on: macos-15  # (arm64; the app's minimum is macOS 15)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - name: Packages
+        run: brew install ninja  # (cmake is on the runner; the rest comes from make deps)
+      # make deps skips each part whose output exists; src/ (sources, build trees) isn't needed for that
+      # (restore / save as two steps: saved as soon as it's built, even when a later step fails)
+      - name: Deps cache
+        id: deps
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/deps
+            !build/deps/src
+          key: deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build_deps_macos.sh') }}
+      - name: Deps (SDL3, LGPL FFmpeg, keystone, Python)
+        run: make deps
+      - uses: actions/cache/save@v4
+        if: steps.deps.outputs.cache-hit != 'true'
+        with:
+          path: |
+            build/deps
+            !build/deps/src
+          key: ${{ steps.deps.outputs.cache-primary-key }}
+      # (keystone-engine has no macOS arm64 wheel: pip builds it, then keeps it in its cache)
+      - name: pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('third_party/LAS-Randomizer/requirements.txt', 'Makefile') }}
+      - name: Generator helpers
+        run: make rando-helper && make gen-helper
+      - name: Compiler for the player's machine
+        run: tools/fetch_zig.sh
+      - name: App and disk image
+        run: make -j"$(sysctl -n hw.ncpu)" dmg
+      # bundle_macos.sh checked the executable; here everything inside the app: no game code in any Mach-O, no
+      # game files, no generated C (gamelib-src/: the headers and the entry stub it's compiled with; zig/lib: zig's own
+      # runtime sources)
+      - name: No game code
+        run: |
+          A="build/LAS Recomp.app"
+          bad=$(find "$A" -type d \( -name extracted -o -name 'generated*' -o -name exefs -o -name romfs \);
+                find "$A" -name '*.c' ! -path '*/zig/lib/*' ! -path '*/gamelib-src/gamelib_entry.c'; find "$A" -name 'lasgame*')
+          [ -z "$bad" ] || { echo "::error::must not ship: $bad"; exit 1; }
+          find "$A" -type f \( -perm +111 -o -name '*.dylib' -o -name '*.so' \) | while read -r f; do
+            if nm "$f" 2>/dev/null | grep ' _\{0,1\}f_70' >/dev/null; then echo "::error::game code in $f"; exit 1; fi
+          done
+          ls -la build/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: build/dist/*.dmg
+          if-no-files-found: error
+          compression-level: 0  # (already compressed)
+
+  windows:
+    needs: check
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: LF line endings, as tools/setup_windows.ps1 sets for clones
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      # the generator helpers are frozen from a python.org-style CPython 3.12 (MSYS2's Python has no oead wheel)
+      - uses: actions/setup-python@v5
+        id: py
+        with:
+          python-version: '3.12'
+      # MSYS2 UCRT64 as tools/setup_windows.ps1 sets it up (minus the debugger / validation layers; no FFmpeg:
+      # the release links make deps-windows' LGPL one), nasm for FFmpeg's VP9 assembly, zip / unzip for the
+      # release zip and the compiler download
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: make git curl tar xz diffutils zip unzip
+          pacboy: clang:p lld:p binutils:p sdl3:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
+            vulkan-memory-allocator:p nasm:p
+      - name: Deps cache
+        id: deps
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/deps-win
+            !build/deps-win/src
+          key: deps-${{ runner.os }}-${{ hashFiles('tools/build_deps_windows.sh') }}
+      - name: Deps (LGPL FFmpeg)
+        run: make deps-windows
+      - uses: actions/cache/save@v4
+        if: steps.deps.outputs.cache-hit != 'true'
+        with:
+          path: |
+            build/deps-win
+            !build/deps-win/src
+          key: ${{ steps.deps.outputs.cache-primary-key }}
+      - name: Generator helpers
+        run: |
+          PY=$(cygpath -u '${{ steps.py.outputs.python-path }}')
+          make rando-helper RANDO_PY="$PY" && make gen-helper RANDO_PY="$PY"
+      - name: Compiler for the player's machine
+        run: tools/fetch_zig.sh
+      # (make dist: the exe holds no game code, no GPL codec libraries)
+      - name: Release zip
+        run: make -j"$(nproc)" dist
+      - name: No game files or generated C
+        run: |
+          D="build/dist/LAS Recomp"
+          bad=$(find "$D" -type d \( -name extracted -o -name 'generated*' -o -name exefs -o -name romfs \);
+                find "$D" -name '*.c' ! -path '*/zig/lib/*' ! -path '*/gamelib-src/gamelib_entry.c'; find "$D" -name 'lasgame*')
+          [ -z "$bad" ] || { echo "::error::must not ship: $bad"; exit 1; }
+          ls -la build/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: build/dist/*.zip
+          if-no-files-found: error
+          compression-level: 0
+
+  # aarch64 on an x86-64 runner, as tools/linux/appimage.sh does it: cross-compiled in the amd64 container, only the
+  # generator helpers frozen in the arm64 one (QEMU). A native arm runner would still need the amd64 container
+  # (package.sh, appimagetool) under emulation.
+  linux:
+    needs: check
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - name: QEMU user emulation (the arm64 container)
+        if: matrix.arch == 'aarch64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user-static
+      # build_deps.sh skips each part whose output exists (deps-build/: the build trees, not needed for that)
+      - name: Deps cache
+        id: deps
+        uses: actions/cache/restore@v4
+        with:
+          path: build/linux/${{ matrix.arch }}/deps
+          key: deps-linux-${{ matrix.arch }}-${{ hashFiles('tools/linux/build_deps.sh', 'tools/linux/Containerfile') }}
+      # the helpers' wheels (arm64: oead and keystone-engine built from source under QEMU)
+      - name: Wheels cache
+        id: wheels
+        uses: actions/cache/restore@v4
+        with:
+          path: build/linux/${{ matrix.arch }}/wheels
+          key: wheels-linux-${{ matrix.arch }}-${{ hashFiles('third_party/LAS-Randomizer/requirements.txt', 'tools/linux/rando_helper.sh', 'tools/linux/Containerfile') }}
+      - name: AppImage
+        run: make appimage ARCH=${{ matrix.arch }}
+      # saved once complete (shaderc: build_deps.sh's last part; .ok: the helpers' wheels all installed), even when a
+      # later part of the build fails
+      - uses: actions/cache/save@v4
+        if: always() && steps.deps.outputs.cache-hit != 'true' && hashFiles(format('build/linux/{0}/deps/lib/libshaderc_shared.so*', matrix.arch)) != ''
+        with:
+          path: build/linux/${{ matrix.arch }}/deps
+          key: ${{ steps.deps.outputs.cache-primary-key }}
+      - uses: actions/cache/save@v4
+        if: always() && steps.wheels.outputs.cache-hit != 'true' && hashFiles(format('build/linux/{0}/rando-venv/.ok', matrix.arch)) != ''
+        with:
+          path: build/linux/${{ matrix.arch }}/wheels
+          key: ${{ steps.wheels.outputs.cache-primary-key }}
+      # package.sh checked the executable; here the whole AppDir that was packed (readelf: any arch's ELF)
+      - name: No game code
+        run: |
+          A=build/linux/${{ matrix.arch }}/AppDir
+          bad=$(find "$A" -type d \( -name extracted -o -name 'generated*' -o -name exefs -o -name romfs \);
+                find "$A" -name '*.c' ! -path '*/zig/lib/*' ! -path '*/gamelib-src/gamelib_entry.c'; find "$A" -name 'lasgame*')
+          [ -z "$bad" ] || { echo "::error::must not ship: $bad"; exit 1; }
+          find "$A" -type f \( -perm /111 -o -name '*.so*' \) | while read -r f; do
+            if readelf -Ws --wide "$f" 2>/dev/null | grep ' f_70' >/dev/null; then echo "::error::game code in $f"; exit 1; fi
+          done
+          ls -la build/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: build/dist/*.AppImage
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    needs: [check, macos, windows, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write  # (only here: the draft release)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Draft release
+        env:
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ needs.check.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd dist
+          ls -la
+          [ "$(ls | wc -l)" = 4 ] || { echo "::error::expected 4 files"; exit 1; }
+          # (GitHub stores asset names with dots for spaces: LAS.Recomp-<version>-...)
+          {
+            echo "Release notes: (to be written)"
+            echo
+            echo "Built from $SHA."
+            echo
+            echo "| File | sha256 |"
+            echo "|---|---|"
+            for f in *; do echo "| \`${f// /.}\` | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"; done
+          } > ../notes.md
+          cat ../notes.md
+          PRE=(); [[ $TAG == test-* || $TAG == ci-test-* ]] && PRE=(--prerelease)
+          # an existing release is only ever updated while it's still a draft
+          if DRAFT=$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null); then
+            [ "$DRAFT" = true ] || { echo "::error::release $TAG is already published: not touched"; exit 1; }
+            gh release edit "$TAG" --draft --target "$SHA" --notes-file ../notes.md "${PRE[@]}"
+            gh release upload "$TAG" --clobber *
+          else
+            gh release create "$TAG" --draft --target "$SHA" --title "$TAG" --notes-file ../notes.md "${PRE[@]}" *
+          fi
+          gh release view "$TAG" --json url,isDraft,assets -q '.url, .isDraft, (.assets[] | "\(.name) \(.size)")'

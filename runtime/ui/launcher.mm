@@ -93,9 +93,10 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 
 // The release tag this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read
 // it): enhanced-beta<n>.<revision> for this fork. A test build (a pre-release for a few players to try a fix)
-// is test-<name>: the start screen says "Test build <name>" and doesn't check for updates - its players go back to
-// the normal release when it's out.
+// is test-<name>: the start screen says "Test build <name>", and it previews LARECOMP_TEST_OF - the update check
+// offers that release (or a later one) as soon as it's out, so its players move to it.
 #define LARECOMP_VERSION "enhanced-beta5.1"
+#define LARECOMP_TEST_OF "enhanced-beta5.1"
 
 // ------------------------------------------------------------------ update check
 // The start screen asks GitHub for the project's releases once per launch (a background curl, which macOS and
@@ -122,7 +123,6 @@ static std::string g_update_tag;  // a newer release's tag (g_update_lock)
 static pthread_mutex_t g_update_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void *update_thread(void *) {
-    if (!strncmp(LARECOMP_VERSION, "test-", 5)) return NULL;  // (a test build: no update offers)
     std::string body;
     if (const char *t = getenv("LARECOMP_UPDATE_TAGS")) {  // (test) "beta_2,v1.0.0": these releases, no network
         for (const char *p = t; *p;) {
@@ -152,7 +152,8 @@ static void *update_thread(void *) {
         remove(out.c_str());
     }
     std::string best;
-    long long best_rank = tag_rank(LARECOMP_VERSION);
+    // (a test build ranks just below the release it previews; other test builds rank -1: never offered)
+    long long best_rank = strncmp(LARECOMP_VERSION, "test-", 5) ? tag_rank(LARECOMP_VERSION) : tag_rank(LARECOMP_TEST_OF) - 1;
     for (size_t at = 0; (at = body.find("\"tag_name\"", at)) != std::string::npos;) {
         size_t q1 = body.find('"', body.find(':', at) + 1), q2 = q1 == std::string::npos ? q1 : body.find('"', q1 + 1);
         if (q2 == std::string::npos) break;

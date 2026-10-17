@@ -147,6 +147,15 @@ static void boot(const char *root) {
     snprintf(npdm_path, sizeof npdm_path, "%s/main.npdm", exefs);
     if (!g_romfs_dir) g_romfs_dir = strdup(romfs);
 
+#ifdef __linux__
+    {   // the window and graphics device first (normally made by the start screen or ui_run), so the guest heap can be
+        // the driver's memory before any game thread runs (runtime/nvn/vulkan/exec.c backend_guest_heap_prepare)
+        extern void ui_window_init(void);
+        extern void backend_guest_heap_prepare(void);
+        ui_window_init();
+        backend_guest_heap_prepare();
+    }
+#endif
     char why[512];
     if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
     char main_path[1100];
