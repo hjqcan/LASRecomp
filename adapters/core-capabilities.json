@@ -1,7 +1,8 @@
 {
   "schema": 1,
   "capabilities": {
-    "kernel.virtual_memory": {"status": "unimplemented", "variants": [], "limits": "SystemResourceSize remains zero. Dynamic physical mapping needs a larger alias region, partial map/unmap support and resource accounting before enabling virtual address allocators.", "tests": ["tools/test_kernel_info.py"]},
+    "audio.opus": {"status": "unimplemented", "variants": [], "limits": "The hwopus manager and decoder object services are not implemented; strict Z-A startup first requests manager command 8.", "tests": []},
+    "kernel.virtual_memory": {"status": "partial", "variants": ["dynamic_physical"], "limits": "Opt-in 16 GiB alias layout with 4 KiB idempotent mapping, partial release, zero reuse and bounded physical/system budgets. System usage models host tracking and populated page-table spans, not exact Horizon slabs. Unmapped guest access protection is not emulated; larger host pages can retain unused subpage backing.", "tests": ["tools/test_kernel_memory.py", "tools/test_platform_memory.py", "tools/test_kernel_info.py"]},
     "services.ipc": {"status": "partial", "variants": ["cmif", "tipc"], "limits": "TIPC supports inline data, PID, handles and map-alias buffers within the 256-byte TLS command buffer; no static buffers or domain messages.", "tests": ["tools/test_tipc.py", "tools/test_save_mount.py", "tools/test_save_commit.py"]},
     "cpu.relocations": {"status": "implemented", "variants": ["rela", "relr"], "limits": "ELF64 NSO relative relocations only; RELR targets must stay inside their module and outside the relocation table.", "tests": ["tools/test_relr.py"]},
     "gpu.api": {"status": "partial", "variants": ["nvn53"], "limits": "NVN 55 can be requested by a development adapter but has not passed runtime compatibility or gameplay qualification.", "tests": []},

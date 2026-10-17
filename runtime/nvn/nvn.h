@@ -1,6 +1,7 @@
 // NVN implemented on the host. Guest NVN objects hold a pointer to a host object at offset 0;
 // builders and small state objects store their fields directly in guest memory.
 #pragma once
+#include <string.h>
 #include "../hle.h"
 #include "tegra.h"
 
@@ -47,7 +48,30 @@ typedef struct {
     uint16_t base_level, num_levels, min_layer, num_layers;
     uint32_t format, target, ds_mode;
     uint8_t swizzle[4];
-} NvnTextureView;  // our layout of the guest NVNtextureView (0x28 bytes)
+} NvnTextureView;  // expanded host view; the guest's NVN 55 view occupies only 16 bytes
+
+static inline bool nvn_compact_texture_views(void) { return title_profile_current()->nvn_major >= 55; }
+static inline NvnTextureView nvn_texture_view_read(const void *guest) {
+    NvnTextureView v = {0};
+    if (!nvn_compact_texture_views()) { memcpy(&v, guest, sizeof v); return v; }
+    uint64_t bits;
+    memcpy(&bits, guest, 8);
+    v.min_layer = (uint16_t)bits; v.num_layers = (uint16_t)(bits >> 16);
+    v.base_level = (bits >> 32) & 255; v.num_levels = (bits >> 40) & 255;
+    v.target = (bits >> 48) & 255; v.setmask = (bits >> 56) & 63; v.ds_mode = bits >> 62;
+    memcpy(&v.format, (const uint8_t *)guest + 8, 4);
+    memcpy(v.swizzle, (const uint8_t *)guest + 12, 4);
+    return v;
+}
+static inline void nvn_texture_view_write(void *guest, const NvnTextureView *v) {
+    if (!nvn_compact_texture_views()) { memcpy(guest, v, sizeof *v); return; }
+    uint64_t bits = (uint64_t)v->min_layer | (uint64_t)v->num_layers << 16 |
+        (uint64_t)(v->base_level & 255) << 32 | (uint64_t)(v->num_levels & 255) << 40 |
+        (uint64_t)(v->target & 255) << 48 | (uint64_t)(v->setmask & 63) << 56 | (uint64_t)(v->ds_mode & 3) << 62;
+    memcpy(guest, &bits, 8);
+    memcpy((uint8_t *)guest + 8, &v->format, 4);
+    memcpy((uint8_t *)guest + 12, v->swizzle, 4);
+}
 
 typedef struct {
     NvnTexture *tex;

@@ -30,6 +30,7 @@ int main(int argc,char **argv) {
         assert(title_is_las()==las[i]);
         for(unsigned j=0;j<p->module_count;j++) assert(p->init_order[j]==orders[i][j]);
         assert(p->nvn_major==majors[i] && device_integer(0)==majors[i] && device_integer(1)==minors[i]);
+        assert(p->system_resource_size==resources[i]);
         snprintf(path,sizeof path,"%s/exefs/sdk",argv[i+1]);
         assert(title_build_id(path,id) && strlen(id)==64);
         FILE *f=fopen(path,"r+b"); assert(f); fseek(f,0x5f,SEEK_SET); int old=fgetc(f);
@@ -65,7 +66,8 @@ with tempfile.TemporaryDirectory() as temp:
         ('counts',[str(len(r.modules)) for g,r in pairs],'unsigned'),
         ('las',[str('las_extensions' in r.runtime['features']).lower() for g,r in pairs],'bool'),
         ('majors',[str(r.runtime.get('nvn_major',53)) for g,r in pairs],'unsigned'),
-        ('minors',[str(r.runtime['nvn_minor']) for g,r in pairs],'unsigned')):
+        ('minors',[str(r.runtime['nvn_minor']) for g,r in pairs],'unsigned'),
+        ('resources',[str(r.runtime.get('system_resource_size',0)) for g,r in pairs],'unsigned')):
         expected+=f'static {typ} {name}[]={{'+','.join(values)+'};\n'
     orders=[','.join(str(next(i for i,m in enumerate(r.modules) if m.name==name)) for name in r.init_order) for g,r in pairs]
     expected+='static unsigned orders[][TITLE_MAX_MODULES]={{'+'},{'.join(orders)+'}};\n'

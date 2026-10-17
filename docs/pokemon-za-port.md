@@ -1,6 +1,6 @@
 # Pokemon Legends: Z-A integration probe
 
-Status on 2026-10-18: **base 1.0.0 fully compiled; native startup blocked by virtual memory support; not playable**.
+Status on 2026-10-18: **base 1.0.0 reaches audio initialization; blocked by missing hwopus service; not playable**.
 This is third-title framework evidence, not a completed port. No Z-A release has
 been added to the installable catalog. Update 2.0.2 remains an inventory-only
 input. Tests used local files on Windows, starting
@@ -133,7 +133,7 @@ update main and SDK unwind tables found only `zR` and `zPLR`: respectively
 startup with the trap retained. It does not certify dynamically registered
 unwind metadata or add MTE emulation.
 
-## Full native build and startup (2026-10-18)
+## Initial native build and startup (2026-10-18)
 
 A private development package built the complete base game with its bundled
 generator and Zig compiler: **1,052 objects, 302,430,720-byte DLL, exit 0**, in
@@ -158,9 +158,9 @@ native tests:
   Bounds are checked against the 256-byte TIPC command buffer. CMIF requests,
   domain conversion, object responses and object close retain regression coverage.
 
-After these fixes, startup reaches `nninitStartup` and opens several SDK
+At that stage, startup reached `nninitStartup` and opened several SDK
 services. Some applet commands still use logged default responses, and `ectx:aw`
-has only a logging stub; service compatibility is not qualified. Startup stops
+has only a logging stub; service compatibility is not qualified. Startup stopped
 in `StandardAllocator::Initialize` at SDK offset `0x134154`:
 the game passes a null backing buffer and requests **`0x300000000` (12 GiB)**
 from main caller `0x19e8760`. The SDK calls `IsVirtualAddressMemoryEnabled`,
@@ -168,17 +168,16 @@ whose implementation checks `GetInfo(16)` (`SystemResourceSize`). That value
 is zero in the current runtime, so the SDK rejects this allocator mode.
 
 The requested size is a virtual address reservation, not evidence that the
-game needs 12 GiB of physical RAM. The current alias region is only 4 GiB, and
-the existing physical-map handlers do not supply the partial unmap and resource
+game needs 12 GiB of physical RAM. The original alias region was only 4 GiB, and
+the physical-map handlers did not supply the partial unmap and resource
 accounting needed by this allocator. Enabling it requires a reviewed address
 layout and mapping lifecycle, including concurrent mappings, subrange removal,
 zeroing/reuse and reset. Returning a nonzero resource size alone is insufficient.
-`kernel.virtual_memory: dynamic_physical` is therefore an unavailable adapter
-requirement, independently of the still-unqualified NVN 55 requirement.
+`kernel.virtual_memory: dynamic_physical` was recorded as an unavailable
+requirement until the implementation and checks in the follow-up below.
 
-No title screen, rendered game frame, controls, graphics/audio qualification,
-save/reopen or extended play has been reached. The final diagnostic run exited
-with SDK assertion status 3; it is not a successful startup. Update 2.0.2 remains
+That diagnostic run exited with SDK assertion status 3. It did not reach a
+title screen or qualify startup, controls, graphics/audio, saving or extended play. Update 2.0.2 remains
 outside the development adapter, and no playable release/package was published.
 
 Final Windows checks passed for the full runtime build, frozen helper imports
@@ -187,6 +186,78 @@ TIPC/CMIF, catalog and native title identity, adapter contracts/doctor, managed
 game profiles, save mount concurrency and save commit failure/retry handling.
 These save tests use synthetic data; they do not establish Z-A save support.
 Linux/macOS checks were added to CI but were not executed on this host.
+
+## Virtual memory and NVN object follow-up (2026-10-18)
+
+The development adapter now requests the **16 MiB system-resource budget**
+recorded at NPDM offset `0x14`. That field is documented by the
+[process metadata definition](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libstratosphere/include/stratosphere/ldr/ldr_types.hpp).
+Existing adapters default to zero. Their heap, alias, stack, code and HLE
+addresses remain unchanged. Only an opted-in boot extends the host reservation
+from `0x7320000000` to `0x7800000000`, with a 16 GiB alias region at
+`0x7400000000`. The original and extra reservations reset separately.
+
+The shared kernel now tracks physical mappings at 4 KiB granularity. Repeated or
+overlapping maps preserve existing bytes; subrange unmaps split mappings and
+release backing; remapped pages are zeroed. QueryMemory and process usage follow
+the same synchronized map. For opted-in titles, heap allocations and physical mappings share the
+existing application-memory budget. Failed allocation rolls back newly mapped
+holes while preserving prior mappings. These semantics were checked against the
+[physical-memory SVC implementation](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/source/svc/kern_svc_physical_memory.cpp)
+and its [page-table operations](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/source/kern_k_page_table_base.cpp).
+
+System-resource usage is a bounded host model: the tracking bitmap/counts plus a
+4 KiB charge for each populated 2 MiB page-table span. It is not exact Horizon
+slab accounting. The runtime retains its existing permissive access protection;
+unmapped loads/stores are not guaranteed to fault. On hosts with larger pages,
+partial-page release preserves neighboring guest mappings and may retain backing
+for unused subpages. The capability remains partial for these reasons.
+
+Real startup now initializes the game's **12 GiB virtual allocator** and reaches
+main constructors, resource loading and NVN device initialization. A temporary
+large physical reservation reaches about 3.13 GiB, then is released after the
+SDK handles a real resource-limit result. The later startup path uses roughly
+1.2 GiB of mapped physical memory; a 12 GiB virtual request does not commit
+12 GiB of RAM.
+
+That progress exposed two NVN object-size bugs:
+
+- A host sampler descriptor, including its backend pointer, occupied 80 bytes
+  when embedded after a device pointer. Z-A provides only 64 bytes for its sampler
+  builder, so the old writes cleared saved guest registers on the stack. A compact
+  builder now fits in both API generations and expands into a separate host
+  descriptor when initialized or registered. Backend pointers stay on the host.
+- NVN 55 texture views occupy 16 bytes. The old 40-byte clear and expanded field
+  writes corrupted neighboring allocator data. New views use the reviewed packed
+  fields; descriptor registration and render-target, clear and copy commands
+  expand them into host snapshots. NVN 53 retains its existing guest layout.
+  Inspection of both supplied SDKs confirmed the version difference: old default
+  setters write through offset `0x20`, while new defaults write only two words.
+
+The final strict run passes both former crashes and reaches audio setup, then
+stops at **`hwopus` command 8**, which has no service implementation. `audren:u`
+was opened, but audio decoding/playback has not been qualified. No title screen,
+rendered game frame, control test, Z-A save/reopen or extended-play pass is claimed.
+`audio.opus: service` records the missing decoder requirement. NVN 55 also remains
+unavailable for release qualification and the adapter remains
+`development` / `installable: false`.
+
+New native tests cover map overlap, partial release, zero reuse, physical/system
+limits, failed-allocation rollback, eight thousand concurrent mapping cycles,
+five thousand randomized page/data/query operations, reset, real Windows
+reservation/decommit behavior, both view ABIs, sampler guards
+and command snapshot lifetimes. The Windows runtime builds and passes these
+checks. Linux/macOS test recipes are in CI; they were not run on this host.
+
+A separate LAS 1.0.0 regression rebuilt all 646 objects with the frozen helper
+and packaged compiler (705 seconds, build exit 0). The final runtime kept the
+legacy 4 GiB alias range and zero system-resource budget. In an isolated data
+directory, it rendered the title screen, loaded a copied test autosave into
+Marin and Tarin's house, and responded to scripted input by opening Marin's
+dialogue. Captured frames were visually checked and the logs contained no fatal
+errors. Each 90-second smoke run was stopped by the test timeout, so this is not
+a normal-exit, extended-play or new save-write qualification. Original test saves
+were copied, not edited in place.
 
 ## Reproduction
 
@@ -208,6 +279,10 @@ python tools/test_exclusive_pairs.py -v
 python tools/test_relr.py -v
 python tools/test_sdk_start.py
 python tools/test_kernel_info.py
+python tools/test_kernel_memory.py
+python tools/test_platform_memory.py
+python tools/test_nvn_sampler.py
+python tools/test_nvn_views.py
 python tools/test_tipc.py
 python tools/adapter.py doctor --game pokemon_za
 python tools/test_frozen_adapters.py <fresh-lasgen-executable>

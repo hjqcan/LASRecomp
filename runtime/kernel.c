@@ -6,6 +6,7 @@
 
 #include "hle.h"
 #include "kernel.h"
+#include "kernel_memory.h"
 #include "guest_jump.h"
 #include "research.h"
 #ifdef _WIN32
@@ -112,66 +113,8 @@ static bool kwait(int64_t timeout_ns, const struct timespec *ts) {
     return r;
 }
 
-// ------------------------------------------------------------------ memory map
-typedef struct { uint64_t addr, size; uint32_t type, perm; } Region;
-static Region regions[1024];
-static int nregions;
-static uint64_t heap_size;
+// TLS allocation is independent of the page mapping model.
 static uint64_t tls_next = TLS_BASE;
-uint64_t kernel_heap_size(void) { return heap_size; }  // bytes from HEAP_BASE set by SetHeapSize
-// Writable guest data regions (heap, mapped/physical memory, module .data): for debug/runtime memory scans.
-int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
-    int n = 0;
-    for (int i = 0; i < nregions && n < max; i++)
-        if ((regions[i].perm & 2) && regions[i].type != 0xB && regions[i].type != 0xC) {
-            addr[n] = regions[i].addr; size[n] = regions[i].size; n++;
-        }
-    return n;
-}
-
-static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
-    if (nregions == 1024) FATAL("too many regions\n");
-    plat_commit(addr, size);  // back it before the OS writes there (Windows: file reads into the heap)
-    int i = nregions++;
-    while (i > 0 && regions[i - 1].addr > addr) { regions[i] = regions[i - 1]; i--; }
-    regions[i] = (Region){addr, size, type, perm};
-}
-
-static void region_remove(uint64_t addr) {
-    for (int i = 0; i < nregions; i++) {
-        if (regions[i].addr == addr) {
-            memmove(&regions[i], &regions[i + 1], (nregions - i - 1) * sizeof(Region));
-            nregions--;
-            return;
-        }
-    }
-}
-
-static void query_memory(uint64_t addr, uint64_t out) {
-    uint64_t prev_end = 0;
-    uint64_t info[5] = {0};  // addr, size, type|attr<<32, perm|ipc<<32, device|pad<<32
-    for (int i = 0; i < nregions; i++) {
-        Region *r = &regions[i];
-        if (addr >= r->addr && addr < r->addr + r->size) {
-            info[0] = r->addr;
-            info[1] = r->size;
-            info[2] = r->type;
-            info[3] = r->perm;
-            memcpy((void *)out, info, 0x28);
-            return;
-        }
-        if (addr < r->addr) {
-            info[0] = prev_end;
-            info[1] = r->addr - prev_end;
-            memcpy((void *)out, info, 0x28);
-            return;
-        }
-        prev_end = r->addr + r->size;
-    }
-    info[0] = prev_end;
-    info[1] = (1ull << 39) - prev_end;
-    memcpy((void *)out, info, 0x28);
-}
 
 // ------------------------------------------------------------------ threads
 static uint64_t next_thread_id = 0x50;
@@ -268,7 +211,7 @@ static void thread_start(KThread *t) {
 
 KThread *kernel_create_main_thread(uint64_t entry, uint64_t stack_size, int prio) {
     uint64_t stack = STACK_BASE + STACK_SIZE - ((stack_size + 0xFFFF) & ~0xFFFFull);
-    region_add(stack, stack_size, 0xB, 3);
+    kernel_region_add(stack, stack_size, 0xB, 3);
     KThread *t = thread_new(entry, 0, stack + stack_size, prio, 0);
     t->handle = kernel_new_handle(&t->obj);
     return t;
@@ -617,28 +560,23 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     uint64_t *x = c->x;
     switch (imm) {
     case 0x01: {  // SetHeapSize
-        uint64_t size = x[1];
-        if (size > HEAP_MAX) { x[0] = R_OUT_OF_RESOURCE; break; }
-        heap_size = size;
-        region_remove(HEAP_BASE);
-        if (size) region_add(HEAP_BASE, size, 5, 3);
-        x[0] = R_OK;
-        x[1] = HEAP_BASE;
+        x[0] = kernel_set_heap_size(x[1]);
+        x[1] = x[0] == KM_OK ? HEAP_BASE : 0;
         break;
     }
     case 0x02: case 0x03: x[0] = R_OK; break;  // SetMemoryPermission / SetMemoryAttribute
     case 0x04:  // MapMemory(dst, src, size): src is inaccessible while mapped, so copying is equivalent
         memcpy((void *)x[0], (void *)x[1], x[2]);
-        region_add(x[0], x[2], 0xB, 3);
+        kernel_region_add(x[0], x[2], 0xB, 3);
         x[0] = R_OK;
         break;
     case 0x05:  // UnmapMemory(dst, src, size): copy back
         memcpy((void *)x[1], (void *)x[0], x[2]);
-        region_remove(x[0]);
+        kernel_region_remove(x[0]);
         x[0] = R_OK;
         break;
     case 0x06:  // QueryMemory(out_info, _, addr)
-        query_memory(x[2], x[0]);
+        kernel_query_memory(x[2], x[0]);
         x[0] = R_OK;
         x[1] = 0;
         break;
@@ -722,12 +660,12 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         KSharedMem *s = (KSharedMem *)o;
         memset((void *)x[1], 0, x[2]);
         s->guest_addr = x[1];  // HLE services write straight into the guest's mapping
-        region_add(x[1], x[2], 6, 3);
+        kernel_region_add(x[1], x[2], 6, 3);
         if (s->on_map) s->on_map(s);
         x[0] = R_OK;
         break;
     }
-    case 0x14: region_remove(x[1]); x[0] = R_OK; break;  // UnmapSharedMemory
+    case 0x14: kernel_region_remove(x[1]); x[0] = R_OK; break;  // UnmapSharedMemory
     case 0x15: {  // CreateTransferMemory(_, addr, size, perm)
         KTransferMem *t = calloc(1, sizeof *t);
         t->obj.type = KOBJ_TMEM;
@@ -791,7 +729,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         // SDK aborts often place a Result on the current stack. Preserve it in
         // the report so intermittent filesystem failures can be diagnosed.
         if (x[2] == 4 && x[1] >= c->sp && x[1] - c->sp < 0x1000 &&
-            x[1] >= GUEST_LO && x[1] <= GUEST_HI - 4) {
+            x[1] >= GUEST_LO && x[1] <= GUEST_LO + kernel_memory_info(13) - 4) {
             uint32_t result;
             memcpy(&result, (const void *)(uintptr_t)x[1], sizeof result);
             LOG("[kernel] Break result 0x%08x (module %u, description %u)\n", result, result & 511, result >> 9);
@@ -805,26 +743,25 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         switch (id0) {
         case 0: v = 0xF; break;
         case 1: v = 0xFFFFFFFFFFFFFFFFull; break;
-        case 2: v = ALIAS_BASE; break;
-        case 3: v = ALIAS_SIZE; break;
-        case 4: v = HEAP_BASE; break;
-        case 5: v = HEAP_MAX; break;
-        case 6: case 21: v = 0xCD500000ull; break;  // application memory (3.2 GB, as on hardware)
-        case 7: case 22: v = heap_size + 0x4000000; break;
+        case 2: case 3: case 4: case 5: case 6: case 7: case 21: case 22:
+            v = kernel_memory_info(id0); break;
         case 8: v = 0; break;
         case 9: v = 0; break;
         case 11:
             v = ((uint64_t)arc4random() << 32) | arc4random();
             research_external(RESEARCH_EXTERNAL_ENTROPY,pc,kernel_current_thread_handle(),x[3],v);
             break;
-        case 12: v = GUEST_LO; break;
-        case 13: v = GUEST_HI - GUEST_LO; break;
+        case 12: case 13: v = kernel_memory_info(id0); break;
         case 14: v = STACK_BASE; break;
         case 15: v = STACK_SIZE; break;
-        case 16: case 17: v = 0; break;
+        case 16: case 17:
+            if (x[3] != 0) r = R_INVALID_COMBINATION;
+            else if ((uint32_t)x[2] != PSEUDO_PROCESS) r = R_INVALID_HANDLE;
+            else v = kernel_memory_info(id0);
+            break;
         case 18: v = title_profile_current()->program_id; break;
         case 20: v = 0; break;
-        case 28:  // AliasRegionExtraSize (18.0.0+): this host layout adds no extra reservation.
+        case 28:  // AliasRegionExtraSize (18.0.0+): no dedicated alias-extra subregion.
             if (x[3] != 0) r = R_INVALID_COMBINATION;
             else if ((uint32_t)x[2] != PSEUDO_PROCESS) r = R_INVALID_HANDLE;
             break;
@@ -835,13 +772,8 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         break;
     }
     case 0x2C:  // MapPhysicalMemory(addr, size)
-        memset((void *)x[0], 0, x[1]);
-        region_add(x[0], x[1], 0x7, 3);
-        x[0] = R_OK;
-        break;
-    case 0x2D:  // UnmapPhysicalMemory
-        region_remove(x[0]);
-        x[0] = R_OK;
+    case 0x2D:  // UnmapPhysicalMemory(addr, size)
+        x[0] = kernel_map_physical(x[0], x[1], imm == 0x2C);
         break;
     case 0x34: x[0] = svc_wait_for_address(x[0], (uint32_t)x[1], (int32_t)x[2], (int64_t)x[3]); break;
     case 0x35: x[0] = svc_signal_to_address(x[0], (uint32_t)x[1], (int32_t)x[2], (int32_t)x[3]); break;
@@ -910,8 +842,7 @@ void kernel_reset(void) {
     g_waitlist = NULL;
     g_syncwaiters = NULL;
     memset(handles, 0, sizeof handles);
-    nregions = 0;
-    heap_size = 0;
+    kernel_memory_reset();
     tls_next = TLS_BASE;
     next_thread_id = 0x50;
     g_rt_unwind = 0;
@@ -923,14 +854,14 @@ void kernel_init(void) {
     // The SDK chooses shared-memory addresses using QueryMemory. Host-owned
     // callback/data ranges must not look free or an ASLR mapping can overlap
     // font buffers and other HLE objects allocated later in the same boot.
-    region_add(HLE_BASE, HLE_SIZE, 3, 5);
-    region_add(HLE_HEAP, HLE_HEAP_SIZE, 4, 3);
-    region_add(TLS_BASE, TLS_SIZE, 0xC, 3);
+    kernel_region_add(HLE_BASE, HLE_SIZE, 3, 5);
+    kernel_region_add(HLE_HEAP, HLE_HEAP_SIZE, 4, 3);
+    kernel_region_add(TLS_BASE, TLS_SIZE, 0xC, 3);
     for (int i = 0; i < g_nmodules; i++) {
         Module *m = &g_modules[i];
-        region_add(m->base + m->text_off, m->ro_off - m->text_off, 3, 5);
-        region_add(m->base + m->ro_off, m->data_off - m->ro_off, 3, 1);
-        region_add(m->base + m->data_off, m->size - m->data_off, 4, 3);
+        kernel_region_add(m->base + m->text_off, m->ro_off - m->text_off, 3, 5);
+        kernel_region_add(m->base + m->ro_off, m->data_off - m->ro_off, 3, 1);
+        kernel_region_add(m->base + m->data_off, m->size - m->data_off, 4, 3);
     }
 }
 

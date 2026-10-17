@@ -23,6 +23,7 @@ typedef struct {
     unsigned nvn_minor, heap_scale;
     bool las_extensions;
     unsigned nvn_major;
+    uint32_t system_resource_size;
 } TitleProfile;
 
 #ifdef __cplusplus

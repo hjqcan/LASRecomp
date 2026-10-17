@@ -18,6 +18,7 @@
 #include "settings.h"
 #include "hle.h"
 #include "kernel.h"
+#include "kernel_memory.h"
 #include "rando.h"
 
 const char *g_romfs_dir;
@@ -166,6 +167,8 @@ static void teardown(void) {
 static void boot(const char *root) {
     char why[512];
     if (!title_profile_select(root,why,sizeof why)) FATAL("%s\n",why);
+    if (!kernel_memory_configure(title_profile_current()->system_resource_size))
+        FATAL("cannot configure this game's virtual memory reservation\n");
     game_profile_activate(root, rt_data_root());
     extern void save_backups_set_game_root(const char *);
     extern void rando_set_game_root(const char *);

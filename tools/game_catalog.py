@@ -95,6 +95,11 @@ def relative_path(value):
     return value
 
 
+def valid_system_resource(runtime):
+    value = runtime.get('system_resource_size', 0)
+    return type(value) is int and (value == 0 or 0x100000 <= value <= 0x20000000 and value % 0x1000 == 0)
+
+
 def load_games(directory=ADAPTERS):
     """Read reviewed source adapters, never execute code from an imported game."""
     games, identities, builds, locations = [], set(), set(), set()
@@ -118,6 +123,7 @@ def load_games(directory=ADAPTERS):
             require('/' not in name, 'RomFS roots must be top-level names')
         runtime = data['runtime']
         require(type(runtime.get('nvn_major', 53)) is int and runtime.get('nvn_major', 53) > 0 and
+                valid_system_resource(runtime) and
                 type(runtime['nvn_minor']) is int and runtime['nvn_minor'] > 0 and
                 type(runtime['heap_scale']) is int and 1 <= runtime['heap_scale'] <= 16, 'Invalid runtime configuration')
         require(set(runtime['features']) <= {'las_extensions'}, 'Unknown adapter feature')
@@ -133,10 +139,14 @@ def load_games(directory=ADAPTERS):
             for root in roots:
                 relative_path(root); require('/' not in root, 'RomFS roots must be top-level names')
             require(type(release_runtime.get('nvn_major', 53)) is int and release_runtime.get('nvn_major', 53) > 0 and
+                    valid_system_resource(release_runtime) and
                     type(release_runtime['nvn_minor']) is int and release_runtime['nvn_minor'] > 0 and
                     type(release_runtime['heap_scale']) is int and 1 <= release_runtime['heap_scale'] <= 16 and
                     set(release_runtime['features']) <= {'las_extensions'}, 'Invalid release runtime configuration')
             require(all(isinstance(k, str) and isinstance(v, str) for k, v in requirements.items()), 'Invalid release requirement')
+            require(not release_runtime.get('system_resource_size', 0) or
+                    requirements.get('kernel.virtual_memory') == 'dynamic_physical',
+                    'A system resource budget requires the dynamic physical memory capability')
             require(re.fullmatch(r'[0-9]+(?:\.[0-9]+){1,3}', item['version']), 'Invalid release version')
             require(item['version'] not in versions, 'Duplicate release version')
             versions.add(item['version'])
@@ -277,7 +287,7 @@ def render_c_catalog(games=None):
                          f'{release.content["minimum_files"]}, {str(release.content["image_satisfies_count"]).lower()}, '
                          f'{release.runtime["nvn_minor"]}, {release.runtime["heap_scale"]}, '
                          f'{str("las_extensions" in release.runtime["features"]).lower()}, '
-                         f'{release.runtime.get("nvn_major", 53)}' + '},')
+                         f'{release.runtime.get("nvn_major", 53)}, {release.runtime.get("system_resource_size", 0)}' + '},')
     return '\n'.join(lines + ['};', ''])
 
 

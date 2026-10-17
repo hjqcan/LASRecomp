@@ -16,6 +16,13 @@ runtime parameters and capability requirements when an update changes them.
 `runtime.nvn_minor` remains required. These fields report the reviewed API
 version to guest code. They do not establish renderer compatibility: an
 unqualified major version must remain a development requirement.
+`runtime.system_resource_size` defaults to zero, retaining the existing memory
+layout. A reviewed nonzero byte budget (page-aligned, 1 to 512 MiB) opts into the
+shared dynamic physical-memory implementation and requires
+`kernel.virtual_memory: dynamic_physical`. The current layout reserves a separate
+16 GiB alias region when that title starts. It does not commit that whole region.
+The budget must come from reviewed process metadata; arbitrary imported metadata
+does not turn this capability on. See the limits in `adapters/core-capabilities.json`.
 
 The shared core implements archive/container parsing, supported update assembly,
 generation, compilation, installation publication, graphics, sound, input, host

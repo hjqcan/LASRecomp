@@ -135,9 +135,10 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual([g['id'] for g in json.loads(output.getvalue())['games']], [game.id for game in GAMES])
         self.assertEqual({r.main_build_id[:40]: r.version for r in get_game().releases}, VERSIONS)
 
-    def test_za_requires_development_virtual_memory_and_nvn55(self):
+    def test_za_requires_development_and_qualified_capabilities(self):
         game = get_game('pokemon_za'); release = game.releases[0]
         self.assertEqual((release.runtime['nvn_major'],release.runtime['nvn_minor']),(55,15))
+        self.assertEqual(release.runtime['system_resource_size'],0x1000000)
         self.assertEqual([m.base for m in release.modules],[0x7000000000,0x7008000000])
         self.assertFalse(release.installable)
         output=self.root/'untouched'/'game'
@@ -151,18 +152,30 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'unavailable core capability'):load_games(descriptor.parent.parent)
         core=json.loads((ADAPTERS/'core-capabilities.json').read_text(encoding='utf8'))
         core_file=descriptor.parent.parent/'core-capabilities.json'
-        # Either missing feature independently prevents promoting this release.
-        for available,variant in (('gpu.api','nvn55'),('kernel.virtual_memory','dynamic_physical')):
+        # Each missing feature independently prevents promoting this release.
+        for name,variant in game.requirements.items():
+            if variant not in core['capabilities'][name]['variants']:
+                core['capabilities'][name]['variants'].append(variant)
+        for missing in ('gpu.api','kernel.virtual_memory','audio.opus'):
             enabled=json.loads(json.dumps(core))
-            enabled['capabilities'][available]['variants'].append(variant)
+            enabled['capabilities'][missing]['variants'].remove(game.requirements[missing])
             core_file.write_text(json.dumps(enabled),encoding='utf8')
-            with self.subTest(available=available),self.assertRaisesRegex(ValueError,'unavailable core capability'):
+            with self.subTest(missing=missing),self.assertRaisesRegex(ValueError,'unavailable core capability'):
                 load_games(descriptor.parent.parent)
         data['releases'][0].update(status='development',installable=False)
         for invalid in (0,-1,'55',True):
             data['runtime']['nvn_major']=invalid;descriptor.write_text(json.dumps(data),encoding='utf8')
             with self.subTest(value=invalid),self.assertRaisesRegex(ValueError,'runtime configuration'):
                 load_games(descriptor.parent.parent)
+        data['runtime']['nvn_major']=55
+        for invalid in (-1,True,'16777216',0x80000,0x100001,0x20001000):
+            data['runtime']['system_resource_size']=invalid;descriptor.write_text(json.dumps(data),encoding='utf8')
+            with self.subTest(budget=invalid),self.assertRaisesRegex(ValueError,'runtime configuration'):
+                load_games(descriptor.parent.parent)
+        data['runtime']['system_resource_size']=0x1000000
+        del data['requirements']['kernel.virtual_memory'];descriptor.write_text(json.dumps(data),encoding='utf8')
+        with self.assertRaisesRegex(ValueError,'requires the dynamic physical memory capability'):
+            load_games(descriptor.parent.parent)
 
 
 if __name__ == '__main__':

@@ -93,6 +93,7 @@ static void wt_init(uint64_t lo, uint64_t hi) {
 }
 
 // ---- guest address space
+static uint64_t g_guest_lo, g_guest_hi;
 // Everything readable/writable from the start, like macOS: the guest maps at 4K granularity, and untouched pages
 // cost nothing (MAP_NORESERVE: the 12 GB window doesn't count against overcommit).
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
@@ -101,6 +102,39 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
     if (p == MAP_FAILED) return false;
     if (p != (void *)(uintptr_t)lo) { munmap(p, hi - lo); return false; }  // (kernels before 4.17: just a hint)
     wt_init(lo, hi);
+    g_guest_lo = lo; g_guest_hi = hi;
+    return true;
+}
+
+bool plat_reserve_guest_extra(uint64_t lo, uint64_t hi) {
+    if (lo != g_guest_hi || hi <= lo) return false;
+    void *p = mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE,
+                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+    if (p == MAP_FAILED) return false;
+    if (p != (void *)(uintptr_t)lo) { munmap(p, hi - lo); return false; }
+    if (g_uffd >= 0 && !wt_register(lo, hi)) wt_off("register extended window");
+    g_wt_hi = g_guest_hi = hi;
+    return true;
+}
+
+bool plat_commit_physical(uint64_t addr, uint64_t size) {
+    if (!size || addr < g_guest_lo || addr >= g_guest_hi || size > g_guest_hi - addr) return false;
+    memset((void *)(uintptr_t)addr, 0, size);
+    return true;
+}
+
+bool plat_discard_physical(uint64_t addr, uint64_t size) {
+    if (!size || addr < g_guest_lo || addr >= g_guest_hi || size > g_guest_hi - addr) return false;
+    uint64_t page = (uint64_t)sysconf(_SC_PAGESIZE), end = addr + size;
+    uint64_t begin_full = (addr + page - 1) & ~(page - 1), end_full = end & ~(page - 1);
+    if (begin_full >= end_full) memset((void *)(uintptr_t)addr, 0, size);
+    else {
+        // Never discard a neighboring 4-KiB guest mapping on a larger-page host.
+        memset((void *)(uintptr_t)addr, 0, begin_full - addr);
+        if (madvise((void *)(uintptr_t)begin_full, end_full - begin_full, MADV_DONTNEED))
+            memset((void *)(uintptr_t)begin_full, 0, end_full - begin_full);
+        memset((void *)(uintptr_t)end_full, 0, end - end_full);
+    }
     return true;
 }
 

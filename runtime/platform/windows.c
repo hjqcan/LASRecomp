@@ -115,6 +115,27 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
     return true;
 }
 
+bool plat_reserve_guest_extra(uint64_t lo, uint64_t hi) {
+    if (lo != g_hi || hi <= lo) return false;
+    DWORD flags = MEM_RESERVE | (g_write_watch ? MEM_WRITE_WATCH : 0);
+    void *p = VirtualAlloc((void *)(uintptr_t)lo, hi - lo, flags, PAGE_READWRITE);
+    if (p != (void *)(uintptr_t)lo) return false;
+    g_hi = hi;
+    return true;
+}
+
+bool plat_commit_physical(uint64_t addr, uint64_t size) {
+    if (!size || addr < g_lo || addr >= g_hi || size > g_hi - addr) return false;
+    if (!VirtualAlloc((void *)(uintptr_t)addr, size, MEM_COMMIT, PAGE_READWRITE)) return false;
+    memset((void *)(uintptr_t)addr, 0, size);
+    return true;
+}
+
+bool plat_discard_physical(uint64_t addr, uint64_t size) {
+    return size && addr >= g_lo && addr < g_hi && size <= g_hi - addr &&
+        VirtualFree((void *)(uintptr_t)addr, size, MEM_DECOMMIT) != 0;
+}
+
 int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, uint64_t *page) {
     if (!g_write_watch || addr < g_lo || addr + size > g_hi || max <= 0) return -1;
     ULONG_PTR n = (ULONG_PTR)max;

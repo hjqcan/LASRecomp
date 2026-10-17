@@ -7,6 +7,8 @@
 
 static uint64_t pool_guest;
 static unsigned callbacks;
+static const TitleProfile profile = {.nvn_major=53};
+const TitleProfile *title_profile_current(void) { return &profile; }
 void nvn_sync_arm(uint64_t guest) { assert(guest); }
 void rt_fatal_msg(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt); vfprintf(stderr, fmt, ap); va_end(ap);

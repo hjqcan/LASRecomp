@@ -8,13 +8,14 @@
   "adapter_revision": 1,
   "romfs_roots": ["arc", "audio", "system"],
   "init_order": ["sdk", "main"],
-  "runtime": {"nvn_major": 55, "nvn_minor": 15, "heap_scale": 1, "features": []},
+  "runtime": {"nvn_major": 55, "nvn_minor": 15, "heap_scale": 1, "system_resource_size": 16777216, "features": []},
   "requirements": {
     "module_tables": "4",
     "cpu.exclusive_pairs": "value_cas",
     "cpu.relocations": "relr",
     "kernel.virtual_memory": "dynamic_physical",
     "services.ipc": "tipc",
+    "audio.opus": "service",
     "gpu.api": "nvn55",
     "services.network": "offline"
   },
