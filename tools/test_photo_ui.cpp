@@ -85,7 +85,11 @@ int main(int argc, char **argv) {
     tick(3);
 
     // A enters framing from the focused button; sticks then control the photo, not panel navigation.
-    press(ImGuiKey_GamepadFaceDown); assert(state.framing);
+    assert(!photo_mode_pad_button(1, true));
+    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, true); tick(); assert(state.framing);
+    assert(!photo_mode_pad_button(1, false)); // menu_handle_event must forward this release to ImGui
+    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false); tick();
+    assert(!ImGui::IsKeyDown(ImGuiKey_GamepadFaceDown));
     assert(GImGui->NavWindow && !strcmp(GImGui->NavWindow->Name, "##photo_canvas"));
     io.AddKeyAnalogEvent(ImGuiKey_GamepadRStickUp, true, 0.8f);
     io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, true, 0.7f);

@@ -55,7 +55,8 @@ extern "C" bool photo_mode_pad_button(int host, bool down) {
         if (host == bind_prompt_host(BIND_B)) requests.fetch_or(FRAME_CANCEL);
         else if (host == bind_prompt_host(BIND_A)) requests.fetch_or(FRAME_TAKE);
     }
-    return true;
+    // Releases still reach ImGui: the press that entered framing may have activated its panel button.
+    return down;
 }
 extern "C" void photo_mode_frame(uint64_t frame) {
     unsigned r = requests.exchange(0);
