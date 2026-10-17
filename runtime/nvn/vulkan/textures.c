@@ -323,7 +323,12 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkResult r = vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL);
     if (r != VK_SUCCESS) {
-        LOG("[vk] image creation failed (%d): nvn fmt %#x %ux%ux%u target %u\n", r, t->format, t->width, t->height, t->depth, t->target);
+        // (the Vulkan side too: a driver can refuse a format / usage / tiling combination with "out of device memory",
+        // issue #45 - a GTX 1060 failing a 1920x1080 image with plenty of memory free)
+        LOG("[vk] image creation failed (%d): nvn fmt %#x %ux%ux%u target %u - vk format %d, usage %#x, flags %#x, "
+            "%u levels, %u layers, %u samples\n", r, t->format, t->width, t->height, t->depth, t->target, ci.format,
+            ci.usage, ci.flags, ci.mipLevels, ci.arrayLayers, (unsigned)ci.samples);
+        vk_log_memory("image creation failed");
         ci.format = vf = VK_FORMAT_R8G8B8A8_UNORM;
         ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;

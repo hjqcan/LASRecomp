@@ -92,13 +92,15 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 #endif
 
 // The release tag this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read
-// it): beta_<n> until 1.0, then v<major>.<minor>.<patch>.
+// it): enhanced-beta<n>.<revision> for this fork. A test build (a pre-release for a few players to try a fix)
+// is test-<name>: the start screen says "Test build <name>" and doesn't check for updates - its players go back to
+// the normal release when it's out.
 #define LARECOMP_VERSION "enhanced-beta5.1"
 
 // ------------------------------------------------------------------ update check
 // The start screen asks GitHub for the project's releases once per launch (a background curl, which macOS and
-// Windows 10+ ship) and offers the best one if it outranks this build: any v1.0.0+ above every beta, betas by
-// number; other tags (the alpha_* ones) are ignored. Offline / no curl / anything unexpected: nothing is shown.
+// Windows 10+ ship) and offers a newer enhanced release by beta and revision number. Other release channels are
+// ignored. Offline / no curl / anything unexpected: nothing is shown.
 #define RELEASES_URL "https://api.github.com/repos/hjqcan/LASRecomp/releases?per_page=100"
 #define RELEASE_PAGE "https://github.com/hjqcan/LASRecomp/releases/tag/"
 
@@ -112,6 +114,7 @@ static long long tag_rank(const std::string &t) {
 }
 static std::string tag_label(const std::string &t, bool) {
     if (t.rfind("enhanced-beta", 0) == 0) return "Enhanced Beta " + t.substr(13);
+    if (!t.compare(0, 5, "test-")) return "Test build " + t.substr(5);
     return t;
 }
 
@@ -119,6 +122,7 @@ static std::string g_update_tag;  // a newer release's tag (g_update_lock)
 static pthread_mutex_t g_update_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void *update_thread(void *) {
+    if (!strncmp(LARECOMP_VERSION, "test-", 5)) return NULL;  // (a test build: no update offers)
     std::string body;
     if (const char *t = getenv("LARECOMP_UPDATE_TAGS")) {  // (test) "beta_2,v1.0.0": these releases, no network
         for (const char *p = t; *p;) {
