@@ -36,6 +36,8 @@ Service *service_new(const char *name, ServiceHandler fn, void *state) {
     return s;
 }
 void ipc_return_object(IpcResp *r, Service *s) { r->objects[r->nobjects++] = s; }
+void service_retain(Service *s) { ++s->refs; }
+void service_release(Service *s) { if (!--s->refs && s->on_close) s->on_close(s); }
 
 int main(int argc, char **argv) {
     assert(argc == 2);

@@ -277,6 +277,23 @@ GLSL for seven texture types. The recorded post-tent sunset material brightness
 still requires scene comparison; supporting this instruction alone does not
 establish that the lighting problem is fixed.
 
+The first player save reached the NookPhone and wrote all ten header/data files,
+then crashed because `fsp-srv` command 1200 reported success without returning
+`IMultiCommitManager`. That interface now returns a real object with Add (1)
+and Commit (2), matching the [service implementation reference](https://github.com/kotx/Ryujinx/blob/master/src/Ryujinx.HLE/HOS/Services/Fs/IMultiCommitManager.cs).
+The IPC dispatcher resolves input interfaces from copied handles or the calling
+domain. Managers retain their mounts, publish their pending files, return write
+errors, and take backups only after all member commits succeed. Tests send real
+session/domain messages through the production codec, commit ten nested files,
+close input handles before committing, reject invalid objects, and retry a
+failed publication. Publication retains the existing per-file rename semantics;
+it does not promise a power-loss-atomic transaction across multiple filesystems.
+
+The failed first save's original files were preserved separately. A recovery
+copy passed all 24 checksums for the five 1.0.0 data files and their matching
+version headers. In-game loading and another complete commit still need checking
+before that copy replaces the managed save.
+
 Still required: complete intro and island controls, broader graphics and
 audio correctness, game-managed saving and reopening, day rollover, repeated
 starts, and an extended gameplay run. Update and DLC compatibility remain

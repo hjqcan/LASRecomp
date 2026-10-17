@@ -821,6 +821,11 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     }
 }
 
+static void host_fs_close(Service *s) {
+    free(s->state);
+    s->state = NULL;
+}
+
 static Service *open_host_fs(const char *sub) {
     HostFs *fs = calloc(1, sizeof *fs);
     g_save_dir = game_profile_save_dir(game_profile_active());
@@ -861,7 +866,71 @@ static Service *open_host_fs(const char *sub) {
     }
     backup_save(fs, "Before play");
     LOG("[fs] mounted host directory %s\n", fs->root);
-    return service_new("IFileSystem", filesystem, fs);
+    Service *result = service_new("IFileSystem", filesystem, fs);
+    result->on_close = host_fs_close;
+    return result;
+}
+
+// fsp-srv 1200 returns a real interface; returning success without it makes
+// nn::fs dereference a null manager during ACNH's first multi-save commit.
+// The manager retains input mounts even if their guest handles are closed.
+#define MULTI_COMMIT_MAX 10
+typedef struct {
+    pthread_mutex_t lock;
+    Service *mounts[MULTI_COMMIT_MAX];
+    unsigned count;
+} MultiCommit;
+
+static void multi_commit_close(Service *s) {
+    MultiCommit *manager = s->state;
+    if (!manager) return;
+    for (unsigned i = 0; i < manager->count; i++) service_release(manager->mounts[i]);
+    pthread_mutex_destroy(&manager->lock);
+    free(manager);
+    s->state = NULL;
+}
+
+static void multi_commit(Service *s, IpcReq *req, IpcResp *resp) {
+    MultiCommit *manager = s->state;
+    pthread_mutex_lock(&manager->lock);
+    switch (req->cmd) {
+    case 1: {  // Add(IFileSystem)
+        Service *mount = req->nobjects == 1 ? req->objects[0] : NULL;
+        if (!mount || mount->handler != filesystem || !mount->state) {
+            resp->result = MAKE_RESULT(2, 6001);
+            break;
+        }
+        for (unsigned i = 0; i < manager->count; i++) {
+            if (manager->mounts[i] == mount) { resp->result = MAKE_RESULT(2, 6001); goto done; }
+        }
+        if (manager->count == MULTI_COMMIT_MAX) { resp->result = MAKE_RESULT(2, 6001); break; }
+        service_retain(mount);
+        manager->mounts[manager->count++] = mount;
+        LOG("[save] multi-commit added %s\n", ((HostFs *)mount->state)->root);
+        break;
+    }
+    case 2:  // Commit: never report success or snapshot a partially published group
+        for (unsigned i = 0; i < manager->count; i++) {
+            if (!commit(manager->mounts[i]->state)) { resp->result = errno_result(); goto done; }
+        }
+        for (unsigned i = 0; i < manager->count; i++) backup_save(manager->mounts[i]->state, "Automatic save");
+        LOG("[save] multi-commit completed (%u filesystems)\n", manager->count);
+        break;
+    default:
+        resp->result = MAKE_RESULT(2, 6001);
+        break;
+    }
+done:
+    pthread_mutex_unlock(&manager->lock);
+}
+
+static Service *open_multi_commit(void) {
+    MultiCommit *manager = calloc(1, sizeof *manager);
+    if (!manager) FATAL("cannot allocate save commit manager\n");
+    pthread_mutex_init(&manager->lock, NULL);
+    Service *result = service_new("IMultiCommitManager", multi_commit, manager);
+    result->on_close = multi_commit_close;
+    return result;
 }
 
 // ------------------------------------------------------------------ fsp-srv
@@ -886,6 +955,7 @@ SERVICE("fsp-srv", fsp_srv) {
     case 1005: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;  // GetGlobalAccessLogMode
     case 1003: case 1004: case 1006: break;
     case 1011: memset(resp->data, 0, 0x10); resp_size(resp, 0x10); break;
+    case 1200: ipc_return_object(resp, open_multi_commit()); break;
     default: LOG("[fs] fsp-srv cmd %u (ok)\n", req->cmd);
     }
 }

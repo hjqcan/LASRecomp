@@ -6,6 +6,8 @@ typedef struct {
     uint64_t addr, size;
 } IpcBuf;
 
+typedef struct Service Service;
+
 typedef struct IpcReq {
     uint32_t type;      // 4 = request, 5 = control, 2 = close, 6/7 = with context
     uint32_t cmd;
@@ -19,9 +21,9 @@ typedef struct IpcReq {
     uint32_t domain_obj;  // 0 if not a domain message
     uint32_t domain_in_objs[8];
     int ndomain_in;
+    Service *objects[8];  // borrowed input interfaces, resolved in the calling session/domain
+    int nobjects;
 } IpcReq;
-
-typedef struct Service Service;
 
 typedef struct IpcResp {
     uint32_t result;
@@ -72,6 +74,8 @@ static inline IpcBuf *in_buf(IpcReq *req, int i) {
 
 Service *service_new(const char *name, ServiceHandler h, void *state);
 Service *service_lookup(const char *name);  // from the registry (services/*.c)
+void service_retain(Service *s);
+void service_release(Service *s);
 void ipc_return_object(IpcResp *resp, Service *s);
 
 typedef struct { const char *name; ServiceHandler handler; } ServiceDef;

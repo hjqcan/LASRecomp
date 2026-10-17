@@ -43,6 +43,8 @@ Service *service_new(const char *name, ServiceHandler handler, void *state) {
     return s;
 }
 void ipc_return_object(IpcResp *resp, Service *s) { resp->objects[resp->nobjects++] = s; }
+void service_retain(Service *s) { ++s->refs; }
+void service_release(Service *s) { if (!--s->refs && s->on_close) s->on_close(s); }
 static int first_byte(const char *path) {
     FILE *f = fopen(path, "rb"); assert(f); int value = fgetc(f); fclose(f); return value;
 }
