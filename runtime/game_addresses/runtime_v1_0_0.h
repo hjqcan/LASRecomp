@@ -71,3 +71,13 @@
 #define GA_RESEARCH_TIME_ENTRY                UINT64_C(0x70044d0780)
 #define GA_RESEARCH_SEED_CALLSITE             UINT64_C(0x7000009488)
 #define GA_RESEARCH_SEED_INITIALIZER          UINT64_C(0x700000a3f0)
+
+// Local companion co-op is explicitly restricted to the original executable.
+#define GA_COOP_BOWWOW_VTABLE                 UINT64_C(0x7001bdb560)
+#define GA_COOP_IDLE_TICK                     UINT64_C(0x700092b260)
+#define GA_COOP_FOLLOW_TICK                   UINT64_C(0x700092be90)
+#define GA_COOP_CHANGE_STATE                  UINT64_C(0x7000927b80)
+#define GA_COOP_MOVE_TARGET                   UINT64_C(0x700091bbc0)
+#define GA_COOP_TRY_ATTACK                    UINT64_C(0x7000932710)
+#define GA_COOP_ADD_TARGET                    UINT64_C(0x70009411e0)
+#define GA_COOP_ANIMATE                       UINT64_C(0x7000931d90)

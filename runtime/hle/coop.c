@@ -14,14 +14,14 @@
 #include <stdatomic.h>
 
 // Verified 1.0.0 entries; never translated to another version's addresses.
-#define BOWWOW_VTABLE UINT64_C(0x7001bdb560)
-#define IDLE_TICK UINT64_C(0x700092b260)
-#define FOLLOW_TICK UINT64_C(0x700092be90)
-#define CHANGE_STATE UINT64_C(0x7000927b80)
-#define MOVE_TARGET UINT64_C(0x700091bbc0)
-#define TRY_ATTACK UINT64_C(0x7000932710)
-#define ADD_TARGET UINT64_C(0x70009411e0)
-#define ANIMATE UINT64_C(0x7000931d90)
+#define BOWWOW_VTABLE GA_COOP_BOWWOW_VTABLE
+#define IDLE_TICK GA_COOP_IDLE_TICK
+#define FOLLOW_TICK GA_COOP_FOLLOW_TICK
+#define CHANGE_STATE GA_COOP_CHANGE_STATE
+#define MOVE_TARGET GA_COOP_MOVE_TARGET
+#define TRY_ATTACK GA_COOP_TRY_ATTACK
+#define ADD_TARGET GA_COOP_ADD_TARGET
+#define ANIMATE GA_COOP_ANIMATE
 
 static _Atomic bool enabled, requested;
 static _Atomic uint64_t host_input;
