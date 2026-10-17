@@ -964,7 +964,9 @@ void backend_present(NvnTexture *t) {
     if (b) b->presented = true;
     @autoreleasepool {
         // Photos read the drawable back; ordinary play keeps Metal's framebuffer-only optimisation.
-        BOOL framebuffer_only = !photo_mode_active() && !getenv("LARECOMP_WINDOW_SHOT");
+        static int window_shot = -1;
+        if (window_shot < 0) window_shot = getenv("LARECOMP_WINDOW_SHOT") != NULL;
+        BOOL framebuffer_only = !photo_mode_active() && !window_shot;
         if (layer.framebufferOnly != framebuffer_only) layer.framebufferOnly = framebuffer_only;
         uint64_t nd0 = SDL_GetTicksNS();
         id<CAMetalDrawable> drawable = [layer nextDrawable];

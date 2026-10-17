@@ -1,3 +1,5 @@
+// Photo-mode frame and crop bookkeeping, independent of the graphics backend. Wait for a whole clean frame
+// before holding it, keep framing inside the source image, and leave the ordinary presentation crop untouched.
 #include "photo.h"
 #include <math.h>
 #include <string.h>
@@ -44,4 +46,27 @@ void photo_state_crop(const PhotoState *s, float crop[4]) {
     crop[0] += (crop[2] - width) * (bounded(s->pan_x, -1, 1) + 1) * 0.5f;
     crop[1] += (crop[3] - height) * (bounded(s->pan_y, -1, 1) + 1) * 0.5f;
     crop[2] = width; crop[3] = height;
+}
+
+void photo_state_pan(PhotoState *s, float dx, float dy) {
+    if (!s->active || !s->frozen || s->zoom <= 1) return;
+    // Dragging the image right moves the source crop left. The available margin shrinks near 1x zoom.
+    float margin = s->zoom - 1;
+    s->pan_x = bounded(s->pan_x - 2 * dx / margin, -1, 1);
+    s->pan_y = bounded(s->pan_y - 2 * dy / margin, -1, 1);
+}
+void photo_state_zoom(PhotoState *s, float steps) {
+    if (!s->active || !s->frozen || !isfinite(steps)) return;
+    s->zoom = bounded(s->zoom * powf(1.15f, bounded(steps, -20, 20)), 1, 4);
+    if (s->zoom == 1) s->pan_x = s->pan_y = 0;
+}
+void photo_state_begin_framing(PhotoState *s) {
+    if (!s->active || !s->frozen || s->framing) return;
+    s->before_zoom = s->zoom; s->before_pan_x = s->pan_x; s->before_pan_y = s->pan_y;
+    s->framing = true;
+}
+void photo_state_end_framing(PhotoState *s, bool accept) {
+    if (!s->framing) return;
+    if (!accept) { s->zoom = s->before_zoom; s->pan_x = s->before_pan_x; s->pan_y = s->before_pan_y; }
+    s->framing = false;
 }

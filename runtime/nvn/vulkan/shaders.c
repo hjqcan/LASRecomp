@@ -230,7 +230,8 @@ VkDescriptorSetLayout vk_set_layout(const VkBindingInfo *b, int n, uint32_t set,
 static const char *builtin_src(const char *name, int *stage) {
     if (!strcmp(name, "present.vert")) {
         *stage = STAGE_VERTEX;
-        // pv[0].x: flip (lower-left origin), pv[1]: uv crop (origin, size). Fullscreen triangle; Vulkan NDC y points down.
+        // pv[0].x: flip (lower-left origin), pv[1]: uv crop (origin, size), pv[2]: exposure multiplier and saturation.
+        // Fullscreen triangle; Vulkan NDC y points down.
         return "#version 450\n"
                "layout(push_constant) uniform P { vec4 a; vec4 crop; vec4 color; } pc;\n"
                "layout(location = 0) out vec2 uv;\n"

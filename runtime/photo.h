@@ -1,3 +1,5 @@
+// Photo-mode state shared by the overlay and both renderers. A complete scene is held at present, then
+// framing crops that retained image; the game simulation is not serialized or paused as a save state.
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -5,8 +7,9 @@
 extern "C" {
 #endif
 typedef struct {
-    bool active, frozen, hide_hud;
+    bool active, frozen, hide_hud, framing;
     float zoom, pan_x, pan_y, exposure, saturation;
+    float before_zoom, before_pan_x, before_pan_y;  // the view restored when controller framing is cancelled
     uint64_t armed, clean_frame;
 } PhotoState;
 void photo_state_reset(PhotoState *s);
@@ -16,6 +19,10 @@ void photo_state_presented(PhotoState *s, uint64_t frame);
 bool photo_state_skip_draw(PhotoState *s, uint64_t frame, bool screen_target, bool composite);
 bool photo_scene_composite(unsigned target_w, unsigned target_h, unsigned source_w, unsigned source_h,
                            bool fullscreen, bool blended, int textures);
+void photo_state_pan(PhotoState *s, float dx, float dy);  // image drag as fractions of the displayed photo
+void photo_state_zoom(PhotoState *s, float steps);
+void photo_state_begin_framing(PhotoState *s);
+void photo_state_end_framing(PhotoState *s, bool accept);
 void photo_state_crop(const PhotoState *s, float crop[4]);
 
 bool photo_mode_active(void);

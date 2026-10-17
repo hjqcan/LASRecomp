@@ -112,6 +112,10 @@ static ImGuiKey key_from_scancode(SDL_Scancode sc) {
     case SDL_SCANCODE_V: return ImGuiKey_V;
     case SDL_SCANCODE_X: return ImGuiKey_X;
     case SDL_SCANCODE_Z: return ImGuiKey_Z;
+    case SDL_SCANCODE_EQUALS: return ImGuiKey_Equal;
+    case SDL_SCANCODE_MINUS: return ImGuiKey_Minus;
+    case SDL_SCANCODE_KP_PLUS: return ImGuiKey_KeypadAdd;
+    case SDL_SCANCODE_KP_MINUS: return ImGuiKey_KeypadSubtract;
     case SDL_SCANCODE_Q: return ImGuiKey_Q;  // previous tab
     case SDL_SCANCODE_E: return ImGuiKey_E;  // next tab
     default: return ImGuiKey_None;
@@ -165,7 +169,7 @@ bool menu_handle_event(const SDL_Event *e) {
     // typing (a text field, the on-screen keyboard, the name entry): keys are text, not menu shortcuts
     bool typing = g_kbd.load() == 1 || (g_open.load() && g_text_busy.load());
     if (!typing && e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat) {
-        if (e->key.scancode == SDL_SCANCODE_F2) { set_open(false); photo_mode_toggle(); return true; }
+        if (e->key.scancode == SDL_SCANCODE_F2 && (photo_mode_available() || photo_mode_active())) { set_open(false); photo_mode_toggle(); return true; }
         if (photo_mode_active()) {
             if (e->key.scancode == SDL_SCANCODE_ESCAPE) { photo_mode_exit(); return true; }
             if (e->key.scancode == SDL_SCANCODE_F12) { photo_mode_capture(); return true; }
@@ -233,6 +237,10 @@ bool menu_handle_event(const SDL_Event *e) {
         case SDL_GAMEPAD_AXIS_LEFTY:
             q.key = ImGuiKey_GamepadLStickUp; q.value = v < -0.3f ? -v : 0; push(q);
             q.key = ImGuiKey_GamepadLStickDown; q.value = v > 0.3f ? v : 0; push(q);
+            break;
+        case SDL_GAMEPAD_AXIS_RIGHTY:
+            q.key = ImGuiKey_GamepadRStickUp; q.value = v < -0.3f ? -v : 0; push(q);
+            q.key = ImGuiKey_GamepadRStickDown; q.value = v > 0.3f ? v : 0; push(q);
             break;
         case SDL_GAMEPAD_AXIS_LEFT_TRIGGER: q.key = ImGuiKey_GamepadL2; q.value = v; push(q); break;
         case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: q.key = ImGuiKey_GamepadR2; q.value = v; push(q); break;
@@ -826,9 +834,9 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     const double tw = target_w, th = target_h;
 #endif
     bool open = g_open.load();
-    bool inv = !open && inventory_overlay_wanted();
-    bool trk = !open && tracker_overlay_wanted();
-    bool chaos = !open && chaos_overlay_wanted();
+    bool inv = !open && !photo_mode_active() && inventory_overlay_wanted();
+    bool trk = !open && !photo_mode_active() && tracker_overlay_wanted();
+    bool chaos = !open && !photo_mode_active() && chaos_overlay_wanted();
     if (photo_mode_suppress_overlay()) {
         pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); return;
     }
