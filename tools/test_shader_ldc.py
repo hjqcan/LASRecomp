@@ -18,7 +18,7 @@ GENERATOR = r'''
 #include <stdlib.h>
 #include "shader.h"
 int main(int argc, char **argv) {
-    if (argc != 4) return 2;
+    if (argc != 4 && argc != 5) return 2;
     uint64_t blob[24] = {0};
     uint64_t *code = blob + 16;
     uint32_t base = (uint32_t)strtoul(argv[1], NULL, 0);
@@ -27,6 +27,7 @@ int main(int argc, char **argv) {
     code[1] = 0x0100000000070002ull | ((uint64_t)base << 20); // MOV32I R2, base
     code[2] = 0xef90006000070202ull | ((uint64_t)offset << 20) |
               ((uint64_t)(count == 2 ? 5 : 4) << 48); // LDC R2, c6[R2 + offset]
+    if (argc == 5) code[2] = (code[2] & ~0xff00ull) | 0xff00ull; // RZ: constant address
     code[3] = 0xeff000000707ff02ull | ((uint64_t)(count - 1) << 47); // ST position, R2
     code[5] = 0xe30000000007000full; // EXIT
     ShaderKey key = {.glsl = 1};
@@ -78,6 +79,11 @@ with tempfile.TemporaryDirectory() as temp:
     subprocess.run(cc + ['-std=gnu11', '-Iruntime/nvn/maxwell', str(generator),
                         'runtime/nvn/maxwell/translate.c', *([] if os.name == 'nt' else ['-lm']), '-o', str(executable)],
                    cwd=ROOT, check=True)
+    for displacement in (-4, -16, -32768):
+        rejected = subprocess.run([str(executable), '0', str(displacement), '1', 'static'], capture_output=True, text=True)
+        assert rejected.returncode == 1 and 'negative static cbuf address' in rejected.stderr
+    constant = subprocess.check_output([str(executable), '0', '16', '1', 'static'], text=True)
+    assert 'cb6[1][0]' in constant
     for index, (base, displacement, count) in enumerate(cases):
         shader = subprocess.check_output([str(executable), str(base), str(displacement), str(count)], text=True)
         body = shader[shader.index('void main()'):].replace('void main()', 'void shader_main()', 1)
