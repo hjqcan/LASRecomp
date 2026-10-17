@@ -1313,6 +1313,31 @@ static void compile_program(void *arg) {
     atomic_store(&p->state, p->vs && p->fs ? 1 : 2);
 }
 
+// Diagnostic replacement for comparing translators on an isolated save. The
+// caller must preserve descriptor bindings and interface locations in the file.
+static void diagnostic_fragment_override(ShaderInfo *info, uint64_t code) {
+    const char *dir = getenv("LARECOMP_SHADER_OVERRIDE_DIR");
+    const char *save = getenv("LARECOMP_SAVE_DIR");
+    if (!dir || !*dir || !save || !*save || !info || !info->msl) return;
+    char path[4096];
+    int n = snprintf(path, sizeof path, "%s/%llx_fs.glsl", dir, (unsigned long long)code);
+    if (n < 0 || (size_t)n >= sizeof path) FATAL("Shader diagnostic path too long\n");
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    if (fseek(f, 0, SEEK_END)) FATAL("Cannot size shader diagnostic file\n");
+    long size = ftell(f);
+    if (size <= 0 || size > 4 * 1024 * 1024 || fseek(f, 0, SEEK_SET))
+        FATAL("Invalid shader diagnostic file\n");
+    char *source = malloc((size_t)size + 1);
+    if (!source || fread(source, 1, (size_t)size, f) != (size_t)size)
+        FATAL("Cannot read shader diagnostic file\n");
+    fclose(f);
+    source[size] = 0;
+    free(info->msl);
+    info->msl = source;
+    LOG("[shader diagnostic] fragment override %llx: %s\n", (unsigned long long)code, path);
+}
+
 static void translate_program(void *arg) {
     Prog *p = arg;
     pthread_mutex_lock(&translate_lock);
@@ -1334,6 +1359,7 @@ static void translate_program(void *arg) {
         atomic_store(&p->state, 2);
         return;
     }
+    diagnostic_fragment_override(p->fi, p->code[1]);
     p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
     save_glsl(p->vi->msl, p->code[0], "vs");
     save_glsl(p->fi->msl, p->code[1], "fs");
