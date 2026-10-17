@@ -1619,15 +1619,16 @@ static void draw(CmdRec *r, bool indexed) {
     Prog *pr = get_program(st.program, &vkey, &fkey);
     if (!pr || !pr->ready) { stat_skipped++; return; }
     {   // mirror mode (runtime/hle/mirror.c): the scene's composite into the window image is drawn mirrored - the
-        // unblended full-screen draw sampling an image the window's size (the window images also serve as scratch
-        // targets earlier in the frame: those draws sample smaller images; the HUD after it blends)
+        // unblended full-screen draw sampling the scene image (the window images also serve as scratch
+        // targets earlier in the frame: those draws sample much smaller images; the HUD after it blends)
         extern bool mirror_draw(bool composite);
+        extern bool mirror_scene_size(uint32_t sw, uint32_t sh, uint32_t w, uint32_t h);
         bool composite = false;
         if (st.rt.ncolor && st.rt.color[0] && renderer_texture_presented(st.rt.color[0]) && !(st.color_state[0] & 1) &&
             r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
             st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height && pr->fi->ntex) {
             NvnTexture *t0 = shader_texture_object(1, &pr->fi->tex[0]);
-            composite = t0 && t0->width == st.rt.color[0]->width && t0->height == st.rt.color[0]->height;
+            composite = t0 && mirror_scene_size(t0->width, t0->height, st.rt.color[0]->width, st.rt.color[0]->height);
         }
         if (photo_mode_active()) {
             bool photo_composite = composite;

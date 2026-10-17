@@ -135,12 +135,29 @@ void vk_device_fault_report(void) {
             (unsigned long long)vend[i].vendorFaultData);
 }
 
+// Each memory heap: its size, the driver's budget for this process (smaller when other programs hold that memory),
+// this process's use and the part LAS Recomp allocated through VMA. Logged at start and when an allocation fails
+// (issue #45: out of device memory on a 6 GB GTX 1060 - our own use, or other programs'?).
+void vk_log_memory(const char *why) {
+    if (!g_vk.vma) return;
+    const VkPhysicalDeviceMemoryProperties *mp;
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(g_vk.vma, b);
+    for (uint32_t i = 0; i < mp->memoryHeapCount; i++)
+        LOG("[vk] memory (%s) heap %u %s: %llu MB, budget %llu MB, in use %llu MB, ours %llu MB in %u allocations\n", why, i,
+            mp->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? "device-local" : "system",
+            (unsigned long long)(mp->memoryHeaps[i].size >> 20), (unsigned long long)(b[i].budget >> 20),
+            (unsigned long long)(b[i].usage >> 20), (unsigned long long)(b[i].statistics.allocationBytes >> 20),
+            b[i].statistics.allocationCount);
+}
+
 static void create_device(void) {
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[8];
+    const char *ext[12];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
@@ -152,6 +169,17 @@ static void create_device(void) {
     bool fault = has_ext(ep, ne, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);  // device-lost diagnostics (vk_device_fault_report)
     if (fault) ext[n_ext++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME;
     g_fault_ext = fault;
+    bool budget = has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);  // (real per-heap budgets: vk_log_memory)
+    if (budget) ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+#ifdef __linux__
+    // the guest heap as driver memory mapped at HEAP_BASE (exec.c backend_guest_heap_prepare)
+    g_vk.dmabuf = has_ext(ep, ne, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
+                  has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+    if (g_vk.dmabuf) {
+        ext[n_ext++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+        ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
+    }
+#endif
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
@@ -204,8 +232,10 @@ static void create_device(void) {
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
-                                 .vulkanApiVersion = VK_API_VERSION_1_3};
+                                 .vulkanApiVersion = VK_API_VERSION_1_3,
+                                 .flags = budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
     VK_CHECK(vmaCreateAllocator(&ai, &g_vk.vma));
+    vk_log_memory("start");
 
     VkSemaphoreTypeCreateInfo st = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
                                     .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
@@ -298,6 +328,9 @@ static void create_swapchain(void) {
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = present_mode(), .clipped = VK_TRUE,
         .oldSwapchain = old};
     VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
+    static const char *const modes[] = {"immediate", "mailbox", "fifo", "fifo-relaxed"};
+    LOG("[vk] swapchain %ux%u, %u images, %s\n", ext.width, ext.height, count,
+        ci.presentMode < 4 ? modes[ci.presentMode] : "other present mode");
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
     if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
     g_vk.sc_format = sf.format;
@@ -316,6 +349,14 @@ static void recreate_swapchain(void) {
     vkDeviceWaitIdle(g_vk.dev);
     create_swapchain();
 }
+
+// Time this thread spends waiting here - for a frame slot's GPU work, a window image, the presentation engine -
+// counts as idle for the frame pacer (exec.c vk_pace_frame), like the game's own waits: in FIFO (exclusive fullscreen
+// on Windows offers no mailbox) acquire / present block until the display's refresh, and counted as busy that made
+// every frame look ~16.6 ms: the game's 30 fps mode outdoors on a fast GPU (issue #44). GPU-bound frames still show
+// in the game's GPU counters.
+extern __thread uint64_t g_blocked_ns;  // kernel.c
+#define WAITING(x) do { uint64_t w0_ = plat_now_ns(); x; g_blocked_ns += plat_now_ns() - w0_; } while (0)
 
 // ================================================================== frames (start screen and game)
 // Acquire semaphores rotate per frame in flight; a slot is reused once the submission that waited on it is done.
@@ -360,11 +401,13 @@ bool vk_frame_begin(const float clear[4]) {
     if (trace) LOG("[vk] frame begin %dx%d (swapchain %ux%u)\n", w, h, g_vk.sc_extent.width, g_vk.sc_extent.height);
     slot = (slot + 1) % FRAMES;
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
-    vk_wait_seq(slot_seq[slot]);
-    VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+    WAITING(vk_wait_seq(slot_seq[slot]));
+    VkResult r;
+    WAITING(r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image));
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
-        r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+        WAITING(r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE,
+                                          &cur_frame.image));
     }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { LOG("[vk] acquire failed: %d\n", r); return false; }
     cur_frame.acquired = acquire_sem[slot];
@@ -433,7 +476,8 @@ void vk_frame_end(const char *shot_path) {
     vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done_sem[img],
                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
-    VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
+    VkResult r;
+    WAITING(r = vkQueuePresentKHR(g_vk.queue, &pi));
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreate_swapchain();
     cur_frame.ok = false;
     if (shot_path) {
@@ -615,6 +659,8 @@ void backend_present(NvnTexture *t) {
         frames = 0;
         last_fps_time = now;
     }
+    static double mem_at = 60.0;  // (memory in steady state: a minute in, then every 10 minutes)
+    if (now >= mem_at) { vk_log_memory("playing"); mem_at = now + 600.0; }
 }
 
 // ================================================================== UI thread

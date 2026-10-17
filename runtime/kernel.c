@@ -313,6 +313,7 @@ static uint32_t block_current(int64_t timeout_ns) {
             break;
         }
         if (!kwait(timeout_ns, &ts)) {
+            if (t->wait_kind == WAIT_NONE) break;  // (woken just as the time ran out: the waker's result stands)
             t->wait_kind = WAIT_NONE;
             t->wait_result = R_TIMEOUT;
             break;
@@ -354,15 +355,11 @@ static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t
     t->wait_mutex = mutex;
     t->wait_tag = tag;
     __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
+    // Timed out / cancelled: returns without the mutex, as Horizon does - nn::os takes it again itself (TimedWait on
+    // 0xEA01 calls the critical section's Enter). Taking it here as well left the thread holding it when Enter ran:
+    // Enter saw its own handle in the lock word and ArbitrateLock waited on itself forever (issue #19's thread dump: a
+    // controller thread's timer-event wait).
     uint32_t r = block_current(timeout);
-    if (r != R_OK) {
-        // timed out / cancelled: still must reacquire the mutex
-        if (!mutex_acquire_or_mark(mutex, tag)) {
-            t->wait_kind = WAIT_MUTEX;
-            t->wait_addr = mutex;
-            block_current(-1);
-        }
-    }
     pthread_mutex_unlock(&g_klock);
     return r;
 }

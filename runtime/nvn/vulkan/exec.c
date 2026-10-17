@@ -10,6 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef __linux__
+#include <errno.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 #include "../../kernel.h"
 #include "shaders.h"
@@ -453,7 +458,9 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
 
 // ================================================================== transient memory ring
 // 64 MB host-visible chunks (device-local when the GPU exposes resizable BAR); a chunk is reused once every
-// submission that allocated from it has completed.
+// submission that allocated from it has completed. Without resizable BAR the device-local host-visible memory is a
+// small window (256 MB on a GTX 1060): once it's full, later chunks go to system memory (issue #45: it stopped the
+// game with "out of device memory").
 #define CHUNK_SIZE (64ull << 20)
 typedef struct { VkBuffer buf; VmaAllocation mem; uint8_t *ptr; uint64_t size, used, seq; } Chunk;
 static Chunk *chunks;
@@ -469,12 +476,49 @@ static int new_chunk(uint64_t size) {
                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO,
                                   .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
-    if (getenv("LARECOMP_VK_RING_SYSMEM")) ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;  // (test: a GPU without resizable BAR)
+    static bool sysmem;  // (the device-local window ran out: system memory from then on)
+    // Without resizable BAR the device-local host-visible window is ~256 MB, shared with other programs and the driver:
+    // two 64 MB chunks took 128 of its 132 MB in use while its budget fell to 81 MB (RTX 3080 Ti), and a GTX 1060 ran
+    // out (issue #45). A chunk goes there only while the window's use stays under half its budget; past that, system
+    // memory (~1 ms more GPU time a frame on a 3080 Ti at 1x). The first chunks, which most frames use, stay fast.
+    // LARECOMP_VK_RING_BAR=1: no budget check.
+    bool spill = false;
+    if (!sysmem && !getenv("LARECOMP_VK_RING_BAR")) {
+        uint32_t type;
+        if (vmaFindMemoryTypeIndexForBufferInfo(g_vk.vma, &bi, &ai, &type) == VK_SUCCESS) {
+            const VkPhysicalDeviceMemoryProperties *mp;
+            vmaGetMemoryProperties(g_vk.vma, &mp);
+            uint32_t heap = mp->memoryTypes[type].heapIndex;
+            VmaBudget bud[VK_MAX_MEMORY_HEAPS];
+            vmaGetHeapBudgets(g_vk.vma, bud);
+            spill = (mp->memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
+                    bud[heap].usage + size > bud[heap].budget / 2;
+            static bool logged;
+            if (spill && !logged) {
+                logged = true;
+                LOG("[vk] transient ring: device-local window %llu of %llu MB budget in use: new chunks in system memory\n",
+                    (unsigned long long)(bud[heap].usage >> 20), (unsigned long long)(bud[heap].budget >> 20));
+            }
+        }
+    }
+    if (sysmem || spill || getenv("LARECOMP_VK_RING_SYSMEM")) ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;  // (test: a GPU without resizable BAR)
     VmaAllocationInfo info;
-    VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &c->buf, &c->mem, &info));
+    VkResult r = vmaCreateBuffer(g_vk.vma, &bi, &ai, &c->buf, &c->mem, &info);
+    bool moved = false;
+    // (a driver may report the full window as out of host memory too; if memory is really gone, the retry fails as well)
+    if ((r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY) && ai.usage != VMA_MEMORY_USAGE_AUTO_PREFER_HOST) {
+        LOG("[vk] transient ring: device-local memory full after %d chunks, system memory from now on\n", nchunks);
+        vk_log_memory("ring chunk failed");
+        sysmem = moved = true;
+        ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+        r = vmaCreateBuffer(g_vk.vma, &bi, &ai, &c->buf, &c->mem, &info);
+    }
+    VK_CHECK(r);
     c->ptr = info.pMappedData;
     c->size = size;
-    if (!nchunks) {  // where the ring lives: device-local (resizable BAR) or system memory read across PCIe
+    static bool spilled;  // (the first chunk in system memory: logged too)
+    if (!nchunks || moved || (spill && !spilled)) {  // where the ring lives: device-local (resizable BAR) or system memory read across PCIe
+        if (spill) spilled = true;
         VkMemoryPropertyFlags f;
         vmaGetMemoryTypeProperties(g_vk.vma, info.memoryType, &f);
         LOG("[vk] transient ring: memory type %u (%s%s%s)\n", info.memoryType, f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? "device-local " : "system memory ",
@@ -923,6 +967,17 @@ static void begin_pass(void) {
         if (eh < minh) minh = eh;
         pass_samples = b->samples;
     }
+    // Bound color slots without a texture / view stay as VK_NULL_HANDLE attachments (legal), but Intel's Windows
+    // driver for UHD 630 (Vulkan 1.3.215) crashes in vkCmdBeginRendering reading near a null pointer on the title
+    // screen's first clear (issues #8, #46). Empty slots at the end are left out (pipelines and clears follow
+    // pass_ncolor); one in the middle, or a pass with no attachment at all, is logged once for the next report.
+    while (pass_ncolor && !ca[pass_ncolor - 1].imageView) pass_ncolor--;
+    static bool logged_hole;
+    for (uint32_t i = 0; i < pass_ncolor && !logged_hole; i++)
+        if (!ca[i].imageView) {
+            logged_hole = true;
+            LOG("[vk] pass with an empty color slot %u of %u (texture %s)\n", i, pass_ncolor, st.rt.color[i] ? "without a view" : "none");
+        }
     pass_depth = pass_stencil = VK_FORMAT_UNDEFINED;
     bool has_d = false, has_s = false;
     if (st.rt.depth) {
@@ -943,11 +998,34 @@ static void begin_pass(void) {
             if (!pass_ncolor) pass_samples = b->samples;
         }
     }
-    if (!w) { pass_sx = pass_sy = 1; minw = minh = 16; }
+    if (!w) {
+        pass_sx = pass_sy = 1; minw = minh = 16;
+        static bool logged_none;
+        if (!logged_none) logged_none = true, LOG("[vk] pass with no attachments (%d color slots bound)\n", st.rt.ncolor);
+    }
     pass_w = minw; pass_h = minh;
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {minw, minh}}, .layerCount = 1,
-                          .colorAttachmentCount = pass_ncolor, .pColorAttachments = ca,
+                          .colorAttachmentCount = pass_ncolor, .pColorAttachments = pass_ncolor ? ca : NULL,
                           .pDepthAttachment = has_d ? &da : NULL, .pStencilAttachment = has_s ? &sa : NULL};
+    // LARECOMP_VK_LOG_PASSES=<n> (default 300 with =1): each of the first n passes before it begins - an Intel crash
+    // inside vkCmdBeginRendering (issues #8, #46) ends the log on the pass the driver choked on
+    static long log_passes = -1;
+    if (log_passes < 0) {
+        log_passes = getenv("LARECOMP_VK_LOG_PASSES") ? atol(getenv("LARECOMP_VK_LOG_PASSES")) : 0;
+        if (log_passes == 1) log_passes = 300;
+    }
+    if (log_passes > 0) {
+        log_passes--;
+        LOG("[vk] pass %ux%u: %u color", minw, minh, pass_ncolor);
+        for (uint32_t i = 0; i < pass_ncolor; i++) LOG(" [%u: fmt %d view %s %s]", i, pass_color[i], ca[i].imageView ? "yes" : "none",
+                                                       ca[i].loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR ? "clear" : "load");
+        if (has_d || has_s)
+            LOG(", depth %s fmt %d, stencil %s fmt %d (same view %s, layout %d, load op %d / %d)", has_d ? "yes" : "no",
+                pass_depth, has_s ? "yes" : "no", pass_stencil, has_d && has_s && da.imageView == sa.imageView ? "yes" : "no",
+                has_d ? da.imageLayout : sa.imageLayout, has_d ? da.loadOp : -1, has_s ? sa.loadOp : -1);
+        else LOG(", no depth / stencil");
+        LOG(", samples %u\n", pass_samples);
+    }
     vkCmdBeginRendering(cb, &ri);
     ss_forget();  // (whatever ran between the passes may have set its own state)
     in_pass = true;
@@ -1941,6 +2019,100 @@ static bool gmem_import(uint64_t size) {
     return true;
 }
 
+// Linux, AMD (RADV): the import above is a userptr buffer, and amdgpu checks every page of a userptr buffer again on
+// each submission - 3.2 GB of heap, ~45 ms of driver time a frame on a ROG Ally X, Steam Deck, Radeon laptops (issues
+// #40, #51). Here the heap is instead allocated by the driver (cached system memory, exported as a dma-buf) and that
+// memory is mapped at HEAP_BASE before the game starts, so the GPU sees an ordinary buffer. Called from boot (main.c)
+// on the main thread before any guest thread exists; a reboot frees it with gmem_buf (vk_exec_reset) and the guest
+// window's reset unmaps it, so the next boot gets fresh zeroed memory. Costs: the whole HEAP_MAX is committed once the
+// GPU first uses it, and Linux write tracking can't watch this mapping (the heap is then re-checked like on Beta 4).
+// Nothing writes the heap before boot (the start screen doesn't use guest memory): the mapping replaces it unseen.
+// Default on for RADV; LARECOMP_VK_HEAP_DMABUF=0 off, =1 on any Linux driver with dma-buf export.
+void backend_guest_heap_prepare(void) {
+#ifdef __linux__
+    if (gmem_buf || !g_vk.dev || !g_vk.dmabuf || getenv("LARECOMP_VK_NO_GMEM")) return;
+    const char *e = getenv("LARECOMP_VK_HEAP_DMABUF");
+    if (e ? !atoi(e) : !strstr(g_vk.props.deviceName, "RADV")) return;
+    const uint64_t size = HEAP_MAX;
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+    const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                       VK_MEMORY_PROPERTY_HOST_CACHED_BIT;  // (cached: the game's CPU work runs in it)
+    int type = -1;
+    for (uint32_t i = 0; i < mp.memoryTypeCount && type < 0; i++)
+        if ((mp.memoryTypes[i].propertyFlags & want) == want && mp.memoryHeaps[mp.memoryTypes[i].heapIndex].size >= size)
+            type = (int)i;
+    if (type < 0) { LOG("[vk] heap as driver memory: no cached host-visible memory type\n"); return; }
+    VkExternalMemoryBufferCreateInfo eb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+                                           .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &eb, .size = size,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT};
+    VkBuffer buf;
+    if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) { LOG("[vk] heap as driver memory: buffer failed\n"); return; }
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(g_vk.dev, buf, &req);
+    if (!(req.memoryTypeBits & (1u << type))) {
+        LOG("[vk] heap as driver memory: memory type %d not allowed for the buffer\n", type);
+        vkDestroyBuffer(g_vk.dev, buf, NULL);
+        return;
+    }
+    VkMemoryDedicatedAllocateInfo ded = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, .buffer = buf};
+    VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, .pNext = &ded,
+                                     .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &ex, .allocationSize = req.size,
+                               .memoryTypeIndex = (uint32_t)type};
+    VkDeviceMemory mem;
+    VkResult r = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
+    if (r != VK_SUCCESS) { LOG("[vk] heap as driver memory: allocation failed (%d)\n", r); vkDestroyBuffer(g_vk.dev, buf, NULL); return; }
+    PFN_vkGetMemoryFdKHR get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryFdKHR");
+    VkMemoryGetFdInfoKHR fi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = mem,
+                               .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    int fd = -1;
+    const char *why = NULL;
+    if (!get_fd || get_fd(g_vk.dev, &fi, &fd) != VK_SUCCESS || fd < 0) why = "no dma-buf for it";
+    // First mapped anywhere, to know the driver lets it be mapped at all: MAP_FIXED unmaps what's at HEAP_BASE before
+    // the driver is asked, so a refusal there would leave the heap unmapped (review of 2c27f3d)
+    if (!why) {
+        void *probe = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (probe == MAP_FAILED) why = strerror(errno);
+        else munmap(probe, size);
+    }
+    if (!why && mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) !=
+                    (void *)(uintptr_t)HEAP_BASE) {
+        why = strerror(errno);
+        // (the old mapping is gone: plain zeroed memory again, registered for write tracking like a reboot's)
+        if (!plat_reset_guest(HEAP_BASE, HEAP_BASE + size)) FATAL("cannot restore the guest heap mapping\n");
+    }
+    if (fd >= 0) close(fd);  // (the mapping keeps the dma-buf)
+    VkResult br = why ? VK_SUCCESS : vkBindBufferMemory(g_vk.dev, buf, mem, 0);
+    if (!why && br != VK_SUCCESS) {
+        why = "binding failed";
+        if (!plat_reset_guest(HEAP_BASE, HEAP_BASE + size)) FATAL("cannot restore the guest heap mapping\n");
+    }
+    if (why) {
+        LOG("[vk] heap as driver memory: mapping at %llx failed (%s): the heap is shared as before\n",
+            (unsigned long long)HEAP_BASE, why);
+        vkDestroyBuffer(g_vk.dev, buf, NULL);
+        vkFreeMemory(g_vk.dev, mem, NULL);
+        return;
+    }
+    // the game expects a zeroed heap; the kernel hands out zeroed pages, but 8 spread pages are checked to be sure
+    static const uint8_t zero_page[4096];
+    for (int i = 0; i < 8; i++)
+        if (memcmp((const void *)(uintptr_t)(HEAP_BASE + size / 8 * i), zero_page, sizeof zero_page)) {
+            LOG("[vk] heap as driver memory: not zeroed, clearing it\n");
+            memset((void *)(uintptr_t)HEAP_BASE, 0, size);
+            break;
+        }
+    gmem_buf = buf;
+    gmem_mem = mem;
+    gmem_size = size;
+    LOG("[vk] guest heap as driver memory (dma-buf, memory type %d): %llu MB at %llx - all of it is held in system memory "
+        "once the GPU first uses it\n", type, (unsigned long long)(size >> 20), (unsigned long long)HEAP_BASE);
+#endif
+}
+
 static uint64_t gmem_tried;  // heap size the import was last attempted for (gmem_info imports / re-imports)
 
 static VkDescriptorBufferInfo gmem_info(void) {
@@ -2567,12 +2739,13 @@ static void draw_(CmdRec *r, bool indexed) {
     g_mirror_w = 0;
     {   // mirror mode (runtime/hle/mirror.c; as renderer.m): the scene's composite into the window image is mirrored
         extern bool mirror_draw(bool composite);
+        extern bool mirror_scene_size(uint32_t sw, uint32_t sh, uint32_t w, uint32_t h);
         bool composite = false;
         if (st.rt.ncolor && st.rt.color[0] && renderer_texture_presented(st.rt.color[0]) && !(st.color_state[0] & 1) &&
             r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
             st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height && pr->fi->ntex) {
             NvnTexture *t0 = shader_texture_object(1, &pr->fi->tex[0]);
-            composite = t0 && t0->width == st.rt.color[0]->width && t0->height == st.rt.color[0]->height;
+            composite = t0 && mirror_scene_size(t0->width, t0->height, st.rt.color[0]->width, st.rt.color[0]->height);
         }
         if (photo_mode_active()) {
             bool photo_composite = composite;

@@ -32,7 +32,10 @@ If the AppImage won't start with a FUSE error, install your distribution's `fuse
 needs `fusermount3`), or run it as `./LAS.Recomp-...-linux-x86_64.AppImage --appimage-extract-and-run`.
 
 ## Building from source
-Ubuntu / Debian packages (other distributions: the same libraries under their names; SDL3 3.2 or newer):
+Ubuntu / Debian packages (other distributions: the same libraries under their names). SDL3 must be 3.4 or newer
+(LAS Recomp loads and saves PNGs through it); where the distribution ships an older one (Debian 13 has 3.2), build SDL3
+3.4 from source first - `tools/linux/build_deps.sh` builds the pinned version the AppImage uses (into
+`build/linux/<arch>/deps`).
 
     sudo apt install clang lld make pkg-config python3-venv libsdl3-dev libavformat-dev libavcodec-dev \
         libavutil-dev libswscale-dev libvulkan-dev libshaderc-dev libvulkan-memory-allocator-dev glslc vulkan-tools

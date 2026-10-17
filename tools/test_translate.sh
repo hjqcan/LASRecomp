@@ -33,9 +33,13 @@ fi
 rm -f "$OUT"/dump/*
 PER=$(( (COUNT + JOBS - 1) / JOBS ))
 i=0
+PIDS=
 while [ $i -lt "$JOBS" ]; do
   "$OUT/test_translate" runtime/nvn/maxwell/translate.c "$PER" $((i * 7919 + ${SEED:-1})) "$MODE" "$OUT/dump" > "$OUT/log_$i.txt" 2>&1 &
+  PIDS="$PIDS $!"
   i=$((i + 1))
 done
-wait
+FAIL=0
+for p in $PIDS; do wait "$p" || FAIL=1; done  # (each job's exit: 1 on an MSL difference, GLSL compile / validation failure)
 cat "$OUT"/log_*.txt
+exit $FAIL

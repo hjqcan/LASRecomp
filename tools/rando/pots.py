@@ -22,6 +22,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 POT_TYPES = {0x1a7: 'ObjDungeonPot', 0xeb: 'ObjHousePot'}
 SKIP_LEVEL_PREFIX = 'Panel'  # Chamber Dungeons (Dampe): rebuilt from the panel files, not real locations
+# levels whose pots Link can't reach: DogHouse is built on MadamHouse's model and carries copies of Madam MeowMeow's 4
+# pots in her half of the house, behind the wall from the dog house's own room (issue #64)
+SKIP_LEVELS = ('DogHouse',)
 
 DUNGEONS = {  # level -> (LAS location prefix, region, spoiler region)
     'Lv02BottleGrotto': ('D2', 'bottle-grotto', 'bottle-grotto'),
@@ -85,7 +88,7 @@ def scan(romfs, leb):
     pots = []
     for f in sorted(glob.glob(os.path.join(romfs, 'region_common', 'level', '*', '*.leb'))):
         level = os.path.basename(os.path.dirname(f))
-        if level.startswith(SKIP_LEVEL_PREFIX):
+        if level.startswith(SKIP_LEVEL_PREFIX) or level in SKIP_LEVELS:
             continue
         room_name = os.path.basename(f)[:-4]
         with open(f, 'rb') as fh:
@@ -209,6 +212,19 @@ def apply(locs, mods, out_dir, romfs, leb, event_tools, oead_tools, item_get, da
     for name, p in locs.items():
         by_room.setdefault((p['level'], p['room']), []).append((name, p))
     spoiler = []
+    level_keys = {}  # level -> every actor key in its rooms (keys must be unique across a level, not just a room)
+
+    def keys_of(level):
+        if level not in level_keys:
+            ks = set()
+            names = {os.path.basename(f) for d in (common_in, common_out)
+                     for f in glob.glob(os.path.join(d, 'level', level, '*.leb'))}
+            for n in names:
+                with open(path(f'level/{level}/{n}'), 'rb') as fh:
+                    ks.update(a.key for a in leb.Room(fh.read()).actors)
+            level_keys[level] = ks
+        return level_keys[level]
+
     for (level, room_name), entries in sorted(by_room.items()):
         rel = f'level/{level}/{room_name}.leb'
         with open(path(rel), 'rb') as fh:
@@ -249,7 +265,14 @@ def apply(locs, mods, out_dir, romfs, leb, event_tools, oead_tools, item_get, da
                 sheet['values'].append({'symbol': f'{flag_prefix}Cut{cut}', 'index': cut})
                 next_flag += 1
             it = copy.deepcopy(pot)
-            it.key = (key_tag << 56) | ((p['n'] & 0xFFFF) << 32) | (pot.key & 0xFFFFFFFF)
+            # the pot's own key under our tag: actor keys are unique per LEVEL, and a key a second room of the level
+            # also uses spawns only once (issue #65: the item of the n-th pot of a room took the key of the n-th pot of
+            # every other room whose pots share the key's low 32 bits - most dungeon pots never had their item)
+            used_keys = keys_of(level)
+            it.key = (key_tag << 56) | (pot.key & 0x00FFFFFFFFFFFFFF)
+            while it.key in used_keys:
+                it.key = (key_tag << 56) | ((it.key + (1 << 32)) & 0x00FFFFFFFFFFFFFF)
+            used_keys.add(it.key)
             it.name = b'SinkingSword-%016X' % it.key
             it.type = 0x194
             it.parameters = [model_path.encode(), model_name.encode(), name.encode(), flag.encode(),
