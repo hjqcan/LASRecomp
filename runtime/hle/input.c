@@ -45,7 +45,7 @@ static int held_key(int sc) { return sc > 0 && sc < SDL_SCANCODE_COUNT && !(coop
 static int second_key(int sc){return keys_down[sc]||test_keys[sc];}
 static void recompute_second(void) {
     int32_t x=0,y=0;bool attack=false;
-    if(coop_active()&&second_focused) {
+    if(coop_active()&&(second_focused||host_test)) {
         x=(second_key(SDL_SCANCODE_KP_6)-second_key(SDL_SCANCODE_KP_4))*32767;
         y=(second_key(SDL_SCANCODE_KP_8)-second_key(SDL_SCANCODE_KP_5))*32767;
         attack=second_key(SDL_SCANCODE_KP_0);

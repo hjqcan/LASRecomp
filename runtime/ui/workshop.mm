@@ -178,6 +178,7 @@ extern "C" void workshop_overlay(float scale) {
     ImGui::SetNextWindowPos(ImVec2(display.x-20*scale,display.y-20*scale),ImGuiCond_Always,ImVec2(1,1));
     ImGui::SetNextWindowBgAlpha(.75f);
     ImGui::Begin("##challenge-status",NULL,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoInputs|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoFocusOnAppearing);
+    if(coop_active())ImGui::TextUnformatted(ui_tr("Local co-op: BowWow is controlled by player 2."));
     ImGui::Text("%s",ui_tr(status_name(state.status))); ImGui::Text("%s: %.1f / %d s",config.name,state.elapsed,config.seconds);
     ImGui::Text("%s: %s",ui_tr("Goal level"),config.goal_level); ImGui::End();
 }

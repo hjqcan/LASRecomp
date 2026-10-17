@@ -20,6 +20,8 @@ static void env(const char *k,const char *v){_putenv_s(k,v);}
 static void env(const char *k,const char *v){setenv(k,v,1);}
 #endif
 static GameVersion version=GAME_100;
+static bool las=true;
+bool title_is_las(void){return las;}
 static const char *save,*seed;
 GameVersion game_version_current(void){return version;}
 const char *workshop_save_dir(void){return save;}
@@ -38,6 +40,7 @@ int main(void){
     assert(coop_boot(why,sizeof why)&&!coop_active()&&!coop_dispatch_override(IDLE_TICK));
     env("LARECOMP_COOP","1");assert(!coop_boot(why,sizeof why)); // no isolated save
     save="isolated-test-save";version=GAME_110;assert(!coop_boot(why,sizeof why));
+    version=GAME_100;las=false;assert(!coop_boot(why,sizeof why));las=true;
     version=GAME_100;seed="seed";assert(!coop_boot(why,sizeof why));seed=NULL;
     // Wrong instructions at a valid mapped address must reject the whole boot.
     void *address=(void *)(uintptr_t)UINT64_C(0x7000900000);

@@ -58,6 +58,11 @@ jobs:
         run: |
           python3 tools/test_game_addresses.py
           python3 tools/test_version_hooks.py
+      - name: Local co-op guards and SDL input isolation
+        run: |
+          python3 tools/test_coop_gate.py
+          PKG_CONFIG_PATH="$HOME/sdl3/lib/pkgconfig:$HOME/sdl3/lib64/pkgconfig" \
+            LD_LIBRARY_PATH="$HOME/sdl3/lib:$HOME/sdl3/lib64" python3 tools/test_coop_input.py
       - name: FP/SIMD lowering vs a CPU emulator (a sample)
         run: |
           python3 -m venv tools/venv && tools/venv/bin/pip install -q unicorn capstone lz4

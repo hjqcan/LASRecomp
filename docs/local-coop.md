@@ -11,6 +11,8 @@ This enhanced-only prototype lets two people share one 1.0.0 vanilla game: playe
 
 启动器选择 **原版 1.0.0 → 挑战工坊 → 本地伙伴合作 → 准备隔离挑战 → 开始游戏**。P1 操作林克；P2 用第二只手柄的左摇杆和下方按键，或小键盘 8/4/5/6 与 0 操作汪汪。每次启动使用独立存档副本，进度保留在对应 `workshop/runs` 文件夹中，不自动写回主存档。
 
+Windows can also start directly with `tools/start_coop.ps1 -Exe ... -Game ... -Library ... -SaveDirectory ... -DataRoot ...`. `SaveDirectory` contains the `save_0` folder; `DataRoot` is a separate writable session folder. The script leaves the source saves intact, strips inherited test drivers from the child process, and writes `runtime.log` when the game closes. The executable's normal dependency DLLs must be available.
+
 BowWow uses native pathfinding/collision and the game's target selection, attack wind-up, dash, hit and recovery states. The attack button requests a bite of an eligible nearby enemy; it is not a free sword swing. Moving too far away triggers a return toward Link. The existing companion restrictions still apply, including rooms that exclude companions. P2 does not have independent hearts, inventory, conversations or progression. Story events requiring another companion, dungeons, water, bosses and a complete playthrough have not been accepted for this prototype. Physical controller testing remains necessary; automated controller checks use SDL virtual gamepads.
 
 ## Implementation boundaries
