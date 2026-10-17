@@ -31,6 +31,7 @@ void photo_mode_toggle(void);
 void photo_mode_exit(void);
 void photo_mode_capture(void);
 void photo_mode_toggle_controls(void);
+bool photo_mode_pad_button(int host, bool down);  // remapped framing actions; true when the photo consumes the event
 void photo_mode_frame(uint64_t frame);
 void photo_mode_presented(uint64_t frame);
 bool photo_mode_hold(void);

@@ -219,12 +219,16 @@ bool menu_handle_event(const SDL_Event *e) {
             if (photo_mode_active()) photo_mode_exit(); else set_open(!g_open.load());
             return true;
         }
+        if (photo_mode_pad_button(e->gbutton.button, down)) return true;
         if (!capturing()) return false;
         ImGuiKey k = key_from_pad(e->gbutton.button);
         if (k != ImGuiKey_None) { QEvent q = {}; q.kind = QEvent::KEY; q.key = k; q.down = down; push(q); }
         return true;
     }
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
+        if ((e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
+            photo_mode_pad_button(e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? PADB_LTRIGGER : PADB_RTRIGGER,
+                                  e->gaxis.value > 16000)) return true;
         if (!capturing()) return false;
         float v = e->gaxis.value / 32767.0f;
         QEvent q = {};

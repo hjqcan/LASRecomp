@@ -94,9 +94,11 @@ jobs:
           update: true
           install: make git
           pacboy: clang:p lld:p binutils:p sdl3:p ffmpeg:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
-            vulkan-memory-allocator:p
+            vulkan-memory-allocator:p python:p
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp.exe
+      - name: Photo state tests
+        run: python tools/test_photo.py
       # (GLSL only: the script's MSL comparison needs a reference commit that isn't in the history any more; REF=HEAD
       # just satisfies it. The GLSL half - every fuzzed translation compiles and validates - is the check)
       - name: Shader translator fuzz (GLSL)

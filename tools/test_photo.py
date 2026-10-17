@@ -53,9 +53,22 @@ with tempfile.TemporaryDirectory() as temporary:
     subprocess.run([str(exe)],check=True)
     ui_exe = root/('photo-ui.exe' if os.name=='nt' else 'photo-ui')
     imgui = ROOT/'third_party/imgui'
+    # Compile the production prompt resolver without texture loading or a renderer.
+    # Its family/style override and role mapping must stay identical to in-game prompts.
+    textures = (ROOT/'runtime/nvn/texpatch.c').read_text(encoding='utf-8')
+    bindings = (ROOT/'runtime/hle/bindings.c').read_text(encoding='utf-8')
+    prompt_source = root/'prompts.c'
+    prompt_source.write_text('#include <stdlib.h>\n#include <string.h>\n'
+                             '#include "input_bind.h"\n#include "input_prompt.h"\n#include "settings.h"\n' +
+                             textures[textures.index('enum { R_A'):textures.index('typedef struct {')] +
+                             textures[textures.index('static int prompt_style('):textures.index('static uint32_t labels_hash(')] +
+                             bindings[bindings.index('const char *bind_pad_label('):bindings.index('const char *bind_key_label(')])
+    prompt_obj = root/'prompts.o'
+    subprocess.run(shlex.split(os.environ.get('CC','clang'))+['-std=c11','-I'+str(ROOT/'runtime'),
+                   '-c',str(prompt_source),'-o',str(prompt_obj)],check=True)
     subprocess.run(shlex.split(os.environ.get('CXX','clang++'))+
                    ['-std=c++17','-x','c++','-I'+str(ROOT/'runtime'),'-I'+str(imgui),
                     str(ROOT/'tools/test_photo_ui.cpp'),str(ROOT/'runtime/photo.c'),
                     *[str(imgui/name) for name in ('imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp')],
-                    '-o',str(ui_exe)],check=True)
+                    '-x','none',str(prompt_obj),'-o',str(ui_exe)],check=True)
     subprocess.run([str(ui_exe),str(root/'photos with spaces & punctuation')],check=True)

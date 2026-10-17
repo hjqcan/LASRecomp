@@ -2,6 +2,8 @@
 // Requests from the event thread are atomic; framing edits, capture paths and helper handles stay here.
 #include "../photo.h"
 #include "../paths.h"
+#include "../input_bind.h"
+#include "../input_prompt.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include <vector>
@@ -22,7 +24,8 @@ uint64_t renderer_present_count(void);
 static PhotoState state;
 static std::atomic<unsigned> requests;
 static std::atomic<bool> active;
-enum { TOGGLE = 1, EXIT = 2, CAPTURE = 4, CONTROLS = 8 };
+static std::atomic<bool> framing;
+enum { TOGGLE = 1, EXIT = 2, CAPTURE = 4, CONTROLS = 8, FRAME_CANCEL = 16, FRAME_TAKE = 32 };
 static bool controls = true, capture_pending, capture_drawing, focus;
 static std::string capture_path, saved_path, message;
 static PlatProc reveal_process;
@@ -39,6 +42,21 @@ extern "C" void photo_mode_toggle(void) { requests.fetch_or(TOGGLE); }
 extern "C" void photo_mode_exit(void) { requests.fetch_or(EXIT); }
 extern "C" void photo_mode_capture(void) { requests.fetch_or(CAPTURE); }
 extern "C" void photo_mode_toggle_controls(void) { requests.fetch_or(CONTROLS); }
+extern "C" bool photo_mode_pad_button(int host, bool down) {
+    // The panel keeps ordinary menu navigation. Once framing, its actions follow the same bindings as the legend.
+    // Track edges on the event thread so the button that enters framing cannot immediately take a photo.
+    static uint32_t held;
+    if (host < 0 || host >= PADB_HOST_COUNT) return false;
+    uint32_t bit = 1u << host;
+    bool pressed = down && !(held & bit);
+    if (down) held |= bit; else held &= ~bit;
+    if (!active.load() || !framing.load()) return false;
+    if (pressed) {
+        if (host == bind_prompt_host(BIND_B)) requests.fetch_or(FRAME_CANCEL);
+        else if (host == bind_prompt_host(BIND_A)) requests.fetch_or(FRAME_TAKE);
+    }
+    return true;
+}
 extern "C" void photo_mode_frame(uint64_t frame) {
     unsigned r = requests.exchange(0);
     if (reveal_process && plat_proc_wait(reveal_process, false) >= 0) reveal_process = 0;
@@ -57,7 +75,7 @@ extern "C" void photo_mode_frame(uint64_t frame) {
     for (auto at : test_shots) if (frame + 1 == at) r |= CAPTURE;
     if (frame + 1 == test_exit) r |= EXIT;
     if ((r & EXIT) || ((r & TOGGLE) && state.active)) {
-        photo_state_reset(&state); active = false; capture_pending = false; capture_drawing = false;
+        photo_state_reset(&state); active = framing = false; capture_pending = false; capture_drawing = false;
         capture_path.clear(); input_reset();
         fprintf(stderr, "[photo] resumed at frame %llu\n", (unsigned long long)frame);
         return;
@@ -65,12 +83,18 @@ extern "C" void photo_mode_frame(uint64_t frame) {
     if ((r & TOGGLE) && !state.active && photo_mode_available()) {
         photo_state_enter(&state, frame); active = true; controls = true; focus = true;
         message.clear(); capture_path.clear(); saved_path.clear(); input_reset();
-        dragging = frame_focus = return_focus = false; framing_fade = 0;
+        dragging = frame_focus = return_focus = false; framing = false; framing_fade = 0;
         static const float test_zoom = [] { const char *p = getenv("LARECOMP_PHOTO_ZOOM"); return p ? (float)atof(p) : 1.0f; }();
         state.zoom = test_zoom;
         fprintf(stderr, "[photo] entered at frame %llu\n", (unsigned long long)frame);
     }
     if (state.active && (r & CAPTURE)) capture_pending = true;
+    if (state.framing && (r & (FRAME_CANCEL | FRAME_TAKE))) {
+        bool take = !(r & FRAME_CANCEL);
+        photo_state_end_framing(&state, take); framing = false;
+        if (take) capture_pending = true;
+        controls = return_focus = true;
+    }
     if (state.active && !state.framing && (r & CONTROLS)) controls = !controls;
 }
 extern "C" void photo_mode_presented(uint64_t frame) {
@@ -168,6 +192,26 @@ static void reveal_photo(void) {
 static float stick(ImGuiKey positive, ImGuiKey negative) {
     return ImGui::GetKeyData(positive)->AnalogValue - ImGui::GetKeyData(negative)->AnalogValue;
 }
+static void button_prompt(int slot, const char *action) {
+    InputPrompt prompt = input_button_prompt(slot);
+    if (prompt.symbol == INPUT_PROMPT_TEXT) ImGui::TextUnformatted(prompt.text);
+    else {
+        float size = ImGui::GetFontSize(), inset = size * 0.15f, thickness = fmaxf(1.5f, size * 0.08f);
+        ImVec2 p = ImGui::GetCursorScreenPos(), a(p.x + inset, p.y + inset), b(p.x + size - inset, p.y + size - inset);
+        ImDrawList *draw = ImGui::GetWindowDrawList();
+        ImU32 color = ImGui::GetColorU32(ImGuiCol_Text);
+        if (prompt.symbol == INPUT_PROMPT_CIRCLE)
+            draw->AddCircle(ImVec2(p.x + size * 0.5f, p.y + size * 0.5f), size * 0.35f, color, 24, thickness);
+        else if (prompt.symbol == INPUT_PROMPT_CROSS) {
+            draw->AddLine(a, b, color, thickness);
+            draw->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, a.y), color, thickness);
+        } else if (prompt.symbol == INPUT_PROMPT_TRIANGLE)
+            draw->AddTriangle(ImVec2(p.x + size * 0.5f, a.y), b, ImVec2(a.x, b.y), color, thickness);
+        else draw->AddRect(a, b, color, 0, 0, thickness);
+        ImGui::Dummy(ImVec2(size, size));
+    }
+    ImGui::SameLine(); ImGui::TextUnformatted(action);
+}
 extern "C" void photo_mode_draw(float scale) {
     if (!state.active || capture_drawing) return;
     auto &io = ImGui::GetIO();
@@ -177,12 +221,6 @@ extern "C" void photo_mode_draw(float scale) {
         photo_state_pan(&state, -stick(ImGuiKey_GamepadLStickRight, ImGuiKey_GamepadLStickLeft) * dt * 0.4f,
                                 -stick(ImGuiKey_GamepadLStickDown, ImGuiKey_GamepadLStickUp) * dt * 0.4f);
         photo_state_zoom(&state, stick(ImGuiKey_GamepadRStickUp, ImGuiKey_GamepadRStickDown) * dt * 4);
-        bool take = ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false);
-        if (take || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
-            photo_state_end_framing(&state, take);
-            if (take) photo_mode_capture();
-            controls = return_focus = true;
-        }
     }
     // This transparent window sits behind the panel. A drag starts only on the photo, so sliders/buttons
     // retain their ordinary input; once started, a drag remains continuous even when it crosses the panel.
@@ -225,7 +263,7 @@ extern "C" void photo_mode_draw(float scale) {
             ImGui::SetKeyboardFocusHere(); ImGui::SetNavCursorVisible(true); focus = return_focus = false;
         }
         if (ImGui::Button("Frame photo") && !was_framing) {
-            photo_state_begin_framing(&state); frame_focus = true;
+            photo_state_begin_framing(&state); framing = true; frame_focus = true;
         }
         ImGui::SameLine(); ImGui::Text("%.2fx", state.zoom);
         if (ImGui::Button("Save photo")) photo_mode_capture();
@@ -260,7 +298,8 @@ extern "C" void photo_mode_draw(float scale) {
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing);
         ImGui::TextColored(ImVec4(.93f,.76f,.33f,1), "Frame photo   %.2fx", state.zoom);
         ImGui::TextUnformatted("Left stick: pan    Right stick: zoom");
-        ImGui::TextUnformatted("B: cancel          A: take photo");
+        button_prompt(BIND_B, "Cancel"); ImGui::SameLine(0, 24 * scale);
+        button_prompt(BIND_A, "Take photo");
         ImGui::End(); ImGui::PopStyleVar();
     }
 }

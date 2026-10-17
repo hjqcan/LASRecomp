@@ -26,6 +26,7 @@
 
 #include "../hle.h"
 #include "../input_bind.h"
+#include "../input_prompt.h"
 #include "../rando.h"
 #include "../settings.h"
 #include "astc.h"
@@ -320,6 +321,27 @@ static int prompt_label(int role) {
     case 14: return L_DRIGHT;
     default: return L_OTHER;
     }
+}
+
+// Host overlays use the same style and remapped role as the texture labels above.
+InputPrompt input_button_prompt(int slot) {
+    static const int roles[BIND_PAD_COUNT] = {
+        R_A, R_B, R_X, R_Y, 0, 0, R_L, R_R, R_ZL, R_ZR, R_PLUS, R_MINUS,
+    };
+    int style = prompt_style();
+    int label = slot >= 0 && slot < BIND_PAD_COUNT && roles[slot] ? prompt_label(roles[slot]) : L_OTHER;
+    if (style == STYLE_PS && label >= R_A && label <= R_Y) {
+        static const int symbols[] = {INPUT_PROMPT_CIRCLE, INPUT_PROMPT_CROSS, INPUT_PROMPT_TRIANGLE, INPUT_PROMPT_SQUARE};
+        return (InputPrompt){symbols[label - R_A], ""};
+    }
+    static const char *const names[3][10] = {
+        {"A", "B", "X", "Y", "L", "R", "ZL", "ZR", "+", "-"},
+        {"B", "A", "Y", "X", "LB", "RB", "LT", "RT", "Menu", "View"},
+        {"", "", "", "", "L1", "R1", "L2", "R2", "Options", "Create"},
+    };
+    const char *text = label >= R_A && label <= R_MINUS ? names[style][label - R_A] :
+                       bind_pad_label(bind_prompt_host(slot), style);
+    return (InputPrompt){INPUT_PROMPT_TEXT, text};
 }
 
 static uint32_t labels_hash(void) {
