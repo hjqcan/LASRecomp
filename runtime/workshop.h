@@ -39,6 +39,7 @@ bool workshop_recording(void);
 void workshop_observe(const RouteSample *sample);
 void workshop_frame(uint64_t frame);
 void workshop_game_tick(uint64_t frame,uint64_t buttons,int lx,int ly,int rx,int ry);
+bool workshop_read_sample(RouteSample *sample,bool position); // guest thread; preserves frame/time/input fields
 int workshop_damage(int base); // -1: no override
 void workshop_mark_assisted(void);
 bool workshop_overlay_wanted(void);

@@ -1066,7 +1066,8 @@ void backend_present(NvnTexture *t) {
         if (win_shot < 0) win_shot = getenv("LARECOMP_WINDOW_SHOT") ? atol(getenv("LARECOMP_WINDOW_SHOT")) : 0;
         id<MTLTexture> shot_tex = nil;
         extern char g_window_shot_request[256];  // test hooks (runtime/hle/hookshot.c): save the next frame here
-        if (photo_path || (win_shot && (long)total_frames + 1 == win_shot) || g_window_shot_request[0]) {
+        extern bool research_exit_ready(void);
+        if (photo_path || (win_shot && (long)total_frames + 1 == win_shot) || g_window_shot_request[0] || research_exit_ready()) {
             MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:drawable.texture.pixelFormat
                                          width:drawable.texture.width height:drawable.texture.height mipmapped:NO];
             td.usage = MTLTextureUsageShaderRead;

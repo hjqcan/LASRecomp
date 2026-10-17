@@ -47,6 +47,7 @@ const char *loader_symbol_at(uint64_t addr, uint64_t *offset);
 typedef void (*HostFn)(Cpu *c);
 void dispatch_init(void);
 GuestFn dispatch_lookup(uint64_t addr);
+GuestFn research_dispatch_override(uint64_t addr); // opt-in, verified LAS callback observations
 uint64_t hle_register(const char *name, HostFn fn);  // returns fake guest address
 HostFn hle_lookup_impl(const char *name);
 void hle_override(uint64_t guest_addr, HostFn fn, const char *name);

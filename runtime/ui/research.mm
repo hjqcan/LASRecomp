@@ -1,5 +1,6 @@
 // Developer-only observations and final HID-input playback. Never enabled for normal play.
 #include "../research.h"
+#include "../research_update.h"
 #include "../gameversion.h"
 #include "../platform.h"
 #include <algorithm>
@@ -21,17 +22,20 @@ namespace fs=std::filesystem;
 namespace {
 struct Row { ResearchInput input{}; RouteSample state{}; uint64_t frame,ns,timers,vsyncs,digest=0; uint32_t interval; bool observed=false; };
 struct Camera { uint64_t frame,ns;std::array<float,48> matrices; };
+struct Phase { ResearchPhaseSample sample;uint64_t ns,digest,polls,timers,vsyncs;int kind;bool before; };
 std::mutex lock;
 std::atomic<bool> enabled;
 std::atomic<uint64_t> timer_calls,period{16666667};
 std::atomic<uint32_t> last_interval;
 std::vector<Row> rows;
 std::vector<Camera> cameras;
+std::vector<Phase> phases;
 std::vector<ResearchInput> replay;
 std::string directory,build_id;
 uint64_t start_ns;
 size_t replay_at;
 bool replaying,truncated,cameras_truncated,replay_exhausted;
+bool phase_capture,phases_truncated;
 thread_local size_t current_row=SIZE_MAX;
 uint64_t digest(const void *data,size_t n) {
     uint64_t h=14695981039346656037ull;const unsigned char *p=(const unsigned char *)data;
@@ -41,6 +45,8 @@ uint64_t digest(const void *data,size_t n) {
 }
 extern "C" volatile uint64_t g_vsync_count;
 extern "C" bool research_active(void) { return enabled.load(std::memory_order_relaxed); }
+extern "C" bool research_phases_active(void) { return research_active()&&phase_capture; }
+extern "C" bool research_exit_ready(void) { return research_active()&&research_update_done()&&getenv("LARECOMP_EXIT_AFTER_SHOT"); }
 extern "C" uint64_t research_vsync_period(void) { return period.load(std::memory_order_relaxed); }
 extern "C" void research_timer(uint32_t interval) {
     if (!research_active()) return;
@@ -48,17 +54,21 @@ extern "C" void research_timer(uint32_t interval) {
 }
 extern "C" bool research_boot(const char *root,const char *save,char *why,size_t cap) {
     const char *record=getenv("LARECOMP_RESEARCH_CAPTURE"),*tape=getenv("LARECOMP_RESEARCH_REPLAY"),*rate=getenv("LARECOMP_RESEARCH_HZ");
-    if (!record&&!tape&&!rate) return true;
+    const char *phase_option=getenv("LARECOMP_RESEARCH_PHASES");
+    if (!record&&!tape&&!rate&&!phase_option&&!research_update_configured()) return true;
     try {
         if ((!record&&!tape)||(record&&tape)||!save||!*save) throw std::runtime_error("Research needs exactly one capture/replay mode and an isolated workshop save.");
         if(record&&strcmp(record,"1"))throw std::runtime_error("Research capture must be explicitly set to 1.");
+        if(phase_option&&strcmp(phase_option,"1"))throw std::runtime_error("Research phases must be explicitly set to 1.");
         char id[41];
         if (!game_build_id((std::string(root)+"/exefs/main").c_str(),id)||game_version_id(id)==GAME_UNSUPPORTED)
             throw std::runtime_error("Research probes support verified LAS executables only.");
+        char update_error[256];
+        if(!research_update_boot(id,tape,update_error,sizeof update_error))throw std::runtime_error(update_error);
         int hz=60;
         if(rate) { if(strcmp(rate,"30")&&strcmp(rate,"60")&&strcmp(rate,"120")) throw std::runtime_error("Research frequency must be 30, 60 or 120 Hz.");hz=atoi(rate); }
         replay.clear();
-        if(tape) {
+        if(tape&&!research_update_active()) {
             replay.resize(RESEARCH_MAX_INPUTS);char error[256];
             int count=research_tape_read(tape,id,replay.data(),replay.size(),error,sizeof error);
             if(count<0) throw std::runtime_error(error);replay.resize(count);
@@ -66,17 +76,20 @@ extern "C" bool research_boot(const char *root,const char *save,char *why,size_t
         auto path=fs::u8path(save).parent_path()/"research";
         if(!fs::create_directory(path)) throw std::runtime_error("Research output directory already exists or is unavailable.");
         directory=path.u8string();build_id=id;replaying=tape!=nullptr;replay_at=0;
+        phase_capture=phase_option!=nullptr||research_update_active();phases_truncated=false;phases.clear();
+        if(phase_capture)phases.reserve(16000);
         truncated=cameras_truncated=replay_exhausted=false;rows.clear();cameras.clear();rows.reserve(16000);cameras.reserve(8000);
         timer_calls=0;last_interval=0;start_ns=plat_now_ns();period=(1000000000ull+hz/2)/hz;enabled=true;
         static bool registered;if(!registered){registered=true;atexit(research_finish);}
-        fprintf(stderr,"[research] %s, %d Hz emulated vsync, isolated output=%s\n",replaying?"HID replay":"HID capture",hz,directory.c_str());
+        fprintf(stderr,"[research] %s %s, %d Hz emulated vsync, isolated output=%s\n",research_update_active()?"update":"HID",replaying?"replay":"capture",hz,directory.c_str());
         return true;
     } catch(const std::exception &e) { if(cap)snprintf(why,cap,"%s",e.what());return false; }
 }
 extern "C" void research_input(uint64_t frame,uint64_t *buttons,int32_t axes[4]) {
     current_row=SIZE_MAX;if(!research_active())return;
     std::lock_guard<std::mutex> guard(lock);if(!research_active())return;
-    if(replaying) {
+    if(research_update_active())research_update_input(buttons,axes);
+    else if(replaying) {
         ResearchInput input{};
         if(replay_at<replay.size())input=replay[replay_at++];else replay_exhausted=true;
         *buttons=input.buttons;memcpy(axes,input.axes,sizeof input.axes);
@@ -93,6 +106,15 @@ extern "C" void research_state(const RouteSample *sample,const void *fields,size
     auto &row=rows[current_row];row.state=*sample;row.observed=true;
     row.digest=fields&&size?digest(fields,size):0;
 }
+extern "C" void research_phase(int phase,bool before,const ResearchPhaseSample *sample,const void *fields,size_t size) {
+    if(!research_phases_active()||phase<0||phase>=RESEARCH_PHASE_COUNT)return;
+    std::lock_guard<std::mutex> guard(lock);if(!research_active())return;
+    uint64_t hash=fields&&size?digest(fields,size):0;
+    uint64_t ns=sample->state.now_ns-start_ns,timers=timer_calls.load(),vsyncs=__atomic_load_n(&g_vsync_count,__ATOMIC_RELAXED);
+    if(phase==RESEARCH_PHASE_UPDATE)research_update_phase(before,sample,hash,ns,timers,vsyncs);
+    if(phases.size()>=120000){phases_truncated=true;return;}
+    phases.push_back({*sample,ns,hash,rows.size(),timers,vsyncs,phase,before});
+}
 extern "C" void research_camera(uint64_t frame,const float *matrices) {
     if(!research_active())return;
     for(int i=0;i<48;++i)if(!std::isfinite(matrices[i]))return;
@@ -108,7 +130,10 @@ extern "C" void research_finish(void) {
     std::lock_guard<std::mutex> guard(lock);
     try {
         auto root=fs::u8path(directory);std::vector<ResearchInput> inputs;inputs.reserve(rows.size());for(const auto &r:rows)inputs.push_back(r.input);
-        char why[256];if(!research_tape_write((root/"inputs.lastape").u8string().c_str(),build_id.c_str(),inputs.data(),inputs.size(),why,sizeof why))throw std::runtime_error(why);
+        char why[256];auto update=research_update_status();
+        if(update.active) {
+            if(!research_update_export(directory.c_str(),build_id.c_str(),why,sizeof why))throw std::runtime_error(why);
+        } else if(!research_tape_write((root/"inputs.lastape").u8string().c_str(),build_id.c_str(),inputs.data(),inputs.size(),why,sizeof why))throw std::runtime_error(why);
         std::ofstream trace(root/"observations.csv",std::ios::binary),camera(root/"camera.csv",std::ios::binary),meta(root/"summary.ini",std::ios::binary);
         for(auto *f:{&trace,&camera,&meta})f->imbue(std::locale::classic());trace<<std::setprecision(9);camera<<std::setprecision(9);
         trace<<"poll,frame,elapsed_ns,timer_calls,interval,vsyncs,observed,playing,level,hp,position,x,y,z,save_digest\n";
@@ -116,9 +141,22 @@ extern "C" void research_finish(void) {
             trace<<i<<','<<r.frame<<','<<r.ns<<','<<r.timers<<','<<r.interval<<','<<r.vsyncs<<','<<r.observed<<','<<s.playing<<','<<s.level<<','<<s.hp<<','<<s.position<<','<<s.x<<','<<s.y<<','<<s.z<<','<<r.digest<<'\n';}
         camera<<"frame,elapsed_ns";for(const auto *prefix:{"v","p","vp"})for(int i=0;i<16;++i)camera<<','<<prefix<<i;camera<<'\n';
         for(const auto &c:cameras){camera<<c.frame<<','<<c.ns;for(float f:c.matrices)camera<<','<<f;camera<<'\n';}
-        meta<<"format=1\nbuild_id="<<build_id<<"\nmode="<<(replaying?"replay":"capture")<<"\nvsync_hz="<<hz
-            <<"\ninputs="<<rows.size()<<"\ncameras="<<cameras.size()<<"\nreplay_inputs="<<replay.size()<<"\nreplay_consumed="<<replay_at
-            <<"\nreplay_eof="<<replay_exhausted<<"\ntruncated="<<truncated<<"\ncameras_truncated="<<cameras_truncated
+        if(phase_capture) {
+            std::ofstream output(root/"phases.csv",std::ios::binary);output.imbue(std::locale::classic());output<<std::setprecision(9);
+            output<<"event,phase,before,thread,frame,elapsed_ns,counter,delta,blocked,object,caller,observed,playing,level,hp,position,x,y,z,save_digest,poll_count,timer_calls,vsyncs\n";
+            for(size_t i=0;i<phases.size();++i){const auto &p=phases[i];const auto &a=p.sample;const auto &s=a.state;
+                output<<i<<','<<p.kind<<','<<p.before<<','<<a.thread<<','<<s.frame<<','<<p.ns<<','<<a.counter<<','<<a.delta<<','<<a.blocked<<','<<a.object<<','<<a.caller
+                      <<','<<a.observed<<','<<s.playing<<','<<s.level<<','<<s.hp<<','<<s.position<<','<<s.x<<','<<s.y<<','<<s.z<<','<<p.digest
+                      <<','<<p.polls<<','<<p.timers<<','<<p.vsyncs<<'\n';}
+            output.close();if(!output)throw std::runtime_error("Phase export could not be completed.");
+        }
+        meta<<"format="<<(update.active?2:1)<<"\nbuild_id="<<build_id<<"\nmode="<<(replaying?"replay":"capture")<<"\nvsync_hz="<<hz
+            <<"\ninputs="<<(update.active?update.inputs:rows.size())<<"\nhid_polls="<<rows.size()<<"\ncameras="<<cameras.size()
+            <<"\nreplay_inputs="<<(update.active?(update.playback?update.source_inputs:0):replay.size())
+            <<"\nreplay_consumed="<<(update.active?(update.playback?update.source_consumed:0):replay_at)
+            <<"\nreplay_eof="<<(update.active?(update.playback&&update.neutral_after_complete>0):replay_exhausted)<<"\ntruncated="<<truncated<<"\ncameras_truncated="<<cameras_truncated
+            <<"\nphase_capture="<<phase_capture<<"\nphase_samples="<<phases.size()<<"\nphases_truncated="<<phases_truncated
+            <<"\ninput_boundary="<<(update.active?"las_update_dispatch_v1":"fullkey_hid_poll")
             <<"\nstate_boundary=fullkey_hid_poll\ndigest=fnv1a64_live_save_5388_55e0\n";
         for(auto *f:{&trace,&camera,&meta}){f->close();if(!*f)throw std::runtime_error("Research export could not be completed.");}
         fprintf(stderr,"[research] saved %zu HID polls, %zu cameras, replay=%zu/%zu\n",rows.size(),cameras.size(),replay_at,replay.size());

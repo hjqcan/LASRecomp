@@ -144,7 +144,8 @@ static GuestFn dispatch_slow(Cpu *c) {
     }
     for (int i = 0; i < override_count; i++)
         if (overrides[i].addr == pc) return overrides[i].fn;
-    GuestFn f = dispatch_lookup(pc);
+    GuestFn f = research_dispatch_override(pc);
+    if (!f) f = dispatch_lookup(pc);
     if (!f) {
         uint64_t off;
         const char *s = loader_symbol_at(c->x[30], &off);

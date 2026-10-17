@@ -41,6 +41,13 @@
 #define GA_RES_NAME_SITE                    UINT64_C(0x70010def30)
 #define GA_MB_SEEN_SITE                     UINT64_C(0x70000ec354)
 #define GA_FRAME_STEPS_SITE                 UINT64_C(0x700000c954)
+// Opt-in research: verified callback entries and the update dispatcher's clock fields.
+#define GA_RESEARCH_UPDATE                  UINT64_C(0x7000017e30)
+#define GA_RESEARCH_INPUT                   UINT64_C(0x7000015d80)
+#define GA_RESEARCH_TASK                    UINT64_C(0x7000015730)
+#define GA_RESEARCH_TIMER                   UINT64_C(0x700000c910)
+#define GA_RESEARCH_STEP_DELTA              UINT64_C(0x7001cc6e88)
+#define GA_RESEARCH_STEP_COUNT              UINT64_C(0x7001cc6e8c)
 #define GA_DIG_HOLE_SITE                    UINT64_C(0x7000ddc5cc)
 #define GA_HOLE_CAP_SITES_0                 UINT64_C(0x7000d22d30)
 #define GA_HOLE_CAP_SITES_1                 UINT64_C(0x7000d22dc0)

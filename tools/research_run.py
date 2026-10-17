@@ -4,6 +4,7 @@ import configparser
 import csv
 import hashlib
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -11,6 +12,9 @@ import shutil
 import stat
 import subprocess
 from game_versions import game_version
+
+SCENARIO_DIRECTIONS = ((1200, 0, -32767, 19), (1250, 32767, 0, 18),
+                       (1300, 0, 32767, 17), (1350, -32767, 0, 16))
 
 
 def sha(path):
@@ -38,6 +42,34 @@ def ini(path):
     return dict(p['data'])
 
 
+def update_driver(path, build_id, count):
+    """A short, bounded opening-house script indexed by update dispatch, not host frames."""
+    rows = []
+    for step in range(count):
+        buttons = 1 if step <= 847 and step % 60 < 8 else 0
+        lx = ly = 0
+        for start, x, y, bit in SCENARIO_DIRECTIONS:
+            if start <= step < start + 25:
+                lx, ly, buttons = x, y, buttons | (1 << bit)
+        rows.append(f'{step},{buttons},{lx},{ly},0,0\n')
+    path.write_text(f'LASINPUT2\nbuild_id={build_id}\nboundary=las_update_dispatch_v1\n'
+                    'update,buttons,lx,ly,rx,ry\n' + ''.join(rows), encoding='utf-8')
+
+
+def scenario_movement(rows):
+    windows = []
+    for (start, _, _, _), name in zip(SCENARIO_DIRECTIONS, ('down', 'right', 'up', 'left')):
+        distances = []
+        for step in range(start, min(start + 25, len(rows))):
+            a, b = rows[step - 1], rows[step]
+            if a['position'] == b['position'] == '1' and a['level'] == b['level']:
+                distances.append(math.hypot(float(b['x']) - float(a['x']), float(b['z']) - float(a['z'])))
+        windows.append({'direction': name, 'start_update': start, 'available_pairs': len(distances),
+                        'changing_samples': sum(x > 1e-6 for x in distances), 'xz_path_length': sum(distances)})
+    return {'windows': windows, 'all_windows_moved': all(w['changing_samples'] >= 5 for w in windows),
+            'note': 'Movement coverage is separate from successful capture and does not certify deterministic replay.'}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--exe', type=Path, required=True)
@@ -48,6 +80,13 @@ def main():
     p.add_argument('--replay', type=Path, help='Previous research_run output directory; fixture identities must match')
     p.add_argument('--hz', type=int, choices=(30, 60, 120), default=60)
     p.add_argument('--present', choices=('mailbox', 'fifo', 'immediate'), default='mailbox', help='Requested Vulkan mode; actual fallback is reported')
+    p.add_argument('--pace', choices=('on', 'off'), default='on', help='Existing Vulkan frame-pacing heuristic')
+    p.add_argument('--phases', action='store_true', help='Observe verified LAS update/input/task/timer callbacks')
+    p.add_argument('--boundary', choices=('hid', 'update'), default='hid')
+    p.add_argument('--updates', type=int, default=2400, help='Exact captured update count in update mode')
+    p.add_argument('--start-level', default='MarinTarinHouse')
+    p.add_argument('--warmup', type=int, default=240, help='Minimum consecutive valid updates at the start gate')
+    p.add_argument('--stable', type=int, default=60, help='Consecutive equal player-position/health observations')
     p.add_argument('--frames', type=int, default=5700)
     args = p.parse_args()
     if not args.save_copy.is_dir():
@@ -61,12 +100,19 @@ def main():
         p.error('Use existing runtime/library/game/save files and a new output directory')
     if not 500 <= args.frames <= 12000 or any(output.is_relative_to(x) for x in (game, save)):
         p.error('Use 500-12000 frames and an output outside the input game/save directories')
+    if (not 1 <= args.updates <= 12000 or not 0 <= args.warmup <= 3600 or not 1 <= args.stable <= 3600 or
+            not re.fullmatch(r'[A-Za-z0-9_]{1,63}', args.start_level)):
+        p.error('Invalid update count or start-gate limits')
     with (game / 'exefs/main').open('rb') as f:
         build_id = f.read(0x60)[0x40:0x54].hex()
     version = game_version(build_id)
     settings = 'language = en-US\nfullscreen = 0\nmenu_tip_seen = 1\naspect_asked = 1\n'
     fingerprint = {'runtime': sha(exe), 'library': sha(library), 'build_id': build_id,
                    'save': tree(save), 'settings': hashlib.sha256(settings.encode()).hexdigest()}
+    if args.boundary == 'update':
+        fingerprint['update_probe'] = {'boundary': 'las_update_dispatch_v1', 'scenario': 'house_v5',
+                                       'updates': args.updates, 'start_level': args.start_level,
+                                       'warmup': args.warmup, 'stable': args.stable}
     tape = None
     if args.replay:
         previous = args.replay.resolve()
@@ -89,13 +135,27 @@ def main():
                LARECOMP_CHALLENGE_PRESET=str(preset), LARECOMP_NO_UPDATE_CHECK='1',
                LARECOMP_RESEARCH_HZ=str(args.hz), LARECOMP_KBD_AUTO='Link', LARECOMP_NO_USER_INPUT='1',
                LARECOMP_VK_PRESENT=args.present,
+               LARECOMP_PACE='1' if args.pace == 'on' else '0',
                LARECOMP_WINDOW_SHOT=str(args.frames), LARECOMP_EXIT_AFTER_SHOT='1',
                LARECOMP_SHOT_PATH=str(output / 'scene.png'))
+    if args.phases:
+        env['LARECOMP_RESEARCH_PHASES'] = '1'
+    if args.boundary == 'update':
+        env.update(LARECOMP_RESEARCH_BOUNDARY='update', LARECOMP_RESEARCH_START_LEVEL=args.start_level,
+                   LARECOMP_RESEARCH_WARMUP=str(args.warmup), LARECOMP_RESEARCH_STABLE=str(args.stable),
+                   LARECOMP_RESEARCH_UPDATES=str(args.updates))
+        # Bootstrap only. The runtime suppresses this input once the selected level appears.
+        env['LARECOMP_INPUT'] = '200:A:8,600:L:12,600:R:12,700:A:8,900:L:12,900:R:12,1000:A:8'
+        if not tape:
+            driver = output / 'scenario.lastape'
+            update_driver(driver, build_id, args.updates)
+            env['LARECOMP_RESEARCH_DRIVER'] = str(driver)
     if tape:
         env['LARECOMP_RESEARCH_REPLAY'] = str(tape)
     else:
         env['LARECOMP_RESEARCH_CAPTURE'] = '1'
-        env['LARECOMP_INPUT'] = ('200:A:8,600:L:12,600:R:12,700:A:8,900:L:12,900:R:12,1000:A:8,'
+        if args.boundary == 'hid':
+            env['LARECOMP_INPUT'] = ('200:A:8,600:L:12,600:R:12,700:A:8,900:L:12,900:R:12,1000:A:8,'
                                 '1300:A:8,1450:DOWN:8,1600:A:8,1900:A:8,2200:A:8,2500:A:8,2800:A:8,'
                                 '3000:A:8,3100:A:8,3200:A:8,3300:STICK_DOWN:180,' +
                                 ','.join(f'{f}:A:8' for f in range(3400, 4400, 100)) +
@@ -112,18 +172,33 @@ def main():
     folders = list(output.glob('workshop/runs/*/research'))
     report = {'exit_code': result.returncode, 'hz_requested': args.hz, 'version': version,
               'present_requested': args.present,
+              'pacing_requested': args.pace, 'phases_requested': args.phases or args.boundary == 'update',
+              'input_boundary': args.boundary,
               'source_unchanged': fingerprint['save'] == tree(save) == tree(output / 'source-save/save_0'),
               'passed': False, 'deterministic_replay': 'not_established'}
     log_text = (output / 'runtime.log').read_text(encoding='utf-8', errors='replace')
+    report['export_completed'] = '[research] saved ' in log_text and '[research] export failed:' not in log_text
     report['present_observed'] = re.findall(r'\[vk\] swapchain [^\n]*, (fifo|mailbox|immediate)', log_text)
     if len(folders) == 1 and (folders[0] / 'summary.ini').is_file():
         report['capture'] = ini(folders[0] / 'summary.ini')
         with (folders[0] / 'observations.csv').open(newline='') as f:
             observations = list(csv.DictReader(f))
         report['gameplay_polls'] = sum(o['playing'] == '1' for o in observations)
-        report['passed'] = (result.returncode == 0 and report['source_unchanged'] and
+        report['passed'] = (result.returncode == 0 and report['source_unchanged'] and report['export_completed'] and
                             report['gameplay_polls'] > 0 and int(report['capture']['cameras']) > 0 and
                             report['capture']['truncated'] == '0' and (output / 'scene.png').is_file())
+        if args.phases or args.boundary == 'update':
+            report['passed'] = (report['passed'] and int(report['capture'].get('phase_samples', 0)) > 0 and
+                                report['capture'].get('phases_truncated') == '0')
+        if args.boundary == 'update':
+            report['updates'] = ini(folders[0] / 'update-summary.ini')
+            update = report['updates']
+            with (folders[0] / 'updates.csv').open(newline='') as stream:
+                report['scenario_movement'] = scenario_movement(list(csv.DictReader(stream)))
+            report['passed'] = (report['passed'] and update['gate_ready'] == update['completed'] == '1' and
+                                update['integrity_error'] == '0' and
+                                int(update['captured_updates']) == int(update['source_consumed']) == args.updates and
+                                (folders[0] / 'inputs.lastape').is_file())
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2), flush=True)
     if not report['passed']:
