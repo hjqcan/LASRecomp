@@ -329,7 +329,12 @@ writing a later level, so these snapshots redirected each read to its sharp base
 image. Snapshots now retain the complete mip/layer chain and each descriptor's
 original view range, format and swizzle. A production-code mock-GPU regression
 checks the LOD result, snapshot refresh, descriptor views, array layers and volume
-depth. Visual sunset verification remains required.
+depth. The old production snapshot fails that regression; the repaired version
+passes. A subsequent isolated 17:30 launch, without shader overrides or disabled
+lighting effects, showed normal matte skin, clothing and foliage on the loaded
+island and in the title scene. The HDR level-four red peak fell from about 54 to
+2.4 while the sharp sun remained in level zero. These captures establish the
+sunset-feedback regression, not full graphics compatibility.
 
 Still required: broader island controls, graphics and audio correctness, day
 rollover, further repeated starts, and an extended gameplay run. Update and DLC compatibility remain
