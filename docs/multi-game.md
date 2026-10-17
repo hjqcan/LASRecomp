@@ -172,3 +172,18 @@ The resulting managed installation boots through the shortcut's stable launch
 arguments. A Unicode data-folder alias also passes the real CLI identity check
 and shell-link creation. These observations are development evidence; ACNH
 remains gated until game saving, reopening and island gameplay pass.
+
+The 2026-10-17 Windows development run passed photo registration, placed all
+three tents, collected the campfire materials and entered the night gathering.
+Before the first save, the Intel Arc Pro 140T Vulkan queue stopped completing
+submissions. The old runtime logged repeated 10-second GPU wait timeouts but
+continued executing; the host was eventually restarted manually after its
+display froze. No save files existed for this test island, so save/reopen
+acceptance remains unproven. The retained log does not establish the initial
+cause of the GPU stall.
+
+GPU submission waits now terminate with a failure status on timeout, before
+callers can recycle in-flight resources. This path bypasses the normal renderer
+shutdown, whose device-idle wait is unbounded. The injected timeout regression
+uses no GPU and verifies that neither caller continuation nor GPU cleanup runs;
+it does not establish that the original driver hang is fixed.

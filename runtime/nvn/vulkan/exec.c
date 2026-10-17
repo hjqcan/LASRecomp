@@ -92,7 +92,17 @@ void vk_wait_seq(uint64_t seq) {
     stat_wait_ns += SDL_GetTicksNS() - t0;
     cum_wait += SDL_GetTicksNS() - t0;
     wait_account(SDL_GetTicksNS() - t0);
-    if (r == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
+    if (r == VK_TIMEOUT) {
+        // Callers recycle command buffers and GPU allocations after this returns.
+        // A timeout is not completion: continuing would reuse in-flight resources
+        // and submit more work to an already unresponsive GPU. Do not enter the
+        // normal exit handler either; its vkDeviceWaitIdle has no time limit.
+        rt_fatal_msg("Vulkan GPU did not finish submission %llu within 10 s; stopping without GPU cleanup\n",
+                     (unsigned long long)seq);
+        fflush(stderr);
+        plat_terminate(1);
+        abort();  // plat_terminate is an OS termination primitive and must not return.
+    }
     else if (r == VK_SUCCESS) cq_resolve_done(seq);  // (the game reads its timing counters after waiting)
     else {
         extern void vk_devlost_dump(void);

@@ -36,6 +36,8 @@ jobs:
       - run: python tools/test_adapter_doctor.py -v
       - run: python tools/test_game_install.py
       - run: python tools/test_exit_status.py
+      - if: runner.os != 'macOS'
+        run: python tools/test_gpu_wait_timeout.py
       - run: python tools/test_title_profile.py
       - run: python tools/test_game_profiles.py
       - run: python tools/test_shader_ldc.py
