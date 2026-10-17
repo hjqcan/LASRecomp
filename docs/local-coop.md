@@ -30,6 +30,7 @@ Asset-free checks:
 ```sh
 python tools/test_coop_gate.py
 python tools/test_coop_input.py
+python tools/test_shader_policy.py
 ```
 
 The input check needs SDL3 development headers/libraries and `pkg-config`, or `SDL_FLAGS` (for example `-lSDL3` in UCRT64). It tests the real input router with two SDL virtual pads, keyboard separation, focus, disconnect and default-off behavior.
@@ -51,3 +52,13 @@ For a manual isolated CLI run, set `LARECOMP_COOP=1` together with a valid `LARE
 The Windows 1.0.0 prototype entered native attack state 2, defeated the test Octorok, and left that enemy alive in the no-attack control. Both source-save hashes remained unchanged. A 4,400-update run observed `MarinTarinHouse → Field → MarinTarinHouse`, with 973 Field position samples, P1 movement in all four Field windows and three companion ownership epochs. The allocator reused the same actor address; the controller successfully revalidated ownership. Maximum sampled partner distance in that route was 5.021 world units. Asset-free guard/reset and SDL two-pad input checks passed.
 
 These are scoped prototype checks. They do not establish full-game compatibility, online synchronization or deterministic replay.
+
+## Shader scheduling regression (2026-10-17)
+
+The shared adapter integration had changed Vulkan's default from asynchronous shader preparation to blocking first-use compilation, including for LAS. This affected solo play as well as co-op. Compilation bursts then consumed the frame's time budget while the whole picture waited.
+
+LAS now retains its upstream asynchronous shader path; other adapters keep synchronous preparation for one-time resource initialization. The default follows the active title when returning to the launcher and switching games. `LARECOMP_SYNC_SHADERS=0` or `1` explicitly overrides either default. The policy regression test executes the production function and covers title switching and both overrides.
+
+Frame-time acceptance compares the same executable, save, input route, 1280×720 FIFO presentation and fresh application shader-cache directories, changing only the shader policy. Check individual render-thread stalls and the rendered house/Field scenes, as well as the source-save hashes. Average FPS alone cannot establish that hitches are fixed. Room-transition loading outside the renderer remains a separate cost, and these scenes do not certify every first-use effect in a full playthrough.
+
+On the Intel Arc Pro 140T test host, the 3,900-update cold-cache comparison recorded two gameplay frames with more than 100 ms in render execution under synchronous preparation (maximum 589 ms), and none under asynchronous preparation. House and Field image checks found no persistent missing geometry, grass, shadows or character rendering in the captured scenes. Both runs preserved the source save. These measurements exclude application startup and retain room transitions; they are not a promise of hitch-free loading or a universal FPS result.

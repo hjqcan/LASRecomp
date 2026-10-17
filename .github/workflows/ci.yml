@@ -60,6 +60,8 @@ jobs:
           build/test-audio-reverb3d
           clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_aux.c -o build/test-audio-aux
           build/test-audio-aux
+      - name: Shader scheduling policy regression
+        run: python3 tools/test_shader_policy.py
       - name: Save commit and enhanced backup integration
         run: python3 tools/test_save_commit.py
       - name: Game address table tests
