@@ -6,6 +6,7 @@
 #include "../workshop.h"
 #include "../rando.h"
 #include "../coop.h"
+#include "../title_profile.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -72,7 +73,7 @@ static bool read_script(void) {
 bool coop_boot(char *why,size_t cap) {
     clear();
     if(!coop_requested())return true;
-    if(!workshop_save_dir()||rando_seed_dir()||game_version_current()!=GAME_100) {
+    if(!title_is_las()||!workshop_save_dir()||rando_seed_dir()||game_version_current()!=GAME_100) {
         snprintf(why,cap,"Local co-op requires vanilla 1.0.0 and an isolated Workshop save.");return false;
     }
     static const struct { uint64_t address;uint32_t words[4]; } guards[]={

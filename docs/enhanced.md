@@ -16,7 +16,7 @@ This is the independently maintained edition in [hjqcan/LASRecomp](https://githu
 | Versions | Build-ID checks, v1.0.0 and v1.1.0 installations, separate saves, libraries and compilation caches |
 | UI | English, Simplified Chinese and Traditional Chinese settings; upstream language/font fixes; CRLF settings and HK/MO/Hant locale handling |
 | Compilation | Cancel/resume, SHA-256 source/object receipts, split compiler/generator identities, safe library publication, Windows per-helper job objects |
-| Saves | Automatic/manual snapshots, 20-snapshot retention, validated launcher restore, separation by installation and randomizer seed |
+| Saves | Atomic file commits including extended flags, automatic/manual snapshots after commit, 20-snapshot retention, validated launcher restore, separation by installation and randomizer seed |
 | Photos | F2 freeze, aspect-ratio crops, composition guides, color presets/contrast/vignette, F12 PNG plus settings recipe, Vulkan and Metal implementations |
 | Resource mods | Local pack import, metadata, version-specific enable lists, shareable version-checked presets, conflict paths, save backup before selection changes |
 | Randomizer | Existing upstream options plus experimental version-specific v1.1.0 generation and validated patches/event adaptation |
@@ -43,10 +43,14 @@ The [fourth research round](research-fourth-round.md) separates startup seed inp
 
 The [Enhanced Beta 5.1 validation record](enhanced-beta5.1-validation.md) lists actual checks and remaining limits, including the save-mount concurrency fix found during release testing.
 
-[Multi-game development](multi-game.md) records the shared-core/adapters direction.
-The importer now uses a title catalog with full module Build-ID checks. ACNH is
-registered for development inspection only; its runtime integration, a game
-library screen and automatic desktop shortcuts are not released features.
+[Multi-game development](multi-game.md) now includes the shared module runtime,
+reviewed per-game adapter definitions, catalog-generated installation selection,
+release-scoped cache identities and Windows desktop shortcuts. Managed setup
+imports and builds a candidate before atomically selecting it; failed builds keep
+the previous installation. ABI 4 requires a one-time game-library rebuild while
+preserving saves and launch IDs. ACNH remains a development adapter with normal
+installation disabled until its gameplay/save acceptance gates pass. These source
+changes do not themselves publish a new prerelease.
 
 ## Windows quick start / Windows 使用说明
 

@@ -31,6 +31,7 @@ extern "C" {
 #include "../mods.h"
 #include "../workshop.h"
 #include "../performance.h"
+#include "../game_profiles.h"
 void input_reset(void);
 extern "C" bool input_second_event(const SDL_Event *);
 void save_editor_draw(float scale);  // save_editor.mm
@@ -84,7 +85,7 @@ static void set_open(bool open) {
     input_reset();  // nothing held while the menu had focus leaks into the game
     bind_capture_cancel();
     if (open) {
-        save_editor_on_open();
+        if (title_is_las()) save_editor_on_open();
         static bool opened;  // the controller's cursor: the first tab (Controls) the first time this session, later the
         menu_tabs_focus(!opened);  // selected one
         opened = true;
@@ -708,7 +709,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     static const int order[] = {8, 0, 1, 6, 7, 10, 11, 12, 13, 3, 5, 4, 2, 9};  // existing IDs stay stable for test hooks
                                                                 // Cheats, Warp, Save Editor, Quit (ids stay: test hooks)
     for (int i : order)  // (Quit: in game only - the start screen has its own QUIT, and an eleventh tab cut names short)
-        if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, in_game || (i != 4 && i != 5)};
+        if (((title_is_las() && (in_game || game_profile_las_extensions(game_profile_active()))) || i == 8 || i == 0 || i == 1 || i == 9 || i == 13) && (i != 9 || !prelaunch)) tabs[ntabs++] = {names[i], i, in_game || (i != 4 && i != 5)};
     int cur = 0;  // g_tab / g_tab_request hold ids
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
     if (!tabs[cur].on) cur = 0;
@@ -839,9 +840,9 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); return;
     }
     bool open = g_open.load();
-    bool inv = !open && inventory_overlay_wanted();
-    bool trk = !open && tracker_overlay_wanted();
-    bool chaos = !open && chaos_overlay_wanted();
+    bool inv = title_is_las() && !open && inventory_overlay_wanted();
+    bool trk = title_is_las() && !open && tracker_overlay_wanted();
+    bool chaos = title_is_las() && !open && chaos_overlay_wanted();
     if (photo_mode_suppress_overlay()) {
         pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); return;
     }

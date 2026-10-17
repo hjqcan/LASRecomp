@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "id": "acnh",
+  "name": "Animal Crossing: New Horizons",
+  "application_id": "01006f8002326000",
+  "order": 10,
+  "generator_profile": "generic",
+  "adapter_revision": 1,
+  "romfs_roots": [
+    "Movie"
+  ],
+  "init_order": [
+    "sdk",
+    "subsdk0",
+    "main"
+  ],
+  "runtime": {
+    "nvn_minor": 312,
+    "heap_scale": 1,
+    "features": []
+  },
+  "requirements": {
+    "module_tables": "4",
+    "gpu.pool_mapping": "full_alias",
+    "services.network": "offline"
+  },
+  "acceptance": [
+    "startup",
+    "controls",
+    "graphics-audio",
+    "save-reopen",
+    "repeated-start",
+    "extended-play"
+  ],
+  "releases": [
+    {
+      "version": "1.0.0",
+      "role": "base",
+      "content_version": 0,
+      "status": "development",
+      "installable": false,
+      "content": {
+        "minimum_files": 66790,
+        "image_satisfies_count": true
+      },
+      "installation": {
+        "directory": "games/acnh/v1.0.0",
+        "save_directory": "save/acnh/v1.0.0",
+        "label": "Animal Crossing: New Horizons 1.0.0",
+        "setting": "acnh/1.0.0",
+        "legacy_enum": "ACNH",
+        "legacy_index": 3
+      },
+      "modules": [
+        {
+          "name": "main",
+          "build_id": "7fc1baff976aeca414520cb89f4616cb00000000000000000000000000000000",
+          "base": "0x7000000000",
+          "hle": false
+        },
+        {
+          "name": "sdk",
+          "build_id": "ad3fdfbd62a5f4b082d385ffe420d4400abb831d000000000000000000000000",
+          "base": "0x7004000000",
+          "hle": true
+        },
+        {
+          "name": "subsdk0",
+          "build_id": "5a7ada8dd7447c10aa244944f64d0aff17c50539000000000000000000000000",
+          "base": "0x7006000000",
+          "hle": false
+        }
+      ]
+    }
+  ]
+}

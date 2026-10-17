@@ -16,6 +16,7 @@
 #include "paths.h"
 #include "platform.h"
 #include "game_profiles.h"
+#include "game_install.h"
 
 static char g_root[1024], g_start[1024], g_exe_dir[1024];
 
@@ -170,9 +171,13 @@ bool rt_remove_game_files(const char *game_dir) {
         fprintf(stderr, "[paths] refusing to delete game files in %s (not a managed installation)\n", game_dir);
         return false;
     }
+    int profile = game_profile_index(game_dir, g_root);
+    char slot[2048], why[512];
+    snprintf(slot, sizeof slot, "%s/%s", g_root, game_profile_install_dir(profile));
+    if (!game_install_clear(slot, why, sizeof why)) { fprintf(stderr, "[paths] %s\n", why); return false; }
     bool ok = true;
-    for (size_t i = 0; i < sizeof GAME_FILES / sizeof *GAME_FILES; i++) ok &= rt_remove_game_file(game_dir, GAME_FILES[i]);
-    rmdir(game_dir);  // only if empty: anything else in there stays
+    for (size_t i = 0; i < sizeof GAME_FILES / sizeof *GAME_FILES; i++) ok &= rt_remove_game_file(slot, GAME_FILES[i]);
+    rmdir(slot);  // only if empty: anything else in there stays
     return ok;
 }
 
@@ -198,6 +203,14 @@ static unsigned long long tree_size(const char *p) {
 unsigned long long rt_game_files_size(const char *game_dir) {
     unsigned long long n = 0;
     char p[1100];
+    int profile = game_profile_index(game_dir, g_root);
+    char slot[2048];
+    if (profile >= 0) {
+        snprintf(slot, sizeof slot, "%s/%s", g_root, game_profile_install_dir(profile));
+        game_dir = slot;
+        snprintf(p, sizeof p, "%s/.installations", game_dir);
+        n += tree_size(p);
+    }
     for (size_t i = 0; i < sizeof GAME_FILES / sizeof *GAME_FILES; i++) {
         snprintf(p, sizeof p, "%s" SEP "%s", game_dir, GAME_FILES[i]);
         n += tree_size(p);

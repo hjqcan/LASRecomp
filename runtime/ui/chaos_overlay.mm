@@ -27,7 +27,7 @@ bool doorjump_chaos_seen(int id);
 bool doorjump_chaos_twoway(int id);
 }
 
-#define PLAYER_STATUS_PTR (GA_PLAYER_STATUS_PTR)  // PlayerStatus*: current level name at +0
+// GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
 #define DUNGEON_RECORDS (GA_LIVE_SAVE + 0xE0)  // live save: 0x10-byte records (+1 bit 1 = Map)
 
 static volatile uint64_t g_dm_frame, g_dm_obj;
@@ -42,7 +42,7 @@ extern "C" void rt_dgnmap_tick(Cpu *c) {
 extern "C" uint64_t chaos_dgnmap_obj(void) { return g_dm_obj; }  // (LARECOMP_PANE_SCAN)
 
 static const char *current_level(void) {
-    uint64_t ps = LD64(PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     return ps ? (const char *)(uintptr_t)ps : "";
 }
 

@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+from game_catalog import get_game
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,10 +48,16 @@ import pathlib,sys,time
 name,source,base,out=sys.argv[1:5]
 out=pathlib.Path(out);out.mkdir(parents=True,exist_ok=True)
 for i in range(3):
-    (out/f'{name}_{i:03}.c').write_text(f'int {name}_{i:03}(void) {{ return {i}; }}\n')
+    (out/f'{name}_{i:03}.c').write_text(f'#include "cpu.h"\nvoid {name}_{i:03}(Cpu *c) {{ c->x[0] = {i}; }}\n')
     print(f'{name}: progress {i+1}/3 files {i+1}',file=sys.stderr,flush=True)
     time.sleep(.03)
-(out/f'{name}_table.c').write_text(f'int {name}_table(void) {{ return 3; }}\n')
+build_id=pathlib.Path(source).read_bytes()[0x40:0x60].hex()
+text='#include "cpu.h"\n'
+text+=''.join(f'extern void {name}_{i:03}(Cpu *c);\n' for i in range(3))
+text+=f'const uint64_t {name}_fn_addrs[] = {{'+','.join(hex(int(base,0)+i*4) for i in range(3))+'};\n'
+text+=f'const GuestFn {name}_fn_ptrs[] = {{'+','.join(f'{name}_{i:03}' for i in range(3))+'};\n'
+text+=f'const uint64_t {name}_fn_count = 3;\nconst char {name}_build_id_full[] = "{build_id}";\n'
+(out/f'{name}_table.c').write_text(text)
 '''
 
 with tempfile.TemporaryDirectory() as temporary:
@@ -61,12 +68,13 @@ with tempfile.TemporaryDirectory() as temporary:
     (resources/'build').mkdir()
     (game/'exefs').mkdir(parents=True)
     for name in ('cpu.h','simd.h','simd_fp.h','gamelib.h'):
-        (resources/'runtime'/name).write_text('/* fixture header */\n')
-    (resources/'tools/gamelib_entry.c').write_text('int cache_entry(void) { return 0; }\n')
+        shutil.copy2(ROOT/'runtime'/name, resources/'runtime'/name)
+    shutil.copy2(ROOT/'tools/gamelib_entry.c', resources/'tools/gamelib_entry.c')
     (resources/'runtime/hle/hle_symbols.txt').write_text('fixture\n')
     main = bytearray(0x60); main[:4] = b'NSO0'; main[0x40:0x54] = bytes.fromhex('ae16f71e002af8cb059a9a74c4d90f34ba984892')
     (game/'exefs/main').write_bytes(main)
-    (game/'exefs/sdk').write_bytes(b'fixture sdk')
+    sdk=bytearray(0x60);sdk[:4]=b'NSO0';sdk[0x40:0x60]=bytes.fromhex(get_game().releases[0].modules[1].build_id)
+    (game/'exefs/sdk').write_bytes(sdk)
     generator = tmp/'generator.py'; generator.write_text(GENERATOR)
     cc = shlex.split(os.environ.get('CC','clang'))
     cxx = shlex.split(os.environ.get('CXX','clang++'))
@@ -79,7 +87,7 @@ with tempfile.TemporaryDirectory() as temporary:
         subprocess.run(cc+[str(stub),'-shared','-Wl,--out-implib,'+str(resources/'build/lasrecomp.dll.a'),
                            '-o',str(tmp/'stub.dll')],check=True)
     objects=[]
-    for source in ('runtime/gamebuild.c','runtime/gameversion.c'):
+    for source in ('runtime/gamebuild.c','runtime/gameversion.c','runtime/title_profile.c','runtime/gamelib.c'):
         obj=tmp/(Path(source).stem+'.o'); objects.append(str(obj))
         subprocess.run(cc+['-std=gnu11','-fPIC','-Iruntime','-DGAMELIB_ID="cache-fixture"',
                            '-DGAMELIB_CFLAGS="-O0 -fPIC"','-DGAMELIB_SHARED="-shared"',
@@ -87,7 +95,7 @@ with tempfile.TemporaryDirectory() as temporary:
     bridge=tmp/'bridge.cpp'; bridge.write_text(BRIDGE)
     libfile=tmp/('scheduler.dll' if os.name=='nt' else 'scheduler.so')
     subprocess.run(cxx+['-shared','-fPIC','-pthread','-std=c++17','-Iruntime','-x','c++',str(bridge),
-                        'runtime/ui/build_cache.mm','-x','none',*objects,'-o',str(libfile)]+
+                        'runtime/ui/build_cache.mm','runtime/ui/game_install.mm','-x','none',*objects,'-o',str(libfile)]+
                    (['-Wl,--export-all-symbols'] if os.name=='nt' else []),cwd=ROOT,check=True)
     dll_search = os.add_dll_directory(str(Path(compiler).parent)) if os.name == 'nt' else None
     library=ct.CDLL(str(libfile))
@@ -142,6 +150,22 @@ with tempfile.TemporaryDirectory() as temporary:
     library.gamebuild_run.argtypes=[ct.c_char_p,ct.POINTER(Options),ct.c_void_p,ct.c_size_t]
     library.gamebuild_run.restype=ct.c_bool
     why=ct.create_string_buffer(1024)
+    library.gamelib_verify.argtypes=[ct.c_char_p,ct.c_void_p,ct.c_size_t]
+    library.gamelib_verify.restype=ct.c_bool
+    library.game_install_begin.argtypes=[ct.c_char_p,ct.c_bool,ct.c_void_p,ct.c_size_t]
+    library.game_install_begin.restype=ct.c_void_p
+    library.game_install_candidate.argtypes=[ct.c_void_p]
+    library.game_install_candidate.restype=ct.c_char_p
+    library.game_install_clone.argtypes=[ct.c_void_p,ct.c_char_p,ct.c_void_p,ct.c_size_t]
+    library.game_install_clone.restype=ct.c_bool
+    VALIDATE=ct.CFUNCTYPE(ct.c_bool,ct.c_char_p,ct.c_void_p,ct.c_size_t)
+    library.game_install_publish.argtypes=[ct.c_void_p,ct.c_char_p,VALIDATE,ct.c_void_p,ct.c_size_t]
+    library.game_install_publish.restype=ct.c_bool
+    library.game_install_close.argtypes=[ct.c_void_p]
+    library.game_install_resolve.argtypes=[ct.c_char_p,ct.c_void_p,ct.c_size_t,ct.c_void_p,ct.c_size_t]
+    library.game_install_resolve.restype=ct.c_bool
+    @VALIDATE
+    def verify(path, error, cap): return library.gamelib_verify(path,error,cap)
     def run():
         launched.clear();why.value=b''
         return library.gamebuild_run(str(game).encode(),ct.byref(options),why,len(why))
@@ -154,6 +178,12 @@ with tempfile.TemporaryDirectory() as temporary:
         assert run(),why.value
         assert not generators() and len(compiles())==10-saved
         output=next(p for p in game.glob('lasgame.*') if p.suffix!='.id')
+        assert library.gamelib_verify(str(game).encode(),why,len(why)),why.value
+        receipt=output.with_name(output.name+'.id')
+        original_id=receipt.read_bytes()
+        receipt.write_bytes(original_id.replace(get_game().releases[0].main_build_id.encode(),b'00'*32))
+        assert not library.gamelib_verify(str(game).encode(),why,len(why))
+        receipt.write_bytes(original_id)
         before=hashlib.sha256(output.read_bytes()).digest()
         (work/'main_000.o').write_bytes(b'corrupt')
         assert run(),why.value
@@ -174,10 +204,50 @@ with tempfile.TemporaryDirectory() as temporary:
         (game/'exefs/main').write_bytes(main+b'changed input')
         assert run(),why.value
         assert len(generators())==2 and len(compiles())==1
-        (resources/'runtime/cpu.h').write_text('/* changed header */\n')
+        (resources/'runtime/cpu.h').write_text((resources/'runtime/cpu.h').read_text()+'\n/* changed header */\n')
         assert run(),why.value
         assert len(generators())==2 and len(compiles())==9
-        print('Build scheduler: cancellation/resume, one-object repair, source repair, failed compile/link preservation and input invalidation passed')
+        las_output=output
+        las_hash=hashlib.sha256(las_output.read_bytes()).digest()
+        game=tmp/'acnh'; (game/'exefs').mkdir(parents=True)
+        for module in get_game('acnh').releases[0].modules:
+            header=bytearray(0x60);header[:4]=b'NSO0';header[0x40:0x60]=bytes.fromhex(module.build_id)
+            (game/'exefs'/module.name).write_bytes(header)
+        work=game/'.gamebuild'
+        assert run(),why.value
+        assert len(generators())==3 and len(compiles())==13
+        assert all(a[a.index('--profile')+1]=='generic' for a in generators())
+        assert (work/'subsdk0_table.o').exists()
+        assert run() and len(compiles())==1 and not generators(),why.value
+        output=next(p for p in game.glob('lasgame.*') if p.suffix!='.id')
+        acnh_hash=hashlib.sha256(output.read_bytes()).digest()
+        sdk=bytearray((game/'exefs/sdk').read_bytes());sdk[-1]=1;(game/'exefs/sdk').write_bytes(sdk)
+        assert not run() and b'sdk' in why.value and not launched
+        assert hashlib.sha256(output.read_bytes()).digest()==acnh_hash
+        assert hashlib.sha256(las_output.read_bytes()).digest()==las_hash
+        # The real builder, real library validator and real installation publisher share one candidate.
+        sdk[-1]=0;(game/'exefs/sdk').write_bytes(sdk)
+        slot=game
+        transaction=library.game_install_begin(str(slot).encode(),True,why,len(why));assert transaction,why.value
+        try:
+            assert library.game_install_clone(transaction,str(slot).encode(),why,len(why)),why.value
+            game=Path(library.game_install_candidate(transaction).decode());work=game/'.gamebuild'
+            fail_link=True
+            assert not run()
+            resolved=ct.create_string_buffer(4096)
+            assert library.game_install_resolve(str(slot).encode(),resolved,len(resolved),why,len(why))
+            assert Path(resolved.value.decode())==slot
+            assert hashlib.sha256(output.read_bytes()).digest()==acnh_hash
+            assert library.gamelib_verify(str(slot).encode(),why,len(why)),why.value
+            assert run(),why.value
+            assert library.game_install_publish(transaction,b'acnh/1.0.0',verify,why,len(why)),why.value
+            assert library.game_install_resolve(str(slot).encode(),resolved,len(resolved),why,len(why))
+            assert Path(resolved.value.decode())==game
+            assert library.gamelib_verify(str(game).encode(),why,len(why)),why.value
+            assert hashlib.sha256(output.read_bytes()).digest()==acnh_hash
+        finally:
+            library.game_install_close(transaction)
+        print('Build scheduler and installation: cancel/resume, input isolation, real library verification, failed rebuild preservation and candidate publication passed')
     finally:
         for pid in list(processes): kill(pid)
         if os.name=='nt':

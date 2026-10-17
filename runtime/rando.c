@@ -7,6 +7,7 @@
 // Code patches: gen.py compiled every variant of every patched instruction in (tools/rando/patch_variants.json);
 // rando_word() tells the generated code which one the seed uses (0 = the original instruction).
 #include "rando.h"
+#include "game_addresses.h"
 
 #include <dirent.h>
 #include <pthread.h>
@@ -61,6 +62,7 @@ static bool load_pchtxt(const char *path) {
 }
 
 static bool init(void) {
+    if (!title_is_las()) return true;
     settings_load();
     const char *seed = getenv("LARECOMP_RANDO_SEED") ? getenv("LARECOMP_RANDO_SEED") : g_settings.rando_seed;
     if (!seed || !seed[0]) return true;

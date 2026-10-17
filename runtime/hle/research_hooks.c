@@ -24,7 +24,7 @@ static bool heap_read(void *context,uint64_t address,void *out,size_t size) {
 }
 void research_read_actors(ResearchActorSnapshot *out) {
     memset(out,0,sizeof *out);out->issue=RESEARCH_ACTORS_UNREADABLE;
-    if(!research_semantics_active())return;
+    if(!title_is_las()||!research_semantics_active())return;
     extern uint64_t kernel_heap_size(void);
     uint64_t size=kernel_heap_size();if(!size||size>HEAP_MAX)return;
     uint64_t limit=HEAP_BASE+size;
@@ -65,7 +65,7 @@ static void timer(Cpu *c){invoke(c,RESEARCH_PHASE_TIMER);}
 static const GuestFn wrappers[RESEARCH_PHASE_COUNT]={update,input,task,timer};
 
 bool research_hooks_init(char *why,size_t cap) {
-    if(!research_phases_active())return true;
+    if(!title_is_las()||!research_phases_active())return true;
     if(research_semantics_active()) {
         static const uint32_t initial[4]={123456789,362436069,521288629,88675123};
         if(!research_rng_site_matches((const void *)(uintptr_t)game_main_address(GA_RESEARCH_RNG_PROBE),40)||
@@ -94,7 +94,7 @@ bool research_hooks_init(char *why,size_t cap) {
     return true;
 }
 GuestFn research_dispatch_override(uint64_t addr) {
-    if(!research_phases_active())return NULL;
+    if(!title_is_las()||!research_phases_active())return NULL;
     if(research_semantics_active()&&addr==GA_RESEARCH_TIME_ENTRY)return observe_time;
     uint64_t canonical=game_canonical_address(addr);
     for(int i=0;i<RESEARCH_PHASE_COUNT;++i)if(canonical==sites[i])return wrappers[i];

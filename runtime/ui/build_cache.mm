@@ -107,8 +107,12 @@ bool valid_stem(const std::string &s) {
     return !s.empty() && s.size() < 64 &&
            s.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") == std::string::npos;
 }
+bool valid_module(const char *name) {
+    return !strcmp(name,"main") || !strcmp(name,"sdk") || !strcmp(name,"rtld") ||
+           (strlen(name)==7 && !strncmp(name,"subsdk",6) && name[6]>='0' && name[6]<='9');
+}
 std::string generation(BuildCache *c, const char *module, int chunks) {
-    need((!strcmp(module, "main") || !strcmp(module, "sdk")) && chunks > 0 && chunks <= 10000,
+    need(valid_module(module) && chunks > 0 && chunks <= 10000,
          "Invalid generated module.");
     std::ostringstream out;
     out << "LASGEN1\n" << chunks << '\n';
@@ -215,8 +219,11 @@ extern "C" bool build_cache_prepare_generation(BuildCache *c, const char *spec, 
         std::string identity = "LASGENKEY1\n" + key.finish() + "\n";
         auto record = c->root / "generation-identity";
         if (!fs::exists(record) || read(record, 128) != identity) {
-            for (const char *name : {"main.generation", "sdk.generation", "main", "sdk"})
-                fs::remove_all(c->root / name);
+            for (const auto &entry : fs::directory_iterator(c->root)) {
+                auto name=entry.path().filename().u8string();
+                if (entry.path().extension()==".generation") name=entry.path().stem().u8string();
+                if (valid_module(name.c_str())) { plain(entry.path()); fs::remove_all(entry.path()); }
+            }
             write(record, identity);
         }
         return true;
@@ -230,7 +237,7 @@ extern "C" void build_cache_close(BuildCache *c) {
 }
 extern "C" bool build_cache_generation(BuildCache *c, const char *module, int *chunks) {
     try {
-        need(!strcmp(module, "main") || !strcmp(module, "sdk"), "Invalid module name.");
+        need(valid_module(module), "Invalid module name.");
         auto record = read(c->root / (std::string(module) + ".generation"));
         std::istringstream in(record);
         std::string magic;
@@ -287,7 +294,7 @@ extern "C" bool build_cache_save_object(BuildCache *c, const char *stem, const c
     }
 }
 extern "C" bool build_cache_publish(BuildCache *c, const char *name, const char *runtime_id, const char *main_id,
-                                    char *why, size_t cap) {
+                                    const char *adapter_id, char *why, size_t cap) {
     try {
         need(library_name(name), "Invalid game library filename.");
         auto lib = c->root.parent_path() / name, id = lib;
@@ -297,7 +304,7 @@ extern "C" bool build_cache_publish(BuildCache *c, const char *name, const char 
         auto tmp = c->root / (std::string(name) + ".tmp");
         need(fs::file_size(tmp) > 0, "The linker did not produce a game library.");
         plain(tmp);
-        write(c->root / "next-id", std::string(runtime_id) + "\n" + main_id + "\n");
+        write(c->root / "next-id", std::string(runtime_id) + "\n" + main_id + "\n" + adapter_id + "\n");
         bool had_lib = fs::exists(lib), had_id = fs::exists(id);
         if (had_lib)
             fs::copy_file(lib, c->root / "previous-library", fs::copy_options::overwrite_existing);

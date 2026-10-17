@@ -221,7 +221,7 @@ class NspTests(unittest.TestCase):
 
     def test_wrong_game_wrong_version_and_wrong_role(self):
         path = self.root / 'base.nsp'
-        for kwargs, message in (({'title': APP + 0x10000}, 'not Link'), ({'version': 999}, 'Unsupported content')):
+        for kwargs, message in (({'title': APP + 0x10000}, 'No supported game adapter'), ({'version': 999}, 'Unsupported content')):
             path.write_bytes(package(**kwargs))
             with self.assertRaisesRegex(ValueError, message):
                 inspect_package(path, self.keys)

@@ -3,7 +3,8 @@
 // movie:: (nnMedia) implemented with FFmpeg: an Android MediaExtractor/MediaCodec-style API.
 // The game owns the objects (vtable at +0); we keep host state at +8.
 //
-// Extractor slots: 4 GetTrackCount(int*), 5 GetTrackConfiguration(int, MediaData*), 6 SelectTrack(int),
+// Extractor slots: 2 SetDataSource(const char*), 4 GetTrackCount(int*),
+//   5 GetTrackConfiguration(int, MediaData*), 6 SelectTrack(int),
 //   9 GetSampleTrackIndex(size_t*), 10 Read(Buffer*), 11 Advance(), 12 GetSampleTime(int64*),
 //   15 SetDataSource(DataSource*, const char* path).
 // Decoder slots: 2 Configure(MediaData*), 3 RegisterClientEvents(EventType*[4]), 4 GetOutputFormat(MediaData*),
@@ -89,15 +90,41 @@ HLE_FUNC("_ZNK5movie9MediaData10FindStringEPKcPS2_", md_find_string) {
     c->x[0] = 0;
 }
 
-// ------------------------------------------------------------------ Buffer (opaque, <= 0x40 bytes)
+// The ACNH multimedia API also queries the decoder's visible rectangle. Host
+// frames are emitted uncropped, so their inclusive rectangle is the full frame.
+HLE_FUNC("_ZNK5movie9MediaData8FindRectEPKcPiS3_S3_S3_", md_find_rect) {
+    MediaData *m = md(c->x[0]);
+    const char *k = (const char *)(uintptr_t)c->x[1];
+    int32_t width = 0, height = 0;
+    if (k && !strcmp(k, "crop")) {
+        for (int i = 0; i < m->n; i++) {
+            if (!strcmp(m->e[i].key, "width")) width = (int32_t)m->e[i].ival;
+            if (!strcmp(m->e[i].key, "height")) height = (int32_t)m->e[i].ival;
+        }
+    }
+    if (width <= 0 || height <= 0) { c->x[0] = 0; return; }
+    *(int32_t *)(uintptr_t)c->x[2] = 0;
+    *(int32_t *)(uintptr_t)c->x[3] = 0;
+    *(int32_t *)(uintptr_t)c->x[4] = width - 1;
+    *(int32_t *)(uintptr_t)c->x[5] = height - 1;
+    c->x[0] = 1;
+}
+
+// ------------------------------------------------------------------ Buffer (0x40-byte public ABI)
+// Some callers inline Base/Data/Size instead of calling exported methods. Keep
+// these offsets identical for both supported multimedia SDKs.
 typedef struct {
-    uint64_t base, capacity;
     int32_t offset, size;
-    int64_t i64;
-    uint32_t u32;
     int32_t i32;
+    uint32_t u32;
+    uint8_t owned, reserved[7];
+    uint64_t capacity;
+    int64_t i64;
+    uint64_t base, nvn_device, nvn_sync;
 } MBuffer;
-_Static_assert(sizeof(MBuffer) <= 0x40, "movie::Buffer size");
+_Static_assert(sizeof(MBuffer) == 0x40, "movie::Buffer size");
+_Static_assert(offsetof(MBuffer, capacity) == 0x18 && offsetof(MBuffer, base) == 0x28,
+               "movie::Buffer inline accessors");
 #define BUF(x) ((MBuffer *)(uintptr_t)(x))
 
 HLE_FUNC("_ZN5movie6BufferC1Ev", buf_ctor) { memset(BUF(c->x[0]), 0, sizeof(MBuffer)); }
@@ -136,6 +163,7 @@ HLE_FUNC("_ZN5movie6Buffer12SetInt32DataEi", buf_set_i32) { BUF(c->x[0])->i32 = 
 
 HLE_FUNC("_ZN5movie12SetAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", movie_set_allocator) { (void)c; }
 HLE_FUNC("_ZN5movie17SetThreadPriorityEi", movie_set_thread_priority) { (void)c; }
+HLE_FUNC("_ZN5movie11SetCoreMaskEm", movie_set_core_mask) { (void)c; }
 HLE_FUNC("_ZN5movie17GetThreadPriorityEv", movie_get_thread_priority) { c->x[0] = 16; }
 
 // ------------------------------------------------------------------ helpers
@@ -179,6 +207,7 @@ static bool g_skip_held;           // ex_fill: A / B held at the last look
 static double g_skip_pressed_at;    // when they were pressed (0 = not yet)
 
 static void ex_fill(Extractor *e) {
+    if (!e->fmt || !e->pkt) { e->eof = true; return; }
     if (e->skippable && !e->eof) {
         // the game skips the opening with Plus (once a save exists); A and B do too (we press Plus for it)
         extern uint64_t input_buttons_now(void);
@@ -217,6 +246,12 @@ static void ex_fill(Extractor *e) {
 static void ex_set_data_source(Cpu *c) {
     Extractor *e = self_state(c);
     const char *path = (const char *)(uintptr_t)c->x[2];
+    if (e->pkt) av_packet_free(&e->pkt);
+    if (e->fmt) avformat_close_input(&e->fmt);
+    e->selected = 0;
+    e->ntracks = 0;
+    e->have_pkt = e->eof = e->skippable = false;
+    if (!path || !*path) { c->x[0] = 1; return; }
     // "rom:/region_common/movie/title.webm" -> extracted/romfs/region_common/movie/title.webm
     const char *rel = path && strstr(path, ":/") ? strstr(path, ":/") + 2 : path;
     char host[1024];
@@ -225,10 +260,12 @@ static void ex_set_data_source(Cpu *c) {
     LOG("[movie] open %s -> %s\n", path ? path : "(null)", host);
     if (avformat_open_input(&e->fmt, host, NULL, NULL) < 0 || avformat_find_stream_info(e->fmt, NULL) < 0) {
         LOG("[movie] cannot open %s\n", host);
+        if (e->fmt) avformat_close_input(&e->fmt);
         c->x[0] = 1;
         return;
     }
     e->pkt = av_packet_alloc();
+    if (!e->pkt) { avformat_close_input(&e->fmt); c->x[0] = 1; return; }
     e->ntracks = 0;
     // the opening at launch can always be skipped, vanilla and randomizer (with no save yet the game forces it)
     e->skippable = rel && strstr(rel, "movie/opening.webm");
@@ -238,6 +275,13 @@ static void ex_set_data_source(Cpu *c) {
             (e->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && g_settings.movie_audio && !getenv("LARECOMP_NO_MOVIE_AUDIO")))
             e->map[e->ntracks++] = (int)i;
     c->x[0] = 0;
+}
+
+// The path-only overload occupies slot 2. LAS supplies a ClientStreamReader
+// and path at slot 15; other callers use this standard local-file overload.
+static void ex_set_path_source(Cpu *c) {
+    c->x[2] = c->x[1];
+    ex_set_data_source(c);
 }
 
 static void ex_get_track_count(Cpu *c) {
@@ -350,6 +394,7 @@ static void movie_track(int kind, void *p, bool add) {
 
 static void ex_dtor(Cpu *c) {
     Extractor *e = self_state(c);
+    if (e && e->pkt) av_packet_free(&e->pkt);
     if (e && e->fmt) avformat_close_input(&e->fmt);
     if (e) movie_track(0, e, false);
     c->x[0] = 0;
@@ -374,11 +419,12 @@ EX_LOCKED(ex_advance)
 EX_LOCKED(ex_get_sample_time)
 EX_LOCKED(ex_cached_duration)
 EX_LOCKED(ex_set_data_source)
+EX_LOCKED(ex_set_path_source)
 
 HLE_FUNC("_ZN5movie9ExtractorC1ENS_13ContainerTypeE", movie_extractor_ctor) {
     uint64_t vt = g_ex_vt;
     if (!vt) {
-        HostFn f[16] = {ex_dtor_l, ex_dtor_l, movie_log_slot, movie_log_slot, ex_get_track_count_l,
+        HostFn f[16] = {ex_dtor_l, ex_dtor_l, ex_set_path_source_l, movie_log_slot, ex_get_track_count_l,
                         ex_get_track_config_l, ex_select_track_l, movie_log_slot, ex_seek_l, ex_get_sample_track_l,
                         ex_read_l, ex_advance_l, ex_get_sample_time_l, movie_log_slot, ex_cached_duration_l,
                         ex_set_data_source_l};
@@ -389,6 +435,12 @@ HLE_FUNC("_ZN5movie9ExtractorC1ENS_13ContainerTypeE", movie_extractor_ctor) {
     Extractor *e = calloc(1, sizeof(Extractor));
     self[1] = (uint64_t)(uintptr_t)e;
     movie_track(0, e, true);
+}
+
+// Same 16-byte public object/vtable as the one-argument constructor; the extra
+// argument chooses the guest's streaming cache, which FFmpeg owns on the host.
+HLE_FUNC("_ZN5movie9ExtractorC1ENS_13ContainerTypeENS_9CacheSizeE", movie_extractor_cache_ctor) {
+    movie_extractor_ctor(c);
 }
 
 // ------------------------------------------------------------------ Decoder
@@ -767,6 +819,7 @@ static void dec_dtor(Cpu *c) {
 RT_ON_RESET(movie_reset) {
     for (int i = 0; i < MAX_MOVIE_OBJS; i++) {
         Extractor *e = g_movie_objs[0][i];
+        if (e && e->pkt) av_packet_free(&e->pkt);
         if (e && e->fmt) avformat_close_input(&e->fmt);
         Decoder *d = g_movie_objs[1][i];
         if (d && d->ctx) avcodec_free_context(&d->ctx);

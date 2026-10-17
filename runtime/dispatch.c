@@ -9,7 +9,8 @@
 #include "hle.h"
 
 typedef struct { const uint64_t *addrs; const GuestFn *fns; uint64_t count, lo, hi; } FnTable;
-static FnTable tables[2];
+static FnTable tables[TITLE_MAX_MODULES];
+static unsigned table_count;
 
 // HLE stubs live at fake addresses HLE_BASE + 16*i
 #define MAX_HLE 4096
@@ -68,6 +69,8 @@ static __thread uint64_t unimpl_pc;
 static int unimpl_counts[MAX_HLE];
 static void hle_unimplemented(Cpu *c) {
     int i = (int)((unimpl_pc - HLE_BASE) / 16);
+    if (getenv("LARECOMP_STRICT_HLE") || getenv("ACNH_STRICT_HLE"))
+        FATAL("[adapter] missing host implementation: %s (lr=%llx)\n", hle_slots[i].name, c->x[30]);
     if (unimpl_counts[i]++ < 3)
         LOG("[hle] UNIMPLEMENTED %s (x0=%llx x1=%llx lr=%llx) -> returning 0\n", hle_slots[i].name, c->x[0],
             c->x[1], c->x[30]);
@@ -107,13 +110,18 @@ void *hle_alloc(uint64_t size) {
 
 void dispatch_init(void) {  // (after gamelib_load)
     const GameLibTables *g = gamelib_tables();
-    uint64_t nm = *g->main_count, ns = *g->sdk_count;
-    tables[0] = (FnTable){g->main_addrs, g->main_fns, nm, g->main_addrs[0], g->main_addrs[nm - 1]};
-    tables[1] = (FnTable){g->sdk_addrs, g->sdk_fns, ns, g->sdk_addrs[0], g->sdk_addrs[ns - 1]};
+    table_count = g->module_count;
+    memset(tables, 0, sizeof tables);
+    for (unsigned i=0; i<table_count; i++) {
+        const GameLibModule *m=&g->modules[i];
+        uint64_t n=*m->count;
+        tables[i]=(FnTable){m->addrs,m->fns,n,m->addrs[0],m->addrs[n-1]};
+        LOG("[dispatch] %s: %llu functions\n",m->name,(unsigned long long)n);
+    }
 }
 
 GuestFn dispatch_lookup(uint64_t addr) {
-    for (int t = 0; t < 2; t++) {
+    for (unsigned t = 0; t < table_count; t++) {
         FnTable *ft = &tables[t];
         if (addr < ft->lo || addr > ft->hi) continue;
         uint64_t lo = 0, hi = ft->count;
@@ -184,10 +192,11 @@ const char *rt_host_fn_name(uint64_t pc, uint64_t *offset) {
     static uint64_t n;
     static __thread char name[32];
     if (!byhost) {
-        uint64_t total = tables[0].count + tables[1].count, k = 0;
+        uint64_t total = 0, k = 0;
+        for (unsigned t=0; t<table_count; t++) total+=tables[t].count;
         uint64_t (*v)[2] = malloc(total * sizeof *v);
         if (!v) return NULL;
-        for (int t = 0; t < 2; t++)
+        for (unsigned t = 0; t < table_count; t++)
             for (uint64_t i = 0; i < tables[t].count; i++) {
                 v[k][0] = (uint64_t)(uintptr_t)tables[t].fns[i];
                 v[k++][1] = tables[t].addrs[i];

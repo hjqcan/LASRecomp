@@ -9,7 +9,6 @@ extracted/
 *.keys
 /lasrecomp.log
 generated/
-generated-*/
 /rando/
 /photos/
 /mods/
@@ -18,6 +17,7 @@ generated-*/
 !/fonts/README.md
 # build output, caches, saves and settings
 build/
+/build-probe/
 /cache/
 save/
 /larecomp.ini
@@ -27,3 +27,4 @@ tools/venv/
 venv/
 __pycache__/
 .DS_Store
+/generated-*/

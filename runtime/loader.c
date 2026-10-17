@@ -3,8 +3,9 @@
 #include <string.h>
 
 #include "rt.h"
+#include "title_profile.h"
 
-Module g_modules[4];
+Module g_modules[TITLE_MAX_MODULES];
 int g_nmodules;
 
 enum { DT_NULL = 0, DT_PLTRELSZ = 2, DT_HASH = 4, DT_STRTAB = 5, DT_SYMTAB = 6, DT_RELA = 7, DT_RELASZ = 8,
@@ -52,7 +53,13 @@ static uint8_t *read_file(const char *path, size_t *len) {
 static void load_nso(Module *m, const char *path, uint64_t base) {
     size_t len;
     uint8_t *raw = read_file(path, &len);
-    if (!raw || memcmp(raw, "NSO0", 4)) FATAL("cannot load %s\n", path);
+    if (!raw || len < 0x100 || memcmp(raw, "NSO0", 4)) FATAL("cannot load %s\n", path);
+    const TitleProfile *profile = title_profile_current();
+    bool matched = false;
+    for (unsigned i = 0; i < profile->module_count; i++)
+        if (!strcmp(m->name, profile->modules[i].name) && title_module_matches(&profile->modules[i], raw + 0x40))
+            matched = true;
+    if (!matched) FATAL("module build ID mismatch: %s\n", path);
     uint32_t flags = *(uint32_t *)(raw + 0xC);
     uint32_t seg[3][3];  // file_off, mem_off, size
     for (int i = 0; i < 3; i++) memcpy(seg[i], raw + 0x10 + i * 0x10, 12);
@@ -174,12 +181,18 @@ static void relocate(Module *m) {
 
 void loader_load(const char *exefs) {
     char path[1024];
-    static const struct { const char *name; uint64_t base; } mods[] = {{"main", MAIN_BASE}, {"sdk", SDK_BASE}};
-    for (unsigned i = 0; i < 2; i++) {
+    const TitleProfile *profile = title_profile_current();
+    if (!profile->module_count || profile->module_count > TITLE_MAX_MODULES) FATAL("invalid module plan\n");
+    for (unsigned i = 0; i < profile->module_count; i++) {
         Module *m = &g_modules[g_nmodules++];
-        m->name = mods[i].name;
+        m->name = profile->modules[i].name;
         snprintf(path, sizeof path, "%s/%s", exefs, m->name);
-        load_nso(m, path, mods[i].base);
+        load_nso(m, path, profile->modules[i].base);
+        for (unsigned j = 0; j < i; j++) {
+            Module *other = &g_modules[j];
+            if (m->base < other->base + other->size && other->base < m->base + m->size)
+                FATAL("module address overlap: %s and %s\n", m->name, other->name);
+        }
     }
     for (int i = 0; i < g_nmodules; i++) relocate(&g_modules[i]);
 }

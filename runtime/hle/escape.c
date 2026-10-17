@@ -23,7 +23,7 @@
 #include "../hle.h"
 #include "../rando.h"
 
-#define PLAYER_STATUS_PTR (GA_PLAYER_STATUS_PTR)  // PlayerStatus*: level name at +0, inventory bits at +0xa8
+// GA_PLAYER_STATUS_PTR: PlayerStatus*: level name at +0, inventory bits at +0xa8
 extern uint64_t renderer_present_count(void);
 extern int game_in_play(void);
 extern int warp_busy(void);
@@ -72,7 +72,7 @@ static bool active(void) {
 }
 
 static const char *cur_level(void) {
-    uint64_t ps = LD64(PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     return ps ? (const char *)(uintptr_t)ps : "";
 }
 
@@ -168,7 +168,7 @@ void escape_bottle_tint(int kind, const float *ui, uint32_t ui_size, float tint[
         return;
     }
     if (!active()) return;
-    uint64_t ps = LD64(PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     if (!ps) return;
     bool owned = LD8(ps + 0xa9) & 0x80;
     if (kind == 2) {
