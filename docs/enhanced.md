@@ -16,7 +16,7 @@ This is the independently maintained edition in [hjqcan/LASRecomp](https://githu
 | Versions | Build-ID checks, v1.0.0 and v1.1.0 installations, separate saves, libraries and compilation caches |
 | UI | English, Simplified Chinese and Traditional Chinese settings; upstream language/font fixes; CRLF settings and HK/MO/Hant locale handling |
 | Compilation | Cancel/resume, SHA-256 source/object receipts, split compiler/generator identities, safe library publication, Windows per-helper job objects |
-| Saves | Automatic/manual snapshots, 20-snapshot retention, validated launcher restore, separation by installation and randomizer seed |
+| Saves | Atomic file commits including extended flags, automatic/manual snapshots after commit, 20-snapshot retention, validated launcher restore, separation by installation and randomizer seed |
 | Photos | F2 freeze, aspect-ratio crops, composition guides, color presets/contrast/vignette, F12 PNG plus settings recipe, Vulkan and Metal implementations |
 | Resource mods | Local pack import, metadata, version-specific enable lists, shareable version-checked presets, conflict paths, save backup before selection changes |
 | Randomizer | Existing upstream options plus experimental version-specific v1.1.0 generation and validated patches/event adaptation |

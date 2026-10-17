@@ -19,8 +19,8 @@ int rt_hookshot_seed_forced(void);  // hle/hookshot.c
 int rt_no_buff_seed_forced(void);   // hle/qol.c
 }
 
-#define LIVE_SAVE GA_LIVE_SAVE
-#define HERO_FLAG (LIVE_SAVE + 0x55E0)  // PlayerStatus (save+0x54C0) + 0x120
+
+#define HERO_FLAG (GA_LIVE_SAVE + 0x55E0)  // PlayerStatus (save+0x54C0) + 0x120
 
 extern "C" int rt_hero_mode(void) { return *(volatile uint8_t *)(uintptr_t)HERO_FLAG == 1; }
 

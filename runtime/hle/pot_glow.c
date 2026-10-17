@@ -14,7 +14,7 @@
 #include "../platform.h"
 #include "../rando.h"
 
-#define PLAYER_STATUS_PTR (GA_PLAYER_STATUS_PTR)  // PlayerStatus*: current level name at +0
+// GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
 #define EVENT_FLAGS (GA_LIVE_SAVE + 0x5DC0)  // live save: GlobalFlags bitfield (2048 bits)
 
 // bushes.tsv rows may add: cut flag, hidden item scale, full item scale, room file, item record offset in it
@@ -56,7 +56,7 @@ static void load(void) {
 }
 
 static const char *current_level(void) {
-    uint64_t ps = LD64(PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     return ps ? (const char *)(uintptr_t)ps : "";
 }
 
