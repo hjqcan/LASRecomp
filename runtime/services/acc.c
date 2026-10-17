@@ -3,6 +3,7 @@
 
 #include "../hle.h"
 #include "../ipc.h"
+#include "../title_profile.h"
 
 const uint8_t g_user_id[16] = {0x4c, 0x41, 0x52, 0x65, 0x63, 0x6f, 0x6d, 0x70, 0x01, 0, 0, 0, 0, 0, 0, 0x01};
 
@@ -20,7 +21,7 @@ static void profile(Service *s, IpcReq *req, IpcResp *resp) {
         memset(resp->data, 0, 0x38);
         memcpy(resp->data, g_user_id, 16);
         *(uint64_t *)(resp->data + 16) = 1600000000;
-        strcpy((char *)resp->data + 24, "Player");
+        strcpy((char *)resp->data + 24, title_is_las() ? "Link" : "Player");
         resp_size(resp, 0x38);
         if (req->cmd == 0 && out_buf(req, 0)) memset((void *)(uintptr_t)out_buf(req, 0)->addr, 0, out_buf(req, 0)->size);
         break;

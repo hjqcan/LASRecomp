@@ -65,3 +65,15 @@ checks Unicode paths, arguments, duplicate updates and preservation of unrelated
 files. `tools/test_game_profiles.py` checks exact managed locations, launch IDs
 and distinct save folders. These tests do not replace real import, compilation,
 desktop launch and gameplay verification.
+
+The Windows development package has imported a metadata-free ACNH base NSZ,
+validated all three modules, and built them using its bundled frozen generator
+and Zig compiler, with no external Python/compiler override. Generation produced
+523 main, 102 SDK and 100 multimedia chunks; compilation produced 729 objects
+including tables and the library entry. A system sleep interrupted the first
+attempt with a lost Vulkan device. A subsequent setup reused 559 verified
+objects, compiled the remaining 170 and published the library and shortcut.
+The resulting managed installation boots through the shortcut's stable launch
+arguments. A Unicode data-folder alias also passes the real CLI identity check
+and shell-link creation. These observations are development evidence; ACNH
+remains gated until game saving, reopening and island gameplay pass.
