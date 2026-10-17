@@ -190,7 +190,7 @@ const VkPreparedShader *vk_prepare_shader(const char *src, int stage) {
     size_t n = 0;
     uint32_t *spv = vk_glsl_to_spirv(src, stage, stage == STAGE_VERTEX ? "vs" : stage == STAGE_FRAGMENT ? "fs" : "cs", &n);
     if (spv) {
-        entry->shader.nbinds = vk_reflect(spv, n, entry->shader.binds, 96);
+        entry->shader.nbinds = vk_reflect(spv, n, entry->shader.binds, 128);
         entry->shader.module = vk_module(spv, n);
         free(spv);
     }
@@ -281,9 +281,9 @@ int vk_reflect(const uint32_t *spv, size_t n, VkBindingInfo *out, int max) {
 }
 
 VkDescriptorSetLayout vk_set_layout(const VkBindingInfo *b, int n, uint32_t set, VkShaderStageFlags stages) {
-    VkDescriptorSetLayoutBinding lb[96];
+    VkDescriptorSetLayoutBinding lb[128];
     uint32_t k = 0;
-    for (int i = 0; i < n && k < 96; i++)
+    for (int i = 0; i < n && k < 128; i++)
         if (b[i].set == set) lb[k++] = (VkDescriptorSetLayoutBinding){b[i].binding, b[i].type, 1, stages, NULL};
     VkDescriptorSetLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = k, .pBindings = lb};
     VkDescriptorSetLayout l;

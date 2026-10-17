@@ -10,6 +10,8 @@
 //    `layout(std430, set=S, binding=17) [readonly] buffer GMem { uint w[]; } gmem_;`, 32-bit words relative to
 //    maxwell_gmem_base. `readonly` unless the shader stores (needs vertexPipeline/fragmentStoresAndAtomics then);
 //    byte / short stores are atomicAnd + atomicOr on the containing word.
+//    When gmem_chunk_words is nonzero, split into aligned descriptors at binding 17,
+//    then 96 onward. LDG/STG route each word to its segment without requiring descriptor indexing.
 //  - rscale table -> binding 18: `uniform RScale { vec4 rscale[65]; };` (std140, the MSL buffer 18 contents).
 //  - per-draw tint -> binding 19: `uniform Tint { vec4 ltint[2]; };` (fragment, when uses_tint).
 //  - texture slot i (ShaderInfo.tex[i]) -> binding 32 + i, a combined image sampler: sampler1D/2D/3D/Cube/
@@ -47,6 +49,7 @@ typedef struct {
     uint32_t vs_out_mask;   // fragment: varyings the vertex shader provides
     uint8_t glsl;           // emit Vulkan GLSL (see the contract above) instead of MSL
     uint32_t shared_memory; // compute: bytes shared by a workgroup, from the NVN control block
+    uint32_t gmem_chunk_words; // Vulkan SSBO segment size, 0 when one descriptor fits the heap
 } ShaderKey;
 
 typedef struct {
@@ -73,6 +76,7 @@ typedef struct {
                             // dispatch's storage buffers - when found, stores too (copied back after the dispatch).
                             // runtime/nvn/vulkan/exec.c
     bool uses_gmem_store;   // writes global memory (STG)
+    uint32_t gmem_chunk_words;
     bool uses_tint;        // fragment: reads the per-draw tint (buffer 19, float4[2]) applied to color target 0
     bool uses_rscale;       // reads the resolution-scale table (fragment/compute buffer 18): float4 [0] = render
                             // target scale, [1 + i] = allocation scale of texture i
@@ -81,8 +85,10 @@ typedef struct {
     char error[256];        // set when translation fails
 } ShaderInfo;
 
-// Global memory (LDG/STG) is addressed through one buffer that wraps the guest heap.
+// Global memory (LDG/STG) wraps the guest heap, optionally through multiple descriptors.
 #define GMEM_BUFFER_INDEX 17
+#define GMEM_EXTRA_BUFFER_INDEX 96 // later heap segments; separate from texture bindings 32..95
+#define GMEM_MAX_SEGMENTS 32
 // (GLSL compute, Vulkan) the fast copy of a dispatch's storage buffers: its address table and its data
 #define GMAP_BUFFER_INDEX 20
 #define GFAST_BUFFER_INDEX 21

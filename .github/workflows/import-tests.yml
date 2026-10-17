@@ -49,6 +49,7 @@ jobs:
       - run: python tools/test_shader_ldc.py
       - run: python tools/test_shader_shared.py
       - run: python tools/test_shader_tmml.py
+      - run: python tools/test_shader_gmem.py
       - if: runner.os != 'Windows'
         run: clang -std=gnu11 -O1 -Iruntime tools/test_touch.c -o test-touch && ./test-touch
       - if: runner.os != 'Windows'

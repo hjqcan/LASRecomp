@@ -294,6 +294,14 @@ copy passed all 24 checksums for the five 1.0.0 data files and their matching
 version headers. In-game loading and another complete commit still need checking
 before that copy replaces the managed save.
 
+Strict Vulkan validation of that recovery run identified an oversized global-memory
+descriptor: the imported heap exceeded this Intel GPU's `maxStorageBufferRange`.
+The Vulkan backend now splits heap bindings at the device's aligned range limit,
+and shader LDG/STG selects a segment for each word. Generated shader tests cover
+signed sub-word loads, masked stores, vectors crossing a segment boundary, the
+last partial segment, and compute fast-copy routing. Actual loading and saving
+with validation enabled remain required before declaring the recovery complete.
+
 Still required: complete intro and island controls, broader graphics and
 audio correctness, game-managed saving and reopening, day rollover, repeated
 starts, and an extended gameplay run. Update and DLC compatibility remain

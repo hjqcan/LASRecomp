@@ -7,7 +7,7 @@
 typedef struct { uint32_t set, binding; VkDescriptorType type; } VkBindingInfo;
 typedef struct {
     VkShaderModule module;
-    VkBindingInfo binds[96];
+    VkBindingInfo binds[128];
     int nbinds;
 } VkPreparedShader;
 

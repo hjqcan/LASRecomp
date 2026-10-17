@@ -20,6 +20,7 @@
 #include "shaders.h"
 #include "shader_jobs.h"
 #include "gpu_watchdog.h"
+#include "gmem_segments.h"
 #include "vk.h"
 #include "../renderer.h"
 #include "../render_control.h"
@@ -1262,7 +1263,7 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
 }
 
 // ================================================================== programs
-#define MAX_BIND 96
+#define MAX_BIND 256
 typedef struct {
     ShaderInfo *vi, *fi;
     uint64_t code[2], cmax[2];
@@ -1343,8 +1344,19 @@ typedef struct { uint64_t key; Prog *prog; } ProgEntry;
 static ProgEntry *prog_tab;
 static size_t prog_cap, prog_count;
 
+static uint32_t gmem_shader_words(void) {
+    const VkPhysicalDeviceLimits *l = &g_vk.props.limits;
+    uint32_t words = gmem_segment_words(HEAP_MAX, l->maxStorageBufferRange, l->minStorageBufferOffsetAlignment);
+    uint64_t count = words && words != UINT32_MAX ? (HEAP_MAX + (uint64_t)words * 4 - 1) / ((uint64_t)words * 4) : 1;
+    if (words == UINT32_MAX || count > GMEM_MAX_SEGMENTS || count + 1 > l->maxPerStageDescriptorStorageBuffers ||
+        count * 2 > l->maxDescriptorSetStorageBuffers)
+        FATAL("GPU storage buffer limits cannot address the guest heap\n");
+    return words;
+}
+
 static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     if (!(np->stage_mask & 1) || !(np->stage_mask & 2)) return NULL;
+    vkey->gmem_chunk_words = fkey->gmem_chunk_words = gmem_shader_words();
     uint64_t h = 0xcbf29ce484222325ull;
     for (int i = 0; i < 3; i++) {
         uint64_t a = i == 2 ? np->revision : np->stages[i].code_addr;
@@ -2211,6 +2223,18 @@ static VkDescriptorBufferInfo gmem_info(void) {
     return (VkDescriptorBufferInfo){s.buf, s.off, sizeof zero};
 }
 
+static VkDescriptorBufferInfo gmem_binding_info(VkDescriptorBufferInfo heap, uint32_t words, uint32_t binding) {
+    uint32_t segment = binding == GMEM_BUFFER_INDEX ? 0 : binding - GMEM_EXTRA_BUFFER_INDEX + 1;
+    uint64_t offset, range;
+    if (gmem_segment_range(heap.range, words, segment, &offset, &range))
+        return (VkDescriptorBufferInfo){heap.buffer, heap.offset + offset, range};
+    // A shader can refer to heap segments that the guest has not committed yet.
+    // Keep every reflected descriptor valid; shader length checks guard its tail.
+    uint32_t zero = 0;
+    VkSpan s = vk_transient_copy(&zero, sizeof zero, g_vk.props.limits.minStorageBufferOffsetAlignment);
+    return (VkDescriptorBufferInfo){s.buf, s.off, sizeof zero};
+}
+
 // Compute dispatches that use global memory: the imported heap is host memory across PCIe on a discrete GPU, and a
 // shader storing to it in a loop crawls (the little chain chomps in Madam MeowMeow's house: ~8 ms a frame on a GTX 1660
 // Super and on an RTX 3080 Ti alike, which the game then waits for on its fence - 49-53 fps there on the 1660). Before
@@ -2619,6 +2643,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     VkDescriptorBufferInfo bi[MAX_BIND];
     VkDescriptorImageInfo ii[MAX_BIND];
     int n = 0;
+    VkDescriptorBufferInfo heap = si->uses_gmem ? gmem_info() : (VkDescriptorBufferInfo){0};
     int sg = stage == 1 ? 1 : 0;
     float rs[66][4] = {{1, 1, 0, 0}};  // ([65]: mirror mode, renderer.m)
     if (rscale_row0) memcpy(rs[0], rscale_row0, 16);
@@ -2643,7 +2668,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             bi[n] = cbuf_info(stage, si, (int)b->binding, gx, gy, gz);
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-            bi[n] = b->binding == GFAST_BUFFER_INDEX ? gfast_info() : gmem_info();
+            bi[n] = b->binding == GFAST_BUFFER_INDEX ? gfast_info() : gmem_binding_info(heap, si->gmem_chunk_words, b->binding);
             w[n].pBufferInfo = &bi[n];
         } else {
             continue;  // rscale / tint: written below, once the textures (and their scales) are known
@@ -2748,7 +2773,7 @@ static CsProg *compute_program(NvnProgram *np) {
     cp->p.code[0] = ss->code_addr;
     cp->p.cmax[0] = ss->const_offset ? ss->const_offset : 0x10000;
     cp->p.snapshot[0] = shader_snapshot(cp->p.code[0], &cp->p.cmax[0], STAGE_COMPUTE);
-    cp->p.vkey = (ShaderKey){.glsl = 1, .shared_memory = config[3]};
+    cp->p.vkey = (ShaderKey){.glsl = 1, .shared_memory = config[3], .gmem_chunk_words = gmem_shader_words()};
     memcpy(cp->local, config, sizeof cp->local);
     if (!cp->p.cmax[0]) {
         atomic_store(&cp->p.state, 2);
