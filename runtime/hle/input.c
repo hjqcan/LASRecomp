@@ -425,6 +425,11 @@ void input_frame(uint64_t frame) {
     snprintf(buf, sizeof buf, "%s", spec);
     for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
         unsigned long start = 0, len = 10;
+        char shot[192];
+        if (sscanf(tok, "%lu:shot:%191[A-Za-z0-9_-]", &start, shot) == 2) {
+            test_push(frame, start, 0, "shot", shot);
+            continue;
+        }
         char name[32] = "";
         if (sscanf(tok, "%lu:%31[A-Z_0-9]:%lu", &start, name, &len) < 2) continue;
         if (frame < start || frame >= start + len) continue;

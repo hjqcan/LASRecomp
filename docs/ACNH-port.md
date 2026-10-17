@@ -193,6 +193,9 @@ For checkpoint-driven regression, `LARECOMP_INPUT_FILE` reads the same
 the game capture. `LARECOMP_SCREENSHOT_EVERY` and `LARECOMP_SCREENSHOT_FROM`
 capture game images without depending on desktop focus. Cold startup timing is
 not fixed, so input should be scheduled after observing the target screen.
+The same live script accepts `frame:shot:name` to save `build/name.png` from
+the presented window, including menus, on Vulkan or Metal. Names use letters,
+digits, underscores and hyphens.
 
 Synthetic touchscreen tests cover poisoned buffers, 1,024 samples, capacity
 bounds, surrounding canaries and reboot. Native execution of translated synthetic
