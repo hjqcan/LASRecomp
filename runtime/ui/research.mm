@@ -23,6 +23,7 @@ namespace {
 struct Row { ResearchInput input{}; RouteSample state{}; uint64_t frame,ns,timers,vsyncs,digest=0; uint32_t interval; bool observed=false; };
 struct Camera { uint64_t frame,ns;std::array<float,48> matrices; };
 struct Phase { ResearchPhaseSample sample;uint64_t ns,digest,polls,timers,vsyncs;int kind;bool before; };
+struct External { int kind;uint64_t pc,index,value,ns;uint32_t thread;size_t updates;bool ready; };
 std::mutex lock;
 std::atomic<bool> enabled;
 std::atomic<uint64_t> timer_calls,period{16666667};
@@ -30,12 +31,14 @@ std::atomic<uint32_t> last_interval;
 std::vector<Row> rows;
 std::vector<Camera> cameras;
 std::vector<Phase> phases;
+std::vector<External> external;
 std::vector<ResearchInput> replay;
 std::string directory,build_id;
 uint64_t start_ns;
 size_t replay_at;
 bool replaying,truncated,cameras_truncated,replay_exhausted;
 bool phase_capture,phases_truncated;
+bool semantics,external_truncated;
 thread_local size_t current_row=SIZE_MAX;
 uint64_t digest(const void *data,size_t n) {
     uint64_t h=14695981039346656037ull;const unsigned char *p=(const unsigned char *)data;
@@ -46,6 +49,15 @@ uint64_t digest(const void *data,size_t n) {
 extern "C" volatile uint64_t g_vsync_count;
 extern "C" bool research_active(void) { return enabled.load(std::memory_order_relaxed); }
 extern "C" bool research_phases_active(void) { return research_active()&&phase_capture; }
+extern "C" bool research_semantics_active(void) { return research_active()&&semantics; }
+extern "C" void research_external(int kind,uint64_t pc,uint32_t thread,uint64_t index,uint64_t value) {
+    if(!research_semantics_active())return;
+    std::lock_guard<std::mutex> guard(lock);if(!research_semantics_active())return;
+    if(kind!=RESEARCH_EXTERNAL_ENTROPY&&kind!=RESEARCH_EXTERNAL_CLOCK)return;
+    if(external.size()>=4096){external_truncated=true;return;}
+    auto update=research_update_status();
+    external.push_back({kind,pc,index,value,plat_now_ns()-start_ns,thread,update.inputs,update.ready});
+}
 extern "C" bool research_exit_ready(void) { return research_active()&&research_update_done()&&getenv("LARECOMP_EXIT_AFTER_SHOT"); }
 extern "C" uint64_t research_vsync_period(void) { return period.load(std::memory_order_relaxed); }
 extern "C" void research_timer(uint32_t interval) {
@@ -55,7 +67,8 @@ extern "C" void research_timer(uint32_t interval) {
 extern "C" bool research_boot(const char *root,const char *save,char *why,size_t cap) {
     const char *record=getenv("LARECOMP_RESEARCH_CAPTURE"),*tape=getenv("LARECOMP_RESEARCH_REPLAY"),*rate=getenv("LARECOMP_RESEARCH_HZ");
     const char *phase_option=getenv("LARECOMP_RESEARCH_PHASES");
-    if (!record&&!tape&&!rate&&!phase_option&&!research_update_configured()) return true;
+    const char *semantics_option=getenv("LARECOMP_RESEARCH_SEMANTICS");
+    if (!record&&!tape&&!rate&&!phase_option&&!semantics_option&&!research_update_configured()) return true;
     try {
         if ((!record&&!tape)||(record&&tape)||!save||!*save) throw std::runtime_error("Research needs exactly one capture/replay mode and an isolated workshop save.");
         if(record&&strcmp(record,"1"))throw std::runtime_error("Research capture must be explicitly set to 1.");
@@ -65,6 +78,8 @@ extern "C" bool research_boot(const char *root,const char *save,char *why,size_t
             throw std::runtime_error("Research probes support verified LAS executables only.");
         char update_error[256];
         if(!research_update_boot(id,tape,update_error,sizeof update_error))throw std::runtime_error(update_error);
+        if(semantics_option&&(strcmp(semantics_option,"1")||!research_update_active()))
+            throw std::runtime_error("Semantic observations require update mode and an explicit value of 1.");
         int hz=60;
         if(rate) { if(strcmp(rate,"30")&&strcmp(rate,"60")&&strcmp(rate,"120")) throw std::runtime_error("Research frequency must be 30, 60 or 120 Hz.");hz=atoi(rate); }
         replay.clear();
@@ -76,6 +91,8 @@ extern "C" bool research_boot(const char *root,const char *save,char *why,size_t
         auto path=fs::u8path(save).parent_path()/"research";
         if(!fs::create_directory(path)) throw std::runtime_error("Research output directory already exists or is unavailable.");
         directory=path.u8string();build_id=id;replaying=tape!=nullptr;replay_at=0;
+        semantics=semantics_option!=nullptr;external_truncated=false;external.clear();
+        if(semantics)external.reserve(64);
         phase_capture=phase_option!=nullptr||research_update_active();phases_truncated=false;phases.clear();
         if(phase_capture)phases.reserve(16000);
         truncated=cameras_truncated=replay_exhausted=false;rows.clear();cameras.clear();rows.reserve(16000);cameras.reserve(8000);
@@ -150,12 +167,20 @@ extern "C" void research_finish(void) {
                       <<','<<p.polls<<','<<p.timers<<','<<p.vsyncs<<'\n';}
             output.close();if(!output)throw std::runtime_error("Phase export could not be completed.");
         }
+        if(semantics) {
+            std::ofstream output(root/"external.csv",std::ios::binary);output.imbue(std::locale::classic());
+            output<<"event,kind,pc,thread,index,value,elapsed_ns,completed_updates,gate_ready\n";
+            for(size_t i=0;i<external.size();++i){const auto &e=external[i];
+                output<<i<<','<<e.kind<<','<<e.pc<<','<<e.thread<<','<<e.index<<','<<e.value<<','<<e.ns<<','<<e.updates<<','<<e.ready<<'\n';}
+            output.close();if(!output)throw std::runtime_error("External observation export could not be completed.");
+        }
         meta<<"format="<<(update.active?2:1)<<"\nbuild_id="<<build_id<<"\nmode="<<(replaying?"replay":"capture")<<"\nvsync_hz="<<hz
             <<"\ninputs="<<(update.active?update.inputs:rows.size())<<"\nhid_polls="<<rows.size()<<"\ncameras="<<cameras.size()
             <<"\nreplay_inputs="<<(update.active?(update.playback?update.source_inputs:0):replay.size())
             <<"\nreplay_consumed="<<(update.active?(update.playback?update.source_consumed:0):replay_at)
             <<"\nreplay_eof="<<(update.active?(update.playback&&update.neutral_after_complete>0):replay_exhausted)<<"\ntruncated="<<truncated<<"\ncameras_truncated="<<cameras_truncated
             <<"\nphase_capture="<<phase_capture<<"\nphase_samples="<<phases.size()<<"\nphases_truncated="<<phases_truncated
+            <<"\nsemantics="<<semantics<<"\nexternal_samples="<<external.size()<<"\nexternal_truncated="<<external_truncated
             <<"\ninput_boundary="<<(update.active?"las_update_dispatch_v1":"fullkey_hid_poll")
             <<"\nstate_boundary=fullkey_hid_poll\ndigest=fnv1a64_live_save_5388_55e0\n";
         for(auto *f:{&trace,&camera,&meta}){f->close();if(!*f)throw std::runtime_error("Research export could not be completed.");}

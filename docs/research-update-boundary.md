@@ -4,6 +4,8 @@ The [initial research captures](research-findings-2026-10-17.md) showed that sta
 
 The [native validation record](research-update-validation-2026-10-17.md) contains the dual-version movement comparisons, clock observations and one excluded GPU failure.
 
+The [semantic observation extension](research-semantic-observations.md) adds a guarded RNG state, selected external returns and placed NPC/enemy component samples. Its first comparison found RNG divergence despite matching player/save observations.
+
 ## Observed boundary
 
 Four callback entries are recognized in the two supported LAS executables. Their canonical addresses live in the shared address table; runtime initialization also checks each entry's first four instructions and resolves the original generated function. A mismatch stops the experiment before guest threads start.

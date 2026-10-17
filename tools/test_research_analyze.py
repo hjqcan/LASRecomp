@@ -2,7 +2,8 @@ import unittest
 import tempfile
 from pathlib import Path
 from research_analyze import camera_report, divergence, input_motion_segments, inputs, matrix_product, phase_report, pose_comparison, timing, update_timing
-from research_run import scenario_movement
+from research_run import scenario_movement, scenario_transition, update_driver
+from research_semantics import actor_comparison, actor_report, rng_comparison, rng_distance, rng_next, rng_report, rng_state, external_comparison, external_report
 
 
 class ResearchAnalysis(unittest.TestCase):
@@ -106,6 +107,78 @@ class ResearchAnalysis(unittest.TestCase):
         self.assertTrue(result['all_windows_moved'])
         self.assertEqual([w['changing_samples'] for w in result['windows']], [25] * 4)
         self.assertFalse(scenario_movement(rows[:1200])['all_windows_moved'])
+
+    def test_rng_consumption_and_scope(self):
+        seed = (123456789, 362436069, 521288629, 88675123)
+        one = rng_next(seed)
+        self.assertEqual(one, (362436069, 521288629, 88675123, 3701687786))
+        two = rng_next(one)
+        self.assertEqual(rng_distance(seed, two), 2)
+        self.assertIsNone(rng_distance(seed, two, 1))
+        self.assertIsNone(rng_distance((0, 0, 0, 0), (0, 0, 0, 0)))
+        def row(before, after):
+            return dict(rng_before_observed='1', rng_observed='1',
+                        **{p+str(i): str(x) for p, values in [('rng_before', before), ('rng', after)]
+                           for i, x in enumerate(values)})
+        rows = [row(seed, one), row(two, two)]
+        report = rng_report(rows)
+        self.assertEqual(report['within_dispatch_advances'], {'1': 1, '0': 1})
+        self.assertEqual(report['between_dispatch_advances'], {'1': 1})
+        self.assertTrue(rng_comparison(rows, rows)['all_observed_states_match'])
+        self.assertFalse(rng_comparison(rows, rows[:1])['all_observed_states_match'])
+        changed = [row(seed, two), rows[1]]
+        self.assertEqual(rng_comparison(rows, changed)['first_difference']['update'], 0)
+        self.assertIsNone(rng_state({}))
+        self.assertEqual(rng_report([{}])['observed_pairs'], 0)
+        self.assertFalse(rng_comparison([{}], [{}])['all_observed_states_match'])
+        with self.assertRaises(ValueError):
+            rng_state(dict(rows[0], rng0=str(1 << 32)))
+        with self.assertRaises(ValueError):
+            rng_state(dict(rows[0], rng_observed='2'))
+
+    def test_external_provenance(self):
+        row = dict(event='0', kind='0', pc='123', thread='4', index='0', value='987',
+                   elapsed_ns='20', completed_updates='0', gate_ready='0')
+        self.assertEqual(external_report([row])['by_source'], {'entropy': 1})
+        report = external_comparison([row], [dict(row, value='988')])
+        self.assertFalse(report['entropy']['all_returns_match'])
+        self.assertEqual(report['entropy']['first_difference']['source_ordinal'], 0)
+        self.assertFalse(report['user_system_clock']['all_returns_match'])
+        with self.assertRaises(ValueError):
+            external_report([dict(row, event='1')])
+
+    def test_actor_identity_positions_and_partial_snapshots(self):
+        sample = dict(update='0', level='House', complete='1', issue='0', registry_count='1', selected_count='1')
+        row = dict(update='0', key='1', vtable='123', name='NpcTest-0000000000000001',
+                   component='CharacterMovement', position='1', x='1', y='0', z='2')
+        self.assertEqual(actor_report([sample], [row])[0]['position_rows'], 1)
+        self.assertTrue(actor_comparison([sample], [row], [sample], [row])['all_samples_match'])
+        report = actor_comparison([sample], [row], [sample], [dict(row, x='1.5')])
+        self.assertEqual(report['max_component_position_difference'], .5)
+        self.assertEqual(report['first_difference']['actor'], row['name'])
+        partial = dict(sample, complete='0', issue='1')
+        self.assertFalse(actor_comparison([partial], [], [partial], [])['all_samples_match'])
+        with self.assertRaises(ValueError):
+            actor_report([partial], [row])
+        with self.assertRaises(ValueError):
+            actor_report([sample], [])
+        with self.assertRaises(ValueError):
+            actor_report([sample], [dict(row, key='2')])
+
+    def test_exit_scenario_and_level_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            update_driver(root / 'inputs.lastape', 'a' * 40, 4800, 'house-exit')
+            values = inputs(root)[2]
+            self.assertEqual(values[1600], (1 << 18, 32767, 0, 0, 0))
+            self.assertEqual(values[1740], (0, 0, 0, 0, 0))
+            self.assertEqual(values[1760], (2, 0, 0, 0, 0))
+            self.assertEqual(values[2850], (1 << 19, 0, -32767, 0, 0))
+        rows = [dict(self.sample(i), update=str(i), level='MarinTarinHouse' if i < 2 else 'Field') for i in range(4)]
+        report = scenario_transition(rows)
+        self.assertTrue(report['house_to_field_observed'])
+        self.assertEqual(report['field_position_samples'], 2)
+        self.assertFalse(scenario_transition(rows[:2])['house_to_field_observed'])
 
 
 if __name__ == '__main__':

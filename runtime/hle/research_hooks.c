@@ -3,10 +3,25 @@
 #include "../game_addresses.h"
 #include "../gameversion.h"
 #include "../rt.h"
+#include "../research_actors.h"
 #include <math.h>
+#include <string.h>
 
 static const uint64_t sites[RESEARCH_PHASE_COUNT]={GA_RESEARCH_UPDATE,GA_RESEARCH_INPUT,GA_RESEARCH_TASK,GA_RESEARCH_TIMER};
 static GuestFn original[RESEARCH_PHASE_COUNT];
+static bool heap_read(void *context,uint64_t address,void *out,size_t size) {
+    uint64_t limit=*(const uint64_t *)context;
+    if(address<HEAP_BASE||address>limit||size>limit-address)return false;
+    memcpy(out,(const void *)(uintptr_t)address,size);return true;
+}
+void research_read_actors(ResearchActorSnapshot *out) {
+    memset(out,0,sizeof *out);out->issue=RESEARCH_ACTORS_UNREADABLE;
+    if(!research_semantics_active())return;
+    extern uint64_t kernel_heap_size(void);
+    uint64_t size=kernel_heap_size();if(!size||size>HEAP_MAX)return;
+    uint64_t limit=HEAP_BASE+size;
+    research_collect_actors(LD64(GA_ACTOR_REGISTRY),heap_read,&limit,out);
+}
 static void observe(int phase,bool before,uint64_t object,uint64_t caller) {
     if(!research_phases_active())return;
     extern uint64_t renderer_present_count(void);
@@ -16,6 +31,10 @@ static void observe(int phase,bool before,uint64_t object,uint64_t caller) {
     s.observed=workshop_read_sample(&s.state,true);
     s.counter=LD32(GA_RESEARCH_STEP_COUNT);
     s.delta=*(const float *)(uintptr_t)GA_RESEARCH_STEP_DELTA;
+    if(phase==RESEARCH_PHASE_UPDATE&&research_semantics_active()) {
+        memcpy(s.rng,(const void *)(uintptr_t)GA_RESEARCH_RNG_STATE,sizeof s.rng);
+        s.rng_observed=true;
+    }
     if(!isfinite(s.delta)){s.delta=0;s.observed=false;}
     if(object>=GUEST_LO&&object<GUEST_HI-16) {
         uint64_t context=LD64(object+8);
@@ -39,6 +58,14 @@ static const GuestFn wrappers[RESEARCH_PHASE_COUNT]={update,input,task,timer};
 
 bool research_hooks_init(char *why,size_t cap) {
     if(!research_phases_active())return true;
+    if(research_semantics_active()) {
+        static const uint32_t initial[4]={123456789,362436069,521288629,88675123};
+        if(!research_rng_site_matches((const void *)(uintptr_t)game_main_address(GA_RESEARCH_RNG_PROBE),40)||
+           memcmp((const void *)(uintptr_t)GA_RESEARCH_RNG_STATE,initial,sizeof initial)) {
+            if(cap)snprintf(why,cap,"Research RNG instruction/data guard failed.");
+            return false;
+        }
+    }
     for(int i=0;i<RESEARCH_PHASE_COUNT;++i) {
         uint64_t site=game_main_address(sites[i]);
         original[i]=dispatch_lookup(site);

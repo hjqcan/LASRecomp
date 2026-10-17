@@ -1,5 +1,6 @@
 #include "research_update.h"
 #include "research_gate.h"
+#include "research_actors.h"
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
@@ -9,6 +10,7 @@
 #include <iostream>
 #include <vector>
 namespace fs=std::filesystem;
+extern "C" void research_read_actors(ResearchActorSnapshot *out){*out={};out->complete=true;}
 static void env(const char *key,const char *value){
 #ifdef _WIN32
     _putenv_s(key,value?value:"");
@@ -36,6 +38,11 @@ int main(int argc,char **argv){
     assert(research_site_matches(RESEARCH_PHASE_UPDATE,signature,16));signature[15]^=1;
     assert(!research_site_matches(RESEARCH_PHASE_UPDATE,signature,16));
     assert(!research_site_matches(-1,signature,16)&&!research_site_matches(0,signature,15)&&!research_site_matches(0,nullptr,16));
+    unsigned char rng_signature[]={0x55,0xe0,0x00,0xd0,0xb5,0xe2,0x07,0x91,0x00,0x18,0x21,0x1e,0xa8,0x26,0x40,0x29,
+        0xa9,0x02,0x00,0xb9,0xa9,0x2a,0x41,0x29,0x08,0x2d,0x08,0x4a,0x08,0x21,0x48,0x4a,0x08,0x01,0x0a,0x4a,0x08,0x4d,0x4a,0x4a};
+    assert(research_rng_site_matches(rng_signature,sizeof rng_signature));
+    rng_signature[4]^=1;assert(!research_rng_site_matches(rng_signature,sizeof rng_signature));
+    assert(!research_rng_site_matches(rng_signature,39)&&!research_rng_site_matches(nullptr,40));
     ResearchInput script[3]={{1,{123,-456,0,0}},{2,{0,0,0,0}},{0,{0,0,0,0}}},out[3];
     auto tape=(root/"driver.lastape").u8string();
     assert(research_update_tape_write(tape.c_str(),id,script,3,why,sizeof why));

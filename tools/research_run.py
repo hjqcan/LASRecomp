@@ -15,6 +15,9 @@ from game_versions import game_version
 
 SCENARIO_DIRECTIONS = ((1200, 0, -32767, 19), (1250, 32767, 0, 18),
                        (1300, 0, 32767, 17), (1350, -32767, 0, 16))
+SCENARIOS = {'house': 'house_v5', 'house-exit': 'house_exit_v2'}
+FIELD_DIRECTIONS = ((3600, 32767, 0, 18), (3700, 0, -32767, 19),
+                    (3800, -32767, 0, 16), (3900, 0, 32767, 17))
 
 
 def sha(path):
@@ -42,7 +45,7 @@ def ini(path):
     return dict(p['data'])
 
 
-def update_driver(path, build_id, count):
+def update_driver(path, build_id, count, scenario='house'):
     """A short, bounded opening-house script indexed by update dispatch, not host frames."""
     rows = []
     for step in range(count):
@@ -51,6 +54,19 @@ def update_driver(path, build_id, count):
         for start, x, y, bit in SCENARIO_DIRECTIONS:
             if start <= step < start + 25:
                 lx, ly, buttons = x, y, buttons | (1 << bit)
+        if scenario == 'house-exit':
+            # Talk to Tarin to recover the shield before approaching the exit.
+            # B advances dialogue without initiating another conversation afterwards.
+            if 1700 <= step < 1708:
+                buttons |= 1
+            if 1760 <= step <= 2667 and (step - 1760) % 60 < 8:
+                buttons |= 2
+            route = ((1600, 32, 32767, 0, 18), (1640, 8, 0, -32767, 19),
+                     (1660, 1, 32767, 0, 18), (2800, 18, -32767, 0, 16),
+                     (2850, 140, 0, -32767, 19))
+            for start, duration, x, y, bit in (*route, *((s, 40, x, y, b) for s, x, y, b in FIELD_DIRECTIONS)):
+                if start <= step < start + duration:
+                    lx, ly, buttons = x, y, buttons | (1 << bit)
         rows.append(f'{step},{buttons},{lx},{ly},0,0\n')
     path.write_text(f'LASINPUT2\nbuild_id={build_id}\nboundary=las_update_dispatch_v1\n'
                     'update,buttons,lx,ly,rx,ry\n' + ''.join(rows), encoding='utf-8')
@@ -70,6 +86,32 @@ def scenario_movement(rows):
             'note': 'Movement coverage is separate from successful capture and does not certify deterministic replay.'}
 
 
+def scenario_transition(rows):
+    sequence = []
+    field = []
+    for row in rows:
+        if row['observed'] != '1' or row['playing'] != '1' or not row['level']:
+            continue
+        if not sequence or sequence[-1]['level'] != row['level']:
+            sequence.append({'update': int(row['update']), 'level': row['level']})
+        if row['level'] == 'Field' and row['position'] == '1':
+            field.append(row)
+    movement = []
+    for (start, _, _, _), name in zip(FIELD_DIRECTIONS, ('right', 'down', 'left', 'up')):
+        distances = []
+        for step in range(start, min(start + 40, len(rows))):
+            a, b = rows[step-1], rows[step]
+            if a['level'] == b['level'] == 'Field' and a['position'] == b['position'] == '1':
+                distances.append(math.hypot(float(b['x'])-float(a['x']), float(b['z'])-float(a['z'])))
+        movement.append({'direction': name, 'start_update': start, 'available_pairs': len(distances),
+                         'changing_samples': sum(d > 1e-6 for d in distances), 'xz_path_length': sum(distances)})
+    return {'level_sequence': sequence, 'field_position_samples': len(field), 'field_movement': movement,
+            'all_field_windows_moved': all(w['changing_samples'] >= 5 for w in movement),
+            'house_to_field_observed': any(a['level'] == 'MarinTarinHouse' and b['level'] == 'Field'
+                                          for a, b in zip(sequence, sequence[1:])),
+            'note': 'Observed level names and available positions; does not certify completed loading or combat.'}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--exe', type=Path, required=True)
@@ -82,13 +124,23 @@ def main():
     p.add_argument('--present', choices=('mailbox', 'fifo', 'immediate'), default='mailbox', help='Requested Vulkan mode; actual fallback is reported')
     p.add_argument('--pace', choices=('on', 'off'), default='on', help='Existing Vulkan frame-pacing heuristic')
     p.add_argument('--phases', action='store_true', help='Observe verified LAS update/input/task/timer callbacks')
+    p.add_argument('--semantics', action='store_true', help='Read the guarded global RNG state and selected clock/entropy returns (update mode)')
     p.add_argument('--boundary', choices=('hid', 'update'), default='hid')
-    p.add_argument('--updates', type=int, default=2400, help='Exact captured update count in update mode')
+    p.add_argument('--scenario', choices=tuple(SCENARIOS), default='house', help='Update-indexed input driver; house-exit adds an exit and field movement')
+    p.add_argument('--updates', type=int, help='Exact captured updates; default 2400 for house, 4800 for house-exit')
     p.add_argument('--start-level', default='MarinTarinHouse')
     p.add_argument('--warmup', type=int, default=240, help='Minimum consecutive valid updates at the start gate')
     p.add_argument('--stable', type=int, default=60, help='Consecutive equal player-position/health observations')
-    p.add_argument('--frames', type=int, default=5700)
+    p.add_argument('--frames', type=int, help='Presentation fallback limit; default 5700 for house, 9000 for house-exit')
     args = p.parse_args()
+    if args.updates is None:
+        args.updates = 4800 if args.scenario == 'house-exit' else 2400
+    if args.frames is None:
+        args.frames = 9000 if args.scenario == 'house-exit' else 5700
+    if args.semantics and args.boundary != 'update':
+        p.error('--semantics requires --boundary update')
+    if args.scenario != 'house' and args.boundary != 'update':
+        p.error('--scenario requires --boundary update')
     if not args.save_copy.is_dir():
         p.error('--save-copy must be an existing save mount directory')
     try:
@@ -110,9 +162,11 @@ def main():
     fingerprint = {'runtime': sha(exe), 'library': sha(library), 'build_id': build_id,
                    'save': tree(save), 'settings': hashlib.sha256(settings.encode()).hexdigest()}
     if args.boundary == 'update':
-        fingerprint['update_probe'] = {'boundary': 'las_update_dispatch_v1', 'scenario': 'house_v5',
+        fingerprint['update_probe'] = {'boundary': 'las_update_dispatch_v1', 'scenario': SCENARIOS[args.scenario],
                                        'updates': args.updates, 'start_level': args.start_level,
                                        'warmup': args.warmup, 'stable': args.stable}
+        if args.semantics:
+            fingerprint['semantic_probe'] = 'las_rng_actors_v1'
     tape = None
     if args.replay:
         previous = args.replay.resolve()
@@ -140,6 +194,8 @@ def main():
                LARECOMP_SHOT_PATH=str(output / 'scene.png'))
     if args.phases:
         env['LARECOMP_RESEARCH_PHASES'] = '1'
+    if args.semantics:
+        env['LARECOMP_RESEARCH_SEMANTICS'] = '1'
     if args.boundary == 'update':
         env.update(LARECOMP_RESEARCH_BOUNDARY='update', LARECOMP_RESEARCH_START_LEVEL=args.start_level,
                    LARECOMP_RESEARCH_WARMUP=str(args.warmup), LARECOMP_RESEARCH_STABLE=str(args.stable),
@@ -148,7 +204,7 @@ def main():
         env['LARECOMP_INPUT'] = '200:A:8,600:L:12,600:R:12,700:A:8,900:L:12,900:R:12,1000:A:8'
         if not tape:
             driver = output / 'scenario.lastape'
-            update_driver(driver, build_id, args.updates)
+            update_driver(driver, build_id, args.updates, args.scenario)
             env['LARECOMP_RESEARCH_DRIVER'] = str(driver)
     if tape:
         env['LARECOMP_RESEARCH_REPLAY'] = str(tape)
@@ -174,6 +230,7 @@ def main():
               'present_requested': args.present,
               'pacing_requested': args.pace, 'phases_requested': args.phases or args.boundary == 'update',
               'input_boundary': args.boundary,
+              'semantics_requested': args.semantics,
               'source_unchanged': fingerprint['save'] == tree(save) == tree(output / 'source-save/save_0'),
               'passed': False, 'deterministic_replay': 'not_established'}
     log_text = (output / 'runtime.log').read_text(encoding='utf-8', errors='replace')
@@ -194,11 +251,20 @@ def main():
             report['updates'] = ini(folders[0] / 'update-summary.ini')
             update = report['updates']
             with (folders[0] / 'updates.csv').open(newline='') as stream:
-                report['scenario_movement'] = scenario_movement(list(csv.DictReader(stream)))
+                update_rows = list(csv.DictReader(stream))
+            report['scenario_movement'] = scenario_movement(update_rows)
+            report['scenario_transition'] = scenario_transition(update_rows)
             report['passed'] = (report['passed'] and update['gate_ready'] == update['completed'] == '1' and
                                 update['integrity_error'] == '0' and
                                 int(update['captured_updates']) == int(update['source_consumed']) == args.updates and
                                 (folders[0] / 'inputs.lastape').is_file())
+            if args.semantics:
+                report['passed'] = (report['passed'] and report['capture'].get('semantics') == '1' and
+                                    report['capture'].get('external_truncated') == '0' and
+                                    len(update_rows) == args.updates and
+                                    all(r.get('rng_before_observed') == r.get('rng_observed') == '1' for r in update_rows) and
+                                    (folders[0] / 'external.csv').is_file() and (folders[0] / 'actor-samples.csv').is_file() and
+                                    (folders[0] / 'actors.csv').is_file())
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2), flush=True)
     if not report['passed']:

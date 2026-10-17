@@ -13,6 +13,8 @@ typedef struct {
     float delta;
     unsigned blocked;
     bool observed;
+    bool rng_observed;
+    uint32_t rng[4];
 } ResearchPhaseSample;
 bool research_input_valid(const ResearchInput *input);
 int research_tape_read(const char *path,const char *build_id,ResearchInput *out,size_t max,char *why,size_t cap);
@@ -22,6 +24,10 @@ bool research_update_tape_write(const char *path,const char *build_id,const Rese
 bool research_boot(const char *game_root,const char *isolated_save,char *why,size_t cap);
 bool research_active(void);
 bool research_phases_active(void);
+bool research_semantics_active(void);
+enum { RESEARCH_EXTERNAL_ENTROPY, RESEARCH_EXTERNAL_CLOCK };
+void research_external(int kind,uint64_t pc,uint32_t thread,uint64_t index,uint64_t value);
+bool research_rng_site_matches(const void *bytes,size_t size);
 bool research_exit_ready(void);
 bool research_hooks_init(char *why,size_t cap);
 bool research_site_matches(int phase,const void *bytes,size_t size);

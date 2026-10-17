@@ -113,6 +113,8 @@
 #define GA_COMPANION_LEAVE                  UINT64_C(0x7000d53ed0)
 #define GA_ACTOR_KILL                       UINT64_C(0x7000fabf70)
 #define GA_ACTOR_REGISTRY                   UINT64_C(0x7001cb2d00)
+#define GA_RESEARCH_RNG_STATE               UINT64_C(0x7001c341f8)
+#define GA_RESEARCH_RNG_PROBE               UINT64_C(0x700002a5f8)
 #define GA_ADD_ITEM                         UINT64_C(0x70007e18b0)
 #define GA_AREA_EVENT_TRIGGER               UINT64_C(0x7000029520)
 #define GA_SAVE_SCAN_BEGIN                  UINT64_C(0x7001c00000)

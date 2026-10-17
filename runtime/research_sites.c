@@ -12,3 +12,13 @@ static const unsigned char signatures[RESEARCH_PHASE_COUNT][16]={
 bool research_site_matches(int phase,const void *bytes,size_t size) {
     return phase>=0&&phase<RESEARCH_PHASE_COUNT&&bytes&&size>=16&&!memcmp(bytes,signatures[phase],16);
 }
+
+// Address calculation for main+0x1c341f8, state loads and the 11/8/19 XOR shifts.
+// The four initial data words are checked separately before guest startup.
+bool research_rng_site_matches(const void *bytes,size_t size) {
+    static const unsigned char signature[40]={0x55,0xe0,0x00,0xd0,0xb5,0xe2,0x07,0x91,
+        0x00,0x18,0x21,0x1e,0xa8,0x26,0x40,0x29,0xa9,0x02,0x00,0xb9,0xa9,0x2a,0x41,0x29,
+        0x08,0x2d,0x08,0x4a,0x08,0x21,0x48,0x4a,
+        0x08,0x01,0x0a,0x4a,0x08,0x4d,0x4a,0x4a};
+    return bytes&&size>=sizeof signature&&!memcmp(bytes,signature,sizeof signature);
+}

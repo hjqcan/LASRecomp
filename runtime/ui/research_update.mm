@@ -1,6 +1,7 @@
 // Input epochs at the verified LAS update-dispatch callback. This is not a process snapshot.
 #include "../research_update.h"
 #include "../research_gate.h"
+#include "../research_actors.h"
 #include <atomic>
 #include <charconv>
 #include <cstdio>
@@ -19,12 +20,14 @@ namespace fs=std::filesystem;
 namespace {
 struct Point { ResearchPhaseSample sample{};uint64_t digest=0,ns=0,timers=0,vsyncs=0; };
 struct Update { Point before,after;ResearchInput input{};size_t polls=0; };
+struct ActorRow { size_t update;char level[64];ResearchActorSnapshot snapshot; };
 std::mutex update_lock;
 std::atomic<bool> active,done;
 ResearchGate gate{};
 ResearchUpdateStatus status{};
 std::vector<ResearchInput> source;
 std::vector<Update> updates;
+std::vector<ActorRow> actor_rows;
 Point entry,origin;
 ResearchInput latched{};
 size_t limit,cycle_polls,total_callbacks;
@@ -51,7 +54,7 @@ extern "C" bool research_update_active(void){return active.load(std::memory_orde
 extern "C" bool research_update_done(void){return done.load(std::memory_order_relaxed);}
 extern "C" bool research_update_boot(const char *id,const char *replay,char *why,size_t cap) {
     std::lock_guard<std::mutex> guard(update_lock);
-    active=false;done=false;status={};source.clear();updates.clear();error.clear();gate={};depth=0;
+    active=false;done=false;status={};source.clear();updates.clear();actor_rows.clear();error.clear();gate={};depth=0;
     owner_set=cycle_recording=input_latched=false;cycle_polls=total_callbacks=0;entry={};origin={};latched={};
     try {
         const char *boundary=getenv(keys[0]);
@@ -113,6 +116,12 @@ extern "C" void research_update_phase(bool before,const ResearchPhaseSample *sam
     if((uint32_t)(sample->counter-entry.sample.counter)!=1){fail("Update counter did not advance exactly once");return;}
     if(cycle_recording) {
         if(!input_latched){fail("Captured update had no primary-controller poll");return;}
+        if(sample->rng_observed&&updates.size()%10==0) {
+            ActorRow row{};row.update=updates.size();memcpy(row.level,sample->state.level,sizeof row.level);
+            row.snapshot.issue=RESEARCH_ACTORS_UNREADABLE;
+            if(sample->observed&&sample->state.playing)research_read_actors(&row.snapshot);
+            actor_rows.push_back(row);
+        }
         updates.push_back({entry,point,latched,cycle_polls});status.inputs=updates.size();
         if(updates.size()==limit){status.completed=true;done=true;}
     }
@@ -133,18 +142,40 @@ extern "C" bool research_update_export(const char *directory,const char *id,char
         if(status.ready) {
             std::ofstream start(root/"start-state.ini",std::ios::binary);stream_setup(start);const auto &s=origin.sample.state;
             start<<"format=1\nlevel="<<s.level<<"\nhp="<<s.hp<<"\nx="<<s.x<<"\ny="<<s.y<<"\nz="<<s.z
-                 <<"\nsave_digest="<<origin.digest<<"\ncounter="<<origin.sample.counter<<"\nframe="<<s.frame<<"\nelapsed_ns="<<origin.ns<<'\n';
+                 <<"\nsave_digest="<<origin.digest<<"\ncounter="<<origin.sample.counter<<"\nframe="<<s.frame<<"\nelapsed_ns="<<origin.ns
+                 <<"\nrng_observed="<<origin.sample.rng_observed<<'\n';
+            for(int i=0;i<4;++i)start<<"rng"<<i<<'='<<origin.sample.rng[i]<<'\n';
             stream_close(start);
         }
         std::ofstream output(root/"updates.csv",std::ios::binary);stream_setup(output);
-        output<<"update,frame,elapsed_ns,timer_calls,vsyncs,observed,playing,level,hp,position,x,y,z,save_digest,counter_before,counter_after,delta,blocked,hid_polls\n";
+        output<<"update,frame,elapsed_ns,timer_calls,vsyncs,observed,playing,level,hp,position,x,y,z,save_digest,counter_before,counter_after,delta,blocked,hid_polls,rng_before_observed,rng_observed";
+        for(const char *prefix:{"rng_before","rng"})for(int i=0;i<4;++i)output<<','<<prefix<<i;
+        output<<'\n';
         std::vector<ResearchInput> inputs;inputs.reserve(updates.size());
         for(size_t i=0;i<updates.size();++i){const auto &u=updates[i];const auto &a=u.after.sample;const auto &s=a.state;
             output<<i<<','<<s.frame<<','<<u.after.ns<<','<<u.after.timers<<','<<u.after.vsyncs<<','<<a.observed<<','<<s.playing<<','<<s.level<<','<<s.hp
-                  <<','<<s.position<<','<<s.x<<','<<s.y<<','<<s.z<<','<<u.after.digest<<','<<u.before.sample.counter<<','<<a.counter<<','<<a.delta<<','<<a.blocked<<','<<u.polls<<'\n';
+                  <<','<<s.position<<','<<s.x<<','<<s.y<<','<<s.z<<','<<u.after.digest<<','<<u.before.sample.counter<<','<<a.counter<<','<<a.delta<<','<<a.blocked<<','<<u.polls
+                  <<','<<u.before.sample.rng_observed<<','<<a.rng_observed;
+            for(auto v:u.before.sample.rng)output<<','<<v;
+            for(auto v:a.rng)output<<','<<v;
+            output<<'\n';
             inputs.push_back(u.input);
         }
         stream_close(output);
+        if(!actor_rows.empty()) {
+            std::ofstream index(root/"actor-samples.csv",std::ios::binary),actors(root/"actors.csv",std::ios::binary);
+            stream_setup(index);stream_setup(actors);
+            index<<"update,level,complete,issue,registry_count,selected_count\n";
+            actors<<"update,key,vtable,name,component,position,x,y,z\n";
+            for(const auto &row:actor_rows){const auto &snapshot=row.snapshot;
+                index<<row.update<<','<<row.level<<','<<snapshot.complete<<','<<snapshot.issue<<','<<snapshot.registry_count<<','<<snapshot.count<<'\n';
+                if(!snapshot.complete)continue; // Partial walks are diagnostics, never compared as complete rosters.
+                for(unsigned i=0;i<snapshot.count;++i){const auto &a=snapshot.actors[i];
+                    actors<<row.update<<','<<a.key<<','<<a.vtable<<','<<a.name<<','<<a.component<<','<<a.position
+                          <<','<<a.xyz[0]<<','<<a.xyz[1]<<','<<a.xyz[2]<<'\n';}
+            }
+            stream_close(index);stream_close(actors);
+        }
         if(!inputs.empty()) {
             char message[256];require(research_update_tape_write((root/"inputs.lastape").u8string().c_str(),id,inputs.data(),inputs.size(),message,sizeof message),message);
         }

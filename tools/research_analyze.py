@@ -7,6 +7,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
+from research_semantics import actor_comparison, actor_report, external_comparison, external_report, rng_comparison, rng_report, rng_state
 
 
 def matrix_product(a, b):
@@ -254,9 +255,17 @@ def analyze(left, right=None):
     if (a_folder / 'updates.csv').exists():
         a_updates = observations(a_folder, 'updates.csv', 'update')
         result['left_updates'] = update_timing(a_updates)
+        result['left_rng'] = rng_report(a_updates)
         result['left_start_state'] = start_state(a_folder / 'start-state.ini')
         if (a_folder / 'inputs.lastape').exists():
             result['left_motion_segments'] = input_motion_segments(a_updates, inputs(a_folder)[2])
+    a_external = load_csv(a_folder / 'external.csv', 4096) if (a_folder / 'external.csv').exists() else None
+    a_actor_samples = load_csv(a_folder / 'actor-samples.csv', 1200) if (a_folder / 'actor-samples.csv').exists() else None
+    a_actors = load_csv(a_folder / 'actors.csv', 76800) if a_actor_samples is not None else None
+    if a_actor_samples is not None:
+        result['left_actors'] = actor_report(a_actor_samples, a_actors)[0]
+    if a_external is not None:
+        result['left_external'] = external_report(a_external)
     if right is not None:
         b_folder = folder(right)
         b = observations(b_folder)
@@ -266,6 +275,17 @@ def analyze(left, right=None):
         result['input_prefix'] = {'same_build_id': a_id == b_id, 'same_boundary': a_boundary == b_boundary,
                                   'compared': count, 'matches': a_boundary == b_boundary and a_inputs[:count] == b_inputs[:count]}
         result['right'] = timing(b)
+        b_external = load_csv(b_folder / 'external.csv', 4096) if (b_folder / 'external.csv').exists() else None
+        b_actor_samples = load_csv(b_folder / 'actor-samples.csv', 1200) if (b_folder / 'actor-samples.csv').exists() else None
+        if b_actor_samples is not None:
+            b_actors = load_csv(b_folder / 'actors.csv', 76800)
+            result['right_actors'] = actor_report(b_actor_samples, b_actors)[0]
+            if a_actor_samples is not None:
+                result['actor_comparison'] = actor_comparison(a_actor_samples, a_actors, b_actor_samples, b_actors)
+        if b_external is not None:
+            result['right_external'] = external_report(b_external)
+            if a_external is not None:
+                result['external_comparison'] = external_comparison(a_external, b_external)
         result['right_camera'] = camera_report(load_csv(b_folder / 'camera.csv', 12000))
         if (b_folder / 'phases.csv').exists():
             result['right_phases'] = phase_report(load_csv(b_folder / 'phases.csv', 120000))
@@ -277,19 +297,32 @@ def analyze(left, right=None):
         if (b_folder / 'updates.csv').exists():
             b_updates = observations(b_folder, 'updates.csv', 'update')
             result['right_updates'] = update_timing(b_updates)
+            result['right_rng'] = rng_report(b_updates)
             result['right_start_state'] = start_state(b_folder / 'start-state.ini')
             result['right_motion_segments'] = input_motion_segments(b_updates, b_inputs)
             if a_updates is not None:
                 result['update_alignment'] = divergence(a_updates, b_updates, 'updates')
                 result['update_positions'] = pose_comparison(a_updates, b_updates)
+                result['rng_comparison'] = rng_comparison(a_updates, b_updates)
                 x, y = result['left_start_state'], result['right_start_state']
                 if x and y:
                     result['start_state_comparison'] = {
                         'level_health_position_match': x['level'] == y['level'] and x['hp'] == y['hp'] and
                             all(abs(float(x[k]) - float(y[k])) <= 1e-4 for k in ('x', 'y', 'z')),
                         'raw_region_digest_match': x['save_digest'] == y['save_digest'],
+                        'rng_match': rng_state(x) == rng_state(y) if rng_state(x) is not None and rng_state(y) is not None else None,
                         'note': 'This subset does not establish equality of the complete process state.'}
         result['deterministic_replay'] = 'not_established' # Even matching this subset cannot certify the whole simulation.
+        if 'update_alignment' in result:
+            differences = []
+            for key in ('update_alignment', 'rng_comparison', 'actor_comparison'):
+                item = result.get(key, {}).get('first_difference')
+                if item is not None:
+                    differences.append({'observation': key, 'detail': item})
+            result['measured_state_comparison'] = {
+                'observed_divergence': bool(differences), 'differences': differences,
+                'note': 'Player, RNG and actor observations are separate. Missing coverage is not equality; '
+                        'even a measured match does not establish complete deterministic replay.'}
     return result
 
 
