@@ -85,6 +85,28 @@ static void mixer_test(const uint8_t *packet, size_t size) {
     puts("PASS: PCM voice fan-out, reversed submix ordering, splitter to submix to final mix, direct-route parity");
     puts("PASS: stereo channel destination stride");
 }
+
+static void delay_mixer_test(void) {
+    Effect fx[2] = {0};
+    Renderer r = {.sample_count=4, .effects=2, .fx=fx};
+    float samples[9] = {1,0,0,0,0,0,0,0,12345};
+    Mix mix = {.bufs=2, .buf=samples};
+    uint8_t delay[0xc0] = {3,1,1}, biquad[0xc0] = {6,1,1};
+    u32(delay+4,4); u32(delay+0x18,1);  // delay follows the biquad, despite its lower slot
+    AudioDelayParam p = {.channels=1,.channels_max=1,.output={1},.delay_ms=2,.delay_max=4,
+                         .sample_rate=1000*16384,.in_gain=16384,.out_gain=16384};
+    memcpy(delay+0x20,&p,sizeof p); delay[0x20+52]=2;
+    u32(biquad+4,4); biquad[0x20+22]=1; biquad[0x20+23]=1;
+    int16_t half=8192; memcpy(biquad+0x20+12,&half,2);
+    effect_update(&fx[0],delay,0x38564552); effect_update(&fx[1],biquad,0x38564552);
+    apply_effects(&r,0,&mix); assert(samples[0]==1 && samples[5]==0);
+    apply_effects(&r,4,&mix); assert(samples[0]==.5f && samples[5]==.5f && samples[8]==12345);
+    delay[1]=0; delay[2]=0; effect_update(&fx[0],delay,0x38564552);
+    memset(samples,0,8*sizeof(float)); samples[0]=.5f;
+    apply_effects(&r,4,&mix); assert(samples[4]==.25f);  // disabled delay still routes its input
+    delay[0]=0; effect_update(&fx[0],delay,0x38564552); assert(!fx[0].delay.lines);
+    puts("PASS: production effect dispatch, ordered biquad/delay chain, mix selection, bypass and slot retirement");
+}
 #endif
 
 int main(int argc, char **argv) {
@@ -112,6 +134,7 @@ int main(int argc, char **argv) {
     audio_split_free(&s);
 #ifdef TEST_AUDIO_RENDERER
     mixer_test(packet,size);
+    delay_mixer_test();
 #endif
     // Optional local captures exercise the real ABI without checking game data
     // into the repository. The first capture must include initial state.

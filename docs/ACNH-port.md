@@ -82,7 +82,14 @@ and volume ramps. With `-DTEST_AUDIO_RENDERER` and the runtime build headers,
 it additionally feeds synthetic PCM through the actual voice/submix mixer,
 checking stereo destination strides and existing direct routes. Local captures
 from the game validate the packet layout but are not repository fixtures.
-Auxiliary-buffer, delay and reverb-3D effects remain incomplete. This routing
+Audio effect 3 implements Q14 delay gains, persistent delay lines, low-pass
+feedback, mono/stereo/quad/5.1 routing and the legacy surround-channel mapping.
+The equations follow [Ryujinx's delay implementation](https://git.axenov.dev/Museum/ryujinx/src/commit/dde9bb5c69d2e1a70df82af8accd3d01fb94b78d/Ryujinx.Audio/Renderer/Dsp/Command/DelayCommand.cs).
+Impulse tests cover packet boundaries, bypass, aliasing, feedback, invalid
+descriptors and the game's observed 48 kHz / 400 ms parameter set. The production
+mixer test checks ordered biquad/delay processing and effect-slot retirement.
+Actual island audio still needs listening and capture validation.
+Auxiliary-buffer and reverb-3D effects remain incomplete. This routing
 implementation covers the legacy destination format, not REV12 biquads.
 
 NVN recorders use private host arenas and compact allocation budgets, avoiding
