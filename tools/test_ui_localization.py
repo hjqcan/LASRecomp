@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 
 root = Path(__file__).resolve().parent.parent
 catalog = root / 'runtime/ui/localization_strings.h'
@@ -36,3 +37,15 @@ with tempfile.TemporaryDirectory() as temporary:
     subprocess.run(cxx + ['-x', 'c++', '-std=c++17', '-Iruntime', '-I' + str(imgui),
                           *sources, '-o', str(exe)], cwd=root, check=True)
     subprocess.run([str(exe)] + (['--font'] if '--font' in sys.argv else []), cwd=root, check=True)
+    if os.name == 'nt':
+        # Windows may briefly retain the finished executable's image mapping.
+        # Retry this one file inside our temporary directory before rmtree.
+        assert exe.parent == Path(temporary)
+        for attempt in range(60):
+            try:
+                exe.unlink()
+                break
+            except PermissionError:
+                if attempt == 59:
+                    raise
+                time.sleep(0.05)

@@ -61,6 +61,7 @@ static bool load_pchtxt(const char *path) {
 }
 
 static bool init(void) {
+    if (!title_is_las()) return true;
     settings_load();
     const char *seed = getenv("LARECOMP_RANDO_SEED") ? getenv("LARECOMP_RANDO_SEED") : g_settings.rando_seed;
     if (!seed || !seed[0]) return true;

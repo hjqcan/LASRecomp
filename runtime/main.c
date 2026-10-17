@@ -7,6 +7,7 @@
 #include "gamelib.h"
 #include "gameversion.h"
 #include "game_profiles.h"
+#include "game_shortcut.h"
 #include "mods.h"
 #include "photo.h"
 #include "workshop.h"
@@ -37,8 +38,11 @@ static void module_init(Cpu *c, Module *m) {
     else run_array(c, m->init_array, m->init_array_sz);
 }
 
-static void rtld_init_sdk(Cpu *c) { module_init(c, &g_modules[1]); }
-static void rtld_init_main(Cpu *c) { module_init(c, &g_modules[0]); }
+static void rtld_init_sdk(Cpu *c) { module_init(c, &g_modules[title_profile_current()->init_order[0]]); }
+static void rtld_init_main(Cpu *c) {
+    const TitleProfile *p=title_profile_current();
+    for (unsigned i=1;i<p->module_count;i++) module_init(c,&g_modules[p->init_order[i]]);
+}
 
 // Claim the guest address range before anything else can map there. The host allocator places
 // regions at random addresses in the same window; on a collision, re-exec for a fresh layout.
@@ -132,6 +136,8 @@ static void teardown(void) {
 }
 
 static void boot(const char *root) {
+    char why[512];
+    if (!title_profile_select(root,why,sizeof why)) FATAL("%s\n",why);
     game_profile_activate(root, rt_data_root());
     extern void save_backups_set_game_root(const char *);
     extern void rando_set_game_root(const char *);
@@ -145,18 +151,17 @@ static void boot(const char *root) {
     snprintf(npdm_path, sizeof npdm_path, "%s/main.npdm", exefs);
     if (!g_romfs_dir) g_romfs_dir = strdup(romfs);
 
-    char why[512];
     if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
     char main_path[1100];
     snprintf(main_path, sizeof main_path, "%s/main", exefs);
     game_version_select(main_path);
-    if (game_version_current() == GAME_UNSUPPORTED) FATAL("unsupported game executable\n");
-    LOG("[game] version %s\n", game_version_name(game_version_current()));
-    if (!mods_load_active(rt_data_root(), root, game_profile_index(root, rt_data_root()),
+    if (title_is_las() && game_version_current() == GAME_UNSUPPORTED) FATAL("unsupported game executable\n");
+    LOG("[game] %s %s\n",title_profile_current()->name,title_profile_current()->version);
+    if (title_is_las() && !mods_load_active(rt_data_root(), root, game_profile_index(root, rt_data_root()),
                           game_version_name(game_version_current()), why, sizeof why)) FATAL("%s\n", why);
     loader_load(exefs);
     if (!rando_boot()) FATAL("The selected randomizer seed could not be loaded. Choose Vanilla or a compatible seed on the start screen.\n");
-    if (!workshop_boot(root, why, sizeof why)) FATAL("%s\n", why);
+    if (title_is_las() && !workshop_boot(root, why, sizeof why)) FATAL("%s\n", why);
     { extern void settings_load(void); settings_load(); }
     kernel_init();
     dispatch_init();
@@ -192,14 +197,31 @@ int main(int argc, char **argv) {
     const char *root = NULL;  // no explicit CLI path: use the selected installation
     bool skip_launcher = getenv("LARECOMP_NO_LAUNCHER") || getenv("LARECOMP_INPUT");  // tests boot straight in
     static char arg_root[1024];
+    int launch_profile = -1;
+    bool create_shortcut = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--play")) skip_launcher = true;
+        else if (!strcmp(argv[i], "--create-shortcut")) create_shortcut = true;
+        else if (!strcmp(argv[i], "--game")) {
+            if (++i >= argc || (launch_profile = game_profile_from_id(argv[i])) < 0) {
+                fprintf(stderr, "Unknown game installation. Use las/1.0.0, las/1.1.0 or acnh/1.0.0.\n"); return 2;
+            }
+        } else if (!strcmp(argv[i], "--data-root")) {
+            if (++i >= argc) { fprintf(stderr, "--data-root needs a folder path.\n"); return 2; }
+            setenv("LARECOMP_DATA_ROOT", argv[i], 1);
+        }
         else if (argv[i][0] != '-' && !realpath(argv[i], arg_root)) root = argv[i];  // (relative to where we started)
         else if (argv[i][0] != '-') root = arg_root;
     }
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
     settings_load();
+    if (launch_profile >= 0) root = game_profile_dir(launch_profile);
     if (!root) root = game_profile_dir(g_settings.game_profile);
+    if (create_shortcut) {
+        char shortcut[2048], why[512];
+        if (!game_shortcut_create(root, shortcut, sizeof shortcut, why, sizeof why)) { fprintf(stderr, "%s\n", why); return 1; }
+        printf("%s\n", shortcut); return 0;
+    }
     for (bool title = !skip_launcher;;) {
         if (title) {  // start screen (runtime/ui/launcher.mm): game files setup, seed choice, settings
             extern const char *launcher_run(const char *root);

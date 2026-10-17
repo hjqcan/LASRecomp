@@ -210,7 +210,7 @@ static void log_tail(const char *path, char *out, size_t n) {  // the last line 
 }
 
 static bool import_helper(const char *base, const char *update, const char *keys, const char *title_keys,
-                          const char *game_dir, const char *expected_version, bool inspect, void (*progress)(const char *), char *why, size_t why_size) {
+                          const char *game_dir, const char *expected_title, const char *expected_version, bool inspect, void (*progress)(const char *), char *why, size_t why_size) {
     if (!g_registered) g_registered = true, atexit(end_all);
     Tools t;
     if (!find_tools(&t)) {
@@ -226,6 +226,8 @@ static bool import_helper(const char *base, const char *update, const char *keys
     if (keys && *keys) { add(&a, "--keys"); add(&a, keys); }
     if (title_keys && *title_keys) { add(&a, "--title-keys"); add(&a, title_keys); }
     if (expected_version && *expected_version) { add(&a, "--expected-version"); add(&a, expected_version); }
+    if (expected_title && *expected_title) { add(&a, "--game"); add(&a, expected_title); }
+    if (getenv("LARECOMP_ALLOW_DEVELOPMENT_GAMES")) add(&a, "--allow-development");
     if (inspect) { add(&a, "--inspect"); add(&a, "--gui-summary"); }
     else { add(&a, "--output"); add(&a, game_dir); add(&a, "--replace"); }
     char log[1200];
@@ -253,20 +255,21 @@ static bool import_helper(const char *base, const char *update, const char *keys
 }
 
 bool gameimport_run(const char *base, const char *update, const char *keys, const char *title_keys, const char *game_dir,
-                    const char *expected_version,
+                    const char *expected_title, const char *expected_version,
                     void (*progress)(const char *), char *why, size_t why_size) {
-    return import_helper(base, update, keys, title_keys, game_dir, expected_version, false, progress, why, why_size);
+    return import_helper(base, update, keys, title_keys, game_dir, expected_title, expected_version, false, progress, why, why_size);
 }
 
 bool gameimport_inspect(const char *base, const char *update, const char *keys, const char *title_keys,
                         const char *game_dir, GameArchiveInfo info[2], char *why, size_t why_size) {
     char result[512] = "";
-    if (!import_helper(base, update, keys, title_keys, game_dir, NULL, true, NULL, result, sizeof result)) {
+    if (!import_helper(base, update, keys, title_keys, game_dir, NULL, NULL, true, NULL, result, sizeof result)) {
         snprintf(why, why_size, "%s", result);
         return false;
     }
-    if (sscanf(result, "LASMETA1\t%7s\t%15s\t%47s\t%7s\t%15s\t%47s", info[0].format, info[0].version,
-               info[0].metadata, info[1].format, info[1].version, info[1].metadata) != 6) {
+    if (sscanf(result, "LASMETA2\t%7s\t%15s\t%15s\t%47s\t%23s\t%d\t%7s\t%15s\t%15s\t%47s\t%23s\t%d",
+               info[0].format, info[0].game_id, info[0].version, info[0].metadata, info[0].status, &info[0].installable,
+               info[1].format, info[1].game_id, info[1].version, info[1].metadata, info[1].status, &info[1].installable) != 12) {
         snprintf(why, why_size, "The import helper returned an invalid metadata summary.");
         return false;
     }
@@ -316,12 +319,14 @@ static void add_cflags(Args *a, const Tools *t) {
     }
 }
 
-static PlatProc start_compile(const Tools *t, const Unit *u) {
+static PlatProc start_compile(const Tools *t, const Unit *u, const char *work) {
     Args a = {0};
     compiler(&a, t);
     add_cflags(&a, t);
     char inc[1200];
     snprintf(inc, sizeof inc, "-I%s", t->inc);
+    add(&a, inc);
+    snprintf(inc, sizeof inc, "-I%s", work);
     add(&a, inc);
     add(&a, "-DGAMELIB_ID=\"" GAMELIB_ID "\"");
     add(&a, "-c");
@@ -335,6 +340,9 @@ static PlatProc start_compile(const Tools *t, const Unit *u) {
 
 // ------------------------------------------------------------------ the build
 bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size_t why_size) {
+    const TitleProfile *profile=title_profile_validate(game_dir,why,why_size);
+    if (!profile) return false;
+    unsigned module_count=profile->module_count;
     uint64_t t0 = plat_now_ns();
     if (!g_registered) g_registered = true, atexit(end_all);
     Tools t;
@@ -345,21 +353,26 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     char work[1100], tmp[1100];
     snprintf(work, sizeof work, "%s" SEP ".gamebuild", game_dir);
     snprintf(tmp, sizeof tmp, "%s" SEP "%s.tmp", work, GAMELIB_NAME);
-    char input_paths[6][1100], spec[4096];
-    snprintf(input_paths[0], sizeof input_paths[0], "%s" SEP "exefs" SEP "main", game_dir);
-    snprintf(input_paths[1], sizeof input_paths[1], "%s" SEP "exefs" SEP "sdk", game_dir);
+    char input_paths[TITLE_MAX_MODULES+4][1100], spec[4096];
+    for (unsigned i=0;i<module_count;i++)
+        snprintf(input_paths[i],sizeof input_paths[i],"%s" SEP "exefs" SEP "%s",game_dir,profile->modules[i].name);
     const char *headers[] = {"cpu.h", "simd.h", "simd_fp.h", "gamelib.h"};
-    for (int i = 0; i < 4; ++i) snprintf(input_paths[i+2], sizeof input_paths[i+2], "%s" SEP "%s", t.inc, headers[i]);
+    for (int i = 0; i < 4; ++i) snprintf(input_paths[i+module_count], sizeof input_paths[i+module_count], "%s" SEP "%s", t.inc, headers[i]);
     // Generator changes should rebuild only chunks whose C changed, as in the existing incremental builder.
     // Compiler/header/flag changes invalidate every object; entry always rebuilds because it embeds GAMELIB_ID.
-    const char *inputs[] = {input_paths[2], input_paths[3], input_paths[4], input_paths[5], t.cc};
-    snprintf(spec, sizeof spec, "LASBUILD3\n%s\n%s\n%s\n%s\nzig=%d pointer=%d\n", GAMELIB_BASE_ID,
-             GAMELIB_CFLAGS, GAMELIB_SHARED, t.cc, t.zig, (int)sizeof(void *));
+    const char *inputs[] = {input_paths[module_count], input_paths[module_count+1], input_paths[module_count+2], input_paths[module_count+3], t.cc};
+    snprintf(spec, sizeof spec, "LASBUILD4\n%s\n%s\n%s\n%s\nzig=%d pointer=%d\n%s:%s:adapter=%u\n", GAMELIB_BASE_ID,
+             GAMELIB_CFLAGS, GAMELIB_SHARED, t.cc, t.zig, (int)sizeof(void *),profile->key,profile->version,profile->adapter_revision);
     if (o->progress) o->progress(0, "Checking completed build files...");
     BuildCache *cache = build_cache_open(game_dir, spec, inputs, 5, why, why_size);
     if (!cache) return false;
-    const char *gen_inputs[5] = {input_paths[0], input_paths[1], t.gen, t.hle};
-    int ngen = 4;
+    char entry_header[1200];
+    snprintf(entry_header,sizeof entry_header,"%s" SEP "gamelib_modules.inc",work);
+    if (!title_profile_write_entry(profile,entry_header,why,why_size)) { build_cache_close(cache); return false; }
+    const char *gen_inputs[TITLE_MAX_MODULES+4];
+    int ngen=0;
+    for (unsigned i=0;i<module_count;i++) gen_inputs[ngen++]=input_paths[i];
+    gen_inputs[ngen++]=t.gen; gen_inputs[ngen++]=t.hle; gen_inputs[ngen++]=entry_header;
     if (t.gen_script[0]) gen_inputs[ngen++] = t.gen_script;
     if (!build_cache_prepare_generation(cache, GAMELIB_ID, gen_inputs, ngen, why, why_size)) {
         build_cache_close(cache);
@@ -379,12 +392,12 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     LOG("[gamebuild] generator %s%s%s, compiler %s%s, %d jobs\n", t.gen, t.gen_script[0] ? " " : "", t.gen_script,
         t.cc, t.zig ? " cc" : "", o->jobs);
 
-    // 1. the generator, both modules at once; their finished files are compiled while it goes on
-    Gen gens[2] = {{.name = "main"}, {.name = "sdk"}};
-    static const char *const base[2] = {"0x7000000000", "0x7004000000"};
+    // 1. Every module in this adapter; finished chunks compile while generation continues.
+    Gen gens[TITLE_MAX_MODULES] = {0};
     bool ok = true;
-    for (int i = 0; i < 2 && ok; i++) {
+    for (unsigned i = 0; i < module_count && ok; i++) {
         Gen *g = &gens[i];
+        g->name=profile->modules[i].name;
         g->exit = -1;
         snprintf(g->log, sizeof g->log, "%s" SEP "gen_%s.log", work, g->name);
         snprintf(g->out, sizeof g->out, "%s" SEP "%s", work, g->name);
@@ -400,17 +413,19 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         if (t.gen_script[0]) add(&a, t.gen_script);
         add(&a, g->name);
         add(&a, nso);
-        add(&a, base[i]);
+        char base[32]; snprintf(base,sizeof base,"0x%llx",(unsigned long long)profile->modules[i].base);
+        add(&a, base);
         add(&a, g->out);
-        if (i == 1) { add(&a, "--hle"); add(&a, t.hle); }
+        add(&a,"--profile"); add(&a,profile->generator_profile);
+        if (profile->modules[i].hle) { add(&a, "--hle"); add(&a, t.hle); }
         g->p = spawn(a.v, g->log);
         args_free(&a);
         if (!g->p) { snprintf(why, why_size, "the game code builder didn't start"); ok = false; }
     }
 
     Units units = {0};
-    int queued[2] = {0, 0};  // chunk files of each module put in units so far
-    bool tables[2] = {false, false};
+    int queued[TITLE_MAX_MODULES] = {0};
+    bool tables[TITLE_MAX_MODULES] = {false};
     int next = 0, jobs = o->jobs < 1 ? 1 : o->jobs > 64 ? 64 : o->jobs;
     struct { PlatProc p; int unit; } run[64];
     int nrun = 0;
@@ -428,7 +443,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         bool gens_done = true;
         double gen_frac = 0;
         unsigned long long written = 0;
-        for (int i = 0; i < 2; i++) {
+        for (unsigned i = 0; i < module_count; i++) {
             Gen *g = &gens[i];
             if (g->exit < 0) {
                 read_gen_log(g);
@@ -461,7 +476,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
                 add_unit(&units, src, work, stem);
                 tables[i] = true;
             }
-            gen_frac += g->exit == 0 ? 0.5 : g->n ? 0.5 * (double)g->ci / (double)g->n : 0;
+            gen_frac += (g->exit == 0 ? 1.0 : g->n ? (double)g->ci / (double)g->n : 0) / module_count;
         }
         if (!ok) break;
         for (int k = 0; k < units.n; k++) written += units.u[k].bytes;
@@ -472,7 +487,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
             int cached = build_cache_object(cache, u->stem, u->src, u->source_hash);
             if (cached < 0) { snprintf(why, why_size, "A generated source file is missing or unreadable."); ok = false; break; }
             if (cached && next != 0) { done_bytes += u->bytes; ++reused; ++next; continue; }
-            PlatProc p = start_compile(&t, &units.u[next]);
+            PlatProc p = start_compile(&t, &units.u[next], work);
             if (!p) { snprintf(why, why_size, "the compiler didn't start"); ok = false; break; }
             run[nrun].p = p, run[nrun].unit = next++;
             nrun++;
@@ -511,7 +526,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         sleep_ms(50);
     }
     for (int k = 0; k < nrun; k++) stop(run[k].p);  // (a failure: the rest is of no use - the failure shows at once)
-    for (int i = 0; i < 2; i++)
+    for (unsigned i = 0; i < module_count; i++)
         if (gens[i].p && gens[i].exit < 0) stop(gens[i].p);
 
     // 2. link
@@ -573,9 +588,11 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         }
     }
     if (ok) {
-        char main_path[1100], build_id[41];
+        char main_path[1100], build_id[65];
         snprintf(main_path, sizeof main_path, "%s" SEP "exefs" SEP "main", game_dir);
-        if (!game_build_id(main_path, build_id)) { snprintf(why, why_size, "the game executable changed"); ok = false; }
+        if (title_profile_validate(game_dir,why,why_size)!=profile || !title_build_id(main_path, build_id)) {
+            snprintf(why, why_size, "the game executable changed"); ok = false;
+        }
         else ok = build_cache_publish(cache, GAMELIB_NAME, GAMELIB_ID, build_id, why, why_size);
     }
     free(units.u);

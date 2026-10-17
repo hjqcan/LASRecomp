@@ -17,6 +17,8 @@ __attribute__((section(".svc$z"), used)) static const ServiceDef __stop_services
 #endif
 
 static void stub_handler(Service *s, IpcReq *req, IpcResp *resp) {
+    if (getenv("ACNH_STRICT_IPC"))
+        FATAL("[acnh] missing service implementation: %s command %u\n", s->name, req->cmd);
     LOG("[ipc] STUB %s cmd %u (in %u bytes, x%d a%d b%d c%d) -> ok\n", s->name, req->cmd, req->data_size, req->nx,
         req->na, req->nb, req->nc);
     resp->result = 0;

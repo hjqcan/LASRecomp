@@ -19,6 +19,7 @@
 #include <vector>
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 
 #include "imgui.h"
 #include "localization.h"
@@ -41,6 +42,8 @@ extern "C" {
 #include "gamebuild.h"
 #include "gameversion.h"
 #include "game_profiles.h"
+#include "game_shortcut.h"
+#include "title_profile.h"
 #include "rando_profile.h"
 #include "mods.h"
 #include "workshop.h"
@@ -203,11 +206,21 @@ static std::string incomplete(int have) {
 // The copied game files alone ("" = there), without the game code built from them
 static std::string check_copied_files(const std::string &root) {
     if (!file_exists(root + "/exefs/main")) return "No game files yet";
-    GameVersion actual = game_version_file((root + "/exefs/main").c_str());
-    if (actual == GAME_UNSUPPORTED)
-        return "Unsupported game version (needs v1.0.0 or v1.1.0)";
-    const char *expected = game_profile_version(game_profile_index(root.c_str(), rt_data_root()));
-    if (expected && strcmp(expected, game_version_name(actual))) return "The game version does not match this installation slot.";
+    char why[512];
+    const TitleProfile *actual = title_profile_validate(root.c_str(), why, sizeof why);
+    if (!actual) return why;
+    int slot = game_profile_index(root.c_str(), rt_data_root());
+    const char *expected = game_profile_version(slot), *title = game_profile_title(slot);
+    if ((expected && strcmp(expected, actual->version)) || (title && strcmp(title, actual->key)))
+        return "The game version does not match this installation slot.";
+    if (strcmp(actual->key, "las")) {
+        if (!file_exists(root + "/romfs/Movie")) return "Game data missing";
+        if (!file_exists(root + "/romfs.bin")) {
+            if (g_romfs_count < 0) g_romfs_count = count_files(root + "/romfs");
+            if (g_romfs_count < 66790) return "Animal Crossing game data is incomplete.";
+        }
+        return "";
+    }
     if (!file_exists(root + "/romfs/region_common")) return "Game data missing";
     if (g_romfs_count < 0) g_romfs_count = count_files(root + "/romfs");
     if (g_romfs_count < ROMFS_FILES) return incomplete(g_romfs_count);
@@ -240,6 +253,8 @@ static std::string g_update_archive;    // optional NSP/NSZ update
 static std::string g_keys, g_title_keys; // selected local paths, never written to settings
 static GameArchiveInfo g_archive_info[2];
 static bool g_inspected;
+static bool g_pending_inspect;
+static int g_detected_profile = -1;
 static bool is_archive(const std::string &p) {
     return p.size() > 4 && (!SDL_strcasecmp(p.c_str() + p.size() - 4, ".nsz") ||
                             !SDL_strcasecmp(p.c_str() + p.size() - 4, ".nsp") ||
@@ -297,7 +312,7 @@ static bool is_dir(const std::string &p) {
 static void find_game(const std::string &dir, int depth, std::string &exefs, std::string &romfs, bool &unusable) {
     if (depth > 4 || (!exefs.empty() && !romfs.empty())) return;
     if (exefs.empty() && file_exists(dir + "/main") && file_exists(dir + "/main.npdm")) exefs = dir;
-    if (romfs.empty() && is_dir(dir + "/region_common")) romfs = dir;
+    if (romfs.empty() && (is_dir(dir + "/region_common") || is_dir(dir + "/Movie"))) romfs = dir;
     DIR *d = opendir(dir.c_str());
     if (!d) return;
     std::vector<std::string> sub;
@@ -307,7 +322,7 @@ static void find_game(const std::string &dir, int depth, std::string &exefs, std
         std::string ext = n.size() > 4 ? n.substr(n.size() - 4) : "";
         for (auto &ch : ext) ch = (char)tolower((unsigned char)ch);
         if (ext == ".xci" || ext == ".nsp" || ext == ".nca" || ext == ".nsz" || ext == ".xcz") unusable = true;
-        if (n != "region_common" && is_dir(dir + "/" + n)) sub.push_back(dir + "/" + n);
+        if (n != "region_common" && n != "Movie" && is_dir(dir + "/" + n)) sub.push_back(dir + "/" + n);
     }
     closedir(d);
     std::sort(sub.begin(), sub.end());
@@ -315,7 +330,16 @@ static void find_game(const std::string &dir, int depth, std::string &exefs, std
 }
 
 static bool build_id_ok(const std::string &main_path) {
-    return game_version_file(main_path.c_str()) != GAME_UNSUPPORTED;
+    return title_profile_find(main_path.c_str()) != NULL;
+}
+
+static bool prepare_install_parent(void) {
+    try {
+        if (game_profile_index(g_root.c_str(), rt_data_root()) < 0) return false;
+        auto parent = std::filesystem::u8path(g_root).parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent);
+        return true;
+    } catch (...) { return false; }
 }
 
 // progress (the overlay's bar): the romfs copy (bytes)
@@ -394,8 +418,9 @@ static void *extract_thread(void *) {
     set_job("Looking for the game files...");
     if (is_archive(src)) {
         char why[512] = "";
+        if (!prepare_install_parent()) { set_job("Cannot prepare the game installation folder.", true); goto done; }
         set_job(update.empty() ? "Importing the base game..." : "Importing the base game and update...");
-        if (!gameimport_run(src.c_str(), update.c_str(), keys.c_str(), title_keys.c_str(), g_root.c_str(), game_profile_version(g_profile), import_progress, why, sizeof why)) {
+        if (!gameimport_run(src.c_str(), update.c_str(), keys.c_str(), title_keys.c_str(), g_root.c_str(), game_profile_title(g_profile), game_profile_version(g_profile), import_progress, why, sizeof why)) {
             set_job("Game import failed.", true, why);
             goto done;
         }
@@ -405,16 +430,22 @@ static void *extract_thread(void *) {
     }
     find_game(src, 0, exefs, romfs, unusable);
     if (exefs.empty() || romfs.empty()) { set_failure(unusable ? FAIL_UNUSABLE : FAIL_NOT_FOUND); goto done; }
-    if (!build_id_ok(exefs + "/main") || (game_profile_version(g_profile) &&
-        strcmp(game_profile_version(g_profile), game_version_name(game_version_file((exefs + "/main").c_str()))))) {
-        set_job("The game version does not match this installation slot.", true); goto done;
-    }
-    mkdir("games", 0755);
-    if (int have = count_files(romfs); have < ROMFS_FILES) {  // (an incomplete copy: refused before copying it)
+    {
+        const TitleProfile *picked = title_profile_find((exefs + "/main").c_str());
+        const char *version = game_profile_version(g_profile), *title = game_profile_title(g_profile);
+        if (!picked || (version && strcmp(version, picked->version)) || (title && strcmp(title, picked->key))) {
+            set_job("The game version does not match this installation slot.", true); goto done;
+        }
+        std::string parent = exefs.substr(0, exefs.find_last_of("/\\"));
+        int minimum = !strcmp(picked->key, "las") ? ROMFS_FILES : file_exists(parent + "/romfs.bin") ? 1 : 66790;
+        int have = count_files(romfs);
+        if (have < minimum) {
         fprintf(stderr, "[launcher] %s: %d of %d romfs files\n", romfs.c_str(), have, (int)ROMFS_FILES);
         set_failure(FAIL_MISSING, have);
         goto done;
+        }
     }
+    if (!prepare_install_parent()) { set_job("Cannot prepare the game installation folder.", true); goto done; }
     {
         // (the picked folder can't be LAS Recomp's own copy: setting up again deletes that first)
         char a[4096], b[4096];
@@ -435,6 +466,12 @@ static void *extract_thread(void *) {
             set_failure(FAIL_COPY);
             goto done;
         }
+        std::string image = exefs.substr(0, exefs.find_last_of("/\\")) + "/romfs.bin";
+        if (file_exists(image)) {
+            std::error_code error;
+            std::filesystem::copy_file(std::filesystem::u8path(image), std::filesystem::u8path(g_root + "/romfs.bin"), error);
+            if (error) { set_failure(FAIL_COPY); goto done; }
+        }
         g_phase_base = rbytes, g_done = rbytes;
         imported_for_build();
         if (!build_game_code()) goto done;
@@ -443,7 +480,15 @@ check:
     {
         game_files_changed();
         std::string why = check_game_files(g_root);
-        if (why.empty()) set_job("Game files ready.");
+        if (why.empty()) {
+            set_job("Game files ready.");
+#ifdef _WIN32
+            char shortcut[2048], reason[512];
+            if (game_shortcut_create(g_root.c_str(), shortcut, sizeof shortcut, reason, sizeof reason))
+                set_job("Game ready. Its desktop shortcut has been created.");
+            else set_job("Game ready. Desktop shortcut could not be created.", false, reason);
+#endif
+        }
         else if (why.find("version") != std::string::npos) set_failure(FAIL_VERSION);
         else set_failure(FAIL_MISSING, g_romfs_count);
     }
@@ -462,11 +507,15 @@ static void *inspect_thread(void *) {
     GameArchiveInfo info[2] = {};
     char why[512] = "";
     set_job("Checking archive metadata...");
-    bool ok = gameimport_inspect(src.c_str(), update.c_str(), keys.c_str(), title_keys.c_str(),
+    bool ok = prepare_install_parent() && gameimport_inspect(src.c_str(), update.c_str(), keys.c_str(), title_keys.c_str(),
                                  g_root.c_str(), info, why, sizeof why);
     set_job(ok ? "Metadata checked. Executable and data checks run during import." : "Archive check failed.", !ok, why);
     pthread_mutex_lock(&g_lock);
-    if (ok) memcpy(g_archive_info, info, sizeof info);
+    if (ok) {
+        memcpy(g_archive_info, info, sizeof info);
+        const GameArchiveInfo &final = update.empty() ? info[0] : info[1];
+        g_detected_profile = game_profile_match(final.game_id, final.version);
+    }
     g_inspected = ok;
     g_busy = false;
     pthread_mutex_unlock(&g_lock);
@@ -491,6 +540,7 @@ static void SDLCALL picked_archive(void *update, const char *const *files, int) 
     else if (update == (void *)3) g_title_keys = files[0];
     else g_src = files[0];
     g_inspected = false;
+    g_pending_inspect = is_archive(g_src);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -623,6 +673,9 @@ static void load_background(GpuDevice dev) {
 // ------------------------------------------------------------------ seeds
 static std::vector<std::string> list_seeds() {
     std::vector<std::string> out;
+    if (g_profile == GAME_PROFILE_ACNH) return out;
+    const TitleProfile *selected = title_profile_find((g_root + "/exefs/main").c_str());
+    if (selected && strcmp(selected->key, "las")) return out;
     if (DIR *d = opendir("rando")) {
         while (struct dirent *e = readdir(d)) {
             if (e->d_name[0] == '.') continue;
@@ -918,13 +971,13 @@ static void profile_picker(float sc) {
     ImGui::BeginDisabled(locked);
     ImGui::SetNextItemWidth(620 * sc);
     const char *label = g_profile < 0 ? "Custom installation" : game_profile_name(g_profile);
-    if (ImGui::BeginCombo(ui_label("Game version").c_str(), ui_tr(label))) {
+    if (ImGui::BeginCombo(ui_label("Game and version").c_str(), ui_tr(label))) {
         for (int i = 0; i < GAME_PROFILE_COUNT; ++i)
             if (ImGui::Selectable(ui_tr(game_profile_name(i)), g_profile == i)) g_profile_request = i;
         ImGui::EndCombo();
     }
     ImGui::EndDisabled();
-    ImGui::TextWrapped("%s", ui_tr(locked ? "Restart LAS Recomp to switch game versions." :
+    ImGui::TextWrapped("%s", ui_tr(locked ? "Restart LAS Recomp to switch games." :
         "Each installation keeps its own game files, build cache and Vanilla saves. Existing saves stay with Existing installation."));
     ImGui::Spacing();
 }
@@ -947,6 +1000,14 @@ static void prelaunch_tab(float sc) {
     if (gb < 0) gb = rt_game_files_size(g_root.c_str()) / 1e9;
 #ifdef _WIN32
     if (ImGui::Button(ui_label("Show in Explorer").c_str())) reveal_folder(g_root);
+    if (check_game_files(g_root).empty()) {
+        ImGui::SameLine();
+        if (ImGui::Button(ui_label("Create desktop shortcut").c_str())) {
+            char shortcut[2048], reason[512];
+            bool ok = game_shortcut_create(g_root.c_str(), shortcut, sizeof shortcut, reason, sizeof reason);
+            set_job(ok ? "Desktop shortcut created." : "Could not create the desktop shortcut.", !ok, ok ? "" : reason);
+        }
+    }
 #elif defined(__linux__)
     if (ImGui::Button(ui_label("Open folder").c_str())) reveal_folder(g_root);
 #else
@@ -1089,7 +1150,8 @@ extern "C" const char *launcher_run(const char *root) {
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
 
     // an older version's game data image: the game reads the romfs/ folder itself now - 5.8 GB back
-    if (check_copied_files(g_root).empty() && file_exists(g_root + "/romfs.bin") &&
+    const TitleProfile *startup_title = title_profile_find((g_root + "/exefs/main").c_str());
+    if (startup_title && !strcmp(startup_title->key, "las") && check_copied_files(g_root).empty() && file_exists(g_root + "/romfs.bin") &&
         rt_remove_game_file(g_root.c_str(), "romfs.bin"))
         fprintf(stderr, "[launcher] removed the old game data image (romfs.bin)\n");
     std::string status = check_game_files(g_root);
@@ -1205,7 +1267,16 @@ extern "C" const char *launcher_run(const char *root) {
         pthread_mutex_lock(&g_lock);
         bool busy = g_busy;
         bool setup_failed = g_job_failed, inspection = g_job_inspection;
+        bool auto_selected = !busy && g_detected_profile >= 0;
+        if (auto_selected) { g_profile_request = g_detected_profile; g_detected_profile = -1; }
+        bool inspect_now = !busy && g_pending_inspect && !gamelib_tables();
+        if (inspect_now) { g_pending_inspect = false; g_busy = busy = true; }
         pthread_mutex_unlock(&g_lock);
+        if (inspect_now) {
+            pthread_t thread;
+            if (!pthread_create(&thread, NULL, inspect_thread, NULL)) pthread_detach(thread);
+            else { pthread_mutex_lock(&g_lock); g_busy = busy = false; pthread_mutex_unlock(&g_lock); }
+        }
         if (g_profile_request >= 0 && !busy && !gamelib_tables()) {
             g_profile = g_profile_request; g_profile_request = -1;
             g_settings.game_profile = g_profile;
@@ -1220,7 +1291,9 @@ extern "C" const char *launcher_run(const char *root) {
             seeds = list_seeds(); choices = {"Vanilla"}; choices.insert(choices.end(), seeds.begin(), seeds.end()); choice = 0;
             g_settings.rando_seed[0] = 0;
             pthread_mutex_lock(&g_lock);
-            g_src.clear(); g_update_archive.clear(); g_inspected = false; g_job.clear(); g_job_hint.clear();
+            if (!auto_selected) {
+                g_src.clear(); g_update_archive.clear(); g_inspected = false; g_job.clear(); g_job_hint.clear();
+            }
             pthread_mutex_unlock(&g_lock);
             g_bg = 0;
             if (status.empty()) load_background(dev);
@@ -1545,8 +1618,7 @@ extern "C" const char *launcher_run(const char *root) {
                     dl->AddLine(ImVec2(x, cy), ImVec2(x + u * 0.35f, cy + u * 0.35f), g, fs * 0.11f);
                     dl->AddLine(ImVec2(x + u * 0.35f, cy + u * 0.35f), ImVec2(x + u, cy - u * 0.4f), g, fs * 0.11f);
                 };
-                std::string src_d = "The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Link's "
-                                    "Awakening for Nintendo Switch, version 1.0.0 or 1.1.0. The game isn't included with LAS Recomp.";
+                std::string src_d = "Choose your extracted game folder containing exefs and romfs. The game is identified from its executable modules.";
                 src_d = ui_tr(src_d.c_str());
                 if (!src.empty() && !source_is_archive) src_d += "\n\n" + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
@@ -1582,7 +1654,7 @@ extern "C" const char *launcher_run(const char *root) {
                         SDL_ShowOpenFileDialog(picked_archive, NULL, win, nsz_filter, 1, NULL, false);
                     if (source_is_archive) {
                         if (busy) opt_disable_next();
-                        std::string update_hint = std::string(ui_tr("Optional: choose the v1.1.0 update NSP or NSZ.")) + "\n\n" + update_archive;
+                        std::string update_hint = std::string(ui_tr("Optional: choose a supported update for the same game.")) + "\n\n" + update_archive;
                         if (opt_action("Update archive (optional)", ui_tr(update_archive.empty() ? "None" : "Selected"),
                                        update_hint.c_str(), true))
                             SDL_ShowOpenFileDialog(picked_archive, (void *)1, win, nsz_filter, 1, NULL, false);
@@ -1626,14 +1698,20 @@ extern "C" const char *launcher_run(const char *root) {
                             for (int i = 0; i < 2; ++i) {
                                 if (!strcmp(info[i].format, "-")) continue;
                                 ImGui::Text("%s: %s", ui_tr(i ? "Update archive (optional)" : "Base game archive"), info[i].format);
+                                int identified = game_profile_match(info[i].game_id, info[i].version);
+                                if (identified >= 0) ImGui::TextWrapped("%s", ui_tr(game_profile_name(identified)));
                                 if (!strcmp(info[i].version, "?")) ImGui::TextWrapped("%s", ui_tr("Version unknown; checked during import."));
                                 else ImGui::TextWrapped(ui_tr("Version %s (%s)"), info[i].version,
-                                        ui_tr(!strcmp(info[i].metadata, "CNMT") ? "content metadata" : "XML, unverified"));
+                                        ui_tr(!strcmp(info[i].metadata, "CNMT") ? "content metadata" :
+                                              !strcmp(info[i].metadata, "ExeFS") ? "verified executable modules" : "XML, unverified"));
+                                if (!info[i].installable) ImGui::TextWrapped("%s", ui_tr("This game adapter is still in development."));
                             }
                         }
                     }
                     opt_section("Set up");
-                    if (busy || gamelib_tables() || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
+                    bool development_blocked = source_is_archive && inspected && !info[0].installable && !getenv("LARECOMP_ALLOW_DEVELOPMENT_GAMES");
+                    if (busy || gamelib_tables() || (source_is_archive && (!inspected || development_blocked)) ||
+                        (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
                     bool resume_build = src.empty() && check_copied_files(g_root).empty();
                     if (opt_action(resume_build ? "Build or resume game code" : "Set up game files", ui_tr(busy ? "Working..." : ""), ex_d.c_str(), true)) {
                         files_gb = -1;  // (re-measured after a setup)

@@ -53,10 +53,11 @@ def pfs_files(files):
     return struct.pack('<4sIII', b'PFS0', len(files), len(strings), 0) + records + strings + contents
 
 
-def synthetic_romfs():
+def synthetic_romfs(root_name='region_common'):
     empty = 0xffffffff
     dirs = struct.pack('<6I', 0, empty, 24, empty, empty, 0)
-    dirs += struct.pack('<6I', 0, empty, empty, 0, empty, 13) + b'region_common' + bytes(3)
+    name = root_name.encode()
+    dirs += struct.pack('<6I', 0, empty, empty, 0, empty, len(name)) + name + bytes(-len(name) % 4)
     files = struct.pack('<IIQQII', 24, empty, 0, 8, empty, 11) + b'example.bin' + bytes(1)
     header = (80, 80, 4, 84, len(dirs), 84 + len(dirs), 4, 88 + len(dirs), len(files), 0x1000)
     image = bytearray(0x10000)

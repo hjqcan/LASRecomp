@@ -6,6 +6,7 @@
 
 #include "cpu.h"
 #include "platform.h"
+#include "title_profile.h"
 
 #define LOG(...) fprintf(stderr, __VA_ARGS__)
 #define FATAL(...) (rt_fatal_msg(__VA_ARGS__), rt_fatal_trace())  // (runtime/crash_explain.c keeps the line)
@@ -37,7 +38,7 @@ typedef struct Module {
     uint64_t symtab, strtab, nsyms;
 } Module;
 
-extern Module g_modules[4];
+extern Module g_modules[TITLE_MAX_MODULES];
 extern int g_nmodules;
 void loader_load(const char *exefs_dir);  // (again after a reboot: modules are reloaded into wiped memory)
 uint64_t loader_find_symbol(const char *name);

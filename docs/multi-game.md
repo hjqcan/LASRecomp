@@ -1,130 +1,67 @@
-# Multi-game development on enhanced
+# Shared game installations
 
-The target is one application maintained on `enhanced`: select a supported game's
-NSP/NSZ/XCI/XCZ, import the player's data, compile locally, then launch that
-installation from its desktop shortcut. Each title still needs an explicit,
-tested adapter. Recognizing an archive or compiling its code does not establish
-playability.
+The enhanced runtime uses `tools/game_catalog.py` and its generated native
+catalog to identify each reviewed game/version by every module's full 32-byte
+Build ID. LAS 1.0.0 and 1.1.0 use two modules; ACNH 1.0.0 uses three. ACNH is
+still marked as development while the gameplay and save gates in
+[ACNH-port.md](ACNH-port.md) remain open.
 
-## Implemented foundation
+Archive inspection accepts NSP, NSZ, XCI and XCZ. The default is automatic game
+identification. Readable content metadata provides a preliminary identity;
+metadata-free NCZ packages are inspected through their executable modules.
+Filenames do not select the game or version. Import validates module identities,
+base/update roles and RomFS structure before publishing the installation.
+The development override is intended for local port testing:
 
-`tools/game_catalog.py` is the title catalog used by the archive importer. It
-describes application IDs, accepted content versions, complete 32-byte NSO Build
-IDs, module bases, constructor order, generator profile and adaptation status.
-Archive import validates every compiled module against the selected release;
-an updated executable paired with the wrong SDK is rejected. The existing LAS
-patch-address mapping remains in `game_versions.py`; a regression check keeps
-its version IDs aligned with the catalog.
-
-| Adapter | Registered versions | Status in enhanced |
-| --- | --- | --- |
-| `las` | 1.0.0 base, 1.1.0 update | Existing beta installation path; updated randomizer remains experimental |
-| `acnh` | 1.0.0 base | Development: inspection and module planning only; installation disabled |
-
-The current launcher still offers LAS version slots. This change does **not**
-add a multi-game library screen, automatic shortcuts, or an ACNH runtime to the
-published application. ACNH's experimental runtime work must be integrated
-through title-specific configuration before enabling its install flag.
-
-Read-only developer commands (also useful for future launcher integration):
-
-```powershell
-python tools/game_catalog.py
-python tools/game_catalog.py --exefs "path/to/extracted/exefs"
-python tools/import_game.py --catalog
-python tools/import_game.py --game acnh --base "path/to/base.nsz" --inspect
+```
+python tools/import_game.py --base /path/to/game.nsz --inspect
+python tools/import_game.py --base /path/to/game.nsz --output /path/to/install --allow-development
 ```
 
-The frozen helper exposes the import commands as
-`lasgen --import-nsz --catalog` and
-`lasgen --import-nsz --game acnh --base <archive> --inspect`.
-Encrypted inputs still require the player's local keys. Metadata inspection
-preserves its CNMT/XML/unavailable provenance: XML labels alone do not verify
-the executable. The module-plan command checks all registered module IDs and
-performs no compilation or filesystem writes.
+Encrypted content uses locally selected player key files. No keys, extracted
+game code, game assets, generated sources, game libraries or saves belong in
+source commits or distributed runtime packages.
 
-## Shared core and title adapters
+## Managed locations
 
-The shared core owns archive parsing, decompression, supported update assembly,
-the AArch64-to-C generator, compilation/cache management, graphics, audio,
-input, operating-system services, saves and the launcher. Generic fixes found
-while adapting one game should improve this core for subsequent games.
+| Launch ID | Game folder | Vanilla save folder |
+| --- | --- | --- |
+| `existing` | `extracted` | `save` |
+| `las/1.0.0` | `games/v1.0.0` | `save/v1.0.0` |
+| `las/1.1.0` | `games/v1.1.0` | `save/v1.1.0` |
+| `acnh/1.0.0` | `games/acnh/v1.0.0` | `save/acnh/v1.0.0` |
 
-Title adapters own module layouts and startup order, supported Build IDs,
-game-specific patches, service quirks, feature availability and verification
-evidence. LAS randomizer hooks, memory probes, camera offsets and resource
-replacements must only run for LAS. ACNH must use its own module initialization
-and must not inherit those hooks. A new title can also require new core service
-or shader support; a catalog entry alone is insufficient.
+Locations are relative to the application's data folder. Existing LAS locations
+and setting values remain valid. A custom ACNH folder uses a save namespace
+containing its program ID and executable Build ID. Test runs can explicitly
+override the save directory.
 
-Use one extensible, versioned library ABI with a module array, rather than
-separate hardcoded main/sdk/subsdk structs. Bump the ABI when its layout changes.
-Validate every module identity, adapter revision and library identity before
-loading guest code. A game switch starts a fresh process initially; resetting
-all state between different games inside one process is a separate feature.
+The launcher inspects a selected archive and selects the matching managed slot.
+The native importer checks the expected title as well as version, so two games
+that both use version 1.0.0 cannot overwrite each other's slot. Generated-source
+and object caches include the adapter and all modules; an incompatible SDK or
+module set is rejected before compilation replaces a working library.
 
-## Intended user flow
+## Desktop launch
 
-1. Select a local archive. Identify its application ID and version, then show
-   the matching adapter's status. Unsupported builds get a precise explanation.
-2. For an installable adapter, stage extraction and updates in a temporary
-   directory. Check every module before publishing the installation.
-3. Compile the adapter's module plan with the bundled toolchain. Retain verified
-   completed objects when cancelled; report progress and diagnostics.
-4. Validate the resulting library and record the installation. Obtain the name
-   and icon from the player's control data, with a generic host icon fallback.
-5. Create a Windows `.lnk` only after a successful build. The link targets the
-   installed launcher with a stable installation ID and direct-play option.
-   Creating the link does not itself launch the game.
-6. Double-click the shortcut to resolve that installation, verify compatibility
-   and start play. Reuse compiled code until its inputs or toolchain require a
-   rebuild; a stale or moved installation opens a repair screen.
+On Windows, successful setup creates a shell link on the desktop returned by
+`SHGetKnownFolderPath`, including redirected/OneDrive desktops. It records the
+game's stable launch ID and absolute data folder:
 
-The proposed `--game <installation-id> --play` interface is not implemented yet.
-Use a stable ID instead of embedding mutable cache paths in shortcuts. Resolve
-the Windows Desktop known folder, including redirected/OneDrive desktops, and
-write ShellLink fields through native APIs rather than shell command strings.
+```
+lasrecomp.exe --play --game acnh/1.0.0 --data-root "C:\Games\Recomp"
+```
 
-## Storage and compatibility
+Existing installations can use `--create-shortcut` or the launcher's shortcut
+button. A shortcut is updated only when its description identifies the same
+installation; unrelated same-name files are preserved. `icon.ico` in an
+installation supplies its icon when present; otherwise the runtime icon is used.
+Windows 10 1903 and newer use the embedded UTF-8 process manifest for native
+file paths and command-line arguments. Shell-link paths use wide APIs directly.
 
-New installations should live under application ID and complete build identity.
-Compilation receipts must additionally include every module's input identity,
-adapter revision, generator identity, runtime ABI, target architecture, compiler
-and flags. Keep game settings, shader caches, logs and saves isolated by title
-and compatible version/profile. Updating the application must not erase saves;
-cross-version save migration requires a separately verified path and backup.
-
-Retain existing LAS directories and saves through a versioned migration. Never
-silently interpret existing `games/v1.0.0` as another title. Compiled libraries,
-generated game C, extracted assets, local keys and saves remain local and are
-excluded from source commits and release packages.
-
-## Integration order and release gate
-
-1. **Catalog and identity checks:** implemented here; preserve existing LAS
-   imports and register ACNH as development-only.
-2. **Common runtime and compiler plan:** merge ACNH's general fixes, introduce
-   module arrays and gate all LAS-specific behavior by adapter. Recheck both LAS
-   versions while bringing ACNH forward.
-3. **Library and shortcuts:** connect import/build progress to the catalog,
-   persist installations and create direct-play desktop links.
-4. **ACNH acceptance:** verify visible scene rendering and controls, intro/island
-   flow, audio, game-managed save/reopen, day rollover, repeated starts and an
-   extended gameplay run before enabling installation for users.
-5. **Additional titles:** add an adapter and missing core behavior, run its
-   acceptance checks, and keep regression coverage for already supported games.
-
-The current ACNH experiment has displayed dialogue, accepted an advance input,
-and rendered scene geometry into offscreen targets. Final scene composition,
-characters and the gameplay/save acceptance checks remain incomplete. It is not
-a stable playable release.
-
-## Foundation validation
-
-The 44 existing synthetic import/container tests and 8 adapter tests pass on
-Windows. Checks cover cross-title rejection, changed Build ID tails, mixed SDKs,
-missing modules and rejection of development installs before output creation.
-Read-only inspection also matches the local LAS 1.0.0/1.1.0 and ACNH 1.0.0
-module sets. The rebuilt frozen helper lists the catalog, inspects ACNH metadata,
-and imports a synthetic LAS base plus update end to end. These checks validate
-the catalog/import change, not ACNH gameplay or a multi-game launcher.
+Tests use `LARECOMP_SHORTCUT_DIR` to keep fixture links off the real desktop.
+`tools/test_game_shortcut.py` reads the resulting links through the Shell API and
+checks Unicode paths, arguments, duplicate updates and preservation of unrelated
+files. `tools/test_game_profiles.py` checks exact managed locations, launch IDs
+and distinct save folders. These tests do not replace real import, compilation,
+desktop launch and gameplay verification.

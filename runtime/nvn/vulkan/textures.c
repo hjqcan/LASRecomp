@@ -314,6 +314,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     if (depthfmt) usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     else if (format_supports(vf, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     VkImageCreateFlags flags = 0;
+    if (type == VK_IMAGE_TYPE_3D) flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
     if (!depthfmt) flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;  // format views (NVN texture views, raw sRGB views)
     if (type == VK_IMAGE_TYPE_2D && layers >= 6 && tw == th && samples == 1) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = type, .format = vf,
@@ -702,11 +703,17 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     uint32_t nly = v && (v->setmask & 2) && v->num_layers ? v->num_layers : b->layers - (ly0 < b->layers ? ly0 : 0);
     if (lv0 >= b->levels) lv0 = b->levels - 1;
     if (lv0 + nlv > b->levels) nlv = b->levels - lv0;
-    if (ly0 >= b->layers) ly0 = b->layers - 1;
-    if (ly0 + nly > b->layers) nly = b->layers - ly0;
+    uint32_t view_layers = render && b->base_type == VK_IMAGE_VIEW_TYPE_3D ? b->depth >> lv0 : b->layers;
+    if (!view_layers) view_layers=1;
+    if (ly0 >= view_layers) ly0 = view_layers - 1;
+    if (ly0 + nly > view_layers) nly = view_layers - ly0;
     if (render) {
         VkImageViewType type = b->base_type == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
-        if (b->base_type == VK_IMAGE_VIEW_TYPE_3D) return VK_NULL_HANDLE;  // (3D render targets: not used by the game)
+        if (b->base_type == VK_IMAGE_VIEW_TYPE_3D && getenv("LARECOMP_DEBUG_VOLUME")) {
+            static unsigned logged;
+            if (logged++<64) LOG("[volume] render %llx level %u slice %u count %u view %d\n",
+                                 (unsigned long long)t->addr,lv0,ly0,nly,has_view);
+        }
         return vk_image_view(b, type, fmt, lv0, 1, ly0, 1, IDENTITY, b->aspect);
     }
     VkImageAspectFlags aspect = b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : b->aspect;
@@ -736,7 +743,8 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
         return vk_image_view(b, want, fmt, lv0, nlv, ly0, 1, sw, aspect);
     if (want == VK_IMAGE_VIEW_TYPE_2D_ARRAY && (have == VK_IMAGE_VIEW_TYPE_2D || have == VK_IMAGE_VIEW_TYPE_CUBE))
         return vk_image_view(b, want, fmt, lv0, nlv, ly0, have == VK_IMAGE_VIEW_TYPE_CUBE ? nly : 1, sw, aspect);
-    if (want == VK_IMAGE_VIEW_TYPE_CUBE && have == VK_IMAGE_VIEW_TYPE_2D_ARRAY && b->layers >= 6 && b->width == b->height)
+    if (want == VK_IMAGE_VIEW_TYPE_CUBE && (have == VK_IMAGE_VIEW_TYPE_2D_ARRAY || have == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) &&
+        b->layers >= 6 && b->width == b->height)
         return vk_image_view(b, want, fmt, lv0, nlv, ly0 + 6 <= b->layers ? ly0 : 0, 6, sw, aspect);
     if (want == VK_IMAGE_VIEW_TYPE_1D_ARRAY && have == VK_IMAGE_VIEW_TYPE_1D)
         return vk_image_view(b, want, fmt, lv0, nlv, 0, 1, sw, aspect);

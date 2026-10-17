@@ -1,14 +1,16 @@
 #include "../game_profiles.h"
 #include <filesystem>
 #include <string>
+#include <cstring>
 #ifdef _WIN32
 #include <windows.h>
 #endif
 namespace fs = std::filesystem;
 static int active;
-static const char *dirs[] = {"extracted", "games/v1.0.0", "games/v1.1.0"};
-static const char *saves[] = {"save", "save/v1.0.0", "save/v1.1.0"};
-static const char *names[] = {"Existing installation", "v1.0.0 - Vanilla and Randomizer", "v1.1.0 - Vanilla and Randomizer"};
+static const char *dirs[] = {"extracted", "games/v1.0.0", "games/v1.1.0", "games/acnh/v1.0.0"};
+static const char *saves[] = {"save", "save/v1.0.0", "save/v1.1.0", "save/acnh/v1.0.0"};
+static const char *names[] = {"Existing installation", "Link's Awakening 1.0.0", "Link's Awakening 1.1.0", "Animal Crossing: New Horizons 1.0.0"};
+static const char *ids[] = {"existing", "las/1.0.0", "las/1.1.0", "acnh/1.0.0"};
 static int bounded(int p) {
     return p >= 0 && p < GAME_PROFILE_COUNT ? p : 0;
 }
@@ -22,7 +24,20 @@ extern "C" const char *game_profile_name(int p) {
     return names[bounded(p)];
 }
 extern "C" const char *game_profile_version(int p) {
-    return p == 1 ? "1.0.0" : p == 2 ? "1.1.0" : NULL;
+    return p == GAME_PROFILE_BASE || p == GAME_PROFILE_ACNH ? "1.0.0" : p == GAME_PROFILE_UPDATED ? "1.1.0" : NULL;
+}
+extern "C" const char *game_profile_title(int p) {
+    return p == GAME_PROFILE_ACNH ? "acnh" : p == GAME_PROFILE_BASE || p == GAME_PROFILE_UPDATED ? "las" : NULL;
+}
+extern "C" const char *game_profile_id(int p) { return ids[bounded(p)]; }
+extern "C" int game_profile_from_id(const char *id) {
+    if (id) for (int i = 0; i < GAME_PROFILE_COUNT; i++) if (!strcmp(id, ids[i])) return i;
+    return -1;
+}
+extern "C" int game_profile_match(const char *title, const char *version) {
+    if (title && version) for (int i = 1; i < GAME_PROFILE_COUNT; i++)
+        if (!strcmp(title, game_profile_title(i)) && !strcmp(version, game_profile_version(i))) return i;
+    return -1;
 }
 static bool plain(const fs::path &path) {
     fs::path part;

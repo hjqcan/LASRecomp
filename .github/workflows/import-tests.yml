@@ -20,6 +20,15 @@ jobs:
       - run: python -m pip install zstandard==0.25.0 cryptography==50.0.2
       - run: python tools/test_import_game.py -v
       - run: python tools/test_game_catalog.py -v
+      - run: python tools/test_title_profile.py
+      - run: python tools/test_game_profiles.py
+      - run: python tools/test_shader_ldc.py
+      - run: clang -std=gnu11 -O1 -Iruntime tools/test_touch.c -o test-touch
+      - run: ./test-touch
+      - if: runner.os != 'Windows'
+        run: clang -std=gnu11 -O1 -Iruntime tools/test_time_service.c -o test-time && ./test-time
+      - if: runner.os == 'Windows'
+        run: python tools/test_game_shortcut.py
       - run: python tools/test_nsp_import.py -v
       - run: python tools/test_xci_import.py -v
       - run: python tools/test_rando_event_compat.py -v

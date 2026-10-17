@@ -307,6 +307,7 @@ extern "C" void save_editor_file_read(const char *path, uint64_t addr, int64_t o
 extern "C" void cheats_frame(void);      // cheats.mm
 extern "C" void difficulty_frame(void);  // difficulty.mm
 extern "C" void save_editor_frame(uint64_t frame) {
+    if (!title_is_las()) return;
     cheats_frame();
     difficulty_frame();
     static int watch = -1;  // LARECOMP_WATCH_SAVE=<lo>,<hi> (save offsets): log code touching that range
