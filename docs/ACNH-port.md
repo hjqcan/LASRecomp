@@ -41,9 +41,10 @@ and NV12 format 4 strips the host decoder's row and plane padding. Replacing
 the buffer's base pointer left the game's upload allocation empty. The output
 size and alignment query writes two 32-bit integers. Synthetic tests check
 the retained pointer, tight NV12 rows, undersized-buffer rejection and canaries.
-A managed-installation replay now renders the real opening movie correctly
-and reaches the island after decoder EOS. Coastline rendering still shows
-block artifacts, and this replay has not yet completed a game-managed save.
+A managed-installation replay rendered the real opening movie correctly
+and reached the island after decoder EOS. That early replay showed coastline
+artifacts and did not complete a game-managed save. Later save recovery and
+graphics checks are recorded below.
 The executable/library filenames currently retain their inherited LAS names.
 
 Run `build/lasrecomp.exe extracted --play` with an isolated `LARECOMP_DATA_ROOT`
@@ -273,9 +274,9 @@ The encoding and result semantics were checked against
 [envytools](https://github.com/envytools/envytools/blob/master/envydis/gm107.c)
 and [Ryujinx's translator](https://github.com/kotx/Ryujinx/blob/master/src/Ryujinx.Graphics.Shader/Instructions/InstEmitTexture.cs).
 Synthetic tests execute the generated query/result code and compile complete
-GLSL for seven texture types. The recorded post-tent sunset material brightness
-still requires scene comparison; supporting this instruction alone does not
-establish that the lighting problem is fixed.
+GLSL for seven texture types. That instruction change did not resolve the
+recorded post-tent sunset brightness; the later feedback-snapshot correction
+and scene comparison are described below.
 
 The first player save reached the NookPhone and wrote all ten header/data files,
 then crashed because `fsp-srv` command 1200 reported success without returning
@@ -304,10 +305,24 @@ The Vulkan backend now splits heap bindings at the device's aligned range limit,
 and shader LDG/STG selects a segment for each word. Generated shader tests cover
 signed sub-word loads, masked stores, vectors crossing a segment boundary, the
 last partial segment, and compute fast-copy routing. The range validation error
-no longer occurred. Longer validation runs remain inconclusive: the local MSYS2
+no longer occurred. The initial longer validation runs were inconclusive: the local MSYS2
 validation layer stalled during semaphore queries and later crashed inside its
 worker/mutex code. Those runs do not establish a clean Vulkan validation result.
 Normal runs completed the recovery flow above without those failures.
+
+On 2026-10-18 the same rendering/save fixes (`6097a68`) were tested with the
+official LunarG SDK 1.4.363.0 Windows validation layer. Its component checksum
+and LunarG signature were verified, and the layer was loaded locally through
+`VK_LAYER_PATH`, without installing a system layer or changing a driver.
+The desktop shortcut ran an isolated copy of the save with
+`LARECOMP_VK_VALIDATION_STOP=1`, strict HLE/IPC checks and default shader
+preparation. The 616.9-second run loaded the island, walked in both directions,
+entered the tent, opened and closed the inventory, left the tent, and completed
+the game's Save and End flow. It made three successful multi-commits, exited
+normally, and the resulting save passed all 24 data checksums. No Vulkan errors
+were reported. The layer warned about an unused fragment color output during
+depth-only draws. This covers those scenes and operations, not every rendering
+path, synchronization validation, or performance without diagnostic overhead.
 
 For reproducible lighting/day-rollover diagnostics, `LARECOMP_TEST_TIME` accepts
 a Unix timestamp in 2000-2100 only with an explicit `LARECOMP_SAVE_DIR`. Use a
