@@ -31,6 +31,9 @@ modules and main.npdm in the game folder's `exefs`, then run
 `make GAME_DIR=/path/to/game GEN=generated-acnh -j4`.
 The game data is read from that folder's `romfs.bin`. The FFmpeg movie adapter
 also needs `romfs/Movie/OpeningMovie.webm` from the same local data.
+Both path-only and client-reader movie source overloads open local files;
+failed source changes clear old tracks and packets. `tools/test_movie_source.c`
+uses a synthetic PCM/WAV fixture to check both overloads and error cleanup.
 The executable/library filenames currently retain their inherited LAS names.
 
 Run `build/lasrecomp.exe extracted --play` with an isolated `LARECOMP_DATA_ROOT`
@@ -91,6 +94,14 @@ of a 3D image using compatible 2D views; ACNH uses this for its color lookup
 volume. Maxwell LDC instructions sign-extend their 16-bit byte displacement,
 including negative bone-matrix offsets and overlapping 64-bit destinations.
 These fixes restore the airport background, colors and animated characters.
+Full virtual-pool mappings alias their physical pool's storage, including
+nonzero physical offsets. ACNH maps its transient texture pool this way before
+creating movie textures. Returning success without installing the mapping left
+texture addresses as low offsets and crashed when video uploaded its first
+frame. Sparse mappings and rebinding an existing alias are rejected; they are
+not implemented by the current GPU-address-equals-host-address model.
+`tools/test_nvn_pool_mapping.c` checks alias visibility, bounds and rejected
+mapping forms without loading game code.
 
 Docked touchscreen reads return a valid empty sample. Returning no sample from
 an unpopulated HID ring left stale stack data in the game's newest touch state.

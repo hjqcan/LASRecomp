@@ -223,6 +223,8 @@ NVN(nvnMemoryPoolInitialize) {
     p->storage = G(uint64_t, A(1), 0x10);
     p->size = G(uint64_t, A(1), 0x18);
     p->flags = G(uint32_t, A(1), 8);
+    if (!p->storage && ENV("LARECOMP_DEBUG_POOLS")) LOG("[nvn] pool without CPU storage: object %llx size %llx flags %x lr %llx\n",
+                         (unsigned long long)A(0), (unsigned long long)p->size, p->flags, (unsigned long long)c->x[30]);
     SET_HOST(A(0), p);
     RET(1);
 }
@@ -241,7 +243,32 @@ NVN(nvnMemoryPoolFlushMappedRange) {
     backend_pool_written(p->storage + A(1), A(2));
 }
 NVN(nvnMemoryPoolInvalidateMappedRange) { (void)c; }
-NVN(nvnMemoryPoolMapVirtual) { RET(1); }
+NVN(nvnMemoryPoolMapVirtual) {
+    // Full-pool aliases keep the runtime's GPU-address == host-address model.
+    // ACNH binds its transient render-target pool once to a physical pool.
+    // Do not silently accept sparse mappings or rebind existing addresses.
+    NvnPool *dst = HOST(NvnPool, A(0));
+    if (!A(1)) { RET(1); return; }
+    if (!dst || !(dst->flags & 0x200) || A(1) != 1 || !A(2)) { RET(0); return; }
+    const uint8_t *request = AP(2);
+    uint64_t physical, physical_offset, virtual_offset, size;
+    memcpy(&physical, request, 8); memcpy(&physical_offset, request + 8, 8);
+    memcpy(&virtual_offset, request + 16, 8); memcpy(&size, request + 24, 8);
+    NvnPool *src = physical ? HOST(NvnPool, physical) : NULL;
+    if (!src || !(src->flags & 0x100) || !src->storage || virtual_offset || size != dst->size ||
+        physical_offset > src->size || size > src->size - physical_offset ||
+        physical_offset > UINT64_MAX - src->storage) {
+        LOG("[nvn] unsupported virtual pool mapping: offset %llx size %llx\n",
+            (unsigned long long)virtual_offset, (unsigned long long)size);
+        RET(0); return;
+    }
+    uint64_t address = src->storage + physical_offset;
+    if (dst->storage && dst->storage != address) { RET(0); return; }
+    dst->storage = address;
+    LOG("[nvn] mapped virtual pool %llx to %llx (%llx bytes)\n",
+        (unsigned long long)A(0), (unsigned long long)address, (unsigned long long)size);
+    RET(1);
+}
 
 // ================================================================== buffers
 // Builder: device@0 pool@8 offset@0x10 size@0x18. Buffer: address@0 pool@8 offset@0x10 size@0x18 id@0x20
@@ -391,6 +418,10 @@ static NvnTexture *texture_from_builder(uint64_t b) {
     t->pool = pool ? HOST(NvnPool, pool) : NULL;
     t->pool_offset = G(uint64_t, b, 0x40);
     t->addr = t->pool ? t->pool->storage + t->pool_offset : 0;
+    if (t->pool && !t->pool->storage && ENV("LARECOMP_DEBUG_POOLS"))
+        LOG("[nvn] unbacked texture: %ux%u format %x flags %x pool %llx offset %llx pool flags %x\n",
+            t->width, t->height, t->format, t->flags, (unsigned long long)pool,
+            (unsigned long long)t->pool_offset, t->pool->flags);
     builder_layout(b, &t->layout);
     t->debug_id = next_debug_id++;
     return t;

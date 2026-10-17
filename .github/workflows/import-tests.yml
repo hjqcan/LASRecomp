@@ -31,6 +31,8 @@ jobs:
       - run: ./test-audio-biquad
       - run: clang -std=gnu11 -O1 tools/test_audio_splitter.c -o test-audio-splitter
       - run: ./test-audio-splitter
+      - run: clang -std=gnu11 -O1 tools/test_nvn_pool_mapping.c -o test-nvn-pool
+      - run: ./test-nvn-pool
       - if: runner.os != 'Windows'
         run: clang -std=gnu11 -O1 -Iruntime tools/test_time_service.c -o test-time && ./test-time
       - if: runner.os == 'Windows'
