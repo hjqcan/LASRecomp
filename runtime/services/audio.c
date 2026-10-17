@@ -13,6 +13,7 @@
 #include "audio_biquad.h"
 #include "audio_delay.h"
 #include "audio_reverb3d.h"
+#include "audio_aux.h"
 #include "audio_splitter.h"
 
 // ------------------------------------------------------------------ audren: a CPU mixer modelled on
@@ -91,6 +92,8 @@ typedef struct {
     uint32_t nmix;
     uint8_t sink_used, sink_inputs, sink_input[6];
     Effect *fx;
+    AudioAuxPool *pools;
+    uint32_t pool_count;
     SDL_AudioStream *stream;
     FILE *wav;
     uint32_t wav_bytes;
@@ -435,6 +438,8 @@ struct Effect {
     AudioBiquad bq;
     AudioDelay delay;
     AudioReverb3d rv3;
+    AudioAux aux;
+    bool aux_invalid;
 };
 
 // Effect slot update from EffectInParameterVersion1 (0xC0 bytes: type, is_new, enabled, mix, buffers, order, data).
@@ -447,6 +452,11 @@ static void effect_update(Effect *fx, const uint8_t *e, uint32_t revision) {
     fx->enabled = e[2];
     memcpy(&fx->mix_id, e + 4, 4);
     memcpy(&fx->order, e + 0x18, 4);
+    if (fx->type == 2) {
+        audio_aux_update(&fx->aux, e + 0x20);
+        if (new_type || e[1]) fx->aux_invalid = false;
+        return;
+    }
     if (fx->type == 3) {
         audio_delay_update(&fx->delay, e + 0x20, new_type || e[1], (revision >> 24) - '0' >= 11);
         return;
@@ -494,6 +504,12 @@ static void apply_effects(Renderer *r, int32_t mix_id, Mix *m) {
     for (uint32_t order = 0; order < r->effects; order++) {
         for (uint32_t i = 0; i < r->effects; i++) {
             Effect *fx = &r->fx[i];
+            if (fx->type == 2 && fx->mix_id == mix_id && fx->order == order) {
+                bool ok = audio_aux_process(&fx->aux, m->buf, m->bufs, N, fx->enabled, r->pools, r->pool_count);
+                if (!ok && !fx->aux_invalid) LOG("[audren] auxiliary effect %u has invalid buffers or unattached memory\n", i);
+                fx->aux_invalid = !ok;
+                continue;
+            }
             if (fx->type == 3 && fx->mix_id == mix_id && fx->order == order) {
                 audio_delay_process(&fx->delay, m->buf, m->bufs, N, fx->enabled);
                 continue;
@@ -920,11 +936,20 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
     oh[0] = h[0];
     uint32_t o = 0x40;
     pthread_mutex_lock(&r->lock);
+    // Keep attached ranges for effects that exchange sample buffers with guest code.
+    if (npools != r->pool_count) {
+        AudioAuxPool *pools = calloc(npools ? npools : 1, sizeof *pools);
+        if (!pools) { pthread_mutex_unlock(&r->lock); resp->result = MAKE_RESULT(153, 41); return; }
+        uint32_t keep = npools < r->pool_count ? npools : r->pool_count;
+        if (keep) memcpy(pools, r->pools, keep * sizeof *pools);
+        free(r->pools); r->pools = pools; r->pool_count = npools;
+    }
     // memory pools: acknowledge attach/detach requests
     const uint8_t *pin = ip + 0x40 + behavior_sz;
     oh[2] = npools * 0x10;
     for (uint32_t i = 0; i < npools && o + 0x10 <= out->size; i++, o += 0x10) {
         uint32_t st = *(const uint32_t *)(pin + i * 0x20 + 0x10);
+        audio_aux_pool_update(&r->pools[i], pin + i * 0x20);
         *(uint32_t *)(op + o) = st == 4 ? 5 : st == 2 ? 3 : st;
     }
     // voice channel resources
@@ -955,7 +980,7 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
         static uint32_t seen_types;
         if (e[0] && e[0] < 32 && !(seen_types & (1u << e[0]))) {
             seen_types |= 1u << e[0];
-            LOG("[audren] effect type %u used%s: slot %u mix %d enabled %u\n", e[0], (e[0] >= 3 && e[0] <= 6) ? "" : " (not implemented)", i,
+            LOG("[audren] effect type %u used%s: slot %u mix %d enabled %u\n", e[0], (e[0] >= 2 && e[0] <= 6) ? "" : " (not implemented)", i,
                 *(const int32_t *)(e + 4), e[2]);
         }
         if (e[0] && getenv("LARECOMP_AUDIO_LOG")) {
@@ -1183,6 +1208,7 @@ RT_ON_RESET(audio_reset) {
             for (uint32_t m = 0; m < r->nmix; m++) free(r->mix[m].buf);
             for (uint32_t f = 0; f < r->effects; f++) audio_delay_free(&r->fx[f].delay);
             for (uint32_t f = 0; f < r->effects; f++) audio_reverb3d_free(&r->fx[f].rv3);
+            free(r->pools);
             free(r->voice), free(r->chres), free(r->chst), free(r->mix), free(r->fx);  // (reverb delay lines leak)
             audio_split_free(&r->routing);
             free(r);

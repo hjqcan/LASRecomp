@@ -97,8 +97,18 @@ samples matched exactly in the Windows test. Tests retain selected numerical
 checkpoints for CI. The REV11 channel remap applies to 5.1 only; the reference's
 fixed six-element index arrays also remap inactive quad entries, so the quad
 comparison uses its legacy mapping. Runtime integration checks reverb-setting
-bypass and effect retirement. Actual island audio still needs listening and
-capture validation. Auxiliary-buffer effects remain incomplete. This routing
+bypass and effect retirement.
+
+Audio effect 2 exchanges signed integer PCM through the game's auxiliary send
+and return rings. The runtime retains attached audio memory-pool ranges, checks
+each ring against them, transfers all planar channels, and publishes frame
+offsets once per block. It converts between the host mixer's normalized samples
+and the guest's integer PCM units. Disabled effects reset DSP offsets and copy
+their input while preserving CPU headers and loss counters. Layout and protocol
+follow the public [auxiliary-buffer implementation](https://git.axenov.dev/Museum/ryujinx/src/commit/dde9bb5c69d2e1a70df82af8accd3d01fb94b78d/Ryujinx.Audio/Renderer/Dsp/Command/AuxiliaryBufferCommand.cs).
+Tests cover ring wrapping, PCM conversion, frame offsets, pool attach/detach,
+canaries, invalid ranges and the production mixer's effect dispatch. Actual
+island audio still needs listening and capture validation. This routing
 implementation covers the legacy destination format, not REV12 biquads.
 
 NVN recorders use private host arenas and compact allocation budgets, avoiding

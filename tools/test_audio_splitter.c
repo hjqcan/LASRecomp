@@ -15,6 +15,9 @@ Settings g_settings = {0};
 
 static void u32(uint8_t *p, uint32_t x) { memcpy(p, &x, 4); }
 static void f32(uint8_t *p, float x) { memcpy(p, &x, 4); }
+#ifdef TEST_AUDIO_RENDERER
+static void u64(uint8_t *p, uint64_t x) { memcpy(p, &x, 8); }
+#endif
 static size_t state(uint8_t *p, uint32_t id, const uint32_t *dest, uint32_t n) {
     u32(p, 0x49444e53); u32(p + 4, id); u32(p + 8, 48000); u32(p + 12, n);
     if (n) memcpy(p + 16, dest, n * 4);
@@ -114,8 +117,20 @@ static void delay_mixer_test(void) {
     g_settings.reverb=0;memset(samples,0,8*sizeof(float));samples[0]=1;
     apply_effects(&r,4,&mix);assert(samples[4]==.5f);
     delay[0]=0;effect_update(&fx[0],delay,0x38564552);assert(!fx[0].rv3.pre.data);
+    uint32_t send[40]={0},receive[40]={0};receive[32]=4096;
+    AudioAuxPool pools[2]={{(uintptr_t)send,sizeof send},{(uintptr_t)receive,sizeof receive}};
+    r.pools=pools;r.pool_count=2;
+    memset(delay,0,sizeof delay);delay[0]=2;delay[1]=1;delay[2]=1;u32(delay+4,4);u32(delay+0x18,1);
+    delay[0x20+24]=1;u32(delay+0x20+48,1);u32(delay+0x20+56,8);
+    u64(delay+0x20+64,(uintptr_t)send);u64(delay+0x20+80,(uintptr_t)receive);
+    effect_update(&fx[0],delay,0x38564552);memset(samples,0,8*sizeof(float));samples[0]=1;
+    apply_effects(&r,4,&mix);assert(send[32]==16384 && samples[4]==.125f && !fx[0].aux_invalid);
+    assert(send[17]==4 && receive[16]==4);
+    delay[2]=0;effect_update(&fx[0],delay,0x38564552);r.pool_count=0;
+    memset(samples,0,8*sizeof(float));samples[0]=1;apply_effects(&r,4,&mix);assert(samples[4]==.5f);
     puts("PASS: production effect dispatch, ordered biquad/delay chain, mix selection, bypass and slot retirement");
     puts("PASS: production reverb3d dispatch, global reverb setting and slot retirement");
+    puts("PASS: production auxiliary-buffer dispatch, guest PCM exchange and detached bypass");
 }
 #endif
 
