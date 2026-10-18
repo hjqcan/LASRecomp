@@ -33,7 +33,8 @@ with tempfile.TemporaryDirectory(prefix='frozen-adapters-', dir=io_path(tempfile
         assert game.id in inspected.stdout
         output = root / ('nested-' + 'x'*90) / ('candidate-' + 'y'*90) / game.id
         assert len(str(output / 'romfs' / game.romfs_roots[0] / 'example.bin')) > 260
-        imported = subprocess.run(command + ['--output', str(logical_path(output)), '--allow-development'], capture_output=True, encoding='utf-8')
+        import_options = [] if release.installable else ['--allow-development']
+        imported = subprocess.run(command + ['--output', str(logical_path(output))] + import_options, capture_output=True, encoding='utf-8')
         assert imported.returncode == 0, imported.stdout + imported.stderr
         manifest = json.loads((output / 'import-manifest.json').read_text())
         assert manifest['game_id'] == game.id and manifest['code_identity'] == code_identity(game, release)

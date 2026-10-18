@@ -101,6 +101,7 @@ class AdapterContract(unittest.TestCase):
             root = Path(tmp).resolve(); adapters = root / 'adapters'; shutil.copytree(ADAPTERS, adapters)
             data = json.loads((ADAPTERS / 'acnh/adapter.json').read_text())
             data.update(id='fixture', name='Synthetic title', application_id='0100000000000010', order=100, romfs_roots=['Data'])
+            data['releases'][0].update(status='development', installable=False)
             data['releases'][0]['modules'][0]['build_id'] = 'ed' * 32
             data['releases'][0]['installation'] = {}
             data['releases'][0]['content'] = dict(minimum_files=2, image_satisfies_count=False)

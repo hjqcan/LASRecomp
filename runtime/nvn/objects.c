@@ -739,7 +739,7 @@ NVN(nvnWindowInitialize) {
     w->interval = (int)G(uint32_t, A(1), 0x20);
     w->active = G(uint32_t, A(1), 0x24) ? (int)G(uint32_t, A(1), 0x24) : w->num;
     SET_HOST(A(0), w);
-    LOG("[nvn] window with %d textures\n", w->num);
+    LOG("[nvn] window with %d textures, present interval %d\n", w->num, w->interval);
     RET(1);
 }
 NVN(nvnWindowFinalize) { (void)c; }
@@ -750,7 +750,11 @@ NVN(nvnWindowGetNumTextures) { RET(WIN->num); }
 NVN(nvnWindowGetNumActiveTextures) { RET(WIN->active); }
 NVN(nvnWindowSetNumActiveTextures) { WIN->active = (int)A(1); }
 NVN(nvnWindowGetPresentInterval) { RET(WIN->interval); }
-NVN(nvnWindowSetPresentInterval) { WIN->interval = (int)A(1); }
+NVN(nvnWindowSetPresentInterval) {
+    int interval = (int)A(1);
+    if (WIN->interval != interval) LOG("[nvn] present interval %d -> %d\n", WIN->interval, interval);
+    WIN->interval = interval;
+}
 NVN(nvnWindowSetCrop) { int *cr = WIN->crop; cr[0] = (int)A(1); cr[1] = (int)A(2); cr[2] = (int)A(3); cr[3] = (int)A(4); }
 NVN(nvnWindowGetCrop) { memcpy(AP(1), WIN->crop, 16); }
 NVN(nvnWindowAcquireTexture) {
@@ -766,10 +770,35 @@ NVN(nvnQueueAcquireTexture) {
     w->next = (w->next + 1) % (w->active ? w->active : 1);
     RET(0);
 }
+
+static void window_wait_present_interval(NvnWindow *w) {
+    // LAS already waits through its emulated VI event and has a separate frame-mode policy.
+    // Generic adapters also rely on NVN's window interval: 2 on the guest's 60 Hz display
+    // requests 30 FPS, regardless of the host monitor's refresh rate.
+    int interval = w->interval;
+    if (title_is_las() || interval < 1 || interval > 4) {
+        w->present_time_ns = 0;
+        return;
+    }
+    uint64_t period = (1000000000ull * (uint64_t)interval + 59) / 60;
+    uint64_t now = plat_now_ns();
+    if (w->present_time_ns && now >= w->present_time_ns && now - w->present_time_ns < period) {
+        uint64_t remaining = period - (now - w->present_time_ns);
+        if (now <= UINT64_MAX - remaining) {
+            plat_sleep_until_ns(now + remaining);
+            now = plat_now_ns();
+        }
+    }
+    // Include time spent rendering the previous frame. A late frame or a restored window
+    // establishes a fresh deadline instead of causing a burst of catch-up presentations.
+    w->present_time_ns = now;
+}
+
 NVN(nvnQueuePresentTexture) {
     NvnWindow *w = HOST(NvnWindow, A(1));
     int i = (int)A(2);
     if (i >= 0 && i < w->num) {
+        window_wait_present_interval(w);
         backend_present(HOST(NvnTexture, w->textures[i]));
         extern uint64_t renderer_present_count(void);
         extern void backend_represent(void);

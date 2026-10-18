@@ -3,9 +3,10 @@
 The enhanced runtime reads reviewed `adapters/*/adapter.json` definitions through
 `tools/game_catalog.py` and generates its native catalog and installation list.
 It identifies each reviewed game/version by every module's full 32-byte
-Build ID. LAS 1.0.0 and 1.1.0 use two modules; ACNH 1.0.0 uses three. ACNH is
-still marked as development while the gameplay and save gates in
-[ACNH-port.md](ACNH-port.md) remain open.
+Build ID. LAS 1.0.0 and 1.1.0 use two modules; ACNH 1.0.0 uses three. ACNH's base
+release is available as a Windows beta. Its local gameplay, saving and timing
+checks, and the remaining compatibility limits, are recorded in
+[ACNH-port.md](ACNH-port.md).
 
 Archive inspection accepts NSP, NSZ, XCI and XCZ. The default is automatic game
 identification. Readable content metadata provides a preliminary identity;
@@ -14,12 +15,15 @@ Filenames do not select the game or version. Import validates module identities,
 base/update roles and RomFS structure. The launcher stages this content, builds
 and validates the exact library, then publishes the installation. The standalone
 import command below extracts data only; it does not compile or create shortcuts.
-The development override is intended for local port testing:
+For supported releases, standalone inspection and extraction use:
 
 ```
 python tools/import_game.py --base /path/to/game.nsz --inspect
-python tools/import_game.py --base /path/to/game.nsz --output /path/to/install --allow-development
+python tools/import_game.py --base /path/to/game.nsz --output /path/to/install
 ```
+
+`--allow-development` is reserved for local testing of other unfinished ports.
+It is not required for the reviewed LAS releases or ACNH 1.0.0.
 
 Encrypted content uses locally selected player key files. No keys, extracted
 game code, game assets, generated sources, game libraries or saves belong in
@@ -174,15 +178,17 @@ objects, compiled the remaining 170 and published the library and shortcut.
 The resulting managed installation boots through the shortcut's stable launch
 arguments. A Unicode data-folder alias also passes the real CLI identity check
 and shell-link creation. These observations are development evidence; ACNH
-remains gated until game saving, reopening and island gameplay pass.
+remained gated at that stage. Later save/reopen and graphics evidence is
+recorded in [ACNH-port.md](ACNH-port.md), including the base release's Windows
+beta acceptance and remaining limits.
 
 The 2026-10-17 Windows development run passed photo registration, placed all
 three tents, collected the campfire materials and entered the night gathering.
 Before the first save, the Intel Arc Pro 140T Vulkan queue stopped completing
 submissions. The old runtime logged repeated 10-second GPU wait timeouts but
 continued executing; the host was eventually restarted manually after its
-display froze. No save files existed for this test island, so save/reopen
-acceptance remains unproven. The retained log does not establish the initial
+display froze. No save files existed for that test island, so the run did not
+establish save/reopen acceptance. The retained log does not establish the initial
 cause of the GPU stall.
 
 GPU submission waits now terminate with a failure status on timeout, before
@@ -208,7 +214,9 @@ finite guest timeouts still return the NVN timeout result. An indefinite guest
 wait that exhausts the ten-second GPU limit terminates without cleanup. The
 regression executes these production paths with a mocked driver, including
 non-returning wait/query calls. This closes the observed protection gap; the
-underlying rendering/submission stall and sunset lighting remain under investigation.
+underlying rendering/submission stall and sunset lighting were still unresolved
+at that stage. The sequence fix below and the later feedback-snapshot fix in
+[ACNH-port.md](ACNH-port.md) record the subsequent findings and validation.
 
 Recovery boot then read all five saved data files and stopped at SyncWait
 submission 9. A CPU-only reproduction exposed a sequence error at the first
