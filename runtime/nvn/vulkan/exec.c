@@ -64,7 +64,7 @@ typedef struct {
 static Sub subs[SUBS];
 static int cur_sub;
 static void ss_forget(void);
-static uint64_t submit_seq;  // last submitted
+static _Atomic uint64_t submit_seq;  // last submitted; also read by guest texture finalizers
 static pthread_mutex_t seq_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool in_pass;
 

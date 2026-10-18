@@ -506,3 +506,17 @@ message; the correction passes all eight. A read-only check of the local ACNH
 folder, without an adjacent image, mounted all 66,790 files and matched 32 sampled
 payload reads. These data-layer checks do not constitute a new NVIDIA gameplay
 acceptance run.
+
+## Concurrent texture retirement
+
+A subsequent development regression stopped in the host GPU allocation/free
+path during tent entry. That crash alone does not identify its cause. Inspection
+of the same path found an independent race: one guest worker could append to the
+retirement queue after another worker published its larger capacity but before
+its storage had grown. A controlled production-code test reproduces the write
+past the old capacity without a GPU or an unsafe heap access in the test itself.
+Queue growth, appends and completed-submission collection now share a mutex;
+the submission sequence read by finalizers is atomic. The test also checks
+pending entries, compaction, view/image ordering and exactly-once destruction.
+The repaired queue passes it, together with fence and feedback-copy regressions.
+Actual scene requalification is still required for the observed tent-entry crash.

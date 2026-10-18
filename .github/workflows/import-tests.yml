@@ -58,6 +58,7 @@ jobs:
       - run: python tools/test_game_profiles.py
       - run: python tools/test_save_multicommit.py
       - run: python tools/test_fence_sequence.py
+      - run: python tools/test_texture_retirement.py
       - run: python tools/test_feedback_snapshot.py
       - run: python tools/test_nvn_present_interval.py
       - run: python tools/test_frame_pacing.py

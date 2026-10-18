@@ -267,10 +267,14 @@ void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags as
 typedef struct { VkImage img; VmaAllocation mem; VkImageView view; uint64_t seq; } Dead;
 static Dead *dead;
 static int ndead, cap_dead;
+// Finalizers can run on guest worker threads while the render thread collects.
+// Keep storage growth, appends and compaction under the same lock.
+static pthread_mutex_t dead_lock = PTHREAD_MUTEX_INITIALIZER;
 static void views_forget(TexBackend *b);
 
 void vk_collect_dead(void) {
     uint64_t done = vk_completed_seq();
+    pthread_mutex_lock(&dead_lock);
     int k = 0;
     for (int i = 0; i < ndead; i++) {
         if (dead[i].seq > done) { dead[k++] = dead[i]; continue; }
@@ -278,6 +282,7 @@ void vk_collect_dead(void) {
         else vmaDestroyImage(g_vk.vma, dead[i].img, dead[i].mem);
     }
     ndead = k;
+    pthread_mutex_unlock(&dead_lock);
 }
 
 static void create_image(NvnTexture *t, TexBackend *b) {
@@ -390,9 +395,20 @@ static void create_image(NvnTexture *t, TexBackend *b) {
 }
 
 static void defer(Dead d) {
-    if (ndead == cap_dead) { cap_dead = cap_dead ? cap_dead * 2 : 256; dead = realloc(dead, cap_dead * sizeof *dead); }
+    pthread_mutex_lock(&dead_lock);
+    if (ndead == cap_dead) {
+        int capacity = cap_dead ? cap_dead * 2 : 256;
+        Dead *grown = realloc(dead, (size_t)capacity * sizeof *dead);
+        if (!grown) {
+            pthread_mutex_unlock(&dead_lock);
+            FATAL("Vulkan texture retirement queue allocation failed\n");
+        }
+        dead = grown;
+        cap_dead = capacity;
+    }
     d.seq = vk_pending_seq();
     dead[ndead++] = d;
+    pthread_mutex_unlock(&dead_lock);
 }
 
 void vk_defer_image(VkImage img, VmaAllocation mem) { defer((Dead){.img = img, .mem = mem}); }
