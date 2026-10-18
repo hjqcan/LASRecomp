@@ -84,10 +84,28 @@ application ID. The existing LAS/ACNH indices, paths and settings aliases remain
 explicit compatibility entries. Save paths are independent of code/cache IDs.
 
 The doctor reports declared capabilities, limits and acceptance steps. With a
-local installation it checks every module identity. With a log it extracts missing
-HLE/IPC calls, without treating log content as instructions. Use
+local installation it checks every module identity. With a log it reports
+`runtime_diagnostics.blockers`: missing generated functions, unsupported shader
+instructions, guest traps, host exceptions and missing HLE/IPC calls. Repeated
+records retain occurrence counts and first/last line numbers; the legacy
+`unimplemented_calls` field remains available. Log reading and record sizes are
+bounded, and truncation is explicit. An empty report is not a compatibility pass.
+Log content is diagnostic data and is never executed. Use
 `LARECOMP_STRICT_HLE=1` and `LARECOMP_STRICT_IPC=1` during port diagnostics to stop
 at missing implementations. The old `ACNH_STRICT_*` names remain aliases.
+
+Use a new game's failures to improve the shared subsystem and add synthetic
+regressions that do not depend on that game's assets or addresses. For example,
+`cpu.jump_tables: low_mask_relative` resolves masked byte/halfword tables even
+when vector work is scheduled before the branch; it rejects clobbered registers
+and control-flow paths that bypass the mask. An unsupported capability such as
+`gpu.surface_write: store_reduce` stays visible as unavailable instead of being
+silently skipped. Declaring or implementing one capability does not qualify the
+whole game.
+
+Crash explanations also follow the selected adapter's content threshold. A
+small but complete data folder must not inherit LAS's file count or suggest that
+the player re-extract data when generated code is missing.
 
 For a managed slot, the doctor follows the published installation record and
 checks its receipt against the identified game/version. `--pending` explicitly
