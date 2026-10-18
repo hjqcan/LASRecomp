@@ -32,6 +32,7 @@ SDL_Window *SDL_GetKeyboardFocus(void) { return focus ? (SDL_Window *)1 : NULL; 
 bool menu_is_open(void) { return menu; }
 Settings g_settings = {.rumble = true, .rumble_strength = 100};  // (the Rumble settings: on, full, as by default)
 bool coop_active(void) { abort(); }  // unrelated second-player event entry point
+int bind_label_family(void) { abort(); }  // unrelated menu-layout entry point
 void SDL_LockSpinlock(SDL_SpinLock *p) { (void)p; }
 void SDL_UnlockSpinlock(SDL_SpinLock *p) { (void)p; }
 const char *SDL_GetError(void) { return "test: unsupported controller"; }
