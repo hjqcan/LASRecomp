@@ -5,13 +5,14 @@
 #include "rt.h"
 #include "title_profile.h"
 #include "relr.h"
+#include "elf_hash.h"
 
 Module g_modules[TITLE_MAX_MODULES];
 int g_nmodules;
 
 enum { DT_NULL = 0, DT_PLTRELSZ = 2, DT_HASH = 4, DT_STRTAB = 5, DT_SYMTAB = 6, DT_RELA = 7, DT_RELASZ = 8,
        DT_JMPREL = 23, DT_INIT_ARRAY = 25, DT_FINI_ARRAY = 26, DT_INIT_ARRAYSZ = 27, DT_FINI_ARRAYSZ = 28,
-       DT_RELRSZ = 35, DT_RELR = 36, DT_RELRENT = 37 };
+       DT_RELRSZ = 35, DT_RELR = 36, DT_RELRENT = 37, DT_GNU_HASH = 0x6ffffef5 };
 enum { R_ABS64 = 257, R_GLOB_DAT = 1025, R_JUMP_SLOT = 1026, R_RELATIVE = 1027 };
 
 typedef struct { uint32_t name; uint8_t info, other; uint16_t shndx; uint64_t value, size; } Elf64Sym;
@@ -88,11 +89,15 @@ static void load_nso(Module *m, const char *path, uint64_t base) {
     uint32_t mod0 = *(uint32_t *)(base + 4);
     uint64_t mod = base + mod0;
     m->dynamic = mod + *(int32_t *)(mod + 4);
+    uint64_t gnu_hash = 0, syment = sizeof(Elf64Sym);
+    bool have_sysv_hash = false, have_gnu_hash = false;
     for (uint64_t *d = (uint64_t *)m->dynamic; d[0] != DT_NULL; d += 2) {
         switch (d[0]) {
         case DT_SYMTAB: m->symtab = base + d[1]; break;
         case DT_STRTAB: m->strtab = base + d[1]; break;
-        case DT_HASH: m->nsyms = *(uint32_t *)(base + d[1] + 4); break;
+        case DT_HASH: m->nsyms = *(uint32_t *)(base + d[1] + 4); have_sysv_hash = true; break;
+        case DT_GNU_HASH: gnu_hash = d[1]; have_gnu_hash = true; break;
+        case 11: syment = d[1]; break;  // DT_SYMENT
         case 12: m->init = base + d[1]; break;  // DT_INIT
         case 13: m->fini = base + d[1]; break;  // DT_FINI
         case DT_INIT_ARRAY: m->init_array = base + d[1]; break;
@@ -100,6 +105,12 @@ static void load_nso(Module *m, const char *path, uint64_t base) {
         case DT_FINI_ARRAY: m->fini_array = base + d[1]; break;
         case DT_FINI_ARRAYSZ: m->fini_array_sz = d[1]; break;
         }
+    }
+    if (!have_sysv_hash && have_gnu_hash) {
+        if (m->symtab < base || m->symtab - base > size || syment != sizeof(Elf64Sym) ||
+            !gnu_hash_symbol_count((const uint8_t *)(uintptr_t)base, size, gnu_hash,
+                                   (size - (m->symtab - base)) / sizeof(Elf64Sym), &m->nsyms))
+            FATAL("%s: invalid GNU symbol hash table\n", m->name);
     }
     LOG("loaded %-5s at %llx size %llx syms %llu\n", m->name, base, size, m->nsyms);
 }
