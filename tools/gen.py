@@ -146,7 +146,87 @@ class Module:
         r = self._jump_table_fallthrough(br_pc, entry, end)
         if r is None:
             r = self._jump_table_taken(br_pc, entry, end)
+        if r is None:
+            r = self._jump_table_masked(br_pc, entry)
         return r
+
+    def _jump_table_masked(self, br_pc, entry):
+        """A low-bit AND bounds a relative table even without a CMP/branch guard.
+
+        Scheduling may put unrelated SIMD work between target calculation and
+        BR. Verify real GPR writes, not instruction destination bit fields,
+        which alias vector registers. Calls and control-flow joins are barriers.
+        """
+        target_reg = bits(self.word(br_pc), 5, 5)
+        start = max(self.materialization_start(entry), br_pc - 64 * 4)
+        candidate = None
+        for pc in range(br_pc - 12, start - 1, -4):
+            arithmetic = self.relative_table_arithmetic(pc)
+            if arithmetic is not None and arithmetic[0] == target_reg:
+                candidate = (pc, arithmetic[1])
+                break
+        if candidate is None:
+            return None
+        origin_pc, index_reg = candidate
+        md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+        md.detail = True
+        instructions = list(md.disasm(bytes(self.nso.image[start-self.base:br_pc-self.base]), start))
+        if not instructions or len(instructions) * 4 != br_pc - start:
+            return None
+
+        def writes(ins, reg):
+            names = {f'x{reg}', f'w{reg}', *({29: ('fp',), 30: ('lr',)}.get(reg, ()))}
+            return any(ins.reg_name(r) in names for r in ins.regs_access()[1])
+
+        def barrier(ins):
+            return self.lift(ins.address).kind not in ('op', 'asm')
+
+        for ins in instructions:
+            if ins.address > origin_pc + 8 and (barrier(ins) or writes(ins, target_reg)):
+                return None
+        for ins in reversed(instructions):
+            if ins.address >= origin_pc:
+                continue
+            if barrier(ins):
+                return None
+            if not writes(ins, index_reg):
+                continue
+            word = self.word(ins.address)
+            if (word & 0x7F800000) != 0x12000000 or (word & 31) != index_reg:
+                return None  # the reaching definition must be AND (immediate)
+            size = 64 if word >> 31 else 32
+            if size == 32 and bits(word, 22, 1):
+                return None
+            try:
+                mask, _ = decode_bit_masks(bits(word, 22, 1), bits(word, 10, 6), bits(word, 16, 6), size, True)
+            except Unsupported:
+                return None
+            if mask > 4095 or mask & (mask + 1):
+                return None
+            if ins.address < entry:
+                return None  # an independently entered fragment can bypass AND
+            entries = self.function_entries()
+            owner = bisect.bisect_right(entries, br_pc) - 1
+            if owner < 0 or ins.address < entries[owner]:
+                return None
+            end = entries[owner + 1] if owner + 1 < len(entries) else self.hi
+            for pc in range(entries[owner], end, 4):
+                w, target = self.word(pc), None
+                if (w & 0x7C000000) == 0x14000000:  # B / BL
+                    target = pc + sext26(w) * 4
+                elif ((w & 0xFF000010) == 0x54000000 or  # B.cond / CBZ / CBNZ
+                      (w & 0x7E000000) == 0x34000000):
+                    target = pc + sext(bits(w, 5, 19), 19) * 4
+                elif (w & 0x7E000000) == 0x36000000:  # TBZ / TBNZ
+                    target = pc + sext(bits(w, 5, 14), 14) * 4
+                elif pc != br_pc and (w & 0xFFFFFC1F) == 0xD61F0000:
+                    return None  # another indirect branch has unknown incoming edges
+                if target is not None and ins.address < target <= br_pc:
+                    return None
+            # Skip the mask and seed its proved output range. The existing
+            # backward slice evaluates only dependencies of the branch target.
+            return self._slice_table(br_pc, entry, ins.address + 4, [index_reg], mask + 1)
+        return None
 
     def _index_regs(self, start, at, idx):
         """The index register plus registers holding the same value in start..at: sources it was
@@ -583,6 +663,24 @@ class Module:
 
     # ------------------------------------------------------------ functions
 
+    def relative_table_arithmetic(self, pc):
+        """Register pair for an adjacent ADR/load/ADD relative-table calculation."""
+        if pc + 12 > self.hi:
+            return None
+        word, load, add = (self.word(pc + i * 4) for i in range(3))
+        base = word & 31
+        if (word & 0x9F000000) != 0x10000000 or base == 31:
+            return None
+        if (load & 0xFFE0EC00) not in (0x38606800, 0x78606800):
+            return None
+        offset, index = load & 31, bits(load, 16, 5)
+        if offset == 31 or base in (offset, bits(load, 5, 5), index):
+            return None
+        if ((add & 0xFFE0FC00) != 0x8B000800 or bits(add, 5, 5) != base or
+                bits(add, 16, 5) != offset or (add & 31) != base):
+            return None
+        return base, index
+
     def relative_table_origin(self, pc, target):
         """An ADR consumed only by a local byte/halfword relative-table branch.
 
@@ -593,16 +691,11 @@ class Module:
         """
         if pc + 16 > self.hi:
             return None
-        word, load, add, branch = (self.word(pc + i * 4) for i in range(4))
-        base = word & 31
-        # LDRB/H Woffset,[Xtable,Xindex{,LSL #1}]; ADD Xbase,Xbase,Xoffset,LSL #2; BR Xbase.
-        if (word & 0x9F000000) != 0x10000000 or base == 31:
+        arithmetic = self.relative_table_arithmetic(pc)
+        if arithmetic is None:
             return None
-        if (load & 0xFFE0EC00) not in (0x38606800, 0x78606800):
-            return None
-        offset = load & 31
-        if offset == 31 or base in (offset, bits(load, 5, 5), bits(load, 16, 5)):
-            return None
+        base, _ = arithmetic
+        branch = self.word(pc + 12)
         br_pc = pc + 12
         # A return-value clear can be scheduled between the target calculation
         # and its branch. It has no side effects and must not overwrite Xbase.
@@ -611,9 +704,7 @@ class Module:
             if br_pc + 4 > self.hi:
                 return None
             branch = self.word(br_pc)
-        if ((add & 0xFFE0FC00) != 0x8B000800 or bits(add, 5, 5) != base or
-                bits(add, 16, 5) != offset or (add & 31) != base or
-                branch != (0xD61F0000 | (base << 5))):
+        if branch != (0xD61F0000 | (base << 5)):
             return None
         entries = self.function_entries()
         i = bisect.bisect_right(entries, pc) - 1

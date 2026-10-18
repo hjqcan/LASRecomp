@@ -115,6 +115,7 @@ jobs:
           tools/venv/bin/python tools/test_cross_fragment_tables.py
           tools/venv/bin/python tools/test_unbounded_tables.py
           tools/venv/bin/python tools/test_fragment_guard.py
+          tools/venv/bin/python tools/test_masked_tables.py
 
   macos:
     runs-on: macos-15
@@ -156,6 +157,7 @@ jobs:
           build/exclusive-test-env/bin/python tools/test_cross_fragment_tables.py
           build/exclusive-test-env/bin/python tools/test_unbounded_tables.py
           build/exclusive-test-env/bin/python tools/test_fragment_guard.py
+          build/exclusive-test-env/bin/python tools/test_masked_tables.py
       - name: Save commit and enhanced backup integration
         run: python3 tools/test_save_commit.py
       - name: Game address table tests
@@ -242,6 +244,7 @@ jobs:
           build/jump-test-env/Scripts/python.exe tools/test_cross_fragment_tables.py
           build/jump-test-env/Scripts/python.exe tools/test_unbounded_tables.py
           build/jump-test-env/Scripts/python.exe tools/test_fragment_guard.py
+          build/jump-test-env/Scripts/python.exe tools/test_masked_tables.py
           GLSLC=glslc build/jump-test-env/Scripts/python.exe tools/test_shader_shared.py
           build/jump-test-env/Scripts/python.exe tools/test_prepared_shader_lifetime.py
           SDL_FLAGS="$(pkg-config --cflags --libs sdl3)" build/jump-test-env/Scripts/python.exe tools/test_rumble.py
