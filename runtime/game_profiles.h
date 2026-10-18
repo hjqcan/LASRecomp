@@ -22,6 +22,7 @@ static inline bool game_profile_las_extensions(int profile) {
     return profile >= 0 && profile < GAME_PROFILE_COUNT && game_installations[profile].las_extensions;
 }
 const char *game_profile_dir(int profile);
+const char *game_profile_base_dir(int profile); // resolved normal installation, irrespective of frame-rate mode
 const char *game_profile_install_dir(int profile); // stable slot; may contain a published generation
 const char *game_profile_save_dir(int profile);
 const char *game_profile_name(int profile);

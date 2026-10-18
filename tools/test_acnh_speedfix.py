@@ -48,6 +48,19 @@ class PatchTests(unittest.TestCase):
         spec['words'][0][1] = b'xxxx'.hex()
         with self.assertRaises(ValueError): fix.patch_resource(original, spec)
 
+    def test_prepared_directory_retains_real_resources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); source=root/'source';target=root/'target'
+            (source/'Movie/intro').mkdir(parents=True);(source/'Pack').mkdir()
+            (source/'Movie/intro/a.bin').write_bytes(b'unchanged movie')
+            (source/'Pack/StaticParam.pack').write_bytes(b'normal parameters')
+            target.mkdir()
+            fix.copy_romfs(source,target,{'Pack/StaticParam.pack'})
+            self.assertEqual((target/'Movie/intro/a.bin').read_bytes(),b'unchanged movie')
+            self.assertFalse((target/'Pack/StaticParam.pack').exists())
+            (target/'Pack/StaticParam.pack').write_bytes(b'patched parameters')
+            self.assertEqual((source/'Pack/StaticParam.pack').read_bytes(),b'normal parameters')
+
     def test_nso_text_rodata_and_data(self):
         header = bytearray(256)
         header[:4] = b'NSO0'
@@ -92,6 +105,8 @@ int main(int argc, char **argv) {
     assert(acnh60_boot(normal.c_str(),why,sizeof why) && !acnh60_active());
     fs::path mod=root/".acnh60";fs::create_directories(mod/"exefs");
     auto name=mod.u8string();
+    assert(!acnh60_profile(&base,name.c_str(),why,sizeof why));
+    assert(!acnh60_validate(name.c_str(),why,sizeof why));
     {std::ofstream f(mod/".acnh-speedfix60",std::ios::binary);f<<"LASACNH60-1\n"<<argv[2]<<"\n";}
     const TitleProfile *variant=acnh60_profile(&base,name.c_str(),why,sizeof why);
     assert(variant && variant!=&base && strcmp(variant->code_identity,base.code_identity));

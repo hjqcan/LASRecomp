@@ -259,6 +259,30 @@ static bool import_helper(const char *base, const char *update, const char *keys
     return true;
 }
 
+bool gameprepare_acnh60(const char *root, const GameBuildOpts *o, char *why, size_t cap) {
+    if (!g_registered) g_registered=true, atexit(end_all);
+    Tools t;
+    if (!find_tools(&t)) { snprintf(why,cap,"The SpeedFix preparation helper is missing."); return false; }
+    Args a={0}; add(&a,t.gen);
+    if (t.gen_script[0]) add(&a,t.gen_script);
+    add(&a,"--import-nsz");add(&a,"--prepare-speedfix60");add(&a,root);
+    char log[2048];snprintf(log,sizeof log,"%s/.acnh60-prepare.log",root);
+    PlatProc p=spawn(a.v,log);args_free(&a);
+    int result=255;
+    while (p && (result=finished(p))<0) {
+        if (o && o->cancelled && o->cancelled()) {
+            stop(p);snprintf(why,cap,"SpeedFix preparation cancelled. Normal game files are unchanged.");return false;
+        }
+        sleep_ms(200);
+    }
+    if (result) {
+        log_tail(log,why,cap);
+        if (!why[0]) snprintf(why,cap,"SpeedFix preparation failed; see .acnh60-prepare.log.");
+        return false;
+    }
+    return true;
+}
+
 bool gameimport_run(const char *base, const char *update, const char *keys, const char *title_keys, const char *game_dir,
                     const char *expected_title, const char *expected_version,
                     void (*progress)(const char *), char *why, size_t why_size) {
@@ -599,9 +623,11 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     if (ok) {
         char main_path[1100], build_id[65];
         snprintf(main_path, sizeof main_path, "%s" SEP "exefs" SEP "main", game_dir);
-        if (title_profile_validate(game_dir,why,why_size)!=profile || !title_build_id(main_path, build_id)) {
+        if (acnh60_profile(title_profile_validate(game_dir,why,why_size),game_dir,why,why_size)!=profile ||
+            !title_build_id(main_path, build_id)) {
             snprintf(why, why_size, "the game executable changed"); ok = false;
         }
+        else if (!acnh60_validate(game_dir,why,why_size)) ok=false;
         else ok = build_cache_publish(cache, GAMELIB_NAME, GAMELIB_ID, build_id, profile->code_identity, why, why_size);
     }
     free(units.u);

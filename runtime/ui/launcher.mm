@@ -47,6 +47,7 @@ extern "C" {
 #include "title_profile.h"
 #include "rando_profile.h"
 #include "mods.h"
+#include "acnh_speedfix.h"
 #include "workshop.h"
 #include "build_cache.h"
 #include "gamelib.h"
@@ -177,8 +178,10 @@ static void *update_thread(void *) {
 // ------------------------------------------------------------------ game files
 static std::string g_root;  // selected installation: <root>/exefs, <root>/romfs
 static int g_profile = -1, g_profile_request = -1;
+static int g_speedfix_ready_profile = -1;
 static std::string build_cache_root() {
     char pending[2048];
+    if (acnh60_base_path(g_root.c_str(), pending, sizeof pending)) return g_root;
     return g_profile >= 0 && game_install_pending_path(game_profile_install_dir(g_profile), pending, sizeof pending) ? pending : g_root;
 }
 
@@ -475,12 +478,17 @@ static void *extract_thread(void *) {
     char why[512] = "";
     std::string exefs, romfs, target;
     bool unusable = false;
+    char speedfix_base[2048];
+    bool speedfix = acnh60_base_path(g_root.c_str(), speedfix_base, sizeof speedfix_base);
     if (gamelib_tables()) {
         set_job("Restart LAS Recomp before changing the game files.", true,
                 "The current game code is still loaded. Your files have not been changed.");
         goto done;
     }
-    if (g_profile < 0) {
+    if (speedfix && !src.empty()) {
+        set_job("Switch to normal 30 FPS before replacing game files.", true); goto done;
+    }
+    if (g_profile < 0 || speedfix) {
         // External extracted folders retain the existing build-only workflow. No imported data is replaced.
         if (!src.empty()) { set_job("Choose a game installation before setting up files.", true); goto done; }
         std::string problem = check_copied_files(g_root);
@@ -560,6 +568,40 @@ done:
     pthread_mutex_lock(&g_lock);
     g_install_published = published;
     g_busy = false;
+    pthread_mutex_unlock(&g_lock);
+    return nullptr;
+}
+
+static void *speedfix_thread(void *) {
+    stop_background_prep();
+    g_cancel_build=false;g_build_started=SDL_GetTicks();g_build_frac=-1;g_copy_skipped=true;
+    char why[512]="";
+    bool ready=false;
+    const int profile=g_profile;
+    const std::string base=game_profile_base_dir(profile), target=base+"/.acnh60";
+    const TitleProfile *title=title_profile_validate(base.c_str(),why,sizeof why);
+    if (gamelib_tables()) set_job("Restart LAS Recomp before changing frame-rate mode.",true);
+    else if (!title || strcmp(title->key,"acnh") || strcmp(title->version,"3.0.1"))
+        set_job("Install the normal 3.0.1 game files first.",true,why);
+    else {
+        GameBuildOpts options={build_progress,1,build_cancelled};
+        bool prepared=file_exists(target);
+        if (!prepared) {
+            set_job("Preparing 60 FPS + SpeedFix...");
+            prepared=gameprepare_acnh60(base.c_str(),&options,why,sizeof why);
+        }
+        if (!prepared || !acnh60_profile(title,target.c_str(),why,sizeof why) ||
+            !acnh60_validate(target.c_str(),why,sizeof why))
+            set_job("Could not prepare 60 FPS + SpeedFix.",true,why);
+        else if (build_game_code(target)) {
+            if (gamelib_verify(target.c_str(),why,sizeof why)) {
+                set_job("60 FPS + SpeedFix is ready.");ready=true;
+            } else set_job("Game code build failed.",true,why);
+        }
+    }
+    pthread_mutex_lock(&g_lock);
+    if (ready) g_speedfix_ready_profile=profile;
+    g_busy=false;
     pthread_mutex_unlock(&g_lock);
     return nullptr;
 }
@@ -1498,6 +1540,10 @@ extern "C" const char *launcher_run(const char *root) {
         bool setup_failed = g_job_failed, inspection = g_job_inspection;
         bool auto_selected = !busy && g_detected_profile >= 0;
         if (auto_selected) { g_profile_request = g_detected_profile; g_detected_profile = -1; }
+        if (!busy && g_speedfix_ready_profile>=0) {
+            g_settings.acnh_speedfix60=true;
+            g_profile_request=g_speedfix_ready_profile;g_speedfix_ready_profile=-1;
+        }
         bool inspect_now = !busy && g_pending_inspect && !gamelib_tables();
         if (inspect_now) { g_pending_inspect = false; g_busy = busy = true; }
         pthread_mutex_unlock(&g_lock);
@@ -1893,6 +1939,25 @@ extern "C" const char *launcher_run(const char *root) {
                 profile_picker(sc);
                 opt_begin("##files", sc);
                 {
+                    if (g_profile>0 && !strcmp(game_profile_title(g_profile),"acnh") &&
+                        !strcmp(game_profile_version(g_profile),"3.0.1")) {
+                        opt_section("Frame rate");
+                        const char *modes[]={"Normal 30 FPS","60 FPS + SpeedFix (experimental)"};
+                        int mode=g_settings.acnh_speedfix60?1:0;
+                        if (busy || gamelib_tables() || !check_copied_files(game_profile_base_dir(g_profile)).empty()) opt_disable_next();
+                        const char *hint=gamelib_tables()?"Restart LAS Recomp before changing frame-rate mode.":
+                            "60 FPS + SpeedFix keeps normal game speed when your PC sustains 60 FPS. Below 60 FPS the game slows down. First use prepares and compiles a separate copy; both modes use the same 3.0.1 save. ACNH 60 FPS + SpeedFix by tmouh (CC BY-NC 4.0).";
+                        if (opt_choice("Frame-rate mode",&mode,modes,2,0,hint)) {
+                            if (!mode) {g_settings.acnh_speedfix60=false;g_profile_request=g_profile;}
+                            else {
+                                pthread_mutex_lock(&g_lock);g_busy=busy=true;g_job_failed=false;pthread_mutex_unlock(&g_lock);
+                                pthread_t thread;
+                                if (!pthread_create(&thread,NULL,speedfix_thread,NULL)) pthread_detach(thread);
+                                else {pthread_mutex_lock(&g_lock);g_busy=busy=false;pthread_mutex_unlock(&g_lock);
+                                      set_job("Could not start the build worker.",true);}
+                            }
+                        }
+                    }
                     opt_section("Your copy of the game");
                     if (busy) opt_disable_next();
                     if (opt_action("Game files folder", ui_tr(src_v.c_str()), src_d.c_str(), true))
@@ -1987,7 +2052,9 @@ extern "C" const char *launcher_run(const char *root) {
                         }
                     }
                 }
-                if (ready) {
+                char speedfix_parent[2048];
+                bool speedfix_selected=acnh60_base_path(g_root.c_str(),speedfix_parent,sizeof speedfix_parent);
+                if (ready && !speedfix_selected) {
                     // DELETE: frees LAS Recomp's copy (runtime/paths.c removes only what the setup made, only inside
                     // the data root). Saves, seeds, settings and the user's own files stay.
                     if (files_gb < 0) files_gb = rt_game_files_size(g_root.c_str()) / 1e9;

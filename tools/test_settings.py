@@ -32,7 +32,8 @@ with tempfile.TemporaryDirectory() as directory:
             for seed in ['Regression seed', '']:
                 ini = directory / 'test.ini'
                 lines = [f'language = {setting}', 'aspect = original', 'upscaler = bilinear',
-                         'prompts = xbox', 'volume = 1.25', 'volume =', 'language =', f'rando_seed = {seed}']
+                         'prompts = xbox', 'volume = 1.25', 'volume =', 'language =', f'rando_seed = {seed}',
+                         'acnh_speedfix60 = 1']
                 ini.write_bytes((newline.join(lines) + newline).encode())
                 env = dict(os.environ, LARECOMP_SETTINGS=str(ini), LC_ALL='', LC_MESSAGES='', LANG='C')
                 env.update(locale)
@@ -41,5 +42,6 @@ with tempfile.TemporaryDirectory() as directory:
                 expected = 'auto' if setting in ['auto', 'unknown'] else code
                 assert f'language = {expected}\n' in saved
                 assert f'rando_seed = {seed}\n' in saved
+                assert 'acnh_speedfix60 = 1\n' in saved
                 count += 1
     print(f'{count} parser, locale and roundtrip cases passed (LF/CRLF, empty/nonempty seeds)')

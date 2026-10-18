@@ -246,12 +246,29 @@ def link_or_copy(source, destination):
         shutil.copyfile(source, destination)
 
 
+def copy_romfs(source, destination, replacements):
+    # Keep the real extracted directory structure for launcher validation and
+    # resource preparation, even when runtime reads prefer the retained image.
+    for directory, children, names in os.walk(source, followlinks=False):
+        current = Path(directory)
+        require(not current.is_symlink() and all(not (current / n).is_symlink() for n in children),
+                'SpeedFix does not follow source directory links')
+        relative = current.relative_to(source)
+        target = destination / relative
+        target.mkdir(exist_ok=True)
+        for name in names:
+            if (relative / name).as_posix() not in replacements:
+                link_or_copy(current / name, target / name)
+
+
 def prepare(source):
     source = Path(source).resolve(strict=True)
     require(not (source / MARKER).exists() and source.name != DIRECTORY, 'Select the normal 3.0.1 installation')
+    require((source / 'romfs/Movie').is_dir(), 'Select a complete installed 3.0.1 game folder')
     manifest, identity = load_bundle()
     destination = source / DIRECTORY
-    require(not destination.exists(), 'The SpeedFix installation already exists; use its own build/resume action')
+    require(not destination.exists() and not destination.is_symlink(),
+            'The SpeedFix installation already exists; use its own build/resume action')
     prepared = {}
     for name, specification in manifest['modules'].items():
         patch = (BUNDLE / specification['patch']).read_text() if specification.get('patch') else None
@@ -266,17 +283,7 @@ def prepare(source):
         (stage / 'romfs').mkdir()
         if (source / 'romfs.bin').is_file():
             link_or_copy(source / 'romfs.bin', stage / 'romfs.bin')
-        else:
-            for directory, children, names in os.walk(source / 'romfs', followlinks=False):
-                current = Path(directory)
-                require(not current.is_symlink() and all(not (current / n).is_symlink() for n in children),
-                        'SpeedFix does not follow source directory links')
-                relative = current.relative_to(source / 'romfs')
-                target = stage / 'romfs' / relative
-                target.mkdir(exist_ok=True)
-                for name in names:
-                    if ('romfs/' + (relative / name).as_posix()) not in prepared:
-                        link_or_copy(current / name, target / name)
+        copy_romfs(source / 'romfs', stage / 'romfs', {p[6:] for p in prepared if p.startswith('romfs/')})
         for item in (source / 'exefs').iterdir():
             if 'exefs/' + item.name not in prepared:
                 link_or_copy(item, stage / 'exefs' / item.name)

@@ -21,6 +21,8 @@ typedef struct {
 bool gamebuild_run(const char *game_dir, const GameBuildOpts *opts, char *why, size_t why_size);
 // The generator and the compiler are there (shipped builds; a source checkout with tools/venv and clang).
 bool gamebuild_available(void);
+// Prepare the complete reviewed ACNH speed correction; publication remains in a separate subdirectory.
+bool gameprepare_acnh60(const char *normal_root, const GameBuildOpts *opts, char *why, size_t why_size);
 // Import a base NSP/NSZ/XCI/XCZ and optional update using player-selected local keys (never persisted).
 bool gameimport_run(const char *base, const char *update, const char *keys, const char *title_keys, const char *game_dir,
                     const char *expected_title, const char *expected_version,

@@ -19,7 +19,7 @@ static std::once_flag initialized;
 
 static int marker(const char *root) {
     auto path = fs::u8path(root) / ".acnh-speedfix60";
-    if (!fs::exists(path)) return 0;
+    if (!fs::exists(path)) return fs::u8path(root).lexically_normal().filename()==".acnh60" ? -1 : 0;
     FILE *f = fopen(path.u8string().c_str(), "rb");
     if (!f) return -1;
     char bytes[128] = {};
@@ -109,6 +109,7 @@ extern "C" bool acnh60_boot(const char *root, char *why, size_t cap) {
     const TitleProfile *p = acnh60_profile(title_profile_current(), root, why, cap);
     if (!p || !acnh60_validate(root, why, cap)) return false;
     if (p == &variant) {
+        if (strlen(root)>1100) {snprintf(why,cap,"The 60 FPS installation path is too long.");return false;}
         active_root = root;
         active.store(true, std::memory_order_release);
         fprintf(stderr, "[acnh60] 60 FPS + SpeedFix active; all 3 modules and 4 resources verified\n");

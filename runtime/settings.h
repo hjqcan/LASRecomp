@@ -60,6 +60,7 @@ typedef struct {
     int hearts;          // index into g_heart_colours (0 = Default red)
     char rando_seed[128];  // active randomizer seed (rando/<name>/), empty = vanilla
     int game_profile;      // 0: existing extracted/, 1: v1.0.0, 2: v1.1.0; each has separate vanilla saves
+    bool acnh_speedfix60;  // ACNH 3.0.1 only; selected before loading a native game library
 } Settings;
 
 enum { N_TUNIC_COLOURS = 13, N_HEART_COLOURS = 9 };
