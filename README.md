@@ -12,7 +12,7 @@ for Link's Awakening 1.0.0/1.1.0 and Animal Crossing: New Horizons 1.0.0
 (Windows beta). The launcher identifies supported releases from NSP, NSZ, XCI
 and XCZ archives, imports them and builds their native game libraries.
 See [multi-game setup](docs/multi-game.md) and the
-[ACNH validation and limits](docs/ACNH-port.md).
+[ACNH support and limits](docs/ACNH-port.md).
 
 Pokémon Legends: Z-A development work is maintained directly on `enhanced`.
 It remains development-only and is not playable; see the

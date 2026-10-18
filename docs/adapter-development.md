@@ -1,7 +1,7 @@
 # Developing a reviewed game adapter
 
 Development stays on `enhanced`. Each game and executable version needs reviewed
-configuration and actual gameplay evidence. A matching archive, successful
+configuration and working gameplay. A matching archive, successful
 compilation or passing synthetic test does not establish playability.
 
 ## Responsibilities
@@ -27,7 +27,7 @@ does not turn this capability on. See the limits in `adapters/core-capabilities.
 The shared core implements archive/container parsing, supported update assembly,
 generation, compilation, installation publication, graphics, sound, input, host
 services, saves and desktop launch. New runtime behavior belongs in the relevant
-core implementation and needs an independent regression test. Game-specific
+core implementation. Extend existing tests for substantive behavior changes. Game-specific
 behavior must be explicitly selected by the adapter. LAS's existing complex
 hooks/randomizer profile remains guarded; generic adapters never inherit it.
 
@@ -143,89 +143,13 @@ reviewed implementation; arbitrary scripts/plugins are not loaded from archives.
 Use `tools/gen_game.py` or the launcher to pass the complete reviewed module plan.
 Standalone `tools/gen.py` retains its LAS default for existing developer scripts.
 
-## Two separate acceptance decisions
+## Integration and release
 
-Developer qualification is per game/version: startup, controls, graphics/audio,
-game-managed saving and reopening, repeated starts, relevant time transitions
-and an extended gameplay run. Record known unsupported functionality. Keep the
-release in development until these checks support the intended claim.
+Keep unfinished adapters marked as development and unavailable for normal
+installation. Their source can live on `enhanced` while implementation continues.
+Enable installation only when the supported startup, gameplay and save paths work.
 
-Local installation checks verify the imported content, complete build, loadable
-library and matching identities. Once they pass for an installable release, the
-publisher switches the startup record and creates its shortcut. The player does
-not need to perform the developer qualification again.
-
-## Repeatable engineering checks
-
-```text
-python tools/test_adapter_contract.py
-python tools/test_game_install.py
-python tools/test_gamebuild_resume.py
-python tools/test_title_profile.py
-python tools/test_enemy_random.py
-python tools/test_game_addresses.py
-python tools/test_version_hooks.py
-python tools/test_hle_libc.py
-python tools/test_runtime_diagnostics.py
-python tools/test_crash_explain.py
-python tools/test_game_profiles.py
-python tools/test_game_shortcut.py
-python tools/test_frozen_adapters.py <built-lasgen-executable>
-```
-
-The contract test introduces a third synthetic title with different content
-roots and checks native selection, generated slots, settings and save identity.
-It also checks actual Makefile cache identity behavior, per-release dependencies,
-guarded patches and platform-independent descriptor hashing. The installation
-test kills a subprocess on both sides of publication and checks restart behavior,
-concurrent writers, candidate isolation and cleanup boundaries. The build test
-uses a real compiler and production library validator/publication code with tiny
-synthetic function tables. The frozen-helper test checks imports, inventories,
-receipts and actual generation of a tiny synthetic ARM64 function.
-
-Recheck title and version boundaries when merging upstream changes. Shared
-filesystem callbacks can reach title-specific extensions even when generated
-hooks are disabled. The enemy-randomizer test passes invalid pointers under
-unknown, ACNH, Z-A and synthetic future-title profiles, both before and after a
-LAS seed is loaded; they must return without touching pointers or seed state.
-The positive fixture still exercises LAS file-load and spawn behavior. Patch
-fixtures also include required preceding instructions, so every instruction
-guard must use the selected executable's address mapping. The shared libc test
-checks byte semantics, overlapping copies and guest return registers for the
-SDK fast paths. These checks complement actual save/reopen and visual/audio
-regressions of every already-supported game on the same candidate executable.
-
-Record framework integration effort separately from compatibility work for the
-next real title: descriptor changes, dedicated patches, core changes and time
-spent diagnosing missing behavior. A shorter registration diff is useful only
-when failures are understandable and existing games retain their behavior.
-
-The installation publisher currently retains previous generations and copies
-data/cache during a rebuild. Account for that temporary/retained disk usage;
-automatic reclamation and a rollback UI are future work. Desktop link tests use
-a scratch desktop. These engineering checks do not certify a new playable game.
-
-## Packaged Windows setup with local game data
-
-Use a freshly built package and a new data directory to exercise the same launcher
-workers that players use. This opt-in check requires your own supported base
-archive; use `--update` for an adapted update and `--keys` / `--title-keys` only
-when your encrypted content needs them:
-
-```text
-python tools/validate_packaged_setup.py --app "<unpacked-package>" --game las/1.0.0 --base "<base.nsz>" --data-root "<new-test-folder>" --cancel-after 30 --minimized
-```
-
-The test rejects an existing data directory, clears runtime/tool overrides,
-imports with the bundled helper, cancels compilation and resumes the same
-candidate with the bundled compiler. `--minimized` checks that background setup
-continues when the window has no drawable UI area. Omit `--cancel-after` to run
-without an intentional interruption. It checks the exit status, publication
-record, module/library identities and presence of one shortcut in a scratch
-desktop inside the test directory. It writes logs and `setup-validation.json`,
-including failures, and retains the candidate for investigation or manual resume.
-It never changes the system long-path setting or installs keys into the package.
-
-This is installation evidence only: opening the shortcut, interacting with the
-game and saving/reopening still require separate recorded checks. A zero exit
-code without a `READY` result and a valid publication record does not pass.
+Run `python tools/adapter.py check` after changing adapter definitions. Use the
+existing catalog/contract tests and the tests for the affected subsystem; avoid
+duplicating the complete runtime matrix for a documentation-only change.
+Use [the release checklist](enhanced.md#repeatable-release-checks) before packaging.

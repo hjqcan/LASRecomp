@@ -50,24 +50,8 @@ During gameplay, open **Settings → Performance**, choose 10–300 seconds and 
 
 These are presentation intervals, including waits and CPU work between presentations. They are not GPU timers or proof that the simulation runs at the reported rate. Compare captures under the same hardware, settings, save, seed, mods and route, with other workloads stopped. This does not change the game's fixed timing or enable 120 FPS gameplay.
 
-## Validation tools
+## Development
 
-```sh
-python tools/test_workshop.py
-python tools/workshop_smoke.py --exe /path/lasrecomp --game /path/game \
-  --library /path/lasgame --save-copy /path/compatible/save_0 --output /new/output
-python tools/rando_matrix.py --generator /path/rando-gen \
-  --game100 /path/base --game110 /path/updated --output /new/matrix
-```
-
-The synthetic test covers challenge transitions, malformed presets/route data, source-preserving snapshots, route round-trips and frame statistics. The native smoke verifies timeout/success, source hashes, route/benchmark export and a gameplay screenshot; `--result win` uses the opening house as the goal. `--view-route --language zh-Hans` also exercises the route viewer. The randomizer matrix tests 12 settings groups per version and compares the generated logic and progression spheres. It explicitly reports gameplay as not run.
-
-## Further research
-
-Developer-only [isolated HID/timing/camera captures](research-capture.md) now provide repeatable experiments and explicit divergence reports. They are separate from the route viewer and never enable during ordinary play.
-
-Higher refresh rates need separation of simulation, input, animation and rendering clocks. The existing `runtime/hle/framepace.c` experiments do not fix fixed-step walking. Next checks should compare movement distances, collision outcomes, animation lengths, audio and timers over the same route at several presentation rates before exposing a setting.
-
-Deterministic replay requires capturing a starting state, random-number state, asynchronous events and simulation-tick inputs. Observed presentation samples are insufficient. A useful next milestone is an explicit state checksum per simulation tick with a controlled replay harness.
-
-Real-time co-op additionally needs player ownership, authoritative shared-world state, local/remote input separation, synchronization and save ownership. No networking is added by this change. The route format and isolated practice saves provide bounded experiments without making online or deterministic-replay claims.
+`python tools/test_workshop.py` covers challenge state, preset parsing, copied
+saves, route data and frame statistics without game assets. Experimental capture
+and replay tools are described in [research-capture.md](research-capture.md).

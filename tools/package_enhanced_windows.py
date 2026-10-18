@@ -74,14 +74,10 @@ def main():
         copy(root/'third_party/fonts'/folder/license_name, folder+'-LICENSE.txt')
     for name in ('README.md', 'LICENSE', 'CONTRIBUTING.md'):
         copy(root/name, name)
-    for name in ('enhanced.md', 'enhanced-beta5.1-validation.md', 'enhanced-beta5.2-validation.md',
-                 'enhanced-beta5.3-validation.md', 'NSZ-and-v110.md',
-                 'photo-mods-randomizer.md', 'photo-mode.md', 'resource-mods.md',
-                 'multi-game.md', 'adapter-development.md', 'ACNH-port.md', 'pokemon-za-port.md',
-                 'local-coop.md', 'workshop.md', 'enhanced-stage34-validation.md',
-                 'research-capture.md', 'research-findings-2026-10-17.md',
-                 'research-update-boundary.md', 'research-update-validation-2026-10-17.md',
-                 'research-semantic-observations.md', 'research-fourth-round.md', 'research-store-tracing.md'):
+    for name in ('enhanced.md', 'NSZ-and-v110.md', 'photo-mods-randomizer.md',
+                 'photo-mode.md', 'resource-mods.md', 'multi-game.md',
+                 'adapter-development.md', 'ACNH-port.md', 'pokemon-za-port.md',
+                 'local-coop.md', 'workshop.md', 'research-capture.md'):
         copy(root/'docs'/name, 'docs/'+name)
     copy(root/'docs/enhanced.md', 'START-HERE-使用说明.md')
     copy(root/'examples/mods/template', 'examples/mods/template')

@@ -33,45 +33,9 @@ Normal installation is enabled for this base release; updates and DLC remain uns
 
 See [import and versions](NSZ-and-v110.md), [photo/mod/randomizer details](photo-mods-randomizer.md), [mod format](resource-mods.md) and [workshop/replay/performance](workshop.md).
 
-Enhanced Beta 5.2 includes the workshop, extended photo controls, mod presets and frame captures. Their scope and checks are recorded in [third/fourth-round validation](enhanced-stage34-validation.md). The [local companion co-op prototype](local-coop.md) adds same-PC Link + BowWow play in isolated 1.0.0 sessions. High-refresh simulation, deterministic game replay and online co-op remain research work.
-
-The subsequent [research probes](research-capture.md) now measure final HID input, clock behavior and scene camera matrices in isolated saves. See the [2026-10-17 findings](research-findings-2026-10-17.md) for actual dual-version replay divergence and presentation-mode controls.
-
-[Update-dispatch experiments](research-update-boundary.md) add a guarded update boundary and repeatable capture counts while retaining explicit state-comparison limits.
-
-[Semantic observations](research-semantic-observations.md) expose RNG and placed-actor differences that matching player positions can miss, and extend the input scenario across scene transitions.
-
-The [fourth research round](research-fourth-round.md) separates startup seed input from RNG consumption and compares exact save-window bytes and observed loading activity in both supported versions.
-
-[Store tracing](research-store-tracing.md) builds an optional diagnostic library to locate differences in observed RNG writes, with explicit source coverage, buffer limits and state-chain validation.
-
-The [Enhanced Beta 5.3 validation record](enhanced-beta5.3-validation.md) covers
-ACNH acceptance and the latest two-version LAS regression. The
-[Beta 5.2 record](enhanced-beta5.2-validation.md) and
-[Beta 5.1 record](enhanced-beta5.1-validation.md) retain the earlier enhanced-feature checks.
-
-[Multi-game development](multi-game.md) now includes the shared module runtime,
-reviewed per-game adapter definitions, catalog-generated installation selection,
-release-scoped cache identities and Windows desktop shortcuts. Managed setup
-imports and builds a candidate before atomically selecting it; failed builds keep
-the previous installation. ABI 4 requires a one-time game-library rebuild while
-preserving saves and launch IDs. ACNH 1.0.0 is enabled as a Windows beta after
-local island, day-rollover, save/reopen and extended-play checks; see
-[its validation record and limits](ACNH-port.md). Other development adapters
-remain unavailable for normal installation. The shared runtime
-also includes audio effects, guest nonlocal-return handling, compute
-workgroup memory and screen-attachment scaling fixes. Vulkan prepares shaders
-ahead of use and shares identical stages while preserving every required draw.
-Unseen variants can still require first-use waits.
-
-The official `beta_5` synchronization through `0f5a5ab` also includes controller
-rumble with an intensity setting, the frame-job rebuild ordering fix, and LAS
-shader preparation from the player's files. The preparation list is restricted
-to LAS and integrated with the existing Vulkan queue and reboot cleanup. See
-[rumble](rumble.md) and [multi-game rendering](multi-game.md) for behavior and
-validation limits. The later updates include complete movie decoder cleanup on
-reboot, the Vulkan empty-fence fix, and mini-boss frequency settings in shared
-randomizer generation. Existing enhanced version slots and extensions remain.
+See [shared game installations](multi-game.md), [ACNH support](ACNH-port.md),
+[Z-A development status](pokemon-za-port.md), [local co-op](local-coop.md) and
+[experimental capture tools](research-capture.md) for their current scope.
 
 ## Windows quick start / Windows 使用说明
 
@@ -94,12 +58,9 @@ v1.1.0 随机化仍为实验功能，尚未验证完整通关和全部选项组�
 
 ## Repeatable release checks
 
-1. Fetch upstream; fast-forward mirror branches; merge upstream `beta_5` into `enhanced`. Record the upstream commit and confirm all open PR branch heads remain unchanged.
-2. Run the settings, import/NSP/XCI, build cache/resume/Windows process, save backup, mod, photo, address/hook, localization and randomizer profile/event tests. CI uses synthetic data only.
-3. Rebuild both helpers from this branch, including the required `pe_no_cfg.py` step for Windows `lasgen`. Generate and compile both supported executables with all patch instruction guards enabled.
-4. Use a fresh output directory and separate compatible saves for each version. Test actual NSZ base/update import, folder startup, default audio, an opening-room gameplay segment, photo freeze/export/resume and automatic backups. Inspect screenshots and level logs.
-5. Exercise cancel/resume through the launcher with the packaged compiler. Check object hashes and only the build's child processes. Check launcher backup restore and mod import/conflict/disable with scratch saves/resources.
-6. Generate fresh version-specific seeds with the frozen helper. Check runtime patch loading and gameplay. Track keysanity, shops, digs, souls, bosses/minibosses, entrance/dungeon shuffles separately; do not claim full parity from smoke coverage.
-7. Build the package from explicit allowlisted files using `tools/package_enhanced_windows.py`. Inspect its file list; publish ZIP, SHA-256 checksum and precise validation/limitations as a prerelease on this fork.
+1. Merge upstream `beta_5` into `enhanced` and run the relevant CI checks. Preserve the fork features and independent PR branches.
+2. Build the runtime and both helpers from the same revision; apply `pe_no_cfg.py` to the Windows generator. Use `tools/package_enhanced_windows.py` to package only allowlisted files.
+3. Before publishing, check setup, cancel/resume, gameplay, audio, save/reopen and the changed features with compatible copied saves. Keep unsupported ports and experimental randomizer options clearly marked.
+4. Inspect the package contents and checksum, then publish it as a fork prerelease. Do not add per-run reports or machine-specific evidence to the repository.
 
 The source tree contains no game assets, console keys, generated game code or personal saves. The package includes only distributable program/toolchain files and open fonts.

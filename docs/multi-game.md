@@ -4,9 +4,8 @@ The enhanced runtime reads reviewed `adapters/*/adapter.json` definitions throug
 `tools/game_catalog.py` and generates its native catalog and installation list.
 It identifies each reviewed game/version by every module's full 32-byte
 Build ID. LAS 1.0.0 and 1.1.0 use two modules; ACNH 1.0.0 uses three. ACNH's base
-release is available as a Windows beta. Its local gameplay, saving and timing
-checks, and the remaining compatibility limits, are recorded in
-[ACNH-port.md](ACNH-port.md).
+release is available as a Windows beta; see [ACNH support](ACNH-port.md) for its
+requirements and limits.
 
 Archive inspection accepts NSP, NSZ, XCI and XCZ. The default is automatic game
 identification. Readable content metadata provides a preliminary identity;
@@ -54,7 +53,7 @@ while retaining required-job waits and stage deduplication. The renderer reports
 finish ahead of use still blocks; this is not a guarantee of zero first-use
 hitches.
 
-Official `beta_5` through `290990e` adds a shipped LAS shader-variant list and
+LAS uses a shipped shader-variant list and
 launcher preparation with Skip. The list contains hashes and render state;
 shader code comes from the selected player's files. This preparation and reuse
 are LAS-only. ACNH and development adapters retain the shared background queue.
@@ -79,42 +78,12 @@ cache, exercises simultaneous requests, checks a first-use compute dispatch's
 output, resets the cache, and verifies that compile failures wake every waiter.
 The intentional invalid-shader diagnostic in that test is expected.
 
-Official `beta_5` through `35f7d30` also adds translator instruction fixes,
-translator/GPU cache tags, periodic Vulkan pipeline-cache saves and a Metal
-binary archive. Enhanced retains its no-discard shader policy, prepared-object
-ownership and watchdog-protected synchronization paths. The new synchronization
-and validation fixtures exercise those enhanced paths as well as upstream
-failure behavior. Metal compilation is checked in CI; runtime behavior still
-requires a Mac.
+## Development changes
 
-## Regression gates when adding a game
-
-New-game work must preserve the supported LAS 1.0.0, LAS 1.1.0 and ACNH 1.0.0
-paths. Keep game-specific addresses, ABI versions and opt-in memory layouts in
-the reviewed adapter. A shared implementation change needs an impact review
-covering the existing adapters that use that subsystem. For example, LAS's GPU
-counter adjustment remains LAS-only even when its frame pacer is shared by both
-renderers; generic titles retain their requested presentation interval.
-
-`test_game_catalog.py` pins existing installation/save namespaces, legacy indices,
-NVN defaults and zero virtual-memory resource budgets independently of new adapter
-definitions. Native profile, memory, NVN object, presentation and pacing tests
-exercise behavior across both legacy and new configurations. Run the relevant
-production tests for each changed subsystem, including save and audio regressions
-when their code or dependencies change.
-
-Before accepting a shared runtime change, use the same candidate executable and
-frozen helper for all three supported releases. Use separate writable build/data
-directories and copied saves, retain source-save hashes, and exercise loading,
-input, scene rendering, audio, saving and reopening. Compare diagnostics and
-screenshots with the accepted baseline; a title screen alone is insufficient.
-Record any scenario that could not be repeated as unverified. Do not replace the
-user's installed app or original saves during these checks. A release still needs
-the broader [release checklist](enhanced.md#repeatable-release-checks).
-
-An unexplained crash or save mismatch keeps the candidate unqualified. Preserve
-the failing run when later retries pass; repeat with the accepted baseline and
-record the comparison without treating a few successful retries as a fix.
+Keep title-specific addresses, memory layouts and behavior in the adapter.
+Exercise the existing tests for the subsystem being changed. Changes to saves,
+installation publication or rendering also need a focused check with compatible
+copied game data. Compilation alone does not qualify a new game as playable.
 
 ## Managed locations
 
@@ -194,9 +163,8 @@ Failure preservation keeps the older files intact for their compatible runtime.
 
 See [adapter development](adapter-development.md) for schema checks, guarded
 patches, scaffolding and missing-capability diagnostics.
-The [Pokemon Legends: Z-A probe](pokemon-za-port.md) records third-title archive
-and generation results, including unresolved CPU requirements; it is not a
-playable catalog entry.
+The [Pokemon Legends: Z-A port](pokemon-za-port.md) remains a development
+adapter with unresolved CPU and GPU requirements.
 
 ## Desktop launch
 
@@ -221,64 +189,3 @@ checks Unicode paths, arguments, duplicate updates and preservation of unrelated
 files. `tools/test_game_profiles.py` checks exact managed locations, launch IDs
 and distinct save folders. These tests do not replace real import, compilation,
 desktop launch and gameplay verification.
-
-Before the ABI-4 installation refactor, the Windows development package imported a metadata-free ACNH base NSZ,
-validated all three modules, and built them using its bundled frozen generator
-and Zig compiler, with no external Python/compiler override. Generation produced
-523 main, 102 SDK and 100 multimedia chunks; compilation produced 729 objects
-including tables and the library entry. A system sleep interrupted the first
-attempt with a lost Vulkan device. A subsequent setup reused 559 verified
-objects, compiled the remaining 170 and published the library and shortcut.
-The resulting managed installation boots through the shortcut's stable launch
-arguments. A Unicode data-folder alias also passes the real CLI identity check
-and shell-link creation. These observations are development evidence; ACNH
-remained gated at that stage. Later save/reopen and graphics evidence is
-recorded in [ACNH-port.md](ACNH-port.md), including the base release's Windows
-beta acceptance and remaining limits.
-
-The 2026-10-17 Windows development run passed photo registration, placed all
-three tents, collected the campfire materials and entered the night gathering.
-Before the first save, the Intel Arc Pro 140T Vulkan queue stopped completing
-submissions. The old runtime logged repeated 10-second GPU wait timeouts but
-continued executing; the host was eventually restarted manually after its
-display froze. No save files existed for that test island, so the run did not
-establish save/reopen acceptance. The retained log does not establish the initial
-cause of the GPU stall.
-
-GPU submission waits now terminate with a failure status on timeout, before
-callers can recycle in-flight resources. This path bypasses the normal renderer
-shutdown, whose device-idle wait is unbounded. The injected timeout regression
-uses no GPU and verifies that neither caller continuation nor GPU cleanup runs;
-it does not establish that the original driver hang is fixed.
-
-An independent CPU thread also monitors submission, presentation, image acquire,
-and device-idle calls. If a driver call does not return within 20 seconds of
-awake time, it records the operation and submission number and terminates the
-process without querying or cleaning up the GPU. Windows sleep and hibernation
-are excluded from this clock. Window-image acquisition uses a finite wait and
-minimized windows are skipped. Mocked blocking calls test cancellation, thread
-and slot reuse, simultaneous calls, nesting and termination without exit handlers;
-no real driver hang is deliberately induced by these tests.
-
-A later player freeze retained a thread dump showing the main thread in
-`nvnSyncWait` / `renderer_wait_seq_timeout`, an alternate semaphore wait that
-had bypassed the watchdog. That path now also caps each driver wait at ten
-seconds and monitors both semaphore waiting and counter queries. Ordinary
-finite guest timeouts still return the NVN timeout result. An indefinite guest
-wait that exhausts the ten-second GPU limit terminates without cleanup. The
-regression executes these production paths with a mocked driver, including
-non-returning wait/query calls. This closes the observed protection gap; the
-underlying rendering/submission stall and sunset lighting were still unresolved
-at that stage. The sequence fix below and the later feedback-snapshot fix in
-[ACNH-port.md](ACNH-port.md) record the subsequent findings and validation.
-
-Recovery boot then read all five saved data files and stopped at SyncWait
-submission 9. A CPU-only reproduction exposed a sequence error at the first
-eight-slot ring wrap: the next slot retained `main_begun` from its previous
-generation, so an empty queue fence named submission 9 while the empty submit
-path produced no submission. Fence generation now checks the slot's sequence,
-and slot initialization/begun publication/ring advancement share its lock. The
-test fails against the old implementation and passes across repeated wraps,
-pending uploads, main buffers, and empty fences. The previous indefinite wait
-could therefore wait for work that did not exist; this is separate from proving
-every reported host stall has the same cause.
