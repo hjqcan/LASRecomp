@@ -3,7 +3,10 @@
 Status on 2026-10-18: **base 1.0.0 passes the earlier nested-table failure at `0x166df70`; early captures remain black and startup now stops at missing main target `0x1cfcc34`. Surface-write shaders are also unsupported; not playable**.
 This is third-title framework evidence, not a completed port. No Z-A release has
 been added to the installable catalog. Update 2.0.2 remains an inventory-only
-input. Tests used local files on Windows, starting
+input. Z-A source development is maintained directly on `enhanced`, alongside
+official `beta_5` merges. Development status and the failures below restrict
+playability claims and prerelease qualification, not source integration.
+Tests used local files on Windows, starting
 from enhanced commit `871dc34` plus the archive-probe/NCZ changes accompanying
 this document. No game files, generated code, libraries or keys are included.
 
@@ -345,7 +348,7 @@ including five without extra heap/memory logging. A separate candidate SVC trace
 passed and showed no `GetInfo(20)` or physical map/unmap calls during startup.
 All 175 SDK generated C files match the accepted baseline byte-for-byte. These
 observations narrow the investigation; they do not establish equal failure rates,
-prove that the failure predates this work, or justify publishing the candidate.
+prove that the failure predates this work, or qualify the candidate for a prerelease.
 
 The completed Windows regression observations are:
 
@@ -362,7 +365,7 @@ stereo mixer output, not listening-based quality acceptance. The final candidate
 executable was identical across the final LAS reopen and both ACNH runs. These
 are bounded gameplay regressions, not full-playthrough or performance-parity
 results, and they do not cover the experimental 1.1.0 randomizer. The shared
-audio/context changes must stay out of the published runtime until the LAS
+audio/context changes must stay out of a distributed prerelease until the LAS
 startup failure has been explained and the affected checks pass again.
 
 ## Relative-table discovery follow-up (2026-10-18)
@@ -377,8 +380,8 @@ and contributor credit without changing runtime behavior. Its test fixture uses
 the enhanced module count and aborting stubs for unrelated memory/profile/research
 entry points; the test passes in both the published and research checkouts.
 All seven remote CI workflows also pass for `609c33f`.
-The audio/context and discovery experiments
-remain local while the earlier LAS 1.1.0 startup failure is unresolved.
+At that checkpoint, the audio/context and discovery experiments were kept
+local while the earlier LAS 1.1.0 startup failure was unresolved.
 
 The discovery candidate recognizes an exact `ADR; LDRB/H; ADD; BR` sequence in
 which the ADR is only a local relative-table arithmetic origin. It removes that
@@ -460,7 +463,7 @@ includes the preceding `Module` implementation as well as discovery, and gives
 the structural results in the table above. These are bounded regressions, with
 no performance-parity or full-playthrough claim. The earlier LAS 1.1.0 startup
 failure remains unexplained, so this research candidate is still not qualified
-for publication despite the successful new runs.
+for a prerelease despite the successful new runs.
 
 ## Fragmented guards and first presentation attempt (2026-10-18)
 
@@ -475,8 +478,8 @@ and the subsequent `0x60f4e4` failure without inventing an index bound.
 Nine new asset-free cases include native-versus-Unicorn execution, default
 branches and rejected ambiguous cases. Together with the nine cross-fragment
 and seven relative-origin tests, all 25 cases pass locally. The final frozen
-generator passes adapter generation checks. These changes remain research
-work and are excluded from the separately published official-only sync.
+generator passes adapter generation checks. These changes were research
+work excluded from the separately published official-only sync at that checkpoint.
 
 An intermediate Windows probe passed both repaired sites and reached NVN
 presentation frame 0. It reported unsupported Maxwell shader words
@@ -500,7 +503,7 @@ implementation gives the following structural results:
 
 The discovery comparison and a completed library rebuild do not replace
 runtime regression. The earlier LAS 1.1.0 startup crash remains unresolved,
-so the research runtime is still withheld from publication.
+so the research runtime is not qualified for a distributed prerelease.
 
 ## Official synchronization and isolated legacy regression
 
@@ -549,7 +552,7 @@ compatibility failure or establish a performance improvement.
 
 The remaining branch failure requires a discovery repair, and the shader
 words still require translation support. Z-A remains development-only, and
-the earlier LAS 1.1.0 startup failure continues to block publication of the
+the earlier LAS 1.1.0 startup failure continues to block prerelease qualification of the
 shared research runtime.
 
 The same final research executable then passed another bounded legacy batch.
@@ -565,7 +568,7 @@ Source-save manifests and the accepted player executable's SHA-256 remained
 unchanged. This last batch verifies reads and movement on the research
 candidate; manual-save writes and launcher reboot were exercised separately on
 the official-only executable above. Successful bounded runs do not explain or
-clear the earlier LAS 1.1.0 startup crash, so research publication stays blocked.
+clear the earlier LAS 1.1.0 startup crash, so prerelease qualification stays blocked.
 
 ## Official 35f7d30 baseline and nested relative tables
 
@@ -658,9 +661,10 @@ accepting the words would not establish correct rendering.
 Further work should merge official `beta_5` first and extend its implementation
 with focused, independently verified fixes. Prefer upstream implementations
 where they cover the same behavior; propose isolated improvements upstream when
-the local implementation has stronger evidence. The research runtime remains
-local while the earlier unexplained LAS 1.1.0 startup crash and the current Z-A
-failures are unresolved.
+the local implementation has stronger evidence. Ongoing research is committed
+directly to `enhanced` with its development gates intact. The earlier unexplained
+LAS 1.1.0 startup crash and current Z-A failures remain open issues and prevent
+qualifying these changes for a distributed prerelease or marking Z-A playable.
 
 ## Reproduction
 

@@ -14,6 +14,10 @@ and XCZ archives, imports them and builds their native game libraries.
 See [multi-game setup](docs/multi-game.md) and the
 [ACNH validation and limits](docs/ACNH-port.md).
 
+Pokémon Legends: Z-A development work is maintained directly on `enhanced`.
+It remains development-only and is not playable; see the
+[current probe results and blockers](docs/pokemon-za-port.md).
+
 > [!IMPORTANT]
 > **This project was made almost exclusively with AI.** Nearly all of the code, tooling, reverse engineering and
 > documentation in this repository was written by and will be maintained by an AI (Anthropic's Claude, through Claude Code),
