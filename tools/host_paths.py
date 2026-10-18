@@ -1,6 +1,7 @@
 """Internal file paths; extended Windows paths do not need a registry change."""
 import os
 from pathlib import Path
+import time
 
 
 def logical_path(path):
@@ -20,6 +21,21 @@ def io_path(path):
     if value.startswith('\\\\'):
         return Path('\\\\?\\UNC\\' + value[2:])
     return Path('\\\\?\\' + value)
+
+
+def rename_with_retry(source, destination, timeout=5):
+    """Keep atomic rename semantics while short Windows sharing locks clear."""
+    deadline = time.monotonic() + timeout
+    delay = 0.025
+    while True:
+        try:
+            return source.rename(destination)
+        except OSError as error:
+            remaining = deadline - time.monotonic()
+            if getattr(error, 'winerror', None) not in (5, 32, 33) or remaining <= 0:
+                raise
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, 0.5)
 
 
 def read_shared(path, limit=4096):

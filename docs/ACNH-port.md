@@ -37,6 +37,10 @@ The next attempt reached resource extraction and exposed the old 100,000-file
 limit. Traversal is now bounded by the validated directory/file table capacities
 while retaining cycle, parent, name and extent checks. A synthetic 100,001-file
 table reproduces that former rejection without writing those files to disk.
+On Windows, final import-directory publication retries transient sharing/access
+errors for up to five seconds, preserving atomic rename and rollback behavior.
+Tests hold a real directory handle without delete sharing, release it, and
+verify publication; simulated permanent failures still preserve prior data.
 
 | Module | Guest base | Build ID |
 | --- | --- | --- |

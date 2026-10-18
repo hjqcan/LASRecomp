@@ -1,6 +1,7 @@
 """Small synthetic archives only: these tests contain no game data or keys."""
 import io
 import hashlib
+import os
 from pathlib import Path
 import random
 import struct
@@ -332,6 +333,67 @@ class InstallTests(unittest.TestCase):
             self.install(True, True)
         self.assertEqual(self.resource(), b'original')
         self.assertFalse(list(self.root.glob('*.previous-*')))
+
+    def test_transient_ready_directory_lock_is_retried(self):
+        self.install()
+        rename = Path.rename
+        failures = 0
+        def fail_once(path, destination):
+            nonlocal failures
+            if path.name == 'ready' and not failures:
+                failures += 1
+                error = PermissionError('simulated Windows directory lock')
+                error.winerror = 5
+                raise error
+            return rename(path, destination)
+        with patch.object(Path, 'rename', fail_once):
+            self.assertEqual(self.install(True, True)['game_version'], '1.1.0')
+        self.assertEqual(failures, 1)
+        self.assertEqual(self.resource(), b'changed!')
+        self.assertFalse(list(self.root.glob('*.previous-*')))
+
+    def test_rename_retry_is_bounded_and_only_for_windows_lock_errors(self):
+        from host_paths import rename_with_retry
+        source = self.root/'retained'; source.write_bytes(b'original')
+        locked = PermissionError('still locked'); locked.winerror = 32
+        with patch.object(Path, 'rename', side_effect=locked) as rename, self.assertRaises(PermissionError):
+            rename_with_retry(source, self.root/'other', timeout=0)
+        self.assertEqual(rename.call_count, 1)
+        with patch.object(Path, 'rename', side_effect=OSError('other failure')) as rename, self.assertRaises(OSError):
+            rename_with_retry(source, self.root/'other')
+        self.assertEqual(rename.call_count, 1)
+        self.assertEqual(source.read_bytes(), b'original')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows directory sharing behavior')
+    def test_real_windows_directory_handle_delays_rename(self):
+        from host_paths import rename_with_retry
+        import ctypes
+        from ctypes import wintypes
+        import threading
+        source = self.root/'held'; source.mkdir()
+        (source/'payload').write_bytes(b'retained')
+        target = self.root/'published'
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                      ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.CreateFileW(str(source), 1, 3, None, 3, 0x02000000, None)
+        self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
+        closed = []
+        def release():
+            kernel.CloseHandle(handle)
+            closed.append(True)
+        timer = None
+        try:
+            with self.assertRaises(PermissionError): source.rename(target)
+            timer = threading.Timer(0.15, release); timer.start()
+            rename_with_retry(source, target, timeout=2)
+            self.assertEqual((target/'payload').read_bytes(), b'retained')
+            self.assertFalse(source.exists())
+        finally:
+            if timer: timer.join()
+            if not closed: kernel.CloseHandle(handle)
 
     def test_locked_backup_does_not_report_failed_install(self):
         self.install()

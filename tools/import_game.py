@@ -23,7 +23,7 @@ import zstandard
 from game_catalog import GAMES, catalog, get_game, game_for_application, game_for_build, code_identity
 from nca import Keyset, Nca, parse_cnmt, ticket_key
 from containers import View, safe_name, pfs_entries, open_container
-from host_paths import io_path
+from host_paths import io_path, rename_with_retry
 
 CHUNK = 8 << 20
 MAX_IMAGE = 16 << 30
@@ -537,15 +537,16 @@ def import_game(base_path, update_path, output, replace=False, keys_path=None, t
         if metadata:
             manifest.update({k: metadata[k] for k in ('title_id', 'content_version', 'metadata_source')})
         (ready / 'import-manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
+        print(f'import: publishing v{manifest["game_version"]}, {count} files', flush=True)
         backup = None
         if output.exists():
             backup = output.with_name(output.name + '.previous-' + uuid.uuid4().hex)
-            output.rename(backup)
+            rename_with_retry(output, backup)
         try:
-            ready.rename(output)
+            rename_with_retry(ready, output)
         except BaseException:
             if backup:
-                backup.rename(output)
+                rename_with_retry(backup, output)
             raise
         if backup:
             require(backup.resolve().parent == output.parent.resolve(), 'Unexpected backup location')
