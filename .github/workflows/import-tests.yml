@@ -54,6 +54,7 @@ jobs:
       - run: python tools/test_nvn_sampler.py
       - run: python tools/test_nvn_views.py
       - run: python tools/test_tipc.py
+      - run: python tools/test_am_events.py
       - run: python tools/test_game_profiles.py
       - run: python tools/test_save_multicommit.py
       - run: python tools/test_fence_sequence.py

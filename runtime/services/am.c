@@ -76,6 +76,8 @@ static void self_controller(Service *s, IpcReq *req, IpcResp *resp) {
     case 9: resp->copy_handles[resp->ncopy++] = new_event(); break;
     case 40: OUT(uint64_t, 0) = 1; resp_size(resp, 8); break;  // CreateManagedDisplayLayer
     case 69: OUT(uint8_t, 0) = 0; resp_size(resp, 1); break;
+    case 90: OUT(uint64_t, 0) = 0; resp_size(resp, 8); break;  // GetAccumulatedSuspendedTickValue
+    case 91: resp->copy_handles[resp->ncopy++] = new_event(); break;  // GetAccumulatedSuspendedTickChangedEvent
     default: UNHANDLED("ISelfController");
     }
 }
@@ -161,6 +163,10 @@ static void application_functions(Service *s, IpcReq *req, IpcResp *resp) {
     case 23: memcpy(resp->data, "1.0.0", 6); resp_size(resp, 0x10); break;
     case 40: OUT(uint8_t, 0) = 0; resp_size(resp, 1); break;  // NotifyRunning
     case 130: case 140: resp->copy_handles[resp->ncopy++] = new_event(); break;
+    // Newer SDKs use this event when caching GetOperationMode. The desktop's
+    // docked mode is fixed, so it stays unsignaled. A successful empty reply
+    // leaves handle zero and makes the SDK's TryWait retry InvalidHandle forever.
+    case 210: resp->copy_handles[resp->ncopy++] = new_event(); break;
     default: UNHANDLED("IApplicationFunctions");
     }
 }

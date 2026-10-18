@@ -60,6 +60,16 @@ enters an 8,193-instruction graph at several points, checks wrapping arithmetic
 and rejects invalid targets through the existing dispatcher. This compiler
 memory result does not establish gameplay compatibility or performance.
 
+The first completed 3.0.1 library loaded all three modules, then stalled before
+presentation. Profiling found millions of zero-timeout waits on an invalid
+event handle in the SDK's operation-mode query. Its application-functions
+command 210 had received an empty successful reply. That query now returns an
+unsignaled event for the runtime's fixed docked mode. The self-controller's
+suspended-tick query and event also return their typed outputs. A synthetic
+regression exercises the real IPC codec, service handlers and kernel polling
+with ordinary and domain sessions; the former empty reply fails it. This
+addresses the identified service contract, not yet complete 3.0.1 acceptance.
+
 | Module | Guest base | Build ID |
 | --- | --- | --- |
 | main | 0x7000000000 | 7fc1baff976aeca414520cb89f4616cb |
