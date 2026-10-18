@@ -1,4 +1,4 @@
-// SHA-256 for local build-cache integrity. No authentication or secret-key operations.
+// SHA-256 for local build-cache integrity.
 #pragma once
 #include <cstdint>
 #include <cstring>

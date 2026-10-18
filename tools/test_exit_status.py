@@ -19,6 +19,10 @@ harness = '''
 #include <stdlib.h>
 #ifdef _WIN32
 #include <windows.h>
+static void publish_log(void) {
+    if (getenv("BLOCK_TEST_LOG")) Sleep(INFINITE);
+    fputs("log published\\n", stderr);
+}
 #else
 #include <unistd.h>
 #endif
@@ -41,7 +45,12 @@ with tempfile.TemporaryDirectory(prefix='exit-status-') as temp:
     subprocess.run(shlex.split(os.environ.get('CC', 'clang')) + ['-std=c11', '-Iruntime', str(source),
                    'runtime/process_exit.c', '-o', str(exe)], cwd=root, check=True)
     for status in (0, 1, 7):
-        result = subprocess.run([str(exe), str(status)], capture_output=True, text=True, timeout=10)
+        env = dict(os.environ)
+        env.pop('BLOCK_TEST_LOG', None)
+        if status: env['BLOCK_TEST_LOG'] = '1'
+        result = subprocess.run([str(exe), str(status)], env=env, capture_output=True, text=True, timeout=10)
         assert result.returncode == status, result
         assert result.stdout.strip() == 'cleanup ran'
+        if platform == 'windows':
+            assert result.stderr.strip() == ('log published' if status == 0 else '')
 print('PASS: success and failure statuses survive cleanup and immediate OS termination')

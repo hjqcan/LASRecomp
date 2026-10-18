@@ -1063,7 +1063,11 @@ static int rt_kind(uint32_t f) {
 #define PROG_TAB 4096
 static struct { uint64_t key; void *prog; } prog_tab[PROG_TAB];
 
-// ------------------------------------------------------------------ binary archive (LARECOMP_METAL_ARCHIVE=0: none)
+// ------------------------------------------------------------------ binary archive (off; LARECOMP_METAL_ARCHIVE=1: on)
+// Off by default (#52): on macOS 26 Metal's archive writer can crash in serializeToURL (dispatch_retain(NULL) in
+// materializeAirNTFromOnlineForSlice, seen on an M4) when an entry it queued lacks a part. The preparation keeps macOS's
+// own shader cache warm, so the archive only helped when that cache was cleared without a macOS update. Off, a file
+// left by an earlier build is removed. (A check of Metal's queued entries before saving: branch metal-archive-crash.)
 // cache/shaders.metalarchive: the GPU code of every pipeline built here (prepared or at first use), kept across runs
 // (MTLBinaryArchive), used only with a matching cache/shaders.metalarchive.tag (shader_cache_tag: this build, the
 // translator, the GPU and the macOS build; another one, or an archive that doesn't load: a new one, silently). Saved
@@ -1171,7 +1175,11 @@ static void archive_open(void) {  // (at the first pipeline / preparation)
             closedir(cd);
         }
         const char *on = getenv("LARECOMP_METAL_ARCHIVE");
-        if (on && !atoi(on)) return;
+        if (!on || !atoi(on)) {
+            if (remove(ARCHIVE_FILE) == 0) LOG("[metal] removed the shader archive (off)\n");
+            remove(ARCHIVE_TAG);
+            return;
+        }
         atexit(archive_exit);
         char tag[700];
         archive_tag(tag, sizeof tag);

@@ -194,10 +194,12 @@ Vulkan Memory Allocator from your distribution, Python 3.12. Packages, cross bui
 Where files live (game files, saves, seeds, settings, caches, imported fonts):
 - macOS app: `~/Library/Application Support/com.peiikai.lasrecomp/` (the app itself is never written to).
 - Windows: next to `lasrecomp.exe`, so put the `LAS Recomp` folder somewhere writable (not Program Files).
-- Linux: `~/.local/share/lasrecomp/` (`$XDG_DATA_HOME/lasrecomp`); the log is `lasrecomp.log` there when started
-  without a terminal.
+- Linux: `~/.local/share/lasrecomp/` (`$XDG_DATA_HOME/lasrecomp`).
 - Dev / portable mode: if the folder you start from has `extracted/` (a source checkout), that folder is used, as above.
 - `LARECOMP_DATA_ROOT=<dir>` overrides all of these.
+- The log (started without a terminal) is `lasrecomp.log` in that folder, always the latest run; up to five recent
+  runs are kept as `lasrecomp-backup-*.log`. For a bug report attach `lasrecomp.log`, or if the problem was in an
+  earlier run, that run's backup (by date modified).
 
 ### Save backups
 
@@ -217,16 +219,17 @@ backup folders elsewhere if you also need protection against disk failure.
 
 The game-code build keeps completed pieces in the game folder's `.gamebuild/`
 directory. **Cancel (B / Esc)** stops the compiler helpers; **Resume game code**
-continues from verified completed pieces. An interrupted build also resumes when
-LAS Recomp starts again. Generated source and object contents are checked before
-reuse. A generator update recompiles only changed pieces; changes to compiler
-inputs or flags require a full rebuild.
+appears after cancellation or interruption and continues from verified completed
+pieces. An interrupted build also resumes when LAS Recomp starts again. Generated
+source and object contents are checked before reuse. After success, only objects
+and their cache records are kept; generated C, logs, link files and compiler caches
+are removed. A generator update recompiles only changed pieces. Moving the app
+keeps reusable objects; changed compiler contents or flags require a full rebuild.
 
-**Game Files → Clear build cache** removes these temporary files when space is
-needed or to restart a build from scratch. It keeps the installed game library,
-game files and saves. A cache created by an older LAS Recomp build may need this
-one-time cleanup before it can use the new receipts. Failed or cancelled builds
-keep the previous installed library until a replacement is ready.
+**Game Files → Clear build cache** removes cached objects and temporary files,
+including the older `.zigcache` folder, while keeping the installed game library,
+game files and saves. Legacy build caches are upgraded automatically. Failed or
+cancelled builds keep the previous installed library until a replacement is ready.
 
 ## Credits
 
@@ -243,7 +246,8 @@ keep the previous installed library until a replacement is ready.
   parsing and Traditional Chinese locale detection (#53); Windows game thread stacks reserved instead of committed,
   about 9 GB less memory committed (#107); the Vulkan fence fix for reused submission slots (#108); x86 rounding
   without x87 state changes (#115); movie memory freed on close, source change and reboot (#112); Vulkan stopping
-  cleanly on GPU timeouts (#127); a strict Vulkan validation mode for automated tests (#128)
+  cleanly on GPU timeouts (#127); a strict Vulkan validation mode for automated tests (#128); Windows session logs:
+  `lasrecomp.log` always the latest run, with five backups (#114); resumable game-code builds: a cancelled or interrupted setup picks up where it stopped (#56)
 - **[@gitarre1234rr5](https://github.com/gitarre1234rr5)** - controller rumble: the game's vibration on your controller
   (#104), and a regression test for the kernel's timed condition-variable wait (#88)
 

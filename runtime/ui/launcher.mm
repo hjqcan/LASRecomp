@@ -207,7 +207,18 @@ static int count_files(const std::string &dir, int depth = 0) {
 // The copied romfs' file count, counted once (the checks below run every frame): -1 = count again (game files set
 // up, deleted)
 static int g_romfs_count = -1;
-static void game_files_changed(void) { g_romfs_count = -1; }
+static std::atomic<bool> g_build_cache_changed{true};
+static void game_files_changed(void) { g_romfs_count = -1; g_build_cache_changed = true; }
+// The setup page redraws every frame; read the build cache's disk state only after the files/build state changes.
+static bool g_resumable, g_has_build_cache;
+static void read_build_cache(void) {
+    if (!g_build_cache_changed.exchange(false)) return;
+    const std::string root = build_cache_root();
+    g_resumable = build_cache_resumable(root.c_str());
+    g_has_build_cache = build_cache_present(root.c_str());
+}
+static bool resumable_build(void) { read_build_cache(); return g_resumable; }
+static bool has_build_cache(void) { read_build_cache(); return g_has_build_cache; }
 
 static std::string incomplete(int have) {
     char b[96];
@@ -432,7 +443,7 @@ static bool build_game_code(const std::string &target) {
     if (!ok) {
         fprintf(stderr, "[launcher] game code: %s\n", why);
         if (g_cancel_build) set_job("Compilation cancelled. Completed files are kept.");
-        else set_job("Game code build failed.", true, why);
+        else set_job("The game code didn't build", true, why);
     }
     return ok;
 }
@@ -1073,7 +1084,8 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::Begin("##build_cancel", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground);
-        if (ImGui::InvisibleButton("##cancel_build", ImVec2(300 * sc, 44 * sc), ImGuiButtonFlags_EnableNav))
+        if (ImGui::InvisibleButton("##cancel_build", ImVec2(300 * sc, 44 * sc), ImGuiButtonFlags_EnableNav) ||
+            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
             g_cancel_build = true;
         bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
         ImGui::End();
@@ -1547,6 +1559,7 @@ extern "C" const char *launcher_run(const char *root) {
             plat_exit(setup_failed || !check_game_files(g_root).empty() ? 1 : 0);
         }
         static bool was_busy;
+        if (was_busy && !busy) g_build_cache_changed = true;
         if (was_busy && !busy && !inspection) {
             status = check_game_files(g_root);
             game_version_select((g_root + "/exefs/main").c_str());
@@ -1964,7 +1977,7 @@ extern "C" const char *launcher_run(const char *root) {
                     if (busy || gamelib_tables() || (source_is_archive && (!inspected || development_blocked)) ||
                         (src.empty() && !pending_build && !check_copied_files(g_root).empty())) opt_disable_next();
                     bool resume_build = src.empty() && (pending_build || check_copied_files(g_root).empty());
-                    if (opt_action(resume_build ? "Build or resume game code" : "Set up game files", ui_tr(busy ? "Working..." : ""), ex_d.c_str(), true)) {
+                    if (opt_action(resume_build && resumable_build() ? "Resume game code" : resume_build ? "Build or resume game code" : "Set up game files", ui_tr(busy ? "Working..." : ""), ex_d.c_str(), true)) {
                         files_gb = -1;  // (re-measured after a setup)
                         pthread_mutex_lock(&g_lock);
                         g_busy = true;
@@ -2010,11 +2023,12 @@ extern "C" const char *launcher_run(const char *root) {
                         if (opt_action("Cancel", "", "Keeps the game files.", true)) g_confirm_delete = false;
                     }
                 }
-                if (!busy && !gamelib_tables()) {
+                if (!busy && !gamelib_tables() && has_build_cache()) {
                     opt_section("Build cache");
-                    if (opt_action("Clear build cache", "", "Removes generated source, finished objects and compiler caches. "
-                                   "The installed game library, game files and saves are kept. The next build starts over.", true)) {
+                    if (opt_action("Clear build cache", "", "Removes the saved game-code build files. The next setup compiles "
+                                   "everything again.", true)) {
                         char why[512] = "";
+                        g_build_cache_changed = true;
                         if (build_cache_clear(build_cache_root().c_str(), why, sizeof why)) set_job("Build cache cleared.");
                         else set_job("Could not clear the build cache.", true, why);
                     }
@@ -2037,10 +2051,7 @@ extern "C" const char *launcher_run(const char *root) {
                     ImGui::PopTextWrapPos();
                 }
                 opt_end();
-                if (busy && g_build_frac >= 0 && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
-                                                  ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
-                    g_cancel_build = true;
-                else if (g_confirm_delete && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+                if (g_confirm_delete && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
                                          ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
                     g_confirm_delete = false;  // (B / Esc: back out of the question first)
                 else if (!busy && !typing && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||

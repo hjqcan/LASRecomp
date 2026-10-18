@@ -29,6 +29,7 @@ harness = r'''
 #include <time.h>
 #ifdef _WIN32
 #include <windows.h>
+static void publish_log(void) {} // Normal-exit log publishing is covered by test_exit_status.py.
 #else
 #include <unistd.h>
 #endif

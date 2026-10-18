@@ -21,14 +21,15 @@
 #include <unistd.h>
 
 #include "../platform.h"
+#include "posix_log.h"
 
 void rt_crash_explain(char *out, size_t n, const char *log_path);  // runtime/crash_explain.c
 
 static mach_timebase_info_data_t tb;
 
-// Started as the app (Finder, Dock: no terminal): stdout / stderr go to lasrecomp.log in the data folder (as on Linux
-// / Windows), and a fatal error is explained in an alert instead of the app vanishing. Runs from a terminal or a test
-// script (not the .app's executable) keep their own output.
+// Started as the app (Finder, Dock: no terminal): stdout / stderr go to lasrecomp.log in the data folder, with five
+// backups (posix_log.h; as on Linux / Windows), and a fatal error is explained in an alert instead of the app
+// vanishing. Runs from a terminal or a test script (not the .app's executable) keep their own output.
 static char g_log_path[1024];
 
 static void log_to_file_in_app(void) {
@@ -40,25 +41,7 @@ static void log_to_file_in_app(void) {
     if (env && *env) snprintf(dir, sizeof dir, "%s", env);
     else snprintf(dir, sizeof dir, "%s/Library/Application Support/com.peiikai.lasrecomp", home && *home ? home : "/tmp");
     mkdir(dir, 0755);
-    snprintf(g_log_path, sizeof g_log_path, "%s/lasrecomp.log", dir);
-    bool append = getenv("LASRECOMP_LOG_APPEND") != NULL;
-    // A new session moves the last one's log aside (lasrecomp.prev.log) instead of truncating it in place: a copy
-    // started while another is still running or quitting can't empty that one's log (it keeps writing to the moved
-    // file), and the last session's log survives one more start. Opened for appending either way.
-    if (!append) {
-        char prev[1100];
-        snprintf(prev, sizeof prev, "%s/lasrecomp.prev.log", dir);
-        rename(g_log_path, prev);
-    }
-    if (!freopen(g_log_path, "a", stderr)) { g_log_path[0] = 0; return; }
-    setvbuf(stderr, NULL, _IONBF, 0);
-    dup2(STDERR_FILENO, STDOUT_FILENO);
-    setenv("LASRECOMP_LOG_APPEND", "1", 1);
-    // (a first line: an empty log then means writing failed - e.g. a full disk - not another start)
-    time_t now = time(NULL);
-    char when[64];
-    strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime(&now));
-    fprintf(stderr, "[log] %s, pid %d%s\n", when, (int)getpid(), append ? " (restarted)" : "");
+    session_log_open(dir, g_log_path, sizeof g_log_path);
 }
 
 void plat_init(void) { log_to_file_in_app(); }

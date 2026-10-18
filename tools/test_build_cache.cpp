@@ -1,5 +1,5 @@
 #include "build_cache.h"
-#include "ui/cache_sha256.h"
+#include "cache_sha256.h"
 #include <cassert>
 #include <filesystem>
 #include <fstream>
@@ -36,11 +36,16 @@ int main(int argc, char **argv) {
     auto open = [&](const char *spec = "compiler and flags") {
         return build_cache_open(game.c_str(), spec, inputs, 1, why, sizeof why);
     };
+    fs::path work = fs::u8path(game) / ".gamebuild";
+    write(work / "legacy.o", "old beta_5 object without a receipt");
+    write(fs::u8path(game) / "lasgame.dll", "installed library");
+    assert(!build_cache_resumable(game.c_str()));
     BuildCache *cache = open();
     assert(cache);
+    assert(!fs::exists(work / "legacy.o") && read(fs::u8path(game) / "lasgame.dll") == "installed library");
+    assert(build_cache_resumable(game.c_str()));
     assert(!open());
     assert(!build_cache_clear(game.c_str(), why, sizeof why)); // another process/window cannot erase an active build
-    fs::path work = fs::u8path(game) / ".gamebuild";
     assert(build_cache_prepare_generation(cache, "generator 1", inputs, 1, why, sizeof why));
     write(work / "main/main_000.c", "int example;");
     write(work / "main/main_table.c", "int table;");
@@ -55,6 +60,7 @@ int main(int argc, char **argv) {
     assert(build_cache_save_object(cache, "main_000", source.c_str(), hash, why, sizeof why));
     assert(build_cache_object(cache, "main_000", source.c_str(), hash) == 1);
     build_cache_close(cache);
+    assert(build_cache_resumable(game.c_str())); // closing an unfinished build leaves Resume available
     cache = open();
     assert(cache);
     assert(build_cache_generation(cache, "main", &chunks));
@@ -80,8 +86,17 @@ int main(int argc, char **argv) {
     assert(!build_cache_publish(cache, "lasgame.dll", "new-runtime", "new-main", "adapter", why, sizeof why));
     assert(read(fs::u8path(game) / "lasgame.dll") == "old library");
     write(work / "lasgame.dll.tmp", "new library");
+    write(work / "gen_main.log", "generator log");
+    write(work / "main_000.log", "compiler log");
+    write(work / "link.rsp", "object list");
+    write(work / "zig-cache" / "temporary", "compiler cache");
+    write(fs::u8path(game) / ".zigcache" / "temporary", "legacy compiler cache");
     assert(build_cache_publish(cache, "lasgame.dll", "new-runtime", "new-main", "adapter", why, sizeof why));
     assert(read(fs::u8path(game) / "lasgame.dll.id") == "new-runtime\nnew-main\nadapter\n");
+    assert(fs::exists(work / "main_000.o") && fs::exists(work / "main_000.receipt"));
+    for (const char *name : {"main", "gen_main.log", "main_000.log", "link.rsp", "zig-cache", "main.generation"})
+        assert(!fs::exists(work / name));
+    assert(!fs::exists(fs::u8path(game) / ".zigcache") && !build_cache_resumable(game.c_str()));
     // Simulate a crash between installing the library and its metadata, then restart.
     write(work / "previous-library", "old library");
     write(work / "previous-id", "old id");
@@ -101,20 +116,38 @@ int main(int argc, char **argv) {
     build_cache_close(cache);
     cache = open("different compiler or flags");
     assert(cache && !fs::exists(work / "marker"));
+    build_cache_failed(cache);
+    assert(!build_cache_resumable(game.c_str()));
     build_cache_close(cache);
     // Clearing after interrupted publication must recover before discarding rollback files.
     write(work / "previous-library", "old library");
     write(work / "previous-id", "old id");
     write(work / "install-journal", "LASINSTALL1\nlasgame.dll\n1 1\n");
     write(fs::u8path(game) / "lasgame.dll", "incompletely published library");
+    write(fs::u8path(game) / ".zigcache" / "temporary", "legacy compiler cache");
     assert(build_cache_clear(game.c_str(), why, sizeof why));
+    assert(!fs::exists(fs::u8path(game) / ".zigcache"));
     assert(read(fs::u8path(game) / "lasgame.dll") == "old library");
     assert(read(fs::u8path(game) / "lasgame.dll.id") == "old id");
+    assert(!build_cache_present(game.c_str())); // only the lock and owner remain: nothing left to clear
+    std::string fresh = (root / "fresh").u8string();
+    fs::create_directories(fs::u8path(fresh));
+    assert(!build_cache_present(fresh.c_str()) && build_cache_clear(fresh.c_str(), why, sizeof why));
+    assert(!fs::exists(fs::u8path(fresh) / ".gamebuild")); // clearing never creates the cache folder
+    write(fs::u8path(fresh) / ".zigcache" / "temporary", "legacy compiler cache");
+    assert(build_cache_present(fresh.c_str()) && build_cache_clear(fresh.c_str(), why, sizeof why));
+    assert(!fs::exists(fs::u8path(fresh) / ".zigcache") && !fs::exists(fs::u8path(fresh) / ".gamebuild"));
     std::error_code ec;
     fs::create_directory_symlink(root / "extracted", root / "linked", ec);
     if (!ec) {
-        assert(!build_cache_open((root / "linked").u8string().c_str(), "flags", inputs, 1, why, sizeof why));
+        cache = build_cache_open((root / "linked").u8string().c_str(), "flags", inputs, 1, why, sizeof why);
+        assert(cache && !open());
+        build_cache_close(cache);
+        fs::create_directory(root / "outside");
+        fs::create_directory_symlink(root / "outside", work / "linked-inside");
+        assert(!open());
+        fs::remove(work / "linked-inside");
     }
-    std::cout << "SHA-256, cache resume, locks, corruption, input invalidation, publish recovery and path isolation "
+    std::cout << "SHA-256, legacy upgrade, resume markers, success cleanup, locks, corruption, recovery and link boundaries "
                  "passed\n";
 }

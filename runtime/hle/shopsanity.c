@@ -3,7 +3,8 @@
 //   Stealing: the shopkeeper's exit check (main+0xa4a9b4) adds the carried good's item (good +0x488) through the
 //   inner AddItem (keysanity.c rt_add_item). A shopsanity good carries a dummy item (Items.gsheet "LARShop<n>",
 //   itemID 230+); here it sets that check's flags instead (bought/stolen + "give on the way out") and adds nothing.
-//   PlayerStart's ExitOutShop then gives the real item with its item-get animation.
+//   PlayerStart's ExitOutShop then gives the real item with its item-get animation. Whether the shopkeeper lets you
+//   steal at all is the seed's LAS 'stealing' patch (exefs pchtxt at main+0xa4a8f0: never / sword needed / always).
 //   Crane prizes: AddPrizeByKey (main+0x7e1c70) looks the prize row up by symbol and calls AddPrize(row, count,
 //   index) (main+0x1489c0), which knows rows 0-20 only. A Trendsanity prize row (21+) sets its check's flags
 //   (won + "give now") for PrizeCommon's flow; a row that replaces a figure still adds that figure (house shelf,

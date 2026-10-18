@@ -116,6 +116,35 @@ POCKETS = {
     # taltal-ledge-chest: the walled courtyard from the cave door (tile 1) down the corridor (col 3) to the chest
     'Field_02N': ('bombs', _cols([0], [1]) | _cols(range(1, 4), range(1, 4)) | _cols([4, 5], [3]) | _cols([6], [3, 4])
                   | _cols([7], range(3, 6))),
+    # Pothole Field (LAS pothole: golden-leaf:5, through Richard's villa; issue #144): its south end shares the villa's
+    # screen (the villa door is plains, so the screen's region was plains) and the screen east of it - the bush field
+    # north of the villa roof / the wall on 14H. The villa's front yard, the west and east paths stay plains.
+    'Field_14G': ('pothole', _cols(range(0, 3), range(3, 10)) | _cols([3], range(6, 10))),
+    'Field_14H': ('pothole', _cols(range(0, 5), range(0, 7))),
+    # More screens shared by two regions (field_reach.py, issue #144): the part named here is walled off from the
+    # region the screen got and only opens on the one given
+    'Field_03E': ('wasteland', frozenset({49, 58, 59, 68, 69, 79})),          # Tabahl Wasteland's west rim
+    'Field_04E': ('wasteland', frozenset({39, 47, 48, 49, 55, 56, 57, 58, 64, 65, 74, 75})),
+    'Field_05E': ('wasteland', frozenset({3, 5, 13, 14, 15})),
+    # (past the pits / rocks on the woods' east side, below Tracy's: LAS wasteland = woods & feather | bracelet ...)
+    'Field_06F': ('wasteland', _cols(range(3, 8), range(10))),
+    'Field_07F': ('wasteland', frozenset({7, 8, 16, 17, 18, 26, 27, 37, 57, 58, 59, 67, 68, 69, 77, 78})),
+    'Field_07K': ('bridge', frozenset({28, 29, 38, 39, 48})),                 # across the bridge
+    'Field_07L': ('bridge', _cols(range(8), range(10))),
+    'Field_12K': ('animal-village', _cols(range(5, 8), range(6, 10))),       # the path down to Animal Village
+    'Field_02D': ('taltal-west-2', frozenset({4, 10, 11, 12, 13, 23})),       # the Turtle Rock plateau's south rim
+    'Field_03B': ('taltal-west-2', frozenset({4})),                           # (its foot, above Write's house)
+    'Field_03N': ('taltal-east-2 | taltal-river', _cols([0], [0, 1, 7, 8, 9])),  # the ledges above the cliff
+    'Field_03P': ('taltal-east-2', _cols([0], range(3, 8))),
+    'Field_04B': ('mr-write-house', _cols(range(0, 3), range(1, 9))),         # Write's house side of the swamp pits
+    'Field_09P': ('armos-maze', _cols(range(3, 8), [6, 7])),                  # the Armos maze, north end
+    'Field_10P': ('armos-maze', _cols(range(0, 8), range(10), skip=(0, 1, 11, 20, 21))),
+    'Field_12N': ('armos-maze', _cols(range(0, 5), range(10))),               # (the desert is below the cliff)
+    'Field_12P': ('armos-maze', _cols(range(0, 5), range(10))),
+    'Field_12E': ('sign-maze', frozenset({38, 39, 48, 57, 58, 59, 67, 68, 69, 74, 75, 76, 77})),  # the sign maze
+    'Field_13F': ('sign-maze', _cols(range(1, 8), range(10), skip=(16, 17, 18, 19, 26, 27, 28, 29, 37, 38, 39))),
+    'Field_15F': ('ghost-house', frozenset({39, 49})),                        # the ghost's house garden
+    'Field_15G': ('ghost-house', _cols(range(2, 8), range(10), skip=(26, 27, 28, 29, 38))),
 }
 
 

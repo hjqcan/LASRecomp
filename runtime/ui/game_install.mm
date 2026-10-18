@@ -1,5 +1,5 @@
 #include "../game_install.h"
-#include "cache_sha256.h"
+#include "../cache_sha256.h"
 #include "host_path.h"
 #include <algorithm>
 #include <chrono>

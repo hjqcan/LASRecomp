@@ -95,7 +95,8 @@ def default_settings(seed):
         'seashells-important': True, 'trade-important': False, 'randomize-music': False, 'open-mabe': False,
         'boss-cutscenes': True, 'randomize-enemies': False, 'randomize-enemy-sizes': False, 'shuffle-dungeons': False,
         'blur-removal': False, 'OHKO': False, 'lv1-beam': False, 'nice-rod': True, 'nice-bombs': False,
-        'stealing': 'always', 'fast-chests': True, 'fast-keys': True, 'keysanity': 'off', 'randomize-environments': False,
+        'stealing': 'always',  # never / normal (needs the sword, vanilla) / always: the Randomizer tab's Stealing rows
+        'fast-chests': True, 'fast-keys': True, 'keysanity': 'off', 'randomize-environments': False,
         'skip-story-events': True, 'tunic-color': 'default', 'enemy-minibosses': False, 'miniboss-frequency': 0, 'no-buff-drops': False,
         'enemy-mode': 'seeded',  # seeded (fixed in the level files) / random (re-rolled at every load: enemy_random.py)
         'bushes': False, 'boss-souls': False, 'miniboss-souls': False,
@@ -188,6 +189,8 @@ def main():
         else:
             settings[k] = v
     settings['excluded-locations'] = set(settings['excluded-locations'])
+    if settings['stealing'] not in rd.STEALING_REQUIREMENTS:
+        raise SystemExit(f"bad stealing setting {settings['stealing']!r}")
     # optional location groups (Randomizer tab): included = real checks with logic instead of junk
     groups = {'include-fishing': rd.FISHING_REWARDS, 'include-rapids': rd.RAPIDS_REWARDS,
               'include-dampe': rd.DAMPE_REWARDS, 'include-trade-gifts': rd.TRADE_GIFT_LOCATIONS,
@@ -493,6 +496,11 @@ def main():
     if missing:
         print('SHUFFLE ERROR unbeatable seed', missing, file=sys.stderr)
         sys.exit(3)
+    if os.environ.get('LARECOMP_CHECK_ONLY'):  # (test: tools/rando/seed_sweep.py - placements + logic, no game files)
+        with open(os.path.join(out_dir, 'placements.json'), 'w') as f:
+            json.dump({'placements': {k: v for k, v in pl.items() if isinstance(v, str)},
+                       'access': {k: 1 for k, v in settings.items() if v is True}}, f)
+        sys.exit(0)
 
     if pot_locs or bush_locs or dig_locs:  # bomb / powder / arrow refills anywhere: only once owned, else a blue rupee (runtime)
         import pots as _pots
@@ -642,6 +650,8 @@ def main():
         print('refill gets:', refill_gets.apply(out_dir, romfs, settings), flush=True)
     import bomb_bag_text  # (after every flow edit, digs too) found bombs: "You found your Bomb Bag!"
     print('bomb bag text:', bomb_bag_text.apply(out_dir, romfs, settings), flush=True)
+    import powder_bag_text  # (same) found powder: "You found your Powder Bag!"
+    print('powder bag text:', powder_bag_text.apply(out_dir, romfs, settings), flush=True)
     with open(os.path.join(out_dir, 'settings.json'), 'w') as f:
         s = dict(settings)
         s['excluded-locations'] = sorted(s['excluded-locations'])

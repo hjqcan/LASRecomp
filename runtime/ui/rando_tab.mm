@@ -145,6 +145,10 @@ struct GenOpts {
     // starting-items (the game's own start): stored as "not" so seed IDs made before these options (zeros) keep them
     bool no_start_sword = false, no_start_shield = false, no_start_ocarina = false;  // (ocarina: with Manbo's Mambo)
     bool tunic_upgrades = false;  // tunic-upgrades: the red / blue tunics add up instead of swapping (runtime: qol.c)
+    // stealing (LAS 'stealing': never / normal / always), stored so that seed IDs made before these options (zeros)
+    // keep their old rule, 'always' (stealing allowed, no sword needed); new seeds default to the vanilla sword rule
+    bool no_stealing = false;       // with Shopsanity: the shopkeeper never lets you steal ('never')
+    bool steal_needs_sword = true;  // off = "Steal without sword" ('always'); on = the vanilla rule ('normal')
 };
 static GenOpts g_opts;
 
@@ -158,6 +162,8 @@ static GenOpts g_opts;
 enum { SEED_ID_VERSION = 4, SEED_ID_BITS = 125, SEED_ID_BITS_V3 = 100, SEED_ID_FLAGS_V3 = 23 };
 enum { SEED_ID_MBFREQ = SEED_ID_BITS - 5 - 2 };  // mini-boss frequency: 2 bits at the end of the data (v4 IDs)
 enum { SEED_ID_ENEMYMODE = SEED_ID_MBFREQ - 1 };  // enemy mode: 1 bit just before it (older IDs: 0 = Seeded)
+enum { SEED_ID_NOSTEAL = SEED_ID_ENEMYMODE - 1 };  // stealing off: 1 bit before it (older IDs: 0 = stealing allowed)
+enum { SEED_ID_STEALSWORD = SEED_ID_NOSTEAL - 1 };  // stealing needs the sword (older IDs: 0 = no sword needed)
 static const char kB32[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 struct Bits {
@@ -193,9 +199,11 @@ static void seed_id_encode(GenOpts &o, char *out, size_t cap) {
     x.put(o.room_shuffle, 2);  // (v3)
     x.put(o.shopsanity, 2);    // (v4)
     for (int i = 0; bool *f = opt_flags(o, i); i++) x.put(*f, 1);
-    int data = x.n;  // (the flags may grow up to SEED_ID_ENEMYMODE)
+    int data = x.n;  // (the flags may grow up to SEED_ID_STEALSWORD)
     x.put(0, SEED_ID_BITS - 5 - data);
-    x.n = SEED_ID_ENEMYMODE;  // (fixed places before the checksum: IDs made before them hold 0 = Seeded / normal)
+    x.n = SEED_ID_STEALSWORD;  // (fixed places before the checksum: IDs made before them hold 0 = the old behaviour)
+    x.put(o.steal_needs_sword, 1);
+    x.put(o.no_stealing, 1);
     x.put(o.enemy_mode, 1);
     x.n = SEED_ID_MBFREQ;
     x.put(o.miniboss_freq, 2);
@@ -243,6 +251,8 @@ static std::string seed_id_decode(const char *text, GenOpts &o) {
     for (int i = 0; bool *f = opt_flags(t, i); i++) *f = ver >= 4 || i < SEED_ID_FLAGS_V3 ? x.get(1) : 0;
     if (bits == SEED_ID_BITS) { x.n = SEED_ID_MBFREQ; t.miniboss_freq = (int)x.get(2); } else t.miniboss_freq = 0;
     if (bits == SEED_ID_BITS) { x.n = SEED_ID_ENEMYMODE; t.enemy_mode = (int)x.get(1); } else t.enemy_mode = 0;
+    if (bits == SEED_ID_BITS) { x.n = SEED_ID_STEALSWORD; t.steal_needs_sword = x.get(1); t.no_stealing = x.get(1); }
+    else t.steal_needs_sword = t.no_stealing = false;
     if (t.room_shuffle > 3 || t.shopsanity > 2 || t.logic > 4 || t.traps > 4 || t.seashells > 5 || t.tunic >= 14 ||
         t.entrances > 3 || t.start_rupees > 999)
         return "not a valid seed ID";
@@ -355,6 +365,8 @@ static void start_generation(void) {
     fprintf(f, " \"dungeon-room-shuffle\": \"%s\",\n", rs[g_opts.room_shuffle]);
     static const char *shop[] = {"off", "vanilla", "random"};
     fprintf(f, " \"shopsanity\": \"%s\", \"trendsanity\": %s,\n", shop[g_opts.shopsanity], g_opts.trendsanity ? "true" : "false");
+    fprintf(f, " \"stealing\": \"%s\",\n", g_opts.shopsanity && g_opts.no_stealing ? "never"
+                                          : g_opts.steal_needs_sword ? "normal" : "always");
     fprintf(f, " \"boss-souls\": %s, \"miniboss-souls\": %s,\n", g_opts.boss_souls ? "true" : "false",
             g_opts.miniboss_souls ? "true" : "false");
     fprintf(f, " \"hookshot-anything\": %s,\n", g_opts.hookshot_any ? "true" : "false");
@@ -492,6 +504,12 @@ extern "C" void rando_tab_draw(float scale) {
         if (!spoiler_view_draw(g_spoiler_seed, scale)) g_spoiler_seed.clear();
         return;
     }
+    static bool id_once;  // LARECOMP_RANDO_ID=<seed ID>: the tab starts with that ID's options (test hook)
+    if (const char *t = getenv("LARECOMP_RANDO_ID"); !id_once && t) {
+        id_once = true;
+        std::string err = seed_id_decode(t, g_opts);
+        if (!err.empty()) LOG("[rando] test seed ID: %s\n", err.c_str());
+    }
     static bool test_once;  // LARECOMP_RANDO_GEN_TEST=1|<name>[:<seed ID>]: generate a seed (with that ID's options)
     if (const char *t = getenv("LARECOMP_RANDO_GEN_TEST"); !test_once && t) {  // as soon as the tab is shown (test hook)
         test_once = true;
@@ -613,6 +631,11 @@ extern "C" void rando_tab_draw(float scale) {
                        "with logic."))
             g_opts.no_start_ocarina = !oc;
     }
+    {  // (part of the seed: LAS 'stealing' normal / always)
+        bool any = !g_opts.steal_needs_sword;
+        if (opt_toggle("Steal without sword", &any, false, "You can steal from the shop before you have the sword."))
+            g_opts.steal_needs_sword = !any;
+    }
     opt_toggle("Treat Tunics as Upgrades", &g_opts.tunic_upgrades, false,
                "The red and blue tunics add up instead of replacing each other: the blue one always halves the damage "
                "Link takes, the red one always strengthens his attacks, and with both he has both.");
@@ -651,10 +674,8 @@ extern "C" void rando_tab_draw(float scale) {
     static const char *ditems[] = {"Shuffled", "Start with stone beaks", "Start with maps + compasses", "Start with all three"};
     opt_choice("Dungeon items", &g_opts.dungeon_items, ditems, 4, 0,
                "Maps, compasses and stone beaks: shuffled into the item pool, or given at the start.");
-    opt_toggle("Bombs must be found first", &g_opts.bomb_bag, false,
-               "Bombs are an item in the pool: until you find them, shops don't sell bombs and none drop.");
-    opt_toggle("Magic Powder must be found first", &g_opts.powder_bag, false,
-               "Magic Powder is an item in the pool: until you find it, none can be bought or found.");
+    opt_toggle("Bomb bag", &g_opts.bomb_bag, false, "You must find your bomb bag to collect and carry bombs.");
+    opt_toggle("Powder bag", &g_opts.powder_bag, false, "You must find your powder bag to collect and carry Magic Powder.");
     static const char *traps[] = {"None", "Few", "Several", "Many", "Trapsanity"};
     opt_choice("Traps", &g_opts.traps, traps, 5, 1, "How many traps hide among the items.");
     static const char *shells[] = {"None", "Up to 5", "Up to 15", "Up to 30", "Up to 40", "All (50)"};
@@ -685,8 +706,15 @@ extern "C" void rando_tab_draw(float scale) {
                "Unchecked pots are golden: lift, smash or throw one to reveal its item.");
     static const char *shopn[] = {"Off", "Vanilla prices", "Random prices"};
     opt_choice("Shopsanity", &g_opts.shopsanity, shopn, 3, 0,
-               "Every good in the Mabe Village shop is a check: the shield, hearts, shovel, bow, arrows, bombs, the seven "
-               "chamber stones and the piece of heart. Buy it, or steal it (the shopkeeper remembers a thief).");
+               "Every good in the Mabe Village shop is a check: the shield, hearts, shovel, bombs, chamber stone and "
+               "piece of heart. Buy it, or steal it (the shopkeeper remembers a thief).");
+    {
+        opt_indent(1);
+        bool steal = !g_opts.no_stealing;
+        if (!g_opts.shopsanity) opt_disable_next();
+        if (opt_toggle("Stealing", &steal, true, "Off: the shopkeeper never lets you steal.")) g_opts.no_stealing = !steal;
+        opt_indent(-1);
+    }
     opt_toggle("Trendy Game prizes", &g_opts.trendsanity, false,
                "Each of the 5 crane prize spots holds a check; won spots then hold ordinary prizes.");
     opt_toggle("Fishing prizes", &g_opts.inc_fishing, false, "The fishing pond's prizes hold items from the pool.");
