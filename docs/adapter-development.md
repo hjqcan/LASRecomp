@@ -160,6 +160,12 @@ python tools/test_adapter_contract.py
 python tools/test_game_install.py
 python tools/test_gamebuild_resume.py
 python tools/test_title_profile.py
+python tools/test_enemy_random.py
+python tools/test_game_addresses.py
+python tools/test_version_hooks.py
+python tools/test_hle_libc.py
+python tools/test_runtime_diagnostics.py
+python tools/test_crash_explain.py
 python tools/test_game_profiles.py
 python tools/test_game_shortcut.py
 python tools/test_frozen_adapters.py <built-lasgen-executable>
@@ -174,6 +180,18 @@ concurrent writers, candidate isolation and cleanup boundaries. The build test
 uses a real compiler and production library validator/publication code with tiny
 synthetic function tables. The frozen-helper test checks imports, inventories,
 receipts and actual generation of a tiny synthetic ARM64 function.
+
+Recheck title and version boundaries when merging upstream changes. Shared
+filesystem callbacks can reach title-specific extensions even when generated
+hooks are disabled. The enemy-randomizer test passes invalid pointers under
+unknown, ACNH, Z-A and synthetic future-title profiles, both before and after a
+LAS seed is loaded; they must return without touching pointers or seed state.
+The positive fixture still exercises LAS file-load and spawn behavior. Patch
+fixtures also include required preceding instructions, so every instruction
+guard must use the selected executable's address mapping. The shared libc test
+checks byte semantics, overlapping copies and guest return registers for the
+SDK fast paths. These checks complement actual save/reopen and visual/audio
+regressions of every already-supported game on the same candidate executable.
 
 Record framework integration effort separately from compatibility work for the
 next real title: descriptor changes, dedicated patches, core changes and time

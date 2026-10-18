@@ -666,6 +666,85 @@ directly to `enhanced` with its development gates intact. The earlier unexplaine
 LAS 1.1.0 startup crash and current Z-A failures remain open issues and prevent
 qualifying these changes for a distributed prerelease or marking Z-A playable.
 
+## Shared infrastructure feedback, 2026-10-18
+
+The third title is also an infrastructure probe: fixes should reduce the work
+for another adapter while preserving existing games. Z-A playability is a
+separate acceptance decision.
+
+Commit `80256b8` adds a bounded, register-aware masked relative-table fallback.
+It uses a reaching low-bit AND to prove at most 4,096 byte/halfword table entries,
+within the real function and a 64-instruction window. Intervening vector work
+does not count as a write to a similarly numbered general-purpose register.
+Clobbers, calls, incoming branches that bypass the mask, independently callable
+entries and other indirect branches reject the fallback. No Z-A
+addresses or inferred unbounded table lengths are embedded in the algorithm.
+Eight new synthetic tests include native/Unicorn agreement and rejection cases;
+all 38 relative-table/fragment tests pass.
+
+Full module discovery comparisons against `b19a887` preserve every LAS
+1.0.0/1.1.0 and ACNH partition and table. Z-A gains 151 main entries and 79 SDK
+entries; 13 and 6 retained entries respectively change their discovered control
+flow. The earlier `main+0x166df70` dispatch remains present. These are discovery
+results, not gameplay acceptance.
+
+The pre-upstream-merge candidate (`0338d8e`, executable SHA-256
+`10f9b36654fca2a69317bc1bd15051f86af21ee4454c52acef9e67350ee61529`)
+rebuilt Z-A with 1,024 reused and 30 compiled objects in 310 seconds. Strict
+startup passed `main+0x1cfcc34` and stopped after 9.24 seconds at
+`main+0x1cfe57c`, with LR `main+0x1cfdc4c`. The enclosing function contains four
+indirect branches; that case remains outside the new fallback's conservative
+proof. The three unsupported surface-write shader words remain blockers.
+
+The existing `adapter.py doctor --log` now emits deduplicated CPU/GPU/service
+blockers with occurrence counts and line numbers. The catalog separately records
+the partial CPU support and missing surface-write support. Crash explanations
+use the selected adapter's content threshold: Z-A's complete 22-file folder no
+longer receives LAS's misleading incomplete-data message. Empty diagnostics do
+not qualify compatibility, and development releases remain un-installable.
+
+Official `beta_5` through `64f56fe` was merged into `enhanced`. Its host libc
+fast paths gained asset-free byte/overlap/register tests. The new randomizer
+callbacks are gated before any non-LAS pointer or seed access, and their adjacent
+instruction guard now uses the same version mapping as the patched instruction.
+The latter regression caught an unmapped read introduced by the upstream merge;
+both LAS profiles now pass all instruction guards, including rejection of a
+damaged preceding instruction. New randomizer mode labels retain both Chinese
+UI translations. These integration fixes are committed as `c09549b`.
+
+That merged candidate has executable SHA-256
+`5a141ac64186c794925c3889204368910ea07027526eefd1d68e26affd6931a8`.
+Its fresh packaged helper passes inventory/receipt checks and actual ARM64/JIT
+table generation. Z-A rebuilt in 215 seconds with 1,050 objects reused and four
+compiled. A 180-second strict probe still reported all three shader failures,
+captured black frames through frame 10 and then timed out with repeated Opus-open
+messages. It did not reproduce the earlier CPU fatal in that interval. This run
+overlapped the isolated LAS regression; stopped frame progress has no established
+cause, and absence of that fatal does not prove the indirect-branch gap closed.
+
+All seven workflows pass at `4ee33ad`, including Linux, macOS and Windows. That
+commit only corrects the new test harness's portable-FP include on ARM64; the
+runtime candidate above is unchanged.
+
+The same executable passed the existing-game batch using isolated save copies:
+
+| Configuration | Verified behavior | Run duration |
+| --- | --- | --- |
+| LAS 1.0.0 | Load, indoor/outdoor movement, manual save, in-process reboot and saved-game reload | 378.68 s |
+| LAS 1.1.0 | Load, movement, inventory and manual save; separate process reload | 141.84 s + 52.07 s |
+| ACNH 1.0.0 | Island movement and manual save; separate process reload | 251.22 s + 108.96 s |
+
+All five runs exited normally without fatal or strict HLE/IPC diagnostics.
+Actual screenshots were inspected and every run produced finite, nonzero
+48 kHz stereo audio. LAS prepared all 908 indexed shaders without failures,
+including again after the 1.0.0 reboot. Its complete save was read before and
+after that reboot. ACNH's five saved-data headers and 24 hash regions validated
+after both runs. Original saves and the accepted player executable retain their
+recorded hashes. This is bounded functional regression evidence. Other
+development workloads overlapped parts of the batch, so the durations are not
+a performance comparison. It does not establish a full playthrough, updated
+randomizer parity, Z-A readiness or prerelease qualification.
+
 ## Reproduction
 
 Use a fresh local directory outside the checkout for inventories and modules:
