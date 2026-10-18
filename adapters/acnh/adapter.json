@@ -71,6 +71,51 @@
           "hle": false
         }
       ]
+    },
+    {
+      "version": "3.0.1",
+      "role": "update",
+      "content_version": 2097152,
+      "status": "development",
+      "installable": false,
+      "runtime": {
+        "nvn_major": 55,
+        "nvn_minor": 15,
+        "heap_scale": 1,
+        "features": []
+      },
+      "requirements": {
+        "module_tables": "4",
+        "cpu.symbols": "gnu_hash",
+        "cpu.relocations": "relr",
+        "gpu.api": "nvn55",
+        "gpu.pool_mapping": "full_alias",
+        "services.network": "offline"
+      },
+      "content": {
+        "minimum_files": 66790,
+        "image_satisfies_count": true
+      },
+      "modules": [
+        {
+          "name": "main",
+          "build_id": "8f2cb7a9774959c89189c994fe4cc98800000000000000000000000000000000",
+          "base": "0x7000000000",
+          "hle": false
+        },
+        {
+          "name": "sdk",
+          "build_id": "a226048605d3597f90cb1067d141cd36647b90cd000000000000000000000000",
+          "base": "0x7008000000",
+          "hle": true
+        },
+        {
+          "name": "subsdk0",
+          "build_id": "6c6ceace7be94107a8bd440bc2d6070469bc90ce000000000000000000000000",
+          "base": "0x700a000000",
+          "hle": false
+        }
+      ]
     }
   ]
 }

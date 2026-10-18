@@ -100,6 +100,7 @@ class AdapterContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve(); adapters = root / 'adapters'; shutil.copytree(ADAPTERS, adapters)
             data = json.loads((ADAPTERS / 'acnh/adapter.json').read_text())
+            data['releases'] = [data['releases'][0]]
             data.update(id='fixture', name='Synthetic title', application_id='0100000000000010', order=100, romfs_roots=['Data'])
             data['releases'][0].update(status='development', installable=False)
             data['releases'][0]['modules'][0]['build_id'] = 'ed' * 32

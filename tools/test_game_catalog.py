@@ -91,6 +91,30 @@ class CatalogTests(unittest.TestCase):
         # The file picker no longer needs a manually selected title.
         self.assertEqual(inspect_package(archive)['game_id'], 'acnh')
 
+    def test_acnh_update_has_distinct_layout_save_namespace_and_gate(self):
+        game = get_game('acnh')
+        base, update = game.releases
+        self.assertEqual((update.version, update.role, update.content_version), ('3.0.1', 'update', 2097152))
+        self.assertFalse(update.installable)
+        self.assertEqual(update.status, 'development')
+        self.assertEqual((update.runtime['nvn_major'], update.runtime['nvn_minor']), (55, 15))
+        self.assertEqual([m.base for m in update.modules], [0x7000000000, 0x7008000000, 0x700a000000])
+        self.assertEqual(update.installation['save_directory'], 'save/01006f8002326000/v3.0.1')
+        self.assertNotEqual(update.installation['save_directory'], base.installation['save_directory'])
+        metadata = dict(application_id=game.application_id, title_id=game.update_id,
+                        role='update', content_version=2097152)
+        validate_metadata(metadata, 'update', game)
+        for module in update.modules:
+            (self.root/module.name).write_bytes(synthetic_nso(module.build_id))
+        self.assertEqual(inspect_exefs(self.root)['version'], '3.0.1')
+        (self.root/'sdk').write_bytes(synthetic_nso(base.modules[1].build_id))
+        with self.assertRaisesRegex(ValueError, 'sdk Build ID mismatch'):
+            inspect_exefs(self.root)
+        output = self.root/'not-created'/'update'
+        with self.assertRaisesRegex(ValueError, 'in development'):
+            import_game(self.root/'missing.nsz', None, output, game_id='acnh', expected_version='3.0.1')
+        self.assertFalse(output.parent.exists())
+
     def test_metadata_free_auto_detection_and_default_acnh_import(self):
         game = get_game('acnh')
         files = {m.name: synthetic_nso(m.build_id) for m in game.releases[0].modules}

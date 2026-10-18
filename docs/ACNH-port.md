@@ -8,6 +8,26 @@ generated C, compiled game library, or saves belong in commits.
 
 ## Module layout
 
+### 3.0.1 development inventory
+
+The local update has content version 2097152 and main Build ID
+`8f2cb7a9774959c89189c994fe4cc98800000000000000000000000000000000`.
+It remains a development release until gameplay and save/reopen qualification.
+Its main image is 94,392,320 bytes, so the SDK/subsdk bases move to
+`0x7008000000` and `0x700a000000`; the 1.0.0 layout is unchanged. The SDK and
+multimedia modules use GNU-only dynamic symbol hashes. Both the generator and
+native loader now count their bounded GNU buckets/chains, retaining the former
+SysV path for older modules. Synthetic tests cover both paths and malformed
+table rejection.
+
+The graphics initializer at main offset `0x37b6eb8` queries the NVN major/minor
+integers and compares them with 55 and 15. The release declares those values
+and an unqualified NVN 55 capability; this does not establish renderer support.
+Its separate managed namespace is `01006f8002326000/v3.0.1`. Existing 1.0.0 saves
+must not be converted in place or overwritten during development. Initial
+qualification uses the game's normal 30 FPS timing before any high-frame-rate
+work.
+
 | Module | Guest base | Build ID |
 | --- | --- | --- |
 | main | 0x7000000000 | 7fc1baff976aeca414520cb89f4616cb |
