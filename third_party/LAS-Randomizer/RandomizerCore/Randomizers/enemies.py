@@ -180,6 +180,9 @@ def fit_rail(room_data, act, points, rail):
 
 
 def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy_settings: dict, rand_state: tuple):
+    # LARecomp: miniboss-frequency 0 / 1 / 2 / 3 = normal, 2x, 3x, every room with a randomized land enemy
+    miniboss_chance = (MINIBOSS_CHANCE, MINIBOSS_CHANCE * 2, MINIBOSS_CHANCE * 3, 1.0)[
+        min(3, max(0, int(enemy_settings.get('miniboss-frequency', 0))))]
     """"""
 
     random.setstate(rand_state)
@@ -231,7 +234,7 @@ def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy
                 room = enemy_settings['arena'](file[:-4])
                 fits = [m for m in fits if m not in NEEDS_ROOM or roomy(room, act, NEEDS_ROOM[m])]
             if (enemy_settings.get('minibosses') and fits and folder == 'Field'
-                    and (_ONLY or (not room_has_miniboss and random.random() < MINIBOSS_CHANCE))):
+                    and (_ONLY or (not room_has_miniboss and random.random() < miniboss_chance))):
                 mini = random.choice(fits)
                 room_has_miniboss = True
                 new_enemy = mini

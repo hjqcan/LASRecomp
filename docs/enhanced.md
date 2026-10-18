@@ -64,12 +64,14 @@ workgroup memory and screen-attachment scaling fixes. Vulkan prepares shaders
 ahead of use and shares identical stages while preserving every required draw.
 Unseen variants can still require first-use waits.
 
-The official `beta_5` synchronization through `290990e` also includes controller
+The official `beta_5` synchronization through `0f5a5ab` also includes controller
 rumble with an intensity setting, the frame-job rebuild ordering fix, and LAS
 shader preparation from the player's files. The preparation list is restricted
 to LAS and integrated with the existing Vulkan queue and reboot cleanup. See
 [rumble](rumble.md) and [multi-game rendering](multi-game.md) for behavior and
-validation limits.
+validation limits. The later updates include complete movie decoder cleanup on
+reboot, the Vulkan empty-fence fix, and mini-boss frequency settings in shared
+randomizer generation. Existing enhanced version slots and extensions remain.
 
 ## Windows quick start / Windows 使用说明
 

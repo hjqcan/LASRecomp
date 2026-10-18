@@ -293,8 +293,9 @@ static void set_failure(int k, int have = -1) {
         "Choose a supported base archive or a folder containing exefs and romfs.",
         "Make sure there's about 12 GB free and try again.",
         "LAS Recomp supports the verified v1.0.0 and v1.1.0 executable builds.",
-        "Some files are missing. Choose the folder again; if it happens again, dump the game again.",
-        "Make sure there's about 2 GB free and try again. If it keeps happening, report it on Discord or GitHub."};
+        "Some of the game's files are missing - usually a copy or unzip that stopped partway. Copy the game files "
+        "again so none are missing, then choose the folder again.",
+        "Make sure there's about 2 GB free and try again. If it keeps happening, report it on GitHub."};
     if (k < 1 || k > 6) return;
     if (k == FAIL_MISSING && have >= 0) {
         char b[320];
@@ -313,7 +314,7 @@ static bool is_dir(const std::string &p) {
 }
 
 // exefs: main and main.npdm; romfs: content roots declared by a reviewed adapter. Found
-// in the picked folder or a few levels below it (dump tools nest them).
+// in the picked folder or a few levels below it (some folder layouts nest them).
 static void find_game(const std::string &dir, int depth, std::string &exefs, std::string &romfs, bool &unusable) {
     if (depth > 4 || (!exefs.empty() && !romfs.empty())) return;
     if (exefs.empty() && file_exists(dir + "/main") && file_exists(dir + "/main.npdm")) exefs = dir;
@@ -1233,7 +1234,7 @@ static void prelaunch_tab(float sc) {
                 ui_tr(fs ? "Nintendo font (imported)" : "substitute (this OS's, per language)"),
                 ui_tr(fl ? "Nintendo font (imported)" : "substitute"), ui_tr(fe ? "imported" : "substitute"));
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", ui_tr("Fonts aren't included. For the original look, dump them from your own Switch and import "
+    ImGui::TextDisabled("%s", ui_tr("Fonts aren't included. For the original look, import your own copies of "
                         "nintendo_udsg-r_std_003.bfttf (text), the same-named files for Chinese and Korean "
                         "(nintendo_udsg-r_org_zh-cn_003, nintendo_udsg-r_ext_zh-cn_003, nintendo_udjxh-db_zh-tw_003, "
                         "nintendo_udsg-r_ko_003) and nintendo_ext_003.bfttf (button icons). "

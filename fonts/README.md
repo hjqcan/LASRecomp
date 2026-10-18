@@ -6,8 +6,7 @@ Microsoft JhengHei (traditional), since the Japanese Yu Gothic fallback lacks so
 Other Windows languages use Yu Gothic; macOS uses Hiragino Sans (the same style of Japanese gothic as
 the Switch's Morisawa UD Shin Go), then Arial. No system fonts are copied into or shipped with LAS Recomp.
 
-For the exact look, put a dump from your own console here (Switch system archive *FontStandard*, title
-0100000000000811, and *FontNintendoExtension*, 0100000000000810):
+For the exact look, put your own copies of the system fonts here:
 
 - `nintendo_udsg-r_std_003.bfttf`: the main font (a `.ttf` with the same name, or spelled `nintendo_udsgr_std_003`, also works)
 - `nintendo_ext_003.bfttf`: button glyphs (optional)
