@@ -3,7 +3,16 @@
 #include "../runtime/hle.h"
 #undef RT_ON_RESET
 #define RT_ON_RESET(fn) static void fn(void)
+// Pause immediately after the real kernel publishes an unlocked mutex, so a
+// user-space sender can inspect the wait flag before the waiter continues.
+static void after_kernel_store(void *address);
+#define __atomic_store_n(ptr, value, order) do { \
+    __auto_type test_address = (ptr); \
+    __atomic_store_n(test_address, (value), (order)); \
+    after_kernel_store((void *)test_address); \
+} while (0)
 #include "../runtime/kernel.c"
+#undef __atomic_store_n
 #undef NDEBUG
 #include <assert.h>
 
@@ -50,6 +59,43 @@ uint64_t plat_now_ns(void) {
 static uint32_t mutex_word, condition_word;
 static KThread waiter;
 static int contended;
+static pthread_mutex_t schedule = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t schedule_changed = PTHREAD_COND_INITIALIZER;
+static bool gate_release, released, sender_checked;
+static uint32_t observed_flag, queued_messages;
+
+static void after_kernel_store(void *address) {
+    if (address != &mutex_word || !gate_release) return;
+    gate_release = false;
+    pthread_mutex_lock(&schedule);
+    released = true;
+    pthread_cond_broadcast(&schedule_changed);
+    while (!sender_checked) pthread_cond_wait(&schedule_changed, &schedule);
+    pthread_mutex_unlock(&schedule);
+}
+
+static void *send_during_release(void *unused) {
+    (void)unused;
+    pthread_mutex_lock(&schedule);
+    while (!released) pthread_cond_wait(&schedule_changed, &schedule);
+    pthread_mutex_unlock(&schedule);
+    uint32_t expected = 0;
+    assert(__atomic_compare_exchange_n(&mutex_word, &expected, 0x222, false,
+                                      __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
+    queued_messages = 1;
+    observed_flag = __atomic_load_n(&condition_word, __ATOMIC_SEQ_CST);
+    pthread_mutex_lock(&schedule);
+    sender_checked = true;
+    pthread_cond_broadcast(&schedule_changed);
+    pthread_mutex_unlock(&schedule);
+    // Like the SDK, omit the syscall when the condition has no waiters.
+    if (observed_flag) svc_signal_process_wide_key((uint64_t)&condition_word, 1);
+    expected = 0x222;
+    if (!__atomic_compare_exchange_n(&mutex_word, &expected, 0, false,
+                                    __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+        assert(svc_arbitrate_unlock((uint64_t)&mutex_word) == R_OK);
+    return NULL;
+}
 static void *signal_waiter(void *unused) {
     (void)unused;
     // Wait until the real waiter has atomically released its mutex and joined
@@ -97,7 +143,18 @@ int main(void) {
         pthread_join(signaler, NULL);
         mutex_release((uint64_t)&mutex_word);
     }
+    mutex_word = waiter.handle;
+    condition_word = 0;
+    gate_release = true;
+    pthread_t sender;
+    assert(pthread_create(&sender, NULL, send_during_release, NULL) == 0);
+    uint32_t r = svc_wait_process_wide_key((uint64_t)&mutex_word,
+        (uint64_t)&condition_word, waiter.handle, 1000000000);
+    pthread_join(sender, NULL);
+    assert(observed_flag == 1 && queued_messages == 1);
+    assert(r == R_OK && mutex_word == waiter.handle && g_waitlist == NULL);
+    mutex_release((uint64_t)&mutex_word);
     pthread_cond_destroy(&waiter.cond);
-    puts("PASS: timeout returns unlocked; repeated SDK reacquire; signal returns owned; contended ownership transfer");
+    puts("PASS: timeout returns unlocked; repeated SDK reacquire; signal returns owned; contended ownership transfer; wait flag precedes user-space unlock");
     return 0;
 }

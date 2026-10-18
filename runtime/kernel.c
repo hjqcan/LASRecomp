@@ -346,12 +346,16 @@ static uint32_t svc_arbitrate_unlock(uint64_t addr) {
 static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t tag, int64_t timeout) {
     pthread_mutex_lock(&g_klock);
     KThread *t = t_cur;
+    // The next owner can acquire the guest mutex without g_klock and skip its
+    // signal syscall when the key is zero. Publish the waiter before releasing
+    // that mutex, or a message can arrive between unlock and this store and its
+    // notification is lost. g_klock keeps a signal syscall behind registration.
+    __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
     mutex_release(mutex);
     t->wait_kind = WAIT_CONDVAR;
     t->wait_addr = key;
     t->wait_mutex = mutex;
     t->wait_tag = tag;
-    __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
     // Timed out / cancelled: returns without the mutex, as Horizon does - nn::os takes it again itself (TimedWait on
     // 0xEA01 calls the critical section's Enter). Taking it here as well left the thread holding it when Enter ran:
     // Enter saw its own handle in the lock word and ArbitrateLock waited on itself forever (issue #19's thread dump: a

@@ -138,7 +138,16 @@ and compute pipeline creation share its read side. This preserves concurrent
 compilation and releases the barrier before disk I/O. A native mock-driver test
 checks those ordering properties. This is a conservative cache-snapshot change,
 not evidence that Vulkan requires external synchronization for ordinary caches;
-the observed Intel driver path still needs the actual scene regression.
+The next validation run saved two periodic cache snapshots and closed normally,
+but stopped advancing while entering the player's tent. The suspended guest
+thread state showed a queued message with its receiver still asleep and the
+main thread waiting for that worker's completion event. The condition-variable
+wait path released the guest mutex before publishing its waiter flag; a sender
+could acquire it in user space and skip the signal syscall. The flag is now
+published first. A deterministic native test schedules a sender at that exact
+unlock boundary, fails with the old order, and verifies successful wakeup and
+mutex reacquisition with the corrected order. This also retains the existing
+timeout and contended-handoff checks. Scene transitions still require rerunning.
 
 | Module | Guest base | Build ID |
 | --- | --- | --- |
