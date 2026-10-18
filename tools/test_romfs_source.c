@@ -9,6 +9,7 @@
 #undef SERVICE
 #define SERVICE(name, fn) static void fn(Service *s, IpcReq *req, IpcResp *resp)
 #include "../runtime/services/fs.c"
+bool acnh60_romfs_override(const char *p, char *out, size_t n) { abort(); }
 
 const char *g_romfs_dir;
 static TitleProfile profile;

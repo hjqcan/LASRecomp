@@ -31,6 +31,7 @@ const char *game_profile_save_dir(int p) { abort(); }
 const char *workshop_save_dir(void) { abort(); }
 const char *rando_seed_dir(void) { abort(); }
 bool rando_romfs_override(const char *p,char *out,size_t n) { abort(); }
+bool acnh60_romfs_override(const char *p,char *out,size_t n) { abort(); }
 void romfs_layout_free(RomfsLayout *p) { abort(); }
 bool romfs_layout(const char *p,RomfsLayout *l,char *why,size_t n) { abort(); }
 void romfs_file_read_hook(const char *p) { abort(); }
