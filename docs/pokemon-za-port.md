@@ -772,6 +772,73 @@ ten inputs, including register, stack, return-address and floating-point state.
 The fresh Windows helper passes catalog/receipt checks and actual Unicorn JIT
 generation. These checks establish the supported pattern, not Z-A playability.
 
+The final implementation is committed as `a5cebca`, following `fa85907`.
+All six workflows pass at that source revision, including Linux, macOS and
+Windows. Full module discovery comparisons against `78de0e7` preserve every
+partition and table in LAS 1.0.0/1.1.0 (86,669 main and 34,982 SDK entries each)
+and ACNH 1.0.0 (177,433 main, 44,701 SDK and 20,599 subsdk0 entries).
+
+The freshly packaged generator emits four destinations for each of the four
+branches in the `main+0x1cfe330` function, including `main+0x1cfe57c`. It also
+retains all four destinations of the earlier `main+0x1cfcc24` branch and the
+older `main+0x166df70` local dispatch. These checks inspect the actual generated
+C before successful-build cleanup removes it; they do not substitute for a
+runtime probe.
+
+The Windows candidate has executable SHA-256
+`2b3387927b88762ca39eb37aeeab6d60235fe2f4fab240285814c8b073add88f`.
+Its Z-A library rebuilt with 496 reused and 558 compiled objects in 874 seconds.
+The build's initial Windows process relaunched after an address-space collision;
+the private harness followed its actual child and required the runtime's READY
+message rather than treating the bootstrap's exit code as completion.
+
+Two strict starts reached a new missing-function failure at `main+0x1748400`,
+with LR `main+0x1749040`. The second exited with status 3 after 11.29 seconds.
+The target belongs to a six-case byte table in `main+0x17482f0`: its B.HI guard
+is 34 instructions before BR, outside the current guarded fallback's
+16-instruction search window. That distinct discovery limit remains open.
+The three SUST/SURED shader failures remain, and frame 50 is still black.
+This candidate does not qualify Z-A as playable or qualify a prerelease.
+
+The same candidate completes the existing-game Windows regression after full
+rebuilds: 646 objects for each LAS version and 731 for ACNH, all with zero
+object reuse and a confirmed READY transition. Accepted runtime checks are:
+
+| Game | Accepted route | Runtime |
+| --- | --- | ---: |
+| LAS 1.0.0 | Load, indoor/outdoor movement, manual save, soft reboot and reload | 289.55 s |
+| LAS 1.1.0 | Load, movement, inventory and manual save | 185.77 s |
+| LAS 1.1.0 | Fresh process reopens the written manual save | 118.08 s |
+| ACNH 1.0.0 | Load island, move, Save and end, Save complete | 222.10 s |
+| ACNH 1.0.0 | Fresh process reloads the island | 146.48 s |
+
+Every accepted run closes normally with status 0 and no fatal, strict HLE or
+strict IPC failure. Fourteen actual screenshots were visually checked and
+content-hashed. All five runs produce finite, nonzero 48 kHz stereo audio
+samples. LAS prepares all 908 shaders without missing/failed entries; the
+1.0.0 soft reboot stops 44 guest threads, writes manual slot 0 after loading
+autosave slot 3, and then reads slot 0. LAS 1.1.0 loads and writes its existing
+manual slot 0. ACNH's five saved files pass their version-header checks and all
+24 internal hash regions after both accepted runs.
+
+The fresh ACNH baseline first displayed two language-change confirmations.
+An earlier scripted route reached title-screen save settings instead of the
+intended gameplay route and was excluded. A language-initialization run and
+one subsequent save run also lacked complete exit records because the private
+harness used a one-second bootstrap wait. Those records remain separate from
+acceptance. The harness now waits for a signalled Windows process handle; an
+independent replacement-process fixture returns the child's status 7 correctly.
+The accepted ACNH save/reopen pair was rerun with that completion check and the
+initialized language state, using the unchanged candidate executable.
+
+Private evidence is indexed in
+`multi-game-regression-20261018/masked-family-e330-regression-summary.json`,
+with captured-frame hashes, input scripts, runtime/build logs, seven full-module
+discovery comparisons and the source revision's six successful workflows.
+Original save manifests and the existing player-app executable hash remain
+unchanged. These are bounded functional checks; they do not establish a full
+playthrough, performance parity, or updated-version randomizer qualification.
+
 ## Reproduction
 
 Use a fresh local directory outside the checkout for inventories and modules:
