@@ -5,24 +5,24 @@ static const TitleProfile title_profiles[] = {
         {"main", "ae16f71e002af8cb059a9a74c4d90f34ba984892000000000000000000000000", UINT64_C(0x7000000000), false},
         {"sdk", "3ae34e689d7a35f13cbf42bfd672af8b5eb64a9d000000000000000000000000", UINT64_C(0x7004000000), true},
      }, {1, 0},
-     "c88e4be8c20b942f53a35e49a965345104dee94e23f51cbad913780034b138ff", {"region_common"}, 1, 3836, false, 207, 4, true, 53, 0},
+     "d6a901c7b80d75b0da50838a520936ed001a7a3454f2caab418d38d865516095", {"region_common"}, 1, 3836, false, 207, 4, true, 53, 0},
     {"las", "The Legend of Zelda: Link's Awakening", "1.1.0", "las", "beta",
      UINT64_C(0x01006bb00c6f0000), 1, 2, true, {
         {"main", "909e904af78ac1b8deefe97ab2ccdb51968f0ec7000000000000000000000000", UINT64_C(0x7000000000), false},
         {"sdk", "3ae34e689d7a35f13cbf42bfd672af8b5eb64a9d000000000000000000000000", UINT64_C(0x7004000000), true},
      }, {1, 0},
-     "8512db25d7fcd41838b1085a5fde67c4d7d4b9b54940a20a1428476abe086bd3", {"region_common"}, 1, 3836, false, 207, 4, true, 53, 0},
+     "f18b42c3aa989c3d5e6a27a0cf50a4fcd5a98ec58cd484708de5e52efed7f7db", {"region_common"}, 1, 3836, false, 207, 4, true, 53, 0},
     {"acnh", "Animal Crossing: New Horizons", "1.0.0", "generic", "beta",
      UINT64_C(0x01006f8002326000), 1, 3, true, {
         {"main", "7fc1baff976aeca414520cb89f4616cb00000000000000000000000000000000", UINT64_C(0x7000000000), false},
         {"sdk", "ad3fdfbd62a5f4b082d385ffe420d4400abb831d000000000000000000000000", UINT64_C(0x7004000000), true},
         {"subsdk0", "5a7ada8dd7447c10aa244944f64d0aff17c50539000000000000000000000000", UINT64_C(0x7006000000), false},
      }, {1, 2, 0},
-     "f4c3f5df8b8ae293c28c7a21c177ffcafe665e91f676d8bdebe138b5171125f6", {"Movie"}, 1, 66790, true, 312, 1, false, 53, 0},
+     "12964a673f1704fefbd4eb831317794c42585d06627fcd538a6c424fa7ef38d7", {"Movie"}, 1, 66790, true, 312, 1, false, 53, 0},
     {"pokemon_za", "Pok\u00e9mon Legends: Z-A", "1.0.0", "generic", "development",
      UINT64_C(0x0100f43008c44000), 1, 2, false, {
         {"main", "7222e13ecf6adb3249b5dd5c57fa40b102245fce000000000000000000000000", UINT64_C(0x7000000000), false},
         {"sdk", "df7a3960c74c3a4803f826c5871532523aa9cf2a000000000000000000000000", UINT64_C(0x7008000000), true},
      }, {1, 0},
-     "7ec3a28bbfa081ad267372b809848b4a3bd40377ce1e743ef4bc5b28687385f8", {"arc", "audio", "system"}, 3, 22, false, 15, 1, false, 55, 16777216},
+     "9394c35397139fca615d1a6048db75d4fa8a0c95d5920b6fffe8076c6b86eb75", {"arc", "audio", "system"}, 3, 22, false, 15, 1, false, 55, 16777216},
 };

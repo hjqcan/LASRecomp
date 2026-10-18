@@ -221,9 +221,11 @@ class Module:
 
     def _jump_table_taken(self, br_pc, entry, end):
         """Form: cmp idx, #N ; b.ls/b.lo table ... table: <address math> ; br"""
-        # start of the block holding the br
+        # Start of the straight-line block holding the br. A taken guard can
+        # precede a full stack-frame prologue; keep the search within the same
+        # 64-step budget as _emulate_table instead of truncating after 12 ops.
         s = br_pc
-        while s - 4 >= entry and br_pc - (s - 4) <= 4 * 12 and self.lift(s - 4).kind in ('op', 'asm'):
+        while s - 4 >= entry and br_pc - (s - 4) < 4 * 64 and self.lift(s - 4).kind in ('op', 'asm'):
             s -= 4
         # Later discovery rounds split the table block from its earlier guard.
         # Search back to the real function entry, not just this emitted fragment.
