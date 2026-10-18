@@ -17,6 +17,8 @@ const char *game_level_name(void) { abort(); }
 void vk_alias_texture_destroyed(NvnTexture *t) { abort(); }
 void vk_alias_reset(void) { abort(); }
 void vk_convert_nv12(TexBackend *b, const void *p, uint32_t w, uint32_t h, uint32_t s, uint32_t uv) { abort(); }
+// Depth-copy contents are covered by test_depth_copy_gpu; this fixture promotes color images only.
+void vk_blit_depth_nearest(VkCommandBuffer cb, const TexBackend *src, const TexBackend *dst, const VkImageBlit *region) { abort(); }
 VkSpan vk_transient(uint64_t s, uint64_t a) { abort(); }
 VkSpan vk_transient_copy(const void *p, uint64_t s, uint64_t a) { abort(); }
 void vk_dl_note_upload(void *i, uint32_t w, uint32_t h, uint32_t lv) { abort(); }
