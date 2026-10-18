@@ -52,6 +52,8 @@ jobs:
         run: make -j"$(nproc)" build/lasrecomp DEPS="$HOME/sdl3"
       - name: Opus service regression tests
         run: python3 tools/test_hwopus.py
+      - name: Random-byte service regression tests
+        run: python3 tools/test_csrng.py
       - name: Settings regression tests
         run: python3 tools/test_settings.py
       - name: Audio effect impulse and routing regressions
@@ -102,6 +104,8 @@ jobs:
         run: make -j"$(sysctl -n hw.ncpu)" build/lasrecomp
       - name: Opus service regression tests
         run: python3 tools/test_hwopus.py
+      - name: Random-byte service regression tests
+        run: python3 tools/test_csrng.py
       - name: Settings regression tests
         run: python3 tools/test_settings.py
       - name: Exclusive pairs and native contention
@@ -148,7 +152,7 @@ jobs:
         run: clang -std=gnu11 -O1 -Wall -Wextra -Werror -pthread tools/test_hwopus.c -lopus -o build/test-hwopus.exe && build/test-hwopus.exe
       - name: Native runtime regressions (UCRT64 and FFmpeg headers)
         run: |
-          for name in touch prepo nvn_pool_mapping; do
+          for name in touch prepo csrng nvn_pool_mapping; do
             clang -std=gnu11 -O1 -Iruntime "tools/test_${name}.c" -o "build/test-${name}.exe"
             "build/test-${name}.exe"
           done
