@@ -24,7 +24,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang lld make pkg-config cmake ninja-build \
-            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libvulkan-dev libshaderc-dev \
+            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libopus-dev libvulkan-dev libshaderc-dev \
             libvulkan-memory-allocator-dev \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev \
             libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgl-dev libdrm-dev libgbm-dev \
@@ -50,6 +50,8 @@ jobs:
           cmake --install sdl-build
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp DEPS="$HOME/sdl3"
+      - name: Opus service regression tests
+        run: python3 tools/test_hwopus.py
       - name: Settings regression tests
         run: python3 tools/test_settings.py
       - name: Audio effect impulse and routing regressions
@@ -93,9 +95,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Packages
-        run: brew install sdl3 ffmpeg
+        run: brew install sdl3 ffmpeg opus
       - name: App builds
         run: make -j"$(sysctl -n hw.ncpu)" build/lasrecomp
+      - name: Opus service regression tests
+        run: python3 tools/test_hwopus.py
       - name: Settings regression tests
         run: python3 tools/test_settings.py
       - name: Exclusive pairs and native contention
@@ -132,10 +136,12 @@ jobs:
           msystem: UCRT64
           update: true
           install: make git
-          pacboy: clang:p lld:p binutils:p sdl3:p ffmpeg:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
+          pacboy: clang:p lld:p binutils:p sdl3:p ffmpeg:p opus:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
             vulkan-memory-allocator:p
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp.exe
+      - name: Opus service regression tests
+        run: clang -std=gnu11 -O1 -Wall -Wextra -Werror -pthread tools/test_hwopus.c -lopus -o build/test-hwopus.exe && build/test-hwopus.exe
       - name: Native runtime regressions (UCRT64 and FFmpeg headers)
         run: |
           for name in touch prepo nvn_pool_mapping; do

@@ -1,6 +1,6 @@
 # Pokemon Legends: Z-A integration probe
 
-Status on 2026-10-18: **base 1.0.0 reaches audio initialization; blocked by missing hwopus service; not playable**.
+Status on 2026-10-18: **base 1.0.0 passes audio workspace queries and exception-stack registration; blocked by an unresolved indirect branch target; not playable**.
 This is third-title framework evidence, not a completed port. No Z-A release has
 been added to the installable catalog. Update 2.0.2 remains an inventory-only
 input. Tests used local files on Windows, starting
@@ -234,11 +234,11 @@ That progress exposed two NVN object-size bugs:
   Inspection of both supplied SDKs confirmed the version difference: old default
   setters write through offset `0x20`, while new defaults write only two words.
 
-The final strict run passes both former crashes and reaches audio setup, then
-stops at **`hwopus` command 8**, which has no service implementation. `audren:u`
+The strict run at that stage passed both former crashes and reached audio setup, then
+stopped at **`hwopus` command 8**, which had no service implementation. `audren:u`
 was opened, but audio decoding/playback has not been qualified. No title screen,
 rendered game frame, control test, Z-A save/reopen or extended-play pass is claimed.
-`audio.opus: service` records the missing decoder requirement. NVN 55 also remains
+`audio.opus: service` recorded the missing decoder requirement. NVN 55 also remains
 unavailable for release qualification and the adapter remains
 `development` / `installable: false`.
 
@@ -258,6 +258,112 @@ dialogue. Captured frames were visually checked and the logs contained no fatal
 errors. Each 90-second smoke run was stopped by the test timeout, so this is not
 a normal-exit, extended-play or new save-write qualification. Original test saves
 were copied, not edited in place.
+
+## Audio service and process context follow-up (2026-10-18)
+
+The enhanced branch first merged the published ACNH Beta 5.3 changes and upstream
+`beta_5` through `b041b12`, retaining the fork's features. The merge is `8faa052`.
+The upstream shared frame pacer retains LAS-only counter adjustment; other games
+keep their real GPU counters and requested presentation intervals. A deterministic
+test covers that boundary and the upstream fallback backoff.
+
+The old-game rebuild gate caught a separate upstream-integration regression:
+the new font box-glyph null check read the canonical 1.0.0 instruction directly,
+so 1.1.0's shifted text failed its instruction guard. It now uses the existing
+version-aware `patch_word` accessor. The actual instructions at `main+0x111e000`
+(1.0.0) and `main+0x111e0d0` (1.1.0) were verified; the corresponding skip labels
+are `0x111e06c` and `0x111e13c`. `test_version_hooks.py` now checks all 47 patch
+outputs in both executable profiles, in addition to the hook tests, and rejects
+a changed font instruction. The 1.0.0 emitted patch text is unchanged. Both LAS
+adapter identities advance conservatively because a shared patch source changed.
+
+The new `hwopus` service uses host libopus, with manager commands 0-9 and the
+single-stream/multistream decoder interfaces. It supports interleaved PCM16 at
+8, 12, 16, 24 and 48 kHz, the older 40 ms and extended 120 ms workspaces,
+streaming history, reset flags and optional final-range checks. Invalid packets
+and insufficient output buffers leave output and decoder history unchanged.
+Requests sharing an object are serialized, active requests retain their state
+during close, and an in-place reboot releases the remaining decoders.
+
+The transport layout follows the [libnx client](https://github.com/switchbrew/libnx/blob/master/nx/source/services/hwopus.c)
+and [audio service research](https://switchbrew.org/wiki/Audio_services#hwopus).
+The [libopus decoder API](https://opus-codec.org/docs/opus_api-1.5/group__opus__decoder.html)
+supplies actual decoding. Workspace sizes are conservative host requirements;
+exact DSP allocation sizes, hardware error numbering, DSP timings and multistream
+SetContext are not modelled. `audio.opus` is therefore a partial capability.
+The dependency is pinned to libopus 1.6.1 with its published SHA-256; build,
+packaging, license and CI recipes include it on all three platforms.
+
+Real Z-A startup successfully passes its manager command 8 queries and opens
+48 kHz stereo audio output. It has not yet exercised a guest Opus decode call or
+established audible Z-A playback. The new tests generate their own audio and
+compare the service's PCM byte-for-byte with an independent libopus decoder:
+all five rates, mono/stereo, six-channel mapping, 120 ms packets, successive
+packets, reset, concurrent requests, close during a request, malformed inputs,
+range mismatch, output guards and reboot cleanup pass on Windows. The pinned
+Windows libopus build passes the same tests.
+
+The next actual startup exposed `GetInfo(20)` returning zero. SDK function
+`sdk+0x13ff80` queried the process-local address and wrote its exception-handler
+stack at offset `0x1c0`, causing a null access. The kernel now provides a separate
+writable page before thread TLS, with handle/subtype validation and ordinary
+guest-memory reset. The process-local address semantics follow the
+[kernel GetInfo implementation](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/source/svc/kern_svc_info.cpp).
+This provides registration storage; it does not implement guest exception delivery.
+
+With those fixes, strict startup proceeds through more resource reads, empty
+isolated save mounts and BCAT setup. It stops at target `main+0x166d8a0`, reached
+by an unguarded relative jump table in `main+0x166d840`. That target is absent
+from the generated function table. ADR discovery splits off the table's base at
+`main+0x166d888`; the unresolved-table fallback only dispatches within its own
+fragment, so it cannot reach the case at `main+0x166d8a0`. An asset-free synthetic
+probe reproduces that split and confirms that retaining the containing fragment
+preserves the case. This is diagnosis, not a qualified discovery-rule fix: real
+callbacks and independently referenced function entries must still be retained.
+No generator change was included in this step. No Z-A game frame, title screen,
+save/reopen or extended play is qualified; NVN 55 and normal installation remain
+gated.
+
+Existing-game changes must pass the
+[multi-game regression gates](multi-game.md#regression-gates-when-adding-a-game).
+The Windows candidate is tested against separate copies of LAS 1.0.0, LAS 1.1.0
+and ACNH 1.0.0; observations and limitations are recorded below after each run.
+Linux/macOS runtime execution and gameplay are not verified on this host.
+
+The legacy font fix and regression rules were pushed separately as `c376648`.
+The audio/context candidate remains local and **is not release-qualified**:
+one LAS 1.1.0 restart crashed before reading any save file, in the SDK's
+`TlsHeapCache::AllocFuncAlgnMode0` at `sdk+0x2df720`, called during a RomFS
+directory lookup. The same candidate completed a 254-second load/move/interior/
+exterior/manual-save run with normal exit, backups and unchanged source saves;
+a subsequent 115-second run read all 24,288 bytes of the new manual save and
+returned to Mabe Village normally. These successes do not resolve the crash.
+
+Follow-up isolation used copies of the previously accepted executable/library
+and the candidate, with the same copied saves. Ten starts per executable passed,
+including five without extra heap/memory logging. A separate candidate SVC trace
+passed and showed no `GetInfo(20)` or physical map/unmap calls during startup.
+All 175 SDK generated C files match the accepted baseline byte-for-byte. These
+observations narrow the investigation; they do not establish equal failure rates,
+prove that the failure predates this work, or justify publishing the candidate.
+
+The completed Windows regression observations are:
+
+| Existing release | Observed checks | Result and limits |
+| --- | --- | --- |
+| LAS 1.0.0 | Load copied progress, move between Mabe Village and Marin/Tarin's house, open inventory/system UI, manually save with automatic backups, reopen that save, render frames and produce nonzero audio | Normal exits. The final font-fix build reloaded the full 24,288-byte manual save; the preceding audio/context build performed the save write. No failure in these runs. |
+| LAS 1.1.0 | The same load, movement, interior/exterior, manual save, backup, reopen and audio checks | Normal exits for the gameplay and successful reopen, but one additional startup crashed as described above. Candidate qualification remains blocked. |
+| ACNH 1.0.0 | Load a copied island, move, use Save and End, observe completed multi-file commit and backups, restart and return to the island | Normal exits after 563 and 92 seconds. All five full data files were read on reopen; all five headers and 24 internal hashes validated after saving and again after reopening. Nonzero stereo audio was recorded. |
+
+Each run used independent data/settings folders and copied saves. Source-save
+SHA-256 manifests were checked after the runs and remained unchanged. The actual
+captured frames were inspected; audio checks establish nonzero finite 48 kHz
+stereo mixer output, not listening-based quality acceptance. The final candidate
+executable was identical across the final LAS reopen and both ACNH runs. These
+are bounded gameplay regressions, not full-playthrough or performance-parity
+results, and they do not cover the experimental 1.1.0 randomizer. The shared
+audio/context changes must stay out of the published runtime until the LAS
+startup failure has been explained and the affected checks pass again.
 
 ## Reproduction
 
@@ -283,6 +389,8 @@ python tools/test_kernel_memory.py
 python tools/test_platform_memory.py
 python tools/test_nvn_sampler.py
 python tools/test_nvn_views.py
+python tools/test_hwopus.py
+python tools/test_frame_pacing.py
 python tools/test_tipc.py
 python tools/adapter.py doctor --game pokemon_za
 python tools/test_frozen_adapters.py <fresh-lasgen-executable>

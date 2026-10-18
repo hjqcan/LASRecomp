@@ -38,6 +38,17 @@ if [ ! -f "$P/lib/libSDL3.0.dylib" ]; then
     cmake --build "$S/sdl/build" -j"$JOBS" && cmake --install "$S/sdl/build"
 fi
 
+fetch https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz \
+      6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1 opus-1.6.1.tar.gz
+
+if [ ! -f "$P/lib/libopus.dylib" ]; then
+    unpack opus-1.6.1.tar.gz opus
+    cmake -S "$S/opus" -B "$S/opus/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$P" \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET="$MIN" -DCMAKE_OSX_ARCHITECTURES=arm64 \
+          -DBUILD_SHARED_LIBS=ON -DOPUS_BUILD_TESTING=OFF -DOPUS_BUILD_PROGRAMS=OFF
+    cmake --build "$S/opus/build" -j"$JOBS" && cmake --install "$S/opus/build"
+fi
+
 if [ ! -f "$P/lib/libavcodec.dylib" ]; then
     unpack ffmpeg-9.0.2.tar.xz ffmpeg
     (cd "$S/ffmpeg" && ./configure --prefix="$P" --cc=clang --arch=arm64 --enable-shared --disable-static \

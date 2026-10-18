@@ -43,6 +43,10 @@ int main(void) {
     assert(query(16,0,0,R_INVALID_HANDLE)==0);
     assert(query(17,PSEUDO_PROCESS,1,R_INVALID_COMBINATION)==0);
     assert(query(18,PSEUDO_PROCESS,0,R_OK)==profile.program_id);
+    assert(query(20,PSEUDO_PROCESS,0,R_OK)==PROCESS_LOCAL_BASE);
+    assert(PROCESS_LOCAL_BASE >= HLE_BASE+HLE_SIZE && PROCESS_LOCAL_BASE+PROCESS_LOCAL_SIZE <= TLS_BASE);
+    assert(query(20,PSEUDO_THREAD,0,R_INVALID_HANDLE)==0);
+    assert(query(20,PSEUDO_PROCESS,1,R_INVALID_COMBINATION)==0);
     assert(query(28,PSEUDO_PROCESS,0,R_OK)==0);
     assert(query(28,0,0,R_INVALID_HANDLE)==0);
     assert(query(28,PSEUDO_THREAD,0,R_INVALID_HANDLE)==0);

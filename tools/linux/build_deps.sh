@@ -78,6 +78,17 @@ if [ ! -f "$P/lib/libSDL3.so" ]; then
     cmake --build "$W/sdl/build" -j"$JOBS" && cmake --install "$W/sdl/build"
 fi
 
+fetch https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz \
+      6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1 opus-1.6.1.tar.gz
+
+if [ ! -f "$P/lib/libopus.so" ]; then
+    unpack opus-1.6.1.tar.gz opus
+    cmake -S "$W/opus" -B "$W/opus/build" -G Ninja "${CMAKE_CROSS[@]}" -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="$P" -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=ON \
+        -DOPUS_BUILD_TESTING=OFF -DOPUS_BUILD_PROGRAMS=OFF
+    cmake --build "$W/opus/build" -j"$JOBS" && cmake --install "$W/opus/build"
+fi
+
 if [ ! -f "$P/lib/libavcodec.so" ]; then
     unpack ffmpeg-9.0.2.tar.xz ffmpeg
     (cd "$W/ffmpeg" && ./configure --prefix="$P" "${FF_CROSS[@]}" --arch="$ARCH" --target-os=linux \

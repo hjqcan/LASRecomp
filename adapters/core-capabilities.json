@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "capabilities": {
-    "audio.opus": {"status": "unimplemented", "variants": [], "limits": "The hwopus manager and decoder object services are not implemented; strict Z-A startup first requests manager command 8.", "tests": []},
+    "audio.opus": {"status": "partial", "variants": ["service"], "limits": "Host libopus PCM16 decoding with manager commands 0-9, mono/stereo/multistream, 8/12/16/24/48 kHz, reset and 40/120 ms workspaces. Conservative workspace sizing and generic errors; DSP timing and multistream SetContext are not emulated. Z-A audio playback remains unqualified.", "tests": ["tools/test_hwopus.py"]},
     "kernel.virtual_memory": {"status": "partial", "variants": ["dynamic_physical"], "limits": "Opt-in 16 GiB alias layout with 4 KiB idempotent mapping, partial release, zero reuse and bounded physical/system budgets. System usage models host tracking and populated page-table spans, not exact Horizon slabs. Unmapped guest access protection is not emulated; larger host pages can retain unused subpage backing.", "tests": ["tools/test_kernel_memory.py", "tools/test_platform_memory.py", "tools/test_kernel_info.py"]},
     "services.ipc": {"status": "partial", "variants": ["cmif", "tipc"], "limits": "TIPC supports inline data, PID, handles and map-alias buffers within the 256-byte TLS command buffer; no static buffers or domain messages.", "tests": ["tools/test_tipc.py", "tools/test_save_mount.py", "tools/test_save_commit.py"]},
     "cpu.relocations": {"status": "implemented", "variants": ["rela", "relr"], "limits": "ELF64 NSO relative relocations only; RELR targets must stay inside their module and outside the relocation table.", "tests": ["tools/test_relr.py"]},
