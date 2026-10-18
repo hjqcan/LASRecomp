@@ -369,7 +369,8 @@ class Module:
         a = br_pc - 4
         guard = cmp = None
         conditional_cmp = False
-        while a >= analysis_start and br_pc - a <= 4 * 16:
+        distance = getattr(self, 'table_guard_distances', {}).get(br_pc, 16)
+        while a >= analysis_start and br_pc - a <= 4 * distance:
             w = self.word(a)
             if (w & 0xFF000010) == 0x54000000 and bits(w, 0, 4) in (8, 2):
                 guard = a
@@ -1173,6 +1174,9 @@ def main():
         if code_identity(game, release) != args.adapter_id:
             ap.error('The generator and runtime have different adapter/code-generation inputs; update them together')
         apply_instruction_patches(m, release)
+        if game.id == 'pokemon_za':
+            from pokemon_za import configure
+            configure(m)
     if args.name == "main" and args.profile == 'las':
         m.game_version = game_version(m.nso.build_id)
         HOOKS = hook_table(HOOKS, m)

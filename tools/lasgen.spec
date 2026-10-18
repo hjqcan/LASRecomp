@@ -11,12 +11,13 @@ from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
 
 TOOLS = os.path.normpath(SPECPATH)
 sys.path.insert(0, TOOLS)
-from game_catalog import PROFILE_INPUTS, SHARED_GENERATOR_INPUTS
+from game_catalog import ADAPTER_INPUTS, PROFILE_INPUTS, SHARED_GENERATOR_INPUTS
 adapter_data = [(path, 'adapters/' + os.path.basename(os.path.dirname(path)))
                 for path in glob.glob(os.path.join(TOOLS, '..', 'adapters', '*', 'adapter.json'))]
 adapter_data += [(os.path.join(TOOLS, '..', 'adapters', 'core-capabilities.json'), 'adapters')]
 profile_data = [(os.path.join(TOOLS, '..', name), os.path.dirname(name))
-                for name in sorted(set(SHARED_GENERATOR_INPUTS) | {name for inputs in PROFILE_INPUTS.values() for name in inputs})]
+                for name in sorted(set(SHARED_GENERATOR_INPUTS) |
+                                   {name for inputs in (*PROFILE_INPUTS.values(), *ADAPTER_INPUTS.values()) for name in inputs})]
 
 # collect_dynamic_libs only picks unversioned names (libcapstone.so, ...): unicorn's library is versioned
 # (libunicorn.so.2 on Linux, libunicorn.2.dylib on macOS, unicorn.dll on Windows), so add it by hand, where the

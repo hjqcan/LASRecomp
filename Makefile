@@ -122,7 +122,7 @@ GAMELIB_SRCS := tools/gen.py tools/gen_game.py tools/adapter_patches.py runtime/
                 tools/simd_c.py tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
                 runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h runtime/guest_jump.h
 ADAPTER_SRCS := $(wildcard adapters/*/adapter.json) adapters/core-capabilities.json tools/game_catalog.py tools/game_addresses.py runtime/game_addresses/patches_v1_0_0.h \
-                tools/game_versions.py tools/rando_profiles.py tools/patches.py tools/rando/patch_variants.json
+                tools/game_versions.py tools/rando_profiles.py tools/patches.py tools/rando/patch_variants.json tools/pokemon_za.py
 GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(PLATFORM) $(ARCH) $(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 # GAMELIB_BASE_ID: what every compiled piece of it depends on (the headers, the flags, the pinned compiler). The same
 # base keeps the start screen's earlier build pieces: only the pieces whose generated C changed are compiled again
