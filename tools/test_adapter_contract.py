@@ -46,7 +46,8 @@ class AdapterContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve(); (root / 'Makefile').write_text(makefile, encoding='utf-8')
             (root / 'identity.mk').write_text('print-cache-id: ; @echo $(GAMELIB_ID)\n', encoding='utf-8')
-            for name in set(assignment.split()) | {'tools/game_catalog.py', 'runtime/title_catalog.inc', 'tools/fetch_zig.sh', 'runtime/ui/launcher.mm'}:
+            for name in set(assignment.split()) | {'tools/game_catalog.py', 'runtime/title_catalog.inc', 'tools/fetch_zig.sh', 'runtime/ui/launcher.mm',
+                                                 'runtime/nvn/maxwell/translate.c', 'runtime/nvn/maxwell/shader.h'}:
                 target = root / name; target.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / name, target)
             def identity():
                 return subprocess.check_output(['make', '--no-print-directory', '-s', '-f', 'Makefile',
@@ -115,7 +116,7 @@ class AdapterContract(unittest.TestCase):
                 for old, new in zip(original.releases, loaded.releases):
                     self.assertEqual(code_identity(original, old), code_identity(loaded, new))
             runtime = root / 'runtime'; (runtime / 'ui').mkdir(parents=True)
-            for name in ('title_profile.h', 'title_profile.c', 'game_profiles.h', 'game_install.h',
+            for name in ('title_profile.h', 'title_profile.c', 'game_profiles.h', 'game_install.h', 'settings.h',
                          'ui/title_content.mm', 'ui/game_profiles.mm', 'ui/game_install.mm', 'cache_sha256.h', 'ui/host_path.h'):
                 shutil.copy2(ROOT / 'runtime' / name, runtime / name)
             (runtime / 'title_catalog.inc').write_text(render_c_catalog(games), encoding='utf-8')
@@ -130,6 +131,10 @@ class AdapterContract(unittest.TestCase):
             harness.write_text(r'''
 #include "runtime/title_profile.h"
 #include "runtime/game_profiles.h"
+extern "C" {
+#include "runtime/settings.h"
+Settings g_settings={};
+}
 #include <cassert>
 #include <cstring>
 #include <string>
