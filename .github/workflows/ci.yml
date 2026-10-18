@@ -50,12 +50,23 @@ jobs:
           cmake --install sdl-build
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp DEPS="$HOME/sdl3"
+      - name: Movie extractor lifecycle regression
+        run: |
+          clang -std=gnu11 -O1 tools/test_movie_extractor.c $(pkg-config --cflags --libs libavformat libavcodec libavutil libswscale) -pthread -o build/test-movie-extractor
+          mkdir -p build/movie-test
+          build/test-movie-extractor build/movie-test
       - name: Kernel condition-variable regression
         run: |
           clang -O2 -pthread tools/test_condvar.c -o build/test-condvar
           build/test-condvar
       - name: Settings regression tests
         run: python3 tools/test_settings.py
+      - name: Vulkan fence sequence regression
+        run: python3 tools/test_fence_sequence.py
+      - name: SIMD rounding and host-state regression
+        run: |
+          clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -lm -o build/test-simd-rounding
+          build/test-simd-rounding
       - name: Game address table tests
         run: python3 tools/test_game_addresses.py
       - name: Photo state tests
@@ -73,6 +84,15 @@ jobs:
         run: brew install sdl3 ffmpeg
       - name: App builds
         run: make -j"$(sysctl -n hw.ncpu)" build/lasrecomp
+      - name: SIMD rounding and host-state regression
+        run: |
+          clang -std=gnu11 -O1 -pthread tools/test_simd_rounding.c -o build/test-simd-rounding
+          build/test-simd-rounding
+      - name: Movie extractor lifecycle regression
+        run: |
+          clang -std=gnu11 -O1 -I"$(brew --prefix ffmpeg)/include" -L"$(brew --prefix ffmpeg)/lib" tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -pthread -o build/test-movie-extractor
+          mkdir -p build/movie-test
+          build/test-movie-extractor build/movie-test
       - name: Kernel condition-variable regression
         run: |
           clang -O2 -pthread tools/test_condvar.c -o build/test-condvar
@@ -100,21 +120,32 @@ jobs:
         with:
           msystem: UCRT64
           update: true
-          install: make git
+          install: make git python
           pacboy: clang:p lld:p binutils:p sdl3:p ffmpeg:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
             vulkan-memory-allocator:p python:p
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp.exe
       - name: Photo state tests
         run: python tools/test_photo.py
+      - name: Movie extractor lifecycle regression
+        run: |
+          clang -std=gnu11 -O1 tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -o build/test-movie-extractor.exe
+          mkdir -p build/movie-test
+          build/test-movie-extractor.exe build/movie-test
       - name: Kernel condition-variable regression
         run: |
           clang -O2 -pthread tools/test_condvar.c -o build/test-condvar.exe
           build/test-condvar.exe
+      - name: Vulkan fence sequence regression
+        run: python tools/test_fence_sequence.py
       - name: Windows guest thread stack regression
         run: |
           clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe
           build/test-thread-stack.exe
+      - name: SIMD rounding and host-state regression
+        run: |
+          clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -o build/test-simd-rounding.exe
+          build/test-simd-rounding.exe
       # (GLSL only: the script's MSL comparison needs a reference commit that isn't in the history any more; REF=HEAD
       # just satisfies it. The GLSL half - every fuzzed translation compiles and validates - is the check)
       - name: Shader translator fuzz (GLSL)

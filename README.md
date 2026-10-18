@@ -184,9 +184,10 @@ Where files live (game files, saves, seeds, settings, caches, imported fonts):
   and the zh-Hans / zh-Hant codes for Chinese (#25)
 - **[@Maganra](https://github.com/Maganra)** - Linux page write tracking (userfaultfd + PAGEMAP_SCAN) for the Vulkan
   vertex cache and texture checks (#42)
-- **[@hjqcan](https://github.com/hjqcan)** - centralized game patch and runtime addresses (#57), CRLF settings
-  parsing plus Traditional Chinese locale detection (#53), and Windows game thread stacks reserved instead of
-  committed, about 9 GB less memory committed (#107)
+- **[@hjqcan](https://github.com/hjqcan)** - centralized game patch and runtime addresses (#57); CRLF settings
+  parsing and Traditional Chinese locale detection (#53); Windows game thread stacks reserved instead of committed,
+  about 9 GB less memory committed (#107); the Vulkan fence fix for reused submission slots (#108); x86 rounding
+  without x87 state changes (#115)
 - **[@gitarre1234rr5](https://github.com/gitarre1234rr5)** - controller rumble: the game's vibration on your controller
   (#104), and a regression test for the kernel's timed condition-variable wait (#88)
 
