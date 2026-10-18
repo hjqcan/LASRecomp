@@ -583,7 +583,7 @@ class Module:
 
     # ------------------------------------------------------------ functions
 
-    def relative_table_base(self, pc, target):
+    def relative_table_origin(self, pc, target):
         """An ADR consumed only by a local byte/halfword relative-table branch.
 
         Its code address is an arithmetic origin, not an independently callable
@@ -592,50 +592,62 @@ class Module:
         No table length or range of valid indices is inferred here.
         """
         if pc + 16 > self.hi:
-            return False
+            return None
         word, load, add, branch = (self.word(pc + i * 4) for i in range(4))
         base = word & 31
         # LDRB/H Woffset,[Xtable,Xindex{,LSL #1}]; ADD Xbase,Xbase,Xoffset,LSL #2; BR Xbase.
         if (word & 0x9F000000) != 0x10000000 or base == 31:
-            return False
+            return None
         if (load & 0xFFE0EC00) not in (0x38606800, 0x78606800):
-            return False
+            return None
         offset = load & 31
         if offset == 31 or base in (offset, bits(load, 5, 5), bits(load, 16, 5)):
-            return False
+            return None
         br_pc = pc + 12
         # A return-value clear can be scheduled between the target calculation
         # and its branch. It has no side effects and must not overwrite Xbase.
         if (branch & 0x7FFFFFE0) == 0x2A1F03E0 and (branch & 31) != base:
             br_pc += 4
             if br_pc + 4 > self.hi:
-                return False
+                return None
             branch = self.word(br_pc)
         if ((add & 0xFFE0FC00) != 0x8B000800 or bits(add, 5, 5) != base or
                 bits(add, 16, 5) != offset or (add & 31) != base or
                 branch != (0xD61F0000 | (base << 5))):
-            return False
+            return None
         entries = self.function_entries()
         i = bisect.bisect_right(entries, pc) - 1
         if i < 0:
-            return False
+            return None
         end = entries[i + 1] if i + 1 < len(entries) else self.hi
         if not (entries[i] <= target < end and br_pc + 4 <= end):
-            return False
-        # Bounded tables already have explicit destinations. Preserve their
-        # established partitioning; this fallback only repairs unresolved ones.
-        return self.jump_table(br_pc, entries[i], end) is None
+            return None
+        return br_pc, entries[i], end
+
+    def relative_table_base(self, pc, target):
+        """Whether this local arithmetic origin belongs to an unresolved table."""
+        origin = self.relative_table_origin(pc, target)
+        return origin is not None and self.jump_table(*origin) is None
 
     def code_address_targets(self):
         """Materialized callbacks, excluding proven local table arithmetic origins."""
         targets, adrp_regs = set(), {}
+        origins, unresolved_branches = [], {}
         for i, w in enumerate(self.words):
             pc = self.lo + i * 4
             if (w & 0x9F000000) == 0x10000000:  # ADR
                 imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
                 target = pc + imm
-                if self.in_text(target) and not self.relative_table_base(pc, target):
-                    targets.add(target)
+                if self.in_text(target):
+                    origin = self.relative_table_origin(pc, target)
+                    if origin is None:
+                        targets.add(target)
+                    else:
+                        destinations = self.jump_table(*origin)
+                        if destinations is None:
+                            unresolved_branches.setdefault(origin[1], []).append(origin[0])
+                        else:
+                            origins.append((target, origin[1], destinations))
             elif (w & 0x9F000000) == 0x90000000:  # ADRP
                 imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
                 adrp_regs[w & 31] = ((pc & ~0xFFF) + (imm << 12), i)
@@ -645,6 +657,15 @@ class Module:
                     target = adrp_regs[rn][0] + ((w >> 10) & 0xFFF)
                     if self.in_text(target):
                         targets.add(target)
+        # A bounded table can split a nested unresolved table, even when the
+        # latter's own origin is excluded. Suppress that outer arithmetic origin
+        # when its known case span contains an unresolved branch in the same
+        # real function. Keep disjoint bounded tables partitioned as before;
+        # independent references above (or symbols, relocations and BLs) still
+        # create entries. This does not infer the unresolved table's length.
+        targets.update(target for target, entry, destinations in origins
+                       if not any(min(destinations) <= pc <= max(destinations)
+                                  for pc in unresolved_branches.get(entry, ())))
         return targets
 
     def discover_functions(self, starts):
