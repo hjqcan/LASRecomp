@@ -125,6 +125,11 @@ revealed an empty clock-snapshot reply. The service now supplies the typed 0xD0
 snapshot and context-based variant, and distinguishes elapsed time from user
 clock changes in snapshot comparisons. Tests check calendar rollover, source
 UUIDs, network fallback, overflow rejection and output-buffer bounds.
+The close-window path now stops guest threads and drains pipeline jobs before
+the device-idle/cache-save exit handler. Previously both producers could still
+be active there. Cache saves also report their requested byte count and retain
+the previous file if host allocation fails. These changes require another
+normal-close check; the observed driver cache-read crash is not yet qualified.
 
 | Module | Guest base | Build ID |
 | --- | --- | --- |

@@ -14,6 +14,7 @@
 #include "../../ui/menu.h"
 #include "vk.h"
 #include "gpu_watchdog.h"
+#include "shader_jobs.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 #include "../pace.h"
@@ -328,7 +329,13 @@ void vk_pipeline_cache_save(void) {
     pthread_mutex_lock(&lock);
     size_t sz = 0;
     if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) == VK_SUCCESS && sz && sz != pcache_saved) {
+        LOG("[vk] pipeline cache: reading %zu bytes\n", sz);
         void *data = malloc(sz);
+        if (!data) {
+            LOG("[vk] pipeline cache: insufficient host memory; keeping the previous cache\n");
+            pthread_mutex_unlock(&lock);
+            return;
+        }
         if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, data) == VK_SUCCESS && shader_cache_write(PCACHE_FILE, data, sz)) {
             char tag[512];
             pipeline_cache_tag(tag, sizeof tag);
@@ -844,6 +851,11 @@ int ui_run(void) {
             if (e.type == SDL_EVENT_QUIT) {
                 input_rumble_stop();
                 LOG("window closed\n");
+                // The exit handler waits on the device and saves its cache.
+                // Finish guest submissions and host pipeline jobs first; device
+                // idle only waits for GPU work, not those producer threads.
+                kernel_stop_threads(NULL);
+                shader_jobs_drain();
                 plat_exit(0);
             }
             extern bool input_user_blocked(const SDL_Event *e);
