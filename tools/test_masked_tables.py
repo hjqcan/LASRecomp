@@ -109,7 +109,7 @@ class MaskedTableTests(unittest.TestCase):
                 self.assertEqual(mu.reg_read(A.UC_ARM64_REG_X0), 11 + (value & 3))
                 self.assertEqual(mu.reg_read(A.UC_ARM64_REG_Q10), 0x41300000)  # 11.0f
             entries, _ = m.discover_functions(m.boundaries())
-            source = ['#include <assert.h>', '#include <stdlib.h>', '#include "cpu.h"',
+            source = ['#include <assert.h>', '#include <stdlib.h>', '#include "cpu.h"', '#include "simd.h"',
                       '#ifdef _WIN32', '#include <windows.h>', '#else', '#include <sys/mman.h>', '#endif',
                       'volatile int g_fnprof;', 'void fnprof_hit(uint64_t a,uint64_t b,uint64_t d) {}',
                       'void rt_udf(Cpu *c,uint64_t pc) { abort(); }', 'void rt_dispatch(Cpu *c) { abort(); }']
