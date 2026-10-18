@@ -98,6 +98,16 @@ call/transfer barriers. Synthetic byte/halfword tables reproduce the former
 missing-target failure; both captured tables' complete target sets also match
 independently decoded table entries.
 
+The first rendered 3.0.1 screen reported an unsupported system date. The SDK's
+monotonic clock reads the 15.0.0+ continuous-adjustment point at time shared-memory
+offset `0xD0`; leaving it zero caused a clock-source mismatch and a failed time
+query. The service now initializes its two 0x38-byte slots with a matching source
+UUID and zero bounded adjustment, following the [public shared-memory layout](https://github.com/NextendoNetwork/Ryujinx-Nextendo/blob/2e6ff9ee8bc0072debd6584c3521586d1d4ab5ca/src/Ryujinx.HLE/HOS/Services/Time/TimeSharedMemory.cs).
+The production-service regression independently decodes both SDK layouts,
+checks local/network clock parity and 90-second progression, and rejects a
+mismatched UUID. It fails against the former uninitialized point. Actual
+gameplay and save/reopen checks are still required.
+
 | Module | Guest base | Build ID |
 | --- | --- | --- |
 | main | 0x7000000000 | 7fc1baff976aeca414520cb89f4616cb |

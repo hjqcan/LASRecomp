@@ -6,7 +6,8 @@ Service *service_new(const char *n, ServiceHandler h, void *s) { abort(); }
 void ipc_return_object(IpcResp *r, Service *s) { abort(); }
 KSharedMem *kernel_create_shared_memory(uint64_t n, void (*f)(KSharedMem *), uint32_t *h) { abort(); }
 uint32_t kernel_current_thread_handle(void) { return 1; }
-uint64_t rt_ticks(void) { return 0; }
+static uint64_t test_ticks = 19200000ull * 12345 + 9600000;
+uint64_t rt_ticks(void) { return test_ticks; }
 void rt_fatal_msg(const char *fmt, ...) { (void)fmt; abort(); }
 void rt_fatal_trace(void) { abort(); }
 void research_external(int kind, uint64_t pc, uint32_t thread, uint64_t index, uint64_t value) {
@@ -41,7 +42,59 @@ static IpcResp posix(const uint8_t *cal, uint8_t *rule, int64_t *out, size_t n) 
               .nc=1,.c={{(uintptr_t)out,n}}};
     return call(&q);
 }
+
+// SDK consumers select the sequence's active slot, then match its clock UUID.
+// Decode the ABI bytes independently of the service's writer.
+static uint64_t read64(const uint8_t *p) { uint64_t v; memcpy(&v,p,8); return v; }
+static const uint8_t *slot(const uint8_t *m, unsigned offset, unsigned size) {
+    uint32_t sequence; memcpy(&sequence,m+offset,4);
+    return m+offset+8+(sequence&1)*size;
+}
+static int read_clock(const uint8_t *m, unsigned offset, int modern, int64_t *out) {
+    const uint8_t *context=slot(m,offset,0x20);
+    int64_t ns=(int64_t)((__uint128_t)rt_ticks()*10000/192);
+    if (modern) {
+        const uint8_t *point=slot(m,0xd0,0x38);
+        if (memcmp(context+16,point+40,16)) return 0xcc74;
+        int64_t multiplier=(int64_t)read64(point+8);
+        int64_t adjustment=((ns-(int64_t)read64(point))*multiplier >> read64(point+16))
+                           +(int64_t)read64(point+24);
+        int64_t limit=(int64_t)read64(point+32);
+        if (multiplier<0 ? adjustment<limit : adjustment>limit) adjustment=limit;
+        ns+=adjustment;
+    } else {
+        const uint8_t *steady=slot(m,0,0x18);
+        if (memcmp(context+16,steady+8,16)) return 0xcc74;
+        ns+=(int64_t)read64(steady);
+    }
+    *out=(int64_t)read64(context)+ns/1000000000;
+    return 0;
+}
+static void shared_clock(void) {
+    _Alignas(8) uint8_t memory[0x1000]={0};
+    KSharedMem shared={.guest_addr=(uintptr_t)memory};
+    int64_t before=(int64_t)time(NULL), modern, legacy;
+    time_shmem_map(&shared);
+    for (unsigned offset=0x38;offset<=0x80;offset+=0x48) {
+        assert(!read_clock(memory,offset,0,&legacy));
+        assert(!read_clock(memory,offset,1,&modern));
+        assert(modern==legacy && modern>=before && modern<=(int64_t)time(NULL));
+        test_ticks+=19200000ull*90;
+        int64_t advanced;
+        assert(!read_clock(memory,offset,1,&advanced) && advanced==modern+90);
+        test_ticks-=19200000ull*90;
+        // Both slots contain a valid no-adjustment point on initial publication.
+        memory[0xd0]=1;
+        assert(!read_clock(memory,offset,1,&advanced) && advanced==modern);
+        memory[0xd0]=0;
+        memory[0xd8+40]^=1;
+        advanced=123;
+        assert(read_clock(memory,offset,1,&advanced)==0xcc74 && advanced==123);
+        memory[0xd8+40]^=1;
+    }
+}
 int main(void) {
+    shared_clock();
     zone("CST-8");
     memset(local_rule,0xcc,sizeof local_rule);
     IpcReq q={.cmd=0}; IpcResp r=call(&q);
@@ -76,5 +129,5 @@ int main(void) {
     uint8_t autumn[8]={0xe8,0x07,11,3,1,30,0,0};
     r=posix(spring,local_rule,out,16); assert(!r.result && !*(uint32_t *)r.data);
     r=posix(autumn,local_rule,out,16); assert(!r.result && *(uint32_t *)r.data==2 && out[1]-out[0]==3600 && out[2]==77);
-    puts("PASS: timezone IPC rules, local/UTC parity, leap-day rollover, 64-bit dates, DST gaps/folds and buffer bounds");
+    puts("PASS: legacy/modern shared clocks, clock UUIDs, advancing time, timezone IPC rules, local/UTC parity, leap-day rollover, 64-bit dates, DST gaps/folds and buffer bounds");
 }

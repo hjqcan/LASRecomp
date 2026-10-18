@@ -58,6 +58,19 @@ static void time_shmem_map(KSharedMem *s) {
     // 0xC8 automatic correction enabled
     *(uint32_t *)(m + 0xC8) = 0;
     m[0xCC] = 0;
+    // 15.0.0+ SDKs use this 0x38-byte ContinuousAdjustmentTimePoint instead of
+    // SteadyClockContext. A positive slope clamped at zero represents no clock
+    // correction. Its source UUID must match both SystemClockContexts above.
+    // Publish both slots before the guest can read the initial sequence (zero).
+    memset(m + 0xD0, 0, 8 + 2 * 0x38);
+    uint64_t now_ns = (uint64_t)((__uint128_t)rt_ticks() * 10000 / 192);
+    for (unsigned i = 0; i < 2; i++) {
+        uint8_t *point = m + 0xD8 + i * 0x38;
+        memcpy(point, &now_ns, 8);                  // ClockOffset, nanoseconds
+        *(int64_t *)(point + 8) = 1;                // Multiplier
+        // DivisorLog2, Context.Offset and Context.SteadyTimePoint are zero.
+        memcpy(point + 0x28, clock_uuid, 16);
+    }
 }
 
 static void system_clock(Service *s, IpcReq *req, IpcResp *resp) {
