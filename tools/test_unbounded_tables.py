@@ -91,6 +91,19 @@ class UnboundedTableTests(unittest.TestCase):
         self.assertFalse(m.relative_table_base(BASE + 4, BASE + 0x90))
         self.assertIn(BASE + 0x90, m.code_address_targets())
 
+    def test_scheduled_return_clear_preserves_branch_register(self):
+        for clear in (0xAA1F03E0, 0x2A1F03E0):  # mov x0/w0,zr
+            m = module()
+            replace_word(m, 16, clear); replace_word(m, 20, 0xD61F0140)
+            self.assertTrue(m.relative_table_base(BASE + 4, BASE + 0x30))
+            entries, _ = m.discover_functions(m.boundaries())
+            self.assertNotIn(BASE + 0x30, entries)
+            self.assertEqual(entries[BASE][2][BASE + 20], 'all')
+        for operation in (0xAA1F03EA, 0x2A1F03EA, 0xF900002A):  # clear target / store target
+            m = module()
+            replace_word(m, 16, operation); replace_word(m, 20, 0xD61F0140)
+            self.assertFalse(m.relative_table_base(BASE + 4, BASE + 0x30))
+
     def test_bounded_table_keeps_existing_partition(self):
         m = module()
         # cmp w8,#2; b.hi default; adr x9,table; adr x10,base; ldrh; add; br.
@@ -104,8 +117,11 @@ class UnboundedTableTests(unittest.TestCase):
         self.assertIn(BASE + 0x30, m.code_address_targets())
 
     def test_generated_native_execution_matches_arm64(self):
-        for byte_table in (False, True):
+        for byte_table, clear in ((False, None), (True, None), (False, 0xAA1F03E0),
+                                  (True, 0xAA1F03E0), (False, 0x2A1F03E0), (True, 0x2A1F03E0)):
             m = module(byte_table)
+            if clear is not None:
+                replace_word(m, 16, clear); replace_word(m, 20, 0xD61F0140)
             expected = []
             mu = uc.Uc(uc.UC_ARCH_ARM64, uc.UC_MODE_ARM)
             mu.mem_map(BASE, 0x4000); mu.mem_write(BASE, bytes(m.nso.image))
@@ -117,7 +133,7 @@ class UnboundedTableTests(unittest.TestCase):
                 mu.emu_start(BASE, BASE + 0x1000, count=100)
                 self.assertEqual(mu.reg_read(A.UC_ARM64_REG_PC), BASE + 0x1000)
                 expected.append(mu.reg_read(A.UC_ARM64_REG_X0))
-            self.assertEqual(expected, [11, 12, 13])
+            self.assertEqual(expected, [11, 12, 13] if clear is None else [1, 2, 3])
             entries, _ = m.discover_functions(m.boundaries())
             source = ['#include <assert.h>', '#include <stdlib.h>', '#include "cpu.h"',
                       'volatile int g_fnprof;', 'void fnprof_hit(uint64_t a,uint64_t b,uint64_t d) {}',
@@ -131,7 +147,7 @@ class UnboundedTableTests(unittest.TestCase):
                        '    for (unsigned index=0;index<3;index++) {',
                        '        Cpu c={0}; c.x[0]=10; c.x[8]=index; c.x[9]=(uintptr_t)offsets;',
                        '        c.x[30]=0x1234; c.sp=0x8000;', f'        f_{BASE:x}(&c);',
-                       '        assert(c.x[0]==11+index && c.sp==0x8000 && c.x[30]==0x1234);',
+                       f'        assert(c.x[0]=={11 if clear is None else 1}+index && c.sp==0x8000 && c.x[30]==0x1234);',
                        '    }', '    return 0;', '}']
             with tempfile.TemporaryDirectory() as directory:
                 path = Path(directory); file = path / 'case.c'

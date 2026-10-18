@@ -508,6 +508,14 @@ class Module:
         offset = load & 31
         if offset == 31 or base in (offset, bits(load, 5, 5), bits(load, 16, 5)):
             return False
+        br_pc = pc + 12
+        # A return-value clear can be scheduled between the target calculation
+        # and its branch. It has no side effects and must not overwrite Xbase.
+        if (branch & 0x7FFFFFE0) == 0x2A1F03E0 and (branch & 31) != base:
+            br_pc += 4
+            if br_pc + 4 > self.hi:
+                return False
+            branch = self.word(br_pc)
         if ((add & 0xFFE0FC00) != 0x8B000800 or bits(add, 5, 5) != base or
                 bits(add, 16, 5) != offset or (add & 31) != base or
                 branch != (0xD61F0000 | (base << 5))):
@@ -517,11 +525,11 @@ class Module:
         if i < 0:
             return False
         end = entries[i + 1] if i + 1 < len(entries) else self.hi
-        if not (entries[i] <= target < end and pc + 16 <= end):
+        if not (entries[i] <= target < end and br_pc + 4 <= end):
             return False
         # Bounded tables already have explicit destinations. Preserve their
         # established partitioning; this fallback only repairs unresolved ones.
-        return self.jump_table(pc + 12, entries[i], end) is None
+        return self.jump_table(br_pc, entries[i], end) is None
 
     def code_address_targets(self):
         """Materialized callbacks, excluding proven local table arithmetic origins."""
