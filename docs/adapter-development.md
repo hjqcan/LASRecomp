@@ -97,8 +97,10 @@ at missing implementations. The old `ACNH_STRICT_*` names remain aliases.
 Use a new game's failures to improve the shared subsystem and add synthetic
 regressions that do not depend on that game's assets or addresses. For example,
 `cpu.jump_tables: low_mask_relative` resolves masked byte/halfword tables even
-when vector work is scheduled before the branch; it rejects clobbered registers
-and control-flow paths that bypass the mask. An unsupported capability such as
+when vector work is scheduled before the branch. Multiple tables in one function
+must all have a local proof, and no incoming branch, callback, relocation or
+table case may bypass any member's mask or address setup. The group is bounded
+to 16 branches and each setup to 64 instructions. An unsupported capability such as
 `gpu.surface_write: store_reduce` stays visible as unavailable instead of being
 silently skipped. Declaring or implementing one capability does not qualify the
 whole game.

@@ -745,6 +745,30 @@ development workloads overlapped parts of the batch, so the durations are not
 a performance comparison. It does not establish a full playthrough, updated
 randomizer parity, Z-A readiness or prerelease qualification.
 
+## Masked-table groups after the e330462 merge
+
+Official `beta_5` through `e330462` is merged directly into `enhanced` as
+`78de0e7`; all six workflows pass, including Windows, Linux and macOS CI.
+The merged runtime still reproduced the strict CPU stop at `main+0x1cfe57c`.
+
+The shared generator now proves a complete group of up to 16 masked relative
+tables within one function. Each branch needs its own bounded index and all
+address dependencies within a straight-line window of at most 64 instructions.
+Direct branches, callback materializations and relocations from the whole
+module are collected before table analysis. Every table case is then checked
+against every member's setup. An unknown peer or an entry bypassing any mask or
+address definition rejects the group. Function discovery also invalidates peer
+proofs when another table introduces a new independent entry in a later round.
+The algorithm contains no game-specific addresses.
+
+All 46 table and fragment regressions pass. The new cases cover two/four-table
+groups, invalid peers, self-edges, external callbacks/calls/relocations, late
+entries and the group-size limit. Twelve native fixtures (one/two/four tables,
+byte/halfword entries and 32/64-bit masks) match ARM64 Unicorn execution for
+ten inputs, including register, stack, return-address and floating-point state.
+The fresh Windows helper passes catalog/receipt checks and actual Unicorn JIT
+generation. These checks establish the supported pattern, not Z-A playability.
+
 ## Reproduction
 
 Use a fresh local directory outside the checkout for inventories and modules:
@@ -763,6 +787,7 @@ python tools/test_game_catalog.py -v
 python tools/test_adapter_contract.py -v
 python tools/test_exclusive_pairs.py -v
 python tools/test_relr.py -v
+python tools/test_masked_tables.py -v
 python tools/test_sdk_start.py
 python tools/test_kernel_info.py
 python tools/test_kernel_memory.py

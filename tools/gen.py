@@ -151,11 +151,47 @@ class Module:
         return r
 
     def _jump_table_masked(self, br_pc, entry):
+        plan = self._masked_table_plan(br_pc, entry)
+        if plan is None:
+            return None
+        owner, end, _, _, _, _ = plan
+        branches = []
+        for pc in range(owner, end, 4):
+            if (self.word(pc) & 0xFFFFFC1F) == 0xD61F0000:
+                branches.append(pc)
+                if len(branches) > 16:
+                    return None  # bound the all-branches proof and its emulation work
+        _, incoming = self.code_references()
+        plans, tables = {}, {}
+        for branch in branches:
+            local = plan if branch == br_pc else self._masked_table_plan(branch, owner)
+            if local is None or local[:2] != (owner, end):
+                return None  # an unknown peer branch could bypass any table's setup
+            _, _, start, mask, reg, count = local
+            if bisect.bisect_right(incoming, start) != bisect.bisect_right(incoming, branch):
+                return None
+            discovered = getattr(self, '_discovery_entries', ())
+            if bisect.bisect_right(discovered, start) != bisect.bisect_right(discovered, branch):
+                return None
+            targets = self._slice_table(branch, owner, mask + 4, [reg], count, slice_start=start)
+            if targets is None:
+                return None
+            plans[branch], tables[branch] = local, targets
+        # Check the complete group before accepting any member. This includes
+        # self-edges: a case cannot re-enter after the mask or address setup.
+        for targets in tables.values():
+            for branch, local in plans.items():
+                if any(local[2] < target <= branch for target in targets):
+                    return None
+        return tables.get(br_pc)
+
+    def _masked_table_plan(self, br_pc, entry):
         """A low-bit AND bounds a relative table even without a CMP/branch guard.
 
         Scheduling may put unrelated SIMD work between target calculation and
         BR. Verify real GPR writes, not instruction destination bit fields,
-        which alias vector registers. Calls and control-flow joins are barriers.
+        which alias vector registers. Return a local proof to be checked against
+        every incoming edge before using its targets.
         """
         target_reg = bits(self.word(br_pc), 5, 5)
         start = max(self.materialization_start(entry), br_pc - 64 * 4)
@@ -210,22 +246,16 @@ class Module:
             if owner < 0 or ins.address < entries[owner]:
                 return None
             end = entries[owner + 1] if owner + 1 < len(entries) else self.hi
-            for pc in range(entries[owner], end, 4):
-                w, target = self.word(pc), None
-                if (w & 0x7C000000) == 0x14000000:  # B / BL
-                    target = pc + sext26(w) * 4
-                elif ((w & 0xFF000010) == 0x54000000 or  # B.cond / CBZ / CBNZ
-                      (w & 0x7E000000) == 0x34000000):
-                    target = pc + sext(bits(w, 5, 19), 19) * 4
-                elif (w & 0x7E000000) == 0x36000000:  # TBZ / TBNZ
-                    target = pc + sext(bits(w, 5, 14), 14) * 4
-                elif pc != br_pc and (w & 0xFFFFFC1F) == 0xD61F0000:
-                    return None  # another indirect branch has unknown incoming edges
-                if target is not None and ins.address < target <= br_pc:
-                    return None
-            # Skip the mask and seed its proved output range. The existing
-            # backward slice evaluates only dependencies of the branch target.
-            return self._slice_table(br_pc, entry, ins.address + 4, [index_reg], mask + 1)
+            # Every dependency must be defined in this straight-line segment,
+            # including the table address. An entry at AND that skips an earlier
+            # ADR/ADRP is no safer than an entry that skips the mask itself.
+            straight = max(start, entry, entries[owner])
+            for previous in instructions:
+                if previous.address >= ins.address:
+                    break
+                if barrier(previous):
+                    straight = max(straight, previous.address + 4)
+            return entries[owner], end, straight, ins.address, index_reg, mask + 1
         return None
 
     def _index_regs(self, start, at, idx):
@@ -590,7 +620,7 @@ class Module:
                     recomputed[ins.address] = rd
         return aliases, recomputed, projected
 
-    def _slice_table(self, br_pc, entry, cmp, idx_regs, count, index_defs=None):
+    def _slice_table(self, br_pc, entry, cmp, idx_regs, count, index_defs=None, slice_start=None):
         """Evaluate only definitions used by the table target.
 
         Object reads can be scheduled between the guard and the lookup. They
@@ -600,7 +630,7 @@ class Module:
         """
         md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
         md.detail = True
-        start = self.materialization_start(entry)
+        start = self.materialization_start(entry) if slice_start is None else slice_start
         data = bytes(self.nso.image[start-self.base:br_pc-self.base])
         instructions = list(md.disasm(data, start))
         if not instructions or instructions[-1].address + 4 != br_pc:
@@ -720,25 +750,25 @@ class Module:
         origin = self.relative_table_origin(pc, target)
         return origin is not None and self.jump_table(*origin) is None
 
-    def code_address_targets(self):
-        """Materialized callbacks, excluding proven local table arithmetic origins."""
-        targets, adrp_regs = set(), {}
-        origins, unresolved_branches = [], {}
+    def code_references(self):
+        """Raw address references and incoming edges, without resolving tables.
+
+        Build this inventory first: a peer table's setup must also be protected
+        from callbacks, relocations and branches in other functions. Keeping
+        table emulation out of this pass avoids recursive proof dependencies.
+        Module instructions and relocations are immutable during discovery.
+        """
+        if (getattr(self, '_references_words', None) is self.words and
+                getattr(self, '_references_relocs', None) is self.nso.relocs):
+            return self._references
+        references, adrp_regs, incoming = {}, {}, set()
         for i, w in enumerate(self.words):
             pc = self.lo + i * 4
             if (w & 0x9F000000) == 0x10000000:  # ADR
                 imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
                 target = pc + imm
                 if self.in_text(target):
-                    origin = self.relative_table_origin(pc, target)
-                    if origin is None:
-                        targets.add(target)
-                    else:
-                        destinations = self.jump_table(*origin)
-                        if destinations is None:
-                            unresolved_branches.setdefault(origin[1], []).append(origin[0])
-                        else:
-                            origins.append((target, origin[1], destinations))
+                    references[pc] = target
             elif (w & 0x9F000000) == 0x90000000:  # ADRP
                 imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
                 adrp_regs[w & 31] = ((pc & ~0xFFF) + (imm << 12), i)
@@ -747,7 +777,38 @@ class Module:
                 if rn in adrp_regs and i - adrp_regs[rn][1] <= 8:
                     target = adrp_regs[rn][0] + ((w >> 10) & 0xFFF)
                     if self.in_text(target):
-                        targets.add(target)
+                        references[pc] = target
+            target = None
+            if (w & 0x7C000000) == 0x14000000:  # B / BL
+                target = pc + sext26(w) * 4
+            elif ((w & 0xFF000010) == 0x54000000 or
+                  (w & 0x7E000000) == 0x34000000):  # B.cond / CBZ / CBNZ
+                target = pc + sext(bits(w, 5, 19), 19) * 4
+            elif (w & 0x7E000000) == 0x36000000:  # TBZ / TBNZ
+                target = pc + sext(bits(w, 5, 14), 14) * 4
+            if target is not None and self.in_text(target):
+                incoming.add(target)
+        incoming.update(references.values())
+        incoming.update(self.base + add for off, typ, sym, add in self.nso.relocs
+                        if typ == R_AARCH64_RELATIVE and self.in_text(self.base + add))
+        self._references = references, sorted(incoming)
+        self._references_words, self._references_relocs = self.words, self.nso.relocs
+        return self._references
+
+    def code_address_targets(self):
+        """Materialized callbacks, excluding proven local table arithmetic origins."""
+        targets, origins, unresolved_branches = set(), [], {}
+        references, _ = self.code_references()
+        for pc, target in references.items():
+            origin = self.relative_table_origin(pc, target)
+            if origin is None:
+                targets.add(target)
+            else:
+                destinations = self.jump_table(*origin)
+                if destinations is None:
+                    unresolved_branches.setdefault(origin[1], []).append(origin[0])
+                else:
+                    origins.append((target, origin[1], destinations))
         # A bounded table can split a nested unresolved table, even when the
         # latter's own origin is excluded. Suppress that outer arithmetic origin
         # when its known case span contains an unresolved branch in the same
@@ -761,7 +822,9 @@ class Module:
 
     def discover_functions(self, starts):
         """Partition text at independently referenced entries to a fixed point."""
-        start_set = set(starts) | self.code_address_targets()
+        start_set = set(starts)
+        self._discovery_entries = sorted(start_set)
+        start_set |= self.code_address_targets()
         for i, w in enumerate(self.words):
             if (w & 0xFC000000) == 0x94000000:
                 target = self.lo + i * 4 + sext26(w) * 4
@@ -771,6 +834,7 @@ class Module:
         while True:
             rounds += 1
             order, new = sorted(start_set), set()
+            self._discovery_entries = order
             for i, entry in enumerate(order):
                 end = order[i + 1] if i + 1 < len(order) else self.hi
                 key = (entry, end)
@@ -779,6 +843,18 @@ class Module:
                 new |= scanned[key][1] - start_set
             if not new:
                 break
+            # A newly discovered case can independently enter a peer's setup.
+            # Recheck all fragments of that real function, including cached
+            # scans whose own entry/end did not change in this round.
+            owners = self.function_entries()
+            affected = {bisect.bisect_right(owners, target) - 1 for target in new}
+            ranges = sorted((owners[i], owners[i + 1] if i + 1 < len(owners) else self.hi)
+                            for i in affected if i >= 0)
+            range_starts = [start for start, end in ranges]
+            def unaffected(key):
+                i = bisect.bisect_left(range_starts, key[1]) - 1
+                return i < 0 or ranges[i][1] <= key[0]
+            scanned = {key: value for key, value in scanned.items() if unaffected(key)}
             start_set |= new
         entries = {}
         for i, entry in enumerate(order):
