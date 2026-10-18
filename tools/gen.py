@@ -25,7 +25,7 @@ import capstone
 from unicorn import arm64_const as A
 
 from analyze import eh_frame_functions
-from lifter import Insn, Lifter, Unsupported, bits, emit_asm_batch, hx, sext
+from lifter import Insn, Lifter, Unsupported, bits, decode_bit_masks, emit_asm_batch, hx, sext
 from nso import Nso, R_AARCH64_RELATIVE
 
 SCRATCH_MEM = 0x7300000000
@@ -248,11 +248,14 @@ class Module:
 
     def _jump_table_fallthrough(self, br_pc, entry, end):
         rn = bits(self.word(br_pc), 5, 5)
-        # find the guarding b.hi / b.hs and its cmp, scanning backwards
+        # ADR can materialize its own table origin, splitting this fragment
+        # after its guard. Search inside the real function, as for taken guards;
+        # the bounded window and control-flow barriers still apply.
+        analysis_start = self.materialization_start(entry)
         a = br_pc - 4
         guard = cmp = None
         conditional_cmp = False
-        while a >= entry and br_pc - a <= 4 * 16:
+        while a >= analysis_start and br_pc - a <= 4 * 16:
             w = self.word(a)
             if (w & 0xFF000010) == 0x54000000 and bits(w, 0, 4) in (8, 2):
                 guard = a
@@ -263,7 +266,7 @@ class Module:
         if guard is None:
             return None
         a = guard - 4
-        while a >= entry and guard - a <= 4 * 8:
+        while a >= analysis_start and guard - a <= 4 * 8:
             w = self.word(a)
             # SUBS (imm) with Rd = zr, i.e. CMP #imm
             if (w & 0x7F80001F) == 0x7100001F:
@@ -281,6 +284,15 @@ class Module:
             if self.lift(a).kind != 'op':
                 break
             a -= 4
+        if cmp is not None and cmp + 4 < guard:
+            # The linear fast path must use the last NZCV definition. Other
+            # arithmetic can overwrite flags without being a supported CMP.
+            md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+            md.detail = True
+            between = list(md.disasm(bytes(self.nso.image[cmp+4-self.base:guard-self.base]), cmp + 4))
+            if len(between) != (guard - cmp - 4) // 4 or any(
+                    any(ins.reg_name(r) == 'nzcv' for r in ins.regs_access()[1]) for ins in between):
+                return None
         if cmp is None:
             cmp = self._reaching_flags_definition(guard, entry)
             if cmp is None: return None
@@ -301,11 +313,19 @@ class Module:
         if count <= 0 or count > 4096:
             return None
         idx = bits(w, 5, 5)
+        if idx == 31:
+            return None  # SP/ZR is not a bounded table index register.
         # window start: back from cmp to the first control-flow instruction
         start = cmp
-        while start - 4 >= entry and cmp - (start - 4) <= 4 * 12 and self.lift(start - 4).kind in ('op', 'asm'):
+        while start - 4 >= analysis_start and cmp - (start - 4) <= 4 * 12 and self.lift(start - 4).kind in ('op', 'asm'):
             start -= 4
         idx_regs = self._index_regs(start, cmp, idx)
+        aliases, recomputed, projected = self._guard_index_values(entry, cmp, br_pc, idx)
+        if projected or recomputed:
+            # Seed only values proved equal to the bounded expression. Replaying
+            # an unknown object/source register can otherwise collapse every
+            # table entry onto the same target and silently omit valid cases.
+            return self._slice_table(br_pc, entry, cmp, aliases, count, recomputed)
         if conditional_cmp:
             aliases = self._surviving_index_aliases(entry, cmp, idx)
             return self._slice_table(br_pc, entry, cmp, aliases, count)
@@ -425,7 +445,72 @@ class Module:
             if old is not None and rd < 31: values[rd] = old
         return [r for r in range(31) if values[r] == values[idx]]
 
-    def _slice_table(self, br_pc, entry, cmp, idx_regs, count):
+    def _guard_index_values(self, entry, cmp, br_pc, idx):
+        """Known copies and AND masks equal to the value tested by the guard.
+
+        Register versions distinguish values overwritten by calls or later
+        instructions. Identical masks can be recomputed from a callee-saved
+        source after the guard without treating that unmasked source as bounded.
+        """
+        md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+        md.detail = True
+        start = self.materialization_start(entry)
+        values = [('input', r) for r in range(31)]
+        aliases, recomputed, guarded, projected = [], {}, None, False
+        full = (1 << 64) - 1
+        instructions = list(md.disasm(bytes(self.nso.image[start-self.base:br_pc-self.base]), start))
+        block_starts = {start}
+        for ins in instructions:
+            flow = self.lift(ins.address)
+            if flow.kind in ('b', 'bcond'):
+                block_starts.add(flow.target)
+            if flow.kind in ('b', 'bcond', 'br', 'ret', 'trap'):
+                block_starts.add(ins.address + 4)
+
+        def masked(value, mask):
+            if value[0] == 'mask': value, mask = value[1], value[2] & mask
+            if mask == full: return value
+            return ('mask', value, mask)
+
+        for ins in instructions:
+            if ins.address <= cmp and ins.address in block_starts:
+                # Facts from one predecessor need not hold on another. Only
+                # keep value identities within a straight-line block; calls
+                # retain the ABI-preserved registers handled below.
+                values = [('block', ins.address, r) for r in range(31)]
+            w = self.word(ins.address)
+            if ins.address == cmp:
+                width = full if w >> 31 else 0xFFFFFFFF
+                guarded = masked(values[idx], width)
+                aliases = [r for r in range(31) if values[r] == guarded]
+                projected = guarded[0] == 'mask' and guarded[2] != width
+            rd, value = w & 31, None
+            source = bits(w, 5, 5)
+            if (w & 0x7FE0FFE0) == 0x2A0003E0:  # MOV register (unshifted ORR with zr)
+                source = bits(w, 16, 5)
+                if source < 31:
+                    value = masked(values[source], full if w >> 31 else 0xFFFFFFFF)
+            elif (w & 0x7F800000) == 0x12000000 and source < 31:  # AND immediate
+                size = 64 if w >> 31 else 32
+                try:
+                    if size == 32 and bits(w, 22, 1): raise Unsupported('reserved mask')
+                    mask, _ = decode_bit_masks(bits(w, 22, 1), bits(w, 10, 6), bits(w, 16, 6), size, True)
+                    value = masked(values[source], mask)
+                except Unsupported:
+                    pass
+            for reg in ins.regs_access()[1]:
+                name = {'fp': 'x29', 'lr': 'x30'}.get(ins.reg_name(reg), ins.reg_name(reg))
+                if name[:1] in ('w', 'x') and name[1:].isdigit() and int(name[1:]) < 31:
+                    values[int(name[1:])] = ('write', ins.address, int(name[1:]))
+            if ins.group(capstone.CS_GRP_CALL):
+                for r in list(range(19)) + [30]: values[r] = ('call', ins.address, r)
+            if value is not None and rd < 31:
+                values[rd] = value
+                if guarded is not None and ins.address > cmp and value == guarded:
+                    recomputed[ins.address] = rd
+        return aliases, recomputed, projected
+
+    def _slice_table(self, br_pc, entry, cmp, idx_regs, count, index_defs=None):
         """Evaluate only definitions used by the table target.
 
         Object reads can be scheduled between the guard and the lookup. They
@@ -449,6 +534,7 @@ class Module:
         rn = bits(self.word(br_pc), 5, 5)
         needed = {f'x{rn}'}
         seeds = {f'x{r}' for r in idx_regs}
+        index_defs = index_defs or {}
         selected = []
         for ins in reversed(instructions):
             if ins.address < cmp:
@@ -456,6 +542,10 @@ class Module:
             reads, writes = ins.regs_access()
             written = {register_name(ins, r) for r in writes}
             if not written.intersection(needed):
+                continue
+            if ins.address in index_defs:
+                needed.difference_update(written)
+                selected.append(ins.address)
                 continue
             if any(ins.group(g) for g in (capstone.CS_GRP_JUMP, capstone.CS_GRP_CALL, capstone.CS_GRP_RET)):
                 return None
@@ -479,7 +569,10 @@ class Module:
                     if pc >= cmp and not seeded:
                         self._set_index(mu, idx_regs, i)
                         seeded = True
-                    mu.emu_start(pc, 0, count=1)
+                    if pc in index_defs:
+                        self._set_index(mu, [index_defs[pc]], i)
+                    else:
+                        mu.emu_start(pc, 0, count=1)
                 reg = A.UC_ARM64_REG_X0 + rn if rn < 29 else (A.UC_ARM64_REG_X29 if rn == 29 else A.UC_ARM64_REG_X30)
                 target = mu.reg_read(reg)
                 if not self.in_text(target): return None
