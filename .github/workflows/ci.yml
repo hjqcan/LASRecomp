@@ -118,6 +118,7 @@ jobs:
           tools/venv/bin/python tools/test_relr.py
           tools/venv/bin/python tools/test_gnu_hash.py
           tools/venv/bin/python tools/test_generator_memory.py
+          tools/venv/bin/python tools/test_large_dispatch.py
           tools/venv/bin/python tools/test_cross_fragment_tables.py
           tools/venv/bin/python tools/test_unbounded_tables.py
           tools/venv/bin/python tools/test_fragment_guard.py
@@ -166,6 +167,7 @@ jobs:
           build/exclusive-test-env/bin/python tools/test_relr.py
           build/exclusive-test-env/bin/python tools/test_gnu_hash.py
           build/exclusive-test-env/bin/python tools/test_generator_memory.py
+          build/exclusive-test-env/bin/python tools/test_large_dispatch.py
           build/exclusive-test-env/bin/python tools/test_cross_fragment_tables.py
           build/exclusive-test-env/bin/python tools/test_unbounded_tables.py
           build/exclusive-test-env/bin/python tools/test_fragment_guard.py
@@ -257,6 +259,7 @@ jobs:
           build/jump-test-env/Scripts/python.exe tools/test_relr.py
           build/jump-test-env/Scripts/python.exe tools/test_gnu_hash.py
           build/jump-test-env/Scripts/python.exe tools/test_generator_memory.py
+          build/jump-test-env/Scripts/python.exe tools/test_large_dispatch.py
           build/jump-test-env/Scripts/python.exe tools/test_cross_fragment_tables.py
           build/jump-test-env/Scripts/python.exe tools/test_unbounded_tables.py
           build/jump-test-env/Scripts/python.exe tools/test_fragment_guard.py

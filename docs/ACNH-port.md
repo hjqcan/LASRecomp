@@ -49,6 +49,16 @@ regressions cover control flow, nonlocal continuations and unique unsupported
 instruction counts. `LARECOMP_BUILD_JOBS=1..64` can limit build concurrency when
 other applications need memory. An interrupted build keeps completed objects
 for the normal Resume action.
+One 3.0.1 function has 19,701 instruction labels and an every-instruction
+fallback dispatch. LLVM optimization of this dense control-flow graph crossed
+a 4 GiB guard even when compiled alone. Functions with this fallback and more
+than 8,192 guest instructions now use Clang's `optnone` attribute. Their emitted
+operations and valid entry targets remain intact; smaller functions retain
+normal optimization. The isolated failing unit compiled with about 0.62 GiB
+of sampled private memory after this change. A native synthetic regression
+enters an 8,193-instruction graph at several points, checks wrapping arithmetic
+and rejects invalid targets through the existing dispatcher. This compiler
+memory result does not establish gameplay compatibility or performance.
 
 | Module | Guest base | Build ID |
 | --- | --- | --- |

@@ -49,6 +49,10 @@ class Module:
     # Scan and emission revisit instructions, but retaining every lifted C string
     # costs several GB on large modules. Eviction only repeats pure decoding.
     LIFT_CACHE_LIMIT = 65536
+    # Every-instruction dispatch produces a very dense CFG. LLVM's optimization
+    # of its thousands of incoming edges can exhaust memory on an otherwise
+    # small C file. Keep that rare fallback exact, with bounded compilation.
+    MAX_OPTIMIZED_DISPATCH_INSNS = 8192
 
     def __init__(self, name, path, base, simd='asm'):
         self.name = name
@@ -887,6 +891,8 @@ class Module:
             out.append(f'    {sanitize(hle[entry])}(c);')
             out.append('}')
             return out
+        if tables and (end - entry) // 4 > self.MAX_OPTIMIZED_DISPATCH_INSNS:
+            out.insert(0, '__attribute__((optnone))')
         out.append(f'    FN_ENTER({hx(entry)});')
         setjmps, longjmps = self.nonlocal_jump_targets()
         checkpoints = {a for a in range(entry, end, 4) if setjmps and
