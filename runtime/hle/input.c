@@ -17,6 +17,8 @@
 #include "../research.h"
 #include "../input_bind.h"
 #include "../coop.h"
+#include "../rumble.h"
+#include "../ui/menu.h"
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -34,12 +36,93 @@ static SDL_Gamepad *pad2;
 static bool second_focused=true;
 static bool second_text_key;
 static _Atomic int64_t sampling;
+static bool host_test;  // scripted runs must not vibrate the user's controller
+
+// Guest IPC threads publish values; only the UI thread touches SDL's pad.
+// The lock also makes paired value snapshots consistent with permission/reset.
+static SDL_SpinLock rumble_lock;
+static RumbleValue rumble_values[2];
+static bool rumble_allowed = true;
+static _Atomic uint64_t rumble_frame_ms;
+static uint16_t rumble_last_lo, rumble_last_hi;
+static uint64_t rumble_last_ms;
+static bool rumble_warned;
+
+static void rumble_clear(void) {
+    SDL_LockSpinlock(&rumble_lock);
+    memset(rumble_values, 0, sizeof rumble_values);
+    SDL_UnlockSpinlock(&rumble_lock);
+}
+void input_rumble_send(uint32_t h, const RumbleValue *v) {
+    int side = rumble_side(h);
+    SDL_LockSpinlock(&rumble_lock);
+    if (side < 0) { SDL_UnlockSpinlock(&rumble_lock); return; }
+    if (rumble_allowed) rumble_values[side] = *v;
+    SDL_UnlockSpinlock(&rumble_lock);
+}
+RumbleValue input_rumble_get(uint32_t h) {
+    RumbleValue v = {0, 160, 0, 320};
+    int side = rumble_side(h);
+    SDL_LockSpinlock(&rumble_lock);
+    if (side >= 0 && rumble_allowed) v = rumble_values[side];
+    SDL_UnlockSpinlock(&rumble_lock);
+    return v;  // requested value, not physical motor feedback
+}
+void input_rumble_permit(bool allowed) {
+    SDL_LockSpinlock(&rumble_lock);
+    rumble_allowed = allowed;
+    if (!allowed) memset(rumble_values, 0, sizeof rumble_values);
+    SDL_UnlockSpinlock(&rumble_lock);
+}
+bool input_rumble_permitted(void) {
+    SDL_LockSpinlock(&rumble_lock);
+    bool allowed = rumble_allowed;
+    SDL_UnlockSpinlock(&rumble_lock);
+    return allowed;
+}
+void input_rumble_poll(void) {
+    uint64_t now = SDL_GetTicks();
+    uint64_t last_frame = atomic_load(&rumble_frame_ms);
+    uint16_t lo = 0, hi = 0;
+    // Switch values are latched until changed: they contain no duration.
+    // Renew SDL's 250 ms effect every 100 ms while frames are progressing.
+    // A stalled render/UI thread therefore cannot leave an infinite effect.
+    // This watchdog is a host policy, not a duration supplied by the game.
+    bool suppress = (now > last_frame && now - last_frame > 250) || !pad || host_test || !g_settings.rumble || menu_is_open() ||
+                    !SDL_GetKeyboardFocus();
+    SDL_LockSpinlock(&rumble_lock);
+    if (suppress) memset(rumble_values, 0, sizeof rumble_values);
+    else if (rumble_allowed) {
+        rumble_mix(rumble_values, &lo, &hi);
+        int pct = g_settings.rumble_strength;  // (Controls tab: Intensity)
+        if (pct > 0 && pct < 100) lo = (uint16_t)(lo * pct / 100), hi = (uint16_t)(hi * pct / 100);
+    }
+    SDL_UnlockSpinlock(&rumble_lock);
+    if (pad && (lo != rumble_last_lo || hi != rumble_last_hi ||
+                ((lo || hi) && now - rumble_last_ms >= 100))) {
+        if (!SDL_RumbleGamepad(pad, lo, hi, (lo || hi) ? 250 : 0) && !rumble_warned) {
+            LOG("[rumble] unavailable: %s\n", SDL_GetError());
+            rumble_warned = true;  // keyboard/non-rumble pads are still usable
+        }
+        rumble_last_ms = now;
+    }
+    rumble_last_lo = lo; rumble_last_hi = hi;
+}
+void input_rumble_stop(void) {  // UI thread: also called before normal app exit
+    rumble_clear();
+    atomic_store(&rumble_frame_ms, 0);
+    if (pad) SDL_RumbleGamepad(pad, 0, 0, 0);
+    rumble_last_lo = rumble_last_hi = 0;
+}
+RT_ON_RESET(input_rumble_reset) {
+    input_rumble_stop();
+    input_rumble_permit(true);
+}
 
 // Host keys / buttons held by a test script (LARECOMP_HOST_INPUT, input_frame): they go through the bindings
 static uint8_t test_keys[SDL_SCANCODE_COUNT];
 static _Atomic uint32_t test_pad;
 static _Atomic int32_t test_lx, test_ly;  // (a resting stick's drift: "lstick" in LARECOMP_HOST_INPUT)
-static bool host_test;  // (then a real controller is left out: the player's own pad must not spoil the test)
 
 static bool coop_key(int sc) { return sc==SDL_SCANCODE_KP_4||sc==SDL_SCANCODE_KP_6||sc==SDL_SCANCODE_KP_8||sc==SDL_SCANCODE_KP_5||sc==SDL_SCANCODE_KP_0; }
 static int held_key(int sc) { return sc > 0 && sc < SDL_SCANCODE_COUNT && !(coop_active()&&coop_key(sc)) && (keys_down[sc] || test_keys[sc]); }
@@ -113,6 +196,7 @@ static void recompute_pad(void) {
 
 // Forget held keys (the menu took focus); the gamepad is re-read on its next event.
 void input_reset(void) {
+    rumble_clear();
     memset(keys_down, 0, sizeof keys_down);
     for (int i=0;i<BIND_PAD_COUNT;i++) key_pressed_until[i]=0;
     recompute_keyboard();
@@ -222,7 +306,11 @@ void input_handle_event(const SDL_Event *e) {
         refresh_pads();
         break;
     case SDL_EVENT_GAMEPAD_REMOVED:
-        if (pad && SDL_GetGamepadID(pad) == e->gdevice.which) { SDL_CloseGamepad(pad); pad = NULL; note_family(); }
+        if (pad && SDL_GetGamepadID(pad) == e->gdevice.which) {
+            SDL_RumbleGamepad(pad, 0, 0, 0);
+            SDL_CloseGamepad(pad); pad = NULL; note_family();
+            rumble_clear(); rumble_last_lo = rumble_last_hi = 0; rumble_warned = false;
+        }
         if (pad2 && SDL_GetGamepadID(pad2) == e->gdevice.which) { SDL_CloseGamepad(pad2); pad2=NULL; }
         recompute_pad();
         break;
@@ -387,6 +475,7 @@ void input_frame(uint64_t frame) {
     performance_frame(frame);
     extern void workshop_frame(uint64_t frame);
     if (title_is_las()) workshop_frame(frame);
+    atomic_store(&rumble_frame_ms, SDL_GetTicks());
     if (g_pad_obj && getenv("LARECOMP_DUMP_PAD") && frame % 600 == 0) {
         const uint8_t *m = (const uint8_t *)(uintptr_t)(g_pad_obj - 0x98);
         LOG("[pad] mgr %llx 4e0=%u 4e4=%u 4e8=%u 548=%#x 54c..=%02x %02x %02x 56c=%02x\n", g_pad_obj - 0x98,
@@ -624,18 +713,22 @@ HLE_FUNC("_ZN2nn3hid27BindNpadStyleSetUpdateEventERKjPNS_2os15SystemEventTypeENS
     LOG("[input] style set update event bound\n");
 }
 
-// Vibration devices: accepted but inert (the SDK's vibration node graph stays recompiled).
+// The SDK vibration node graph stays recompiled; HID IPC 201/206 sends its
+// output to rumble.h / SDL using the native-layout handles below.
 HLE_FUNC("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", hid_init_vibration) { (void)c; }
 HLE_FUNC("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", hid_vibration_handles) {
     uint32_t *out = (uint32_t *)(uintptr_t)c->x[0];
     int n = (int)c->x[1] < 2 ? (int)c->x[1] : 2;
     uint32_t id = *(uint32_t *)(uintptr_t)c->x[2];
-    for (int i = 0; i < n; i++) out[i] = (id & 0xFF) << 8 | (uint32_t)i | 0x03000000u;  // type, player, position
+    // Native wire layout is style, player, device index, padding (one byte each).
+    // The old synthetic handles placed the style byte in padding.
+    for (int i = 0; i < n; i++) out[i] = 3u | ((id & 0xFF) << 8) | ((uint32_t)i << 16);
     c->x[0] = (uint64_t)n;
 }
 HLE_FUNC("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", hid_vibration_info) {
     uint32_t *info = (uint32_t *)(uintptr_t)c->x[0];
     uint32_t h = *(uint32_t *)(uintptr_t)c->x[1];
     info[0] = 1;        // VibrationDeviceType_LinearResonantActuator
-    info[1] = h & 1;    // position: left / right
+    int side = rumble_side(h);
+    info[1] = side < 0 ? 0 : (uint32_t)side + 1;  // None=0, Left=1, Right=2
 }

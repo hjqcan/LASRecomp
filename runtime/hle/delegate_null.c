@@ -19,7 +19,19 @@
 // waited on X's condition variable forever. So a live job (the derived vtable) waits, up to 1 s, until its delegate is
 // set and the kick-off has let go of X's lock (the lock word at X+0x1f8), then forwards like the original; only a job
 // already torn down (slot +0x00 put the base vtable back: it has run) or a wait that runs out is skipped.
+//
+// The hang after that (issue #19, second thread dump: the main thread in X's done wait at main+0x10ccfb0, the job
+// workers idle, and the guard skipping W's release of a J with the *base* vtable, no delegate, count 1, done 0, X
+// unlocked): J was wiped after its rebuild. The worker loop runs J (slot +0x10, main+0x10cceb0: sets X's done flag,
+// wakes the main thread, unlocks X) and only then calls J's finish (slot +0x38, main+0x10ccfa0 -> slot +0x00: base
+// vtable, delegate cleared). On the Switch that is a few instructions; a host thread preempted between the two lets
+// the main thread wake, end its frame and kick off the next one, and the late finish then wipes the new J (count 1:
+// only W's reference left). So the kick-off (tools/patches.py FRAME_JOB_KICKOFF_SITES) now waits for the last run's
+// finish - done set and J still live means it is due - before it rebuilds J, the order the game relies on.
+// LARECOMP_DEBUG_FRAMEJOB_LATE_FINISH=<ms> delays every frame job's finish to force that race;
+// LARECOMP_FRAMEJOB_NO_WAIT=1 turns the wait off (to see the hang come back).
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "../hle.h"
 #include "../platform.h"
@@ -52,4 +64,41 @@ int rt_delegate_null(Cpu *c, int slot) {
     if (forwarded) return 0;
     c->x[0] = 0;  // (returns 0, as slot +0x38 does when its delegate is missing: x0 is the delegate it loaded)
     return 1;
+}
+
+static bool frame_job(uint64_t job) {
+    uint64_t owner = rd64(job + 0x28);
+    return owner && owner + 0xc8 == job;
+}
+
+// Kick-off of owner X's frame job J = X+0xc8 (before it takes X's lock).
+void rt_frame_job_kickoff(uint64_t owner) {
+    static int off = -1;
+    if (off < 0) {
+        const char *e = getenv("LARECOMP_FRAMEJOB_NO_WAIT");
+        off = e && *e && *e != '0';
+    }
+    uint64_t job = owner + 0xc8;
+    if (off || !owner || !(__atomic_load_n((uint8_t *)(uintptr_t)(owner + 0x1d8), __ATOMIC_ACQUIRE) & 1) ||
+        rd64(job) != GA_DELEGATE_JOB_VTABLE_LIVE || !frame_job(job))
+        return;  // (the usual case: no run of J is still finishing)
+    uint64_t t0 = plat_now_ns(), waited = 0;
+    bool finished;
+    while (!(finished = rd64(job) != GA_DELEGATE_JOB_VTABLE_LIVE) && (waited = plat_now_ns() - t0) < 1000000000ull)
+        plat_sleep_until_ns(plat_now_ns() + 20000);
+    static int logged;
+    if (logged++ < 16)
+        LOG("[delegate] frame job %#llx: rebuild waited %llu us for its last run's finish%s (issue #19)\n",
+            (unsigned long long)job, (unsigned long long)(waited / 1000), finished ? "" : " - gave up");
+}
+
+// Finish of a frame job (slot +0x38, main+0x10ccfa0): only a debug delay, to force the race above.
+void rt_frame_job_finish(uint64_t job) {
+    static long ms = -1;
+    if (ms < 0) {
+        const char *e = getenv("LARECOMP_DEBUG_FRAMEJOB_LATE_FINISH");
+        ms = e ? atol(e) : 0;
+    }
+    if (ms <= 0 || rd64(job) != GA_DELEGATE_JOB_VTABLE_LIVE || !frame_job(job)) return;
+    plat_sleep_until_ns(plat_now_ns() + (uint64_t)ms * 1000000ull);
 }

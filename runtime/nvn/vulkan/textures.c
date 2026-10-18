@@ -167,6 +167,15 @@ static bool format_supports(VkFormat f, VkFormatFeatureFlags want) {
     return (p.optimalTilingFeatures & want) == want;
 }
 
+// (shader preparation) the format and aspects an image of this NVN format gets as a render target
+// (create_backend_image: a format the device can't sample becomes RGBA8; compressed formats are never targets)
+VkFormat vk_image_format(uint32_t nvn, VkImageAspectFlags *aspect) {
+    VkFormat vf = vk_format(nvn);
+    if (!format_supports(vf, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) vf = VK_FORMAT_R8G8B8A8_UNORM;
+    if (aspect) *aspect = renderer_format_is_depth(nvn) ? aspect_of(nvn) : VK_IMAGE_ASPECT_COLOR_BIT;
+    return vf;
+}
+
 // ================================================================== output resolution / per-frame clears
 // Same rules as metal.m (see the comments there).
 static float g_rs_x = 1, g_rs_y = 1;

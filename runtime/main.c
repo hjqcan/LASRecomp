@@ -241,6 +241,7 @@ int main(int argc, char **argv) {
 #endif
     const char *root = NULL;  // no explicit CLI path: use the selected installation
     bool skip_launcher = getenv("LARECOMP_NO_LAUNCHER") || getenv("LARECOMP_INPUT");  // tests boot straight in
+    if (getenv("LARECOMP_FORCE_LAUNCHER")) skip_launcher = false;  // (test: the start screen, then the scripted input)
     static char arg_root[1024];
     int launch_profile = -1;
     bool create_shortcut = false;

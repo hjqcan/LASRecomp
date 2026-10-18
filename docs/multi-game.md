@@ -52,9 +52,26 @@ the safe background path. `LARECOMP_VK_PREWARM=0` disables speculative preparati
 while retaining required-job waits and stage deduplication. The renderer reports
 `shader waits <count> <milliseconds>` separately. An unseen variant that cannot
 finish ahead of use still blocks; this is not a guarantee of zero first-use
-hitches. Metal's scheduling is unchanged.
+hitches.
 
-Run `python tools/test_shader_policy.py`, `python tools/test_shader_jobs.py` and
+Official `beta_5` through `290990e` adds a shipped LAS shader-variant list and
+launcher preparation with Skip. The list contains hashes and render state;
+shader code comes from the selected player's files. This preparation and reuse
+are LAS-only. ACNH and development adapters retain the shared background queue.
+Vulkan preparation uses the same required-work queue, segmented guest-memory
+layout and compute configuration keys as live rendering. Skipping preparation
+can cause first-use waits; it does not discard required draws or dispatches.
+
+Each preparation rebuilds its file index for the selected installation. Vulkan
+reboot drains queued work, releases prepared objects once even when several
+lookup entries reference them, and then clears the stage cache. Returning to
+the launcher can prepare the next boot again. The enhanced import progress,
+compilation cancellation and translated controls remain available. Metal takes
+the upstream preparation path while retaining compute shared-memory identity;
+its runtime behavior has not been tested on the Windows development host.
+
+Run `python tools/test_shader_policy.py`, `python tools/test_shader_jobs.py`,
+`python tools/test_prepared_shader_lifetime.py` and
 `python tools/test_shader_snapshot.py` for policy, queue, snapshot and lookahead
 regressions. With a Vulkan 1.3 GPU plus shaderc development libraries, run
 `python tools/test_shader_prepare_gpu.py`: it uses the production queue and stage
