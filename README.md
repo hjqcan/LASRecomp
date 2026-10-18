@@ -238,8 +238,8 @@ keep the previous installed library until a replacement is ready.
 - **[@hjqcan](https://github.com/hjqcan)** - centralized game patch and runtime addresses (#57), CRLF settings
   parsing plus Traditional Chinese locale detection (#53), and Windows game thread stacks reserved instead of
   committed, about 9 GB less memory committed (#107)
-- **[@gitarre1234rr5](https://github.com/gitarre1234rr5)** - a regression test for the kernel's timed condition-variable
-  wait (#88)
+- **[@gitarre1234rr5](https://github.com/gitarre1234rr5)** - controller rumble: the game's vibration on your controller
+  (#104), and a regression test for the kernel's timed condition-variable wait (#88)
 
 Thanks also to everyone who reports issues and tests builds; your logs and screenshots find most of the bugs.
 
@@ -284,6 +284,9 @@ none of their files are used):
 - **Ryujinx** by the Ryujinx Team and Contributors (MIT, `third_party/ryujinx/LICENSE.txt`) - the audio renderer's
   reverb is a port of its ReverbState / reverb command and the mixer is modelled on its AudioRenderer; its shader
   instruction decoders were the bit-layout reference for parts of the shader translator
+- **SuperMarioWonderRecomp** by BelmanteGu (https://github.com/BelmanteGu/SuperMarioWonderRecomp) - its
+  ahead-of-time shader approach is what the first-launch shader preparation follows (a shipped list of shader variants,
+  built on the player's machine from their own game files)
 - The Switch homebrew community's documentation ([Switchbrew](https://switchbrew.org))
 
 ## Legal

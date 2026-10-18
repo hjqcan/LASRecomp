@@ -27,6 +27,8 @@ void performance_frame(uint64_t f){} void workshop_frame(uint64_t f){} void watc
 int bind_pad_from_name(const char *s){return -1;} int bind_slot_from_name(const char *s){return -1;}
 bool bind_capture_event(const SDL_Event *e){return false;} void bind_capture_begin(int d,int s){} void bind_reset(int d){}
 bool menu_input_captured(void){return false;}
+bool menu_is_open(void){return false;}
+Settings g_settings={.rumble=true,.rumble_strength=100};
 bool title_is_las(void){return true;}
 uint64_t g_test_buttons,g_test_buttons_until;char g_window_shot_request[256];
 static void key(SDL_Scancode sc,bool down){SDL_Event e={0};e.type=down?SDL_EVENT_KEY_DOWN:SDL_EVENT_KEY_UP;e.key.scancode=sc;input_handle_event(&e);}

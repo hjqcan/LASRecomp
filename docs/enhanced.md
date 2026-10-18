@@ -64,6 +64,13 @@ workgroup memory and screen-attachment scaling fixes. Vulkan prepares shaders
 ahead of use and shares identical stages while preserving every required draw.
 Unseen variants can still require first-use waits.
 
+The official `beta_5` synchronization through `290990e` also includes controller
+rumble with an intensity setting, the frame-job rebuild ordering fix, and LAS
+shader preparation from the player's files. The preparation list is restricted
+to LAS and integrated with the existing Vulkan queue and reboot cleanup. See
+[rumble](rumble.md) and [multi-game rendering](multi-game.md) for behavior and
+validation limits.
+
 ## Windows quick start / Windows 使用说明
 
 When upgrading, preserve the existing game installations, saves, seeds and
