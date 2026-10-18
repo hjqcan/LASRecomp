@@ -168,15 +168,19 @@ class Module:
             if local is None or local[:2] != (owner, end):
                 return None  # an unknown peer branch could bypass any table's setup
             _, _, start, mask, reg, count = local
+            resolved = self._slice_table(branch, owner, mask + 4, [reg], count,
+                                         slice_start=start, with_start=True)
+            if resolved is None:
+                return None
+            targets, first_dependency = resolved
+            start = min(mask, first_dependency)
             if bisect.bisect_right(incoming, start) != bisect.bisect_right(incoming, branch):
                 return None
             discovered = getattr(self, '_discovery_entries', ())
             if bisect.bisect_right(discovered, start) != bisect.bisect_right(discovered, branch):
                 return None
-            targets = self._slice_table(branch, owner, mask + 4, [reg], count, slice_start=start)
-            if targets is None:
-                return None
-            plans[branch], tables[branch] = local, targets
+            plans[branch] = (owner, end, start, mask, reg, count)
+            tables[branch] = targets
         # Check the complete group before accepting any member. This includes
         # self-edges: a case cannot re-enter after the mask or address setup.
         for targets in tables.values():
@@ -620,7 +624,8 @@ class Module:
                     recomputed[ins.address] = rd
         return aliases, recomputed, projected
 
-    def _slice_table(self, br_pc, entry, cmp, idx_regs, count, index_defs=None, slice_start=None):
+    def _slice_table(self, br_pc, entry, cmp, idx_regs, count, index_defs=None, slice_start=None,
+                     with_start=False):
         """Evaluate only definitions used by the table target.
 
         Object reads can be scheduled between the guard and the lookup. They
@@ -689,7 +694,10 @@ class Module:
                 targets.append(target)
         except uc.UcError:
             return None
-        return sorted(set(targets))
+        result = sorted(set(targets))
+        # Callers proving incoming edges need the first actual dependency, not
+        # unrelated work at the beginning of the straight-line search window.
+        return (result, selected[0]) if with_start else result
 
     # ------------------------------------------------------------ functions
 

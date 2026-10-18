@@ -134,7 +134,7 @@ class MaskedTableTests(unittest.TestCase):
 
     def test_indirect_edges_cannot_bypass_a_peer_mask_or_address_setup(self):
         for byte_table in (False, True):
-            for target in (BASE + 0x108, BASE + 0x10C, BASE + 0x110, BASE + 0x164):
+            for target in (BASE + 0x10C, BASE + 0x110, BASE + 0x164):
                 m = masked_family(byte_table=byte_table)
                 struct.pack_into('<B' if byte_table else '<H', m.nso.image, 0x2000,
                                  (target - (BASE + 0xA0)) // 4)
@@ -142,6 +142,9 @@ class MaskedTableTests(unittest.TestCase):
             m = masked_family(byte_table=byte_table)
             struct.pack_into('<B' if byte_table else '<H', m.nso.image, 0x2000, (0x100 - 0xA0) // 4)
             self.assertIsNotNone(m.jump_table(m.branches[0], BASE, m.hi))  # complete setup executes
+            struct.pack_into('<B' if byte_table else '<H', m.nso.image, 0x2000, (0x108 - 0xA0) // 4)
+            m.mu = None
+            self.assertIsNotNone(m.jump_table(m.branches[0], BASE, m.hi))  # skips only unrelated work
 
     def test_direct_entry_at_mask_cannot_skip_table_address_definition(self):
         m = masked_module(); replace_word(m, 0, branch(BASE, BASE + 12))
@@ -172,7 +175,7 @@ class MaskedTableTests(unittest.TestCase):
                         result = m.jump_table(pc, BASE, m.hi)
                         if kind == 'symbol' and (pc == m.branches[0] or offset <= 0x108):
                             self.assertIsNotNone(result)  # a separate function has its own proof
-                        elif offset == 0x100:
+                        elif offset <= 0x108:
                             self.assertIsNotNone(result)  # all setup still executes
                         else:
                             self.assertIsNone(result)
@@ -191,6 +194,7 @@ class MaskedTableTests(unittest.TestCase):
         m = masked_family()
         entries, _ = m.discover_functions(m.boundaries() + [BASE + 0x10C])
         self.assertNotIn(m.branches[0], entries[BASE][2])
+
         m = masked_family()
         code = [0x7100011F, 0x54000108, adr(9, BASE + 0x208, BASE + 0x3000),
                 adr(10, BASE + 0x20C, BASE + 0x100), 0x7868792B, 0x8B0B094A, 0xD61F0140]
@@ -200,6 +204,14 @@ class MaskedTableTests(unittest.TestCase):
         self.assertGreater(rounds, 1)
         self.assertIn(BASE + 0x10C, entries)
         self.assertNotIn(m.branches[0], entries[BASE][2])
+
+    def test_join_before_address_setup_does_not_discard_a_proven_table(self):
+        for word in (branch(BASE, BASE + 8), 0x3400004D):  # B / CBZ w13, ADR
+            m = masked_module()
+            replace_word(m, 0, word)
+            self.assertEqual(self.targets(m), [BASE + 0xA0 + i * 8 for i in range(4)])
+            entries, _ = m.discover_functions(m.boundaries())
+            self.assertTrue(any(m.br_pc in tables for end, labels, tables in entries.values()))
 
     def test_self_edges_and_excessive_groups_are_rejected(self):
         m = masked_module(); replace_word(m, m.origin_pc - BASE, adr(10, m.origin_pc, BASE + 12))
@@ -211,6 +223,8 @@ class MaskedTableTests(unittest.TestCase):
         inputs = [0, 1, 2, 3, 4, 7, 0x100, 0x103, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF]
         for count, byte_table, wide in [(n, b, w) for n in (1, 2, 4) for b in (False, True) for w in (False, True)]:
             m = masked_module(byte_table, wide) if count == 1 else masked_family(count, byte_table, wide)
+            if count == 1:
+                replace_word(m, 0, 0x3400004D)  # CBZ w13 skips unrelated work before ADR
             expected_fp = struct.unpack('<I', struct.pack('<f', 2.0 + 9.0 * count))[0]
             mu = uc.Uc(uc.UC_ARCH_ARM64, uc.UC_MODE_ARM)
             mu.mem_map(BASE, 0x4000); mu.mem_write(BASE, bytes(m.nso.image))

@@ -761,9 +761,12 @@ address definition rejects the group. Function discovery also invalidates peer
 proofs when another table introduces a new independent entry in a later round.
 The algorithm contains no game-specific addresses.
 
-All 46 table and fragment regressions pass. The new cases cover two/four-table
+All 47 table and fragment regressions pass. The new cases cover two/four-table
 groups, invalid peers, self-edges, external callbacks/calls/relocations, late
-entries and the group-size limit. Twelve native fixtures (one/two/four tables,
+entries and the group-size limit. Incoming edges before the first actual table
+dependency remain valid; unrelated work at the start of a search window is not
+part of the protected setup. This preserves the earlier `main+0x1cfcc34` table.
+Twelve native fixtures (one/two/four tables,
 byte/halfword entries and 32/64-bit masks) match ARM64 Unicorn execution for
 ten inputs, including register, stack, return-address and floating-point state.
 The fresh Windows helper passes catalog/receipt checks and actual Unicorn JIT
