@@ -245,18 +245,18 @@ static long trace_until = -1;  // LARECOMP_DOORJUMP_TRACE: Link's position for 9
 
 static void place_tick(uint64_t frame) {
     static long at = -2, done, placed_at = -1;
-    static char script[256];
+    static char script[4096];
     static float px, pz;
     static uint64_t since;
     static char level[64];
     if (at == -2) {
         at = -1;
         const char *e = getenv("LARECOMP_PLACE");
-        if (e && sscanf(e, "%ld:%f:%f:%255s", &at, &px, &pz, script) < 3) at = -1;
+        if (e && sscanf(e, "%ld:%f:%f:%4095s", &at, &px, &pz, script) < 3) at = -1;
     }
     if (placed_at >= 0 && script[0]) {  // action script
         long t = (long)frame - placed_at;
-        char buf[256];
+        static char buf[4096];
         strlcpy(buf, script, sizeof buf);
         for (char *st = strtok(buf, "/"); st; st = strtok(NULL, "/")) {
             long d, n;

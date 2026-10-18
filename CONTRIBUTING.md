@@ -100,6 +100,9 @@ them, then `make -j10`. The randomizer needs its Python environment in
   reachable). For dungeon room shuffle, `tools/doorjump_test.sh <seed>` walks every mismatched doorway.
 - State that belongs to a seed must be reset when the player switches seeds in place: use an `RT_ON_RESET` hook
   (see `runtime/hle.h`).
+- For an automated Vulkan validation run, set `LARECOMP_VK_VALIDATION_STOP=1`. This requires the Khronos validation
+  layer and its debug callback, and exits with a failure status on the first validation error. Warnings continue.
+  `LARECOMP_VK_VALIDATION=1` keeps the existing best-effort, log-only behavior.
 
 For address-table changes, run `python tools/test_game_addresses.py`. It checks native/Python agreement,
 patch-output fingerprints from the pre-refactor `beta_5` build, hook records and uncentralized addresses without

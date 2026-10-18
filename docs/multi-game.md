@@ -79,6 +79,14 @@ cache, exercises simultaneous requests, checks a first-use compute dispatch's
 output, resets the cache, and verifies that compile failures wake every waiter.
 The intentional invalid-shader diagnostic in that test is expected.
 
+Official `beta_5` through `35f7d30` also adds translator instruction fixes,
+translator/GPU cache tags, periodic Vulkan pipeline-cache saves and a Metal
+binary archive. Enhanced retains its no-discard shader policy, prepared-object
+ownership and watchdog-protected synchronization paths. The new synchronization
+and validation fixtures exercise those enhanced paths as well as upstream
+failure behavior. Metal compilation is checked in CI; runtime behavior still
+requires a Mac.
+
 ## Regression gates when adding a game
 
 New-game work must preserve the supported LAS 1.0.0, LAS 1.1.0 and ACNH 1.0.0
