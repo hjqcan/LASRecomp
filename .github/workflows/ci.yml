@@ -50,6 +50,10 @@ jobs:
           cmake --install sdl-build
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp DEPS="$HOME/sdl3"
+      - name: Kernel condition-variable regression
+        run: |
+          clang -O2 -pthread tools/test_condvar.c -o build/test-condvar
+          build/test-condvar
       - name: Settings regression tests
         run: python3 tools/test_settings.py
       - name: Audio effect impulse and routing regressions
@@ -96,6 +100,10 @@ jobs:
         run: brew install sdl3 ffmpeg
       - name: App builds
         run: make -j"$(sysctl -n hw.ncpu)" build/lasrecomp
+      - name: Kernel condition-variable regression
+        run: |
+          clang -O2 -pthread tools/test_condvar.c -o build/test-condvar
+          build/test-condvar
       - name: Settings regression tests
         run: python3 tools/test_settings.py
       - name: Exclusive pairs and native contention
@@ -136,6 +144,10 @@ jobs:
             vulkan-memory-allocator:p
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp.exe
+      - name: Kernel condition-variable regression
+        run: |
+          clang -O2 -pthread tools/test_condvar.c -o build/test-condvar.exe
+          build/test-condvar.exe
       - name: Native runtime regressions (UCRT64 and FFmpeg headers)
         run: |
           for name in touch prepo nvn_pool_mapping; do

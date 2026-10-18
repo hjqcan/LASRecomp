@@ -238,6 +238,8 @@ keep the previous installed library until a replacement is ready.
 - **[@hjqcan](https://github.com/hjqcan)** - centralized game patch and runtime addresses (#57), CRLF settings
   parsing plus Traditional Chinese locale detection (#53), and Windows game thread stacks reserved instead of
   committed, about 9 GB less memory committed (#107)
+- **[@gitarre1234rr5](https://github.com/gitarre1234rr5)** - a regression test for the kernel's timed condition-variable
+  wait (#88)
 
 Thanks also to everyone who reports issues and tests builds; your logs and screenshots find most of the bugs.
 
