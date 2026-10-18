@@ -25,6 +25,7 @@
 #include "../renderer.h"
 #include "../render_control.h"
 #include "../shader_prefetch.h"
+#include "../pace.h"
 #include "../../settings.h"
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
@@ -41,6 +42,7 @@ uint64_t prof_views_created;  // textures.c vk_image_view cache misses
 uint64_t prof_up_ns = ~0ull;  // textures.c upload checks (~0: profiling off)
 #define PROF_T0() uint64_t prof_t0_ = prof ? SDL_GetTicksNS() : 0
 #define PROF_ADD(v) do { if (prof) v += SDL_GetTicksNS() - prof_t0_; } while (0)
+extern __thread uint64_t g_blocked_ns;  // shader waits also count as idle time
 static _Atomic int stat_compiles;
 static uint64_t op_counts[CMD_COUNT];
 bool g_debug_frame;
@@ -149,69 +151,7 @@ static int vk_counter_mode(void) {
     return counter_mode;
 }
 
-// ---- frame pacing: the game's own 30 fps mode when we can't hold 60
-// The game advances its world one fixed step per frame in its 60 fps mode, and two steps per frame in its 30 fps mode
-// (measured: Link walks twice as far per frame there) - so a 60-mode frame that takes 20 ms plays in slow motion, while
-// the 30 mode plays at full speed. The game picks its mode from these counters (GPU time per frame), as on the Switch;
-// but our frames can be slow for reasons its GPU time doesn't show (command translation, a slower CPU). So each
-// presented frame's busy time is measured (present to present, minus the time the presenting thread was blocked in
-// kernel waits and sleeps: idle - the game waits for vsync through its own threads); when
-// frames don't fit 60 (12 of the last 60 over 16.2 ms), the counters report a frame of at least PACE_SLOW_NS: the game
-// takes its 30 fps mode, at full speed. Back to the real times after 2 s with headroom (busy under 13 ms on average,
-// at most 2 of the last 60 frames over). The game itself also tries 60 again now and then.
-// LARECOMP_PACE=0: off.
-#define PACE_SLOW_NS 20000000ull
-extern __thread uint64_t g_blocked_ns;  // kernel.c: this thread's time blocked in waits / sleeps
-static bool pace_slow;
-static uint64_t stat_pace_over;
-
-void vk_pace_frame(void) {
-    // Inflating GPU timestamps to select LAS's frame mode is title-specific.
-    // Other adapters must receive their actual timestamp query results.
-    if (!title_is_las()) { pace_slow = false; return; }
-    static int on = -1;
-    if (on < 0) { const char *e = getenv("LARECOMP_PACE"); on = !e || atoi(e) != 0; }
-    static uint64_t last, last_wait;
-    static uint8_t over[60];
-    static int idx, nover, calm;
-    static double avg;  // busy ms, moving average (~20 frames)
-    uint64_t now = plat_now_ns(), w = g_blocked_ns;
-    uint64_t p = now - last, wt = w - last_wait;
-    bool first = !last;
-    last = now, last_wait = w;
-    if (first || p > 100000000ull) return;  // (loading, a hitch: not a pace)
-    double busy = (p > wt ? p - wt : 0) / 1e6;
-    avg = avg ? avg + (busy - avg) * 0.05 : busy;
-    static int log = -1;  // LARECOMP_LOG_PACE=1: each frame's period, vsync wait and busy time
-    if (log < 0) log = getenv("LARECOMP_LOG_PACE") != NULL;
-    if (log) LOG("[pace] period %.2f blocked %.2f busy %.2f ms\n", p / 1e6, wt / 1e6, busy);
-    int o = busy > 16.2;
-    stat_pace_over += o;
-    nover += o - over[idx];
-    over[idx] = (uint8_t)o;
-    idx = (idx + 1) % 60;
-    if (!on) return;  // (measured and counted all the same: LARECOMP_LOG_PACE, the stats)
-    if (!pace_slow && nover >= 12) {
-        pace_slow = true, calm = 0;
-        LOG("[pace] frames don't fit 60 fps (%d of the last 60 over 16.2 ms busy): the game's 30 fps mode\n", nover);
-    } else if (pace_slow) {
-        // headroom: busy well under a 60 fps frame on average, hardly a frame over (single spikes are normal play)
-        calm = avg < 13.0 && nover <= 2 ? calm + 1 : 0;
-        if (calm >= 120) {
-            pace_slow = false, nover = 0;
-            memset(over, 0, sizeof over);
-            LOG("[pace] 2 s with headroom: back to the game's own choice\n");
-        }
-    }
-}
-
-// a pair's end counter (the 16 bytes after its start) is at least PACE_SLOW_NS after it while pace_slow
-static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *entry, uint64_t value) {
-    if (!pace_slow || !start_entry || (const uint8_t *)entry - (const uint8_t *)start_entry != 16) return value;
-    uint64_t min = start_entry[1] + ns_to_gpu_ticks(PACE_SLOW_NS);
-    return value < min ? min : value;
-}
-
+// ---- frame pacing (runtime/nvn/pace.c): the game's 30 fps mode when frames don't fit 60, through these counters
 static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: its counters get their GPU times
     CounterQ *q = &cq[i];
     if (!q->n) return;
@@ -570,7 +510,11 @@ static int new_chunk(uint64_t size) {
         ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
         r = vmaCreateBuffer(g_vk.vma, &bi, &ai, &c->buf, &c->mem, &info);
     }
-    VK_CHECK(r);
+    if (r != VK_SUCCESS) {  // (system memory too: vk_transient waits for a chunk to come free instead - issue #45)
+        LOG("[vk] transient ring: no memory for chunk %d (%llu MB, error %d)\n", nchunks, (unsigned long long)(size >> 20), r);
+        vk_log_memory("ring chunk failed");
+        return -1;
+    }
     c->ptr = info.pMappedData;
     c->size = size;
     static bool spilled;  // (the first chunk in system memory: logged too)
@@ -604,6 +548,17 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
     for (int i = 0; i < nchunks; i++)
         if (i != active && chunks[i].seq <= done && chunks[i].size >= size) { pick = i; break; }
     if (pick < 0) pick = new_chunk(size > CHUNK_SIZE ? size : CHUNK_SIZE);
+    if (pick < 0) {  // no memory for another chunk (a GTX 1060 with 6 GB: issue #45): wait for the work already submitted,
+        // which frees the chunks only it used, and take one of those (the recording in progress keeps its own)
+        vk_wait_seq(submit_seq);
+        done = vk_completed_seq();
+        for (int i = 0; i < nchunks; i++)
+            if (i != active && chunks[i].seq <= done && chunks[i].size >= size) { pick = i; break; }
+        if (pick < 0) FATAL("the graphics card ran out of memory for uploads (%llu MB needed, %d chunks in use)\n",
+                            (unsigned long long)(size >> 20), nchunks);
+        static int nlog;
+        if (nlog++ < 5) LOG("[vk] transient ring: reused chunk %d after waiting for the GPU\n", pick);
+    }
     active = pick;
     chunks[pick].used = size;
     chunks[pick].seq = pending;
@@ -816,8 +771,8 @@ const char *renderer_stats(void) {
         memset(prof_end_line, 0, sizeof prof_end_line);
         n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, " | views created %llu | counters gpu %llu | pace %s, %llu frames over", (unsigned long long)prof_views_created,
-                 (unsigned long long)stat_counters_gpu, pace_slow ? "30" : "60", (unsigned long long)stat_pace_over);
-        stat_counters_gpu = stat_pace_over = 0;
+                 (unsigned long long)stat_counters_gpu, pace_is_slow() ? "30" : "60", (unsigned long long)pace_frames_over());
+        stat_counters_gpu = 0;
         {
             extern uint64_t prof_vc_hits, prof_vc_bypass, prof_vc_copied, prof_vc_queries, prof_vc_scan_pages, prof_vc_scan_ns;
             n = strlen(stats_text);

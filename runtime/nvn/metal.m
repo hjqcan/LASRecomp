@@ -17,6 +17,7 @@
 #include "nvn.h"
 #include "../game_addresses.h"
 #include "renderer.h"
+#include "pace.h"
 #include "texpatch.h"
 
 static id<MTLDevice> dev;
@@ -98,7 +99,11 @@ static MtlFormat mtl_format(uint32_t f) {
     case 0x4B: return (MtlFormat){MTLPixelFormatBC5_RGUnorm};
     // 0x4C = signed RGTC2 (interior normal maps break if decoded unsigned). LARECOMP_BC5_UNORM=1 decodes it
     // unsigned: that removes the overworld grass hatch/moire (see notes/PLAN.md) but wrecks interiors.
-    case 0x4C: return (MtlFormat){getenv("LARECOMP_BC5_UNORM") ? MTLPixelFormatBC5_RGUnorm : MTLPixelFormatBC5_RGSnorm};
+    case 0x4C: {
+        static int unorm = -1;  // (per texture lookup: getenv scans the environment)
+        if (unorm < 0) unorm = getenv("LARECOMP_BC5_UNORM") != NULL;
+        return (MtlFormat){unorm ? MTLPixelFormatBC5_RGUnorm : MTLPixelFormatBC5_RGSnorm};
+    }
     case 0x4D: return (MtlFormat){MTLPixelFormatBC7_RGBAUnorm};
     case 0x4E: return (MtlFormat){MTLPixelFormatBC7_RGBAUnorm_sRGB};
     case 0x4F: return (MtlFormat){MTLPixelFormatBC6H_RGBFloat};
@@ -194,8 +199,8 @@ static void dump_largest_textures(const char *why) {
         TexBackend *b = g_reg[i] ? (TexBackend *)g_reg[i]->backend : NULL;
         if (!b || !b->tex) continue;
         uint64_t a = b->tex.allocatedSize;
-        int k = n < 16 ? n++ : 15;
-        if (k == 15 && n == 16 && a <= sz[15]) continue;
+        if (n == 16 && a <= sz[15]) continue;  // (full: smaller than the 16th. The check came after the 16th entry
+        int k = n < 16 ? n++ : 15;             //  was counted, against an unset sz[15] - an unset idx[15]: #102)
         while (k > 0 && sz[k - 1] < a) { sz[k] = sz[k - 1]; idx[k] = idx[k - 1]; k--; }
         sz[k] = a; idx[k] = i;
     }
@@ -219,7 +224,9 @@ void renderer_get_scale(float *sx, float *sy) { *sx = g_rs_x; *sy = g_rs_y; }
 void renderer_set_scale(float sx, float sy) { g_rs_x = sx; g_rs_y = sy; }
 
 static bool tex_scalable(const NvnTexture *t) {
-    if (getenv("LARECOMP_NO_SCALE")) return false;
+    static int off = -1;  // (per texture lookup: cached)
+    if (off < 0) off = getenv("LARECOMP_NO_SCALE") != NULL;
+    if (off) return false;
     if (t->target != 1 || t->samples > 1 || !(t->flags & 8) || t->width < 32 || t->height < 16) return false;
     float a = (float)t->width / (float)t->height;
     return a > 1.74f && a < 1.81f;  // 16:9 (1920x1080 and its fractions, 704x396, 60x33...)
@@ -1059,6 +1066,8 @@ void backend_present(NvnTexture *t) {
         uint64_t nd0 = SDL_GetTicksNS();
         id<CAMetalDrawable> drawable = [layer nextDrawable];
         uint64_t nd = SDL_GetTicksNS() - nd0;
+        extern __thread uint64_t g_blocked_ns;  // (kernel.c: waiting, not work - for the frame pacer, as Vulkan's acquire)
+        g_blocked_ns += nd;
         if (nd > 30000000) {
             static int warned;
             if (warned++ < 20) LOG("[metal] nextDrawable blocked %llums\n", (unsigned long long)(nd / 1000000));
@@ -1182,6 +1191,7 @@ void backend_present(NvnTexture *t) {
     frames++;
     total_frames++;
     g_frame_counter++;
+    pace_frame();  // (pace.c: the game's 30 fps mode when frames don't fit 60)
     extern void input_frame(uint64_t frame);
     input_frame(total_frames);
     static long slow_ms = -1;  // LARECOMP_SLOW_FRAME_MS=<ms>: sleep per presented frame (simulate a slow machine)
@@ -1262,6 +1272,10 @@ void ui_window_init(void) {
     dev = MTLCreateSystemDefaultDevice();
     layer.device = dev;
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    // The display's vsync stays on: without it frames show as soon as they're done, which tears (seen on a 5120x1440
+    // display), for ~2-3 fps near the limit at most (the game paces itself to vi.c's emulated 60 Hz vsync, and the two
+    // clocks drift). LARECOMP_DISPLAY_SYNC=0: off (tests).
+    layer.displaySyncEnabled = !getenv("LARECOMP_DISPLAY_SYNC") || atoi(getenv("LARECOMP_DISPLAY_SYNC")) != 0;
     layer.framebufferOnly = NO; // photos can be requested at runtime
 }
 

@@ -606,6 +606,24 @@ def _prompt_pos(gen, a):
 PATCHES[PROMPT_POS_SITE] = _prompt_pos
 
 
+# Issue #45: setting up a font, the game looks up the glyph of "□" (U+25A1, its box for a missing character) and
+# marks it (main+0x111dfc0: the lookup at main+0x111dffc, then `ldrb w8, [x0, #0x38]` at main+0x111e000) without
+# checking for none - its second lookup in the same function does check. With a substitute font that has no such
+# glyph for the game (a Yu Gothic on one Windows PC, although its cmap lists it) that read crashed at 0x38. Now no
+# glyph skips the marking as the second lookup's check does (to the function's end).
+FONT_BOX_GLYPH_SITE = A.FONT_BOX_GLYPH_SITE
+
+
+def _font_box_glyph(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w == 0x3940e008, hex(w)  # ldrb w8, [x0, #0x38]
+    return (addr_text('if (c->x[0] == 0) goto L_@FONT_BOX_GLYPH_SKIP@; c->x[8] = LD8(c->x[0] + 0x38);') +
+            f'  /* {a:#x}: ldrb w8, [x0, #0x38] (font box glyph: none skips the marking) */')
+
+
+PATCHES[FONT_BOX_GLYPH_SITE] = _font_box_glyph
+
+
 # Issue #19: [this+0x10] is the delegate of a recycled "action" object (the class whose vtable is 0x7001c51358, and
 # the ~100 siblings sharing these forwarders). Its slot +0x28 (main+0x10cce50) and +0x30 (main+0x10cce30) forward to
 # that delegate without checking it, while the class's own slot +0x38 (main+0x10cce80) checks *its* delegate (+0x18)

@@ -5,13 +5,13 @@ static const TitleProfile title_profiles[] = {
         {"main", "ae16f71e002af8cb059a9a74c4d90f34ba984892000000000000000000000000", UINT64_C(0x7000000000), false},
         {"sdk", "3ae34e689d7a35f13cbf42bfd672af8b5eb64a9d000000000000000000000000", UINT64_C(0x7004000000), true},
      }, {1, 0},
-     "9cfdca5ba471ce98ebfcda98839815e703971e5ca8c61b3d5856d119c4d4df44", {"region_common"}, 1, 3836, false, 207, 4, true, 53, 0},
+     "4d25b95ba47e471d3ea28ba7a96eef41098d511e4810152a4c3b6d4d47be9bbb", {"region_common"}, 1, 3836, false, 207, 4, true, 53, 0},
     {"las", "The Legend of Zelda: Link's Awakening", "1.1.0", "las", "beta",
      UINT64_C(0x01006bb00c6f0000), 1, 2, true, {
         {"main", "909e904af78ac1b8deefe97ab2ccdb51968f0ec7000000000000000000000000", UINT64_C(0x7000000000), false},
         {"sdk", "3ae34e689d7a35f13cbf42bfd672af8b5eb64a9d000000000000000000000000", UINT64_C(0x7004000000), true},
      }, {1, 0},
-     "3d457dbbce79137d531a7b8bdf8c839693ddf4e6172f650b7a27d196dd535081", {"region_common"}, 1, 3836, false, 207, 4, true, 53, 0},
+     "ee007624038f84dc2bef96cdfa3f06fd1bd6b4c04507dc55c6cdf16df1ae5571", {"region_common"}, 1, 3836, false, 207, 4, true, 53, 0},
     {"acnh", "Animal Crossing: New Horizons", "1.0.0", "generic", "beta",
      UINT64_C(0x01006f8002326000), 1, 3, true, {
         {"main", "7fc1baff976aeca414520cb89f4616cb00000000000000000000000000000000", UINT64_C(0x7000000000), false},

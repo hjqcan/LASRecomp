@@ -16,6 +16,7 @@
 #include "nvn.h"
 #include "render_control.h"
 #include "renderer.h"
+#include "pace.h"
 
 static id<MTLDevice> dev;
 static id<MTLCommandBuffer> cmdbuf;
@@ -52,6 +53,17 @@ typedef struct {
 
 typedef struct { uint64_t addr, size; } Range;
 
+// Same targets and views (field by field: the views come from guest records, their padding is not ours to compare).
+static bool rt_same(const RtState *a, const RtState *b) {
+    if (a->ncolor != b->ncolor || a->depth != b->depth || a->has_dview != b->has_dview) return false;
+    if (a->has_dview && memcmp(&a->dview, &b->dview, sizeof a->dview)) return false;
+    for (int i = 0; i < a->ncolor; i++) {
+        if (a->color[i] != b->color[i] || a->has_cview[i] != b->has_cview[i]) return false;
+        if (a->has_cview[i] && memcmp(&a->cview[i], &b->cview[i], sizeof a->cview[i])) return false;
+    }
+    return true;
+}
+
 static struct {
     RtState rt;
     bool rt_dirty, render_enabled;
@@ -86,6 +98,7 @@ static int stat_compiles;
 static inline double now_ms(void) { return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e6; }
 #define TIMED_COMPILE(expr) ({ double t0_ = now_ms(); __auto_type r_ = (expr); stat_compile_ms += now_ms() - t0_; stat_compiles++; r_; })
 
+static uint64_t stat_counters_gpu;  // timing counters given the GPU's time (the game's 30 / 60 fps choice)
 const char *renderer_stats(void) {
     static int dumps;
     if (dumps++ < 3) {
@@ -98,9 +111,11 @@ const char *renderer_stats(void) {
     struct task_vm_info vmi;
     mach_msg_type_number_t vn = TASK_VM_INFO_COUNT;
     uint64_t foot = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vmi, &vn) == KERN_SUCCESS ? vmi.phys_footprint : 0;
-    snprintf(stats_text, sizeof stats_text, "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, gpu %.0fms, wait %.0fms, compile %d/%.0fms, fbcopy %llu | tex %d (%.0f MB) views %d snaps %lu mem %.0f MB | waits fence %.0fms/%llu flush %.0fms/%llu all %.0fms/%llu", stat_draws, stat_skipped,
+    snprintf(stats_text, sizeof stats_text, "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, gpu %.0fms, wait %.0fms, compile %d/%.0fms, fbcopy %llu | tex %d (%.0f MB) views %d snaps %lu mem %.0f MB | waits fence %.0fms/%llu flush %.0fms/%llu all %.0fms/%llu | counters gpu %llu | pace %s, %llu frames over", stat_draws, stat_skipped,
              stat_passes, stat_dispatches, stat_flushes, stat_gpu_s * 1000.0, (double)stat_wait_ns / 1e6 * 125.0 / 3.0, stat_compiles, stat_compile_ms, stat_feedback_copies,
-             g_tex_live, g_tex_live_bytes / 1048576.0, g_views_live, (unsigned long)(g_snap_copies ? g_snap_copies.count : 0), foot / 1048576.0, stat_wait_by[0] / 24e3, (unsigned long long)stat_wait_n[0], stat_wait_by[1] / 24e3, (unsigned long long)stat_wait_n[1], stat_wait_by[2] / 24e3, (unsigned long long)stat_wait_n[2]);
+             g_tex_live, g_tex_live_bytes / 1048576.0, g_views_live, (unsigned long)(g_snap_copies ? g_snap_copies.count : 0), foot / 1048576.0, stat_wait_by[0] / 24e3, (unsigned long long)stat_wait_n[0], stat_wait_by[1] / 24e3, (unsigned long long)stat_wait_n[1], stat_wait_by[2] / 24e3, (unsigned long long)stat_wait_n[2],
+             (unsigned long long)stat_counters_gpu, pace_is_slow() ? "30" : "60", (unsigned long long)pace_frames_over());
+    stat_counters_gpu = 0;
     stat_compiles = 0;
     stat_feedback_copies = 0;
     stat_compile_ms = 0;
@@ -153,7 +168,25 @@ static bool draw_item_cursor;           // a fragment texture is the Items page'
 #define RSCALE_BUFFER_INDEX 18
 
 static int debug_pass_no;
+// Attachment traffic. A tile GPU loads and stores every attachment of every pass, and the game clears each target
+// with a full clear before drawing it: 13 of the 45 passes of a Field_11C frame were clear quads alone, and the game
+// also re-sets the targets it already has between draw groups, which ended the pass (store + load of everything,
+// 3840x2160 depth, stencil and colour at 2x). Measured, Field_11C: 488 -> 343 MB of attachment traffic per frame at 1x,
+// 1701 -> 1297 MB at 2x, 45 -> 42 passes, picture unchanged. ~2 ms a frame on a 68 GB/s M1 Air.
+// - A full clear while no pass is open on its targets is recorded and becomes the load action of the pass that opens
+//   next on them (no load, no clear quad). If something else comes first (other targets, a copy, a dispatch, a submit),
+//   the clear gets a pass of its own that only stores. LARECOMP_MTL_LOAD_CLEAR=0: clears are quads again.
+// - SetRenderTargets with the targets already bound keeps the pass open. LARECOMP_MTL_RT_DEDUP=0: ends it as before.
+static struct {
+    bool on, color[8], depth, stencil;
+    double cc[8][4], dval;
+    uint32_t sval;
+} pending_clear;
+static bool opening_pass;  // begin_pass is ending the previous pass: end_pass must not open one for the recorded clear
+static void begin_pass(void);
+
 static void end_pass(void) {
+    if (pending_clear.on && !opening_pass) begin_pass();  // the recorded clear becomes a pass of its own
     if (enc) {
         [enc endEncoding];
         enc = nil;
@@ -185,6 +218,60 @@ static pthread_mutex_t cb_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t submit_seq;
 static id<MTLCommandBuffer> cb_hist[CB_HIST];
 
+// ---- the game's GPU timing counters (nvnCommandBufferReportCounter, two per frame)
+// The game times its GPU work with these and takes its 30 fps mode when frames look slow (pace.c). They used to get
+// the host clock at translation time: our command translation (~2 ms however long the GPU took), so a Mac that
+// couldn't hold 60 kept the game in its 60 fps mode - slow motion at 30. Now the command buffer is split at each
+// counter (Apple GPUs have no timestamps inside a buffer), and once that's done the counter gets the GPU's time
+// there: the end of the buffer before it, or the start of the one after it if the GPU sat idle in between. Until
+// then the host clock (the game waits on its fence before reading them; resolved after each wait). As vulkan/exec.c.
+// LARECOMP_MTL_COUNTER=cpu: the host clock only.
+#define CTR_MAX 64
+static struct { uint64_t *out; const uint64_t *start; uint64_t before, after; } ctr_pend[CTR_MAX];
+static int nctr;
+static pthread_mutex_t ctr_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t ns_to_gpu_ticks(uint64_t ns) { return (uint64_t)((unsigned __int128)ns * 384 / 625); }  // (614.4 MHz)
+
+static void counters_resolve(void) {
+    pthread_mutex_lock(&ctr_lock);
+    pthread_mutex_lock(&cb_lock);
+    int k = 0;
+    for (int i = 0; i < nctr; i++) {
+        uint64_t bs = ctr_pend[i].before, as = ctr_pend[i].after;
+        if (submit_seq - bs >= CB_HIST || (as <= submit_seq && submit_seq - as >= CB_HIST)) continue;  // (gone)
+        id<MTLCommandBuffer> b = bs ? cb_hist[bs % CB_HIST] : nil;
+        id<MTLCommandBuffer> a = as <= submit_seq ? cb_hist[as % CB_HIST] : nil;
+        // both sides done: a buffer not committed yet (a frame's first chunk still being translated) would leave a
+        // start counter at the previous frame's end - backend_execute commits one at the end of each list
+        bool done = as <= submit_seq && (!b || b.status >= MTLCommandBufferStatusCompleted) &&
+                    (!a || a.status >= MTLCommandBufferStatusCompleted);
+        if (!done) {
+            ctr_pend[k++] = ctr_pend[i];
+            continue;
+        }
+        double t = b ? b.GPUEndTime : 0;
+        if (a && a.GPUStartTime > t) t = a.GPUStartTime;
+        if (t > 0) {
+            uint64_t *out = ctr_pend[i].out;
+            out[1] = pace_end_counter(ctr_pend[i].start, out, ns_to_gpu_ticks((uint64_t)(t * 1e9)));  // (host time base)
+            stat_counters_gpu++;
+        }
+    }
+    nctr = k;
+    pthread_mutex_unlock(&cb_lock);
+    pthread_mutex_unlock(&ctr_lock);
+}
+
+// A counter waits for the buffer after it: true when one ended the list just translated (backend_execute commits
+// one then, empty, so the counter isn't held until the next list).
+static bool counters_want_next(void) {
+    pthread_mutex_lock(&ctr_lock);
+    bool want = false;
+    for (int i = 0; i < nctr && !want; i++) want = ctr_pend[i].after > submit_seq;
+    pthread_mutex_unlock(&ctr_lock);
+    return want;
+}
+
 static int g_wait_kind;
 static void wait_cb(id<MTLCommandBuffer> c) {
     if (!c) return;
@@ -194,6 +281,7 @@ static void wait_cb(id<MTLCommandBuffer> c) {
     stat_wait_ns += d;
     stat_wait_by[g_wait_kind] += d;
     if (d > 24000) stat_wait_n[g_wait_kind]++;  // (> ~1 ms counts as a real wait)
+    counters_resolve();
 }
 
 // Textures the game destroyed (any thread): their cached views and snapshot copies are dropped on the render thread.
@@ -241,6 +329,7 @@ void renderer_submit(void) {
         cb_hist[submit_seq % CB_HIST] = c;
         pthread_mutex_unlock(&cb_lock);
         stat_flushes++;
+        counters_resolve();  // (also without fence waits: a movie, loading - the table doesn't fill)
     }
 }
 
@@ -416,6 +505,7 @@ static __unsafe_unretained id last_bias_enc;  // encoder the depth bias was last
 
 static void begin_pass(void) {
     if (enc && !st.rt_dirty) return;
+    opening_pass = true;  // (until the recorded clear is consumed below: the chunk submit's end_pass must not re-enter)
     end_pass();
     st.rt_dirty = false;
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -436,6 +526,11 @@ static void begin_pass(void) {
             rp.colorAttachments[i].loadAction = MTLLoadActionClear;
             rp.colorAttachments[i].clearColor = MTLClearColorMake(0, 0, 0, fresh ? 0 : 1);
         }
+        if (pending_clear.on && pending_clear.color[i]) {
+            const double *c = pending_clear.cc[i];
+            rp.colorAttachments[i].loadAction = MTLLoadActionClear;
+            rp.colorAttachments[i].clearColor = MTLClearColorMake(c[0], c[1], c[2], c[3]);
+        }
         rp.colorAttachments[i].storeAction = MTLStoreActionStore;
         if (!w) renderer_texture_scale(t, &pass_sx, &pass_sy);
         w = (int)tex.width; h = (int)tex.height;
@@ -447,11 +542,19 @@ static void begin_pass(void) {
             rp.depthAttachment.texture = tex;
             rp.depthAttachment.loadAction = MTLLoadActionLoad;
             rp.depthAttachment.storeAction = MTLStoreActionStore;
+            if (pending_clear.on && pending_clear.depth) {
+                rp.depthAttachment.loadAction = MTLLoadActionClear;
+                rp.depthAttachment.clearDepth = pending_clear.dval;
+            }
         }
         if (renderer_format_has_stencil(st.rt.depth->format)) {
             rp.stencilAttachment.texture = tex;
             rp.stencilAttachment.loadAction = MTLLoadActionLoad;
             rp.stencilAttachment.storeAction = MTLStoreActionStore;
+            if (pending_clear.on && pending_clear.stencil) {
+                rp.stencilAttachment.loadAction = MTLLoadActionClear;
+                rp.stencilAttachment.clearStencil = pending_clear.sval;
+            }
         }
         if (!w) { renderer_texture_scale(st.rt.depth, &pass_sx, &pass_sy); w = (int)tex.width; h = (int)tex.height; }
     }
@@ -468,6 +571,8 @@ static void begin_pass(void) {
     if (chunk < 0) { const char *e = ENV("LARECOMP_CHUNK_PASSES"); chunk = e ? atoi(e) : 8; }
     if (chunk > 0 && cmdbuf && ++g_passes_in_cb >= chunk) renderer_submit();
     enc = [cb() renderCommandEncoderWithDescriptor:rp];
+    memset(&pending_clear, 0, sizeof pending_clear);
+    opening_pass = false;
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
     stat_passes++;
 }
@@ -543,8 +648,35 @@ static void attachment_formats(MTLRenderPipelineDescriptor *pd) {
         if (st.rt.color[i] && st.rt.color[i]->samples > 1) pd.rasterSampleCount = st.rt.color[i]->samples;
 }
 
+// A full clear (whole target, every channel) while no pass is open on the current targets: recorded for the next
+// pass's load action (see pending_clear). Partial clears and clears into an open pass stay quads.
+static bool record_clear(int index, int kind, const void *color, uint32_t mask, bool depth, float dval, bool stencil,
+                         uint32_t sval, uint32_t smask) {
+    static int on = -1;
+    if (on < 0) { const char *e = ENV("LARECOMP_MTL_LOAD_CLEAR"); on = !e || atoi(e); }
+    if (!on || (enc && !st.rt_dirty)) return false;
+    NvnTexture *t = index >= 0 ? (index < st.rt.ncolor ? st.rt.color[index] : NULL) : st.rt.depth;
+    if (!t) return false;
+    const int32_t *sc = st.scissor[0];
+    if (sc[0] != 0 || sc[1] != 0 || sc[2] < (int32_t)t->width || sc[3] < (int32_t)t->height) return false;
+    if (index >= 0 ? mask != 0xF : (!depth && !stencil) || (stencil && smask != 0xFF)) return false;
+    renderer_mark_gpu_owned(t);  // (as the pass would: the guest copy is stale from here on)
+    pending_clear.on = true;
+    if (index >= 0) {
+        pending_clear.color[index] = true;
+        for (int k = 0; k < 4; k++)
+            pending_clear.cc[index][k] = kind == 0 ? ((const float *)color)[k] : kind == 1 ? ((const int32_t *)color)[k] : ((const uint32_t *)color)[k];
+    } else {
+        if (depth) { pending_clear.depth = true; pending_clear.dval = dval; }
+        if (stencil) { pending_clear.stencil = true; pending_clear.sval = sval; }
+    }
+    if (g_debug_frame) LOG("[clear] recorded idx %d depth %d (%g) stencil %d for the next pass's load action\n", index, depth, dval, stencil);
+    return true;
+}
+
 static void clear(int index, int kind, const void *color, uint32_t mask, bool depth, float dval, bool stencil,
                   uint32_t sval, uint32_t smask) {
+    if (record_clear(index, kind, color, mask, depth, dval, stencil, sval, smask)) return;
     begin_pass();
     if (g_debug_frame) {
         int pw, ph;
@@ -2515,6 +2647,7 @@ static void exec_list(uint64_t handle, int depth) {
             }
             const struct { uint64_t tex[8]; NvnTextureView views[8]; uint8_t has_view[8]; uint64_t depth;
                            NvnTextureView dview; uint8_t has_dview; } *rt = x;
+            RtState old = st.rt;
             memset(&st.rt, 0, sizeof st.rt);
             st.rt.ncolor = (int)r->x[0];
             for (int i = 0; i < st.rt.ncolor; i++) {
@@ -2525,6 +2658,16 @@ static void exec_list(uint64_t handle, int depth) {
             st.rt.depth = (NvnTexture *)(uintptr_t)rt->depth;
             st.rt.dview = rt->dview;
             st.rt.has_dview = rt->has_dview;
+            bool same = rt_same(&old, &st.rt);
+            static int dedup = -1;
+            if (dedup < 0) { const char *e = ENV("LARECOMP_MTL_RT_DEDUP"); dedup = !e || atoi(e); }
+            if (dedup && same && enc && !st.rt_dirty) break;  // the targets already bound: the pass goes on
+            if (pending_clear.on && !(dedup && same)) {  // the recorded clear belongs to the targets being replaced
+                RtState new = st.rt;
+                st.rt = old;
+                begin_pass();
+                st.rt = new;
+            }
             st.rt_dirty = true;
             break;
         }
@@ -2666,7 +2809,26 @@ static void exec_list(uint64_t handle, int depth) {
             uint32_t type = (uint32_t)r->x[0];
             if (type < 32 && !(seen & (1u << type))) { seen |= 1u << type; LOG("[nvn] ReportCounter type %u\n", type); }
             // (Switch GPU ticks, 614.4 MHz: the game converts the difference to ns itself - see the Vulkan exec.c)
-            if (out) { out[0] = 0; out[1] = (uint64_t)((unsigned __int128)plat_now_ns() * 384 / 625); }
+            if (!out) break;
+            static int gpu = -1;
+            if (gpu < 0) gpu = !(getenv("LARECOMP_MTL_COUNTER") && !strcmp(getenv("LARECOMP_MTL_COUNTER"), "cpu"));
+            static uint64_t *prev_out;  // (frame pacing: the pair's start)
+            out[0] = 0;
+            out[1] = pace_end_counter(prev_out, out, ns_to_gpu_ticks(plat_now_ns()));
+            if (gpu && type == 0) {  // (type 0: timestamp) the GPU's time at this point, once it's done
+                renderer_submit();
+                pthread_mutex_lock(&ctr_lock);
+                if (nctr < CTR_MAX) {
+                    ctr_pend[nctr].out = out, ctr_pend[nctr].start = prev_out;
+                    ctr_pend[nctr].before = submit_seq, ctr_pend[nctr].after = submit_seq + 1;
+                    nctr++;
+                } else {
+                    static int warned;
+                    if (!warned++) LOG("[metal] timing counters: %d pending, this one keeps the host clock\n", CTR_MAX);
+                }
+                pthread_mutex_unlock(&ctr_lock);
+            }
+            prev_out = out;
             break;
         }
         case CMD_COPY_TEXTURE_TO_TEXTURE: {
@@ -2707,6 +2869,7 @@ static void exec_list(uint64_t handle, int depth) {
 // everything keyed by guest addresses or guest-owned objects - programs (by code address), pipelines (by program),
 // views, snapshots, bound state - so the next boot can't hit a stale entry. Metal's own shader cache stays warm.
 void renderer_reset(void) {
+    memset(&pending_clear, 0, sizeof pending_clear);  // (recorded for the old boot's textures)
     renderer_flush();
     pthread_mutex_lock(&gone_lock);
     ngone = 0;
@@ -2730,6 +2893,9 @@ void renderer_reset(void) {
     nfeedback = 0;
     g_cur_fs_hash = 0;
     last_bias_enc = nil;
+    pthread_mutex_lock(&ctr_lock);
+    nctr = 0;  // (pending timing counters point into the old boot's memory)
+    pthread_mutex_unlock(&ctr_lock);
     pthread_mutex_lock(&cb_lock);
     last_cb = nil;
     for (int i = 0; i < CB_HIST; i++) cb_hist[i] = nil;  // (they retain the old guest heap buffer)
@@ -2744,5 +2910,9 @@ void backend_execute(uint64_t handle) {
         if (sync_submit < 0) sync_submit = getenv("LARECOMP_SYNC_SUBMIT") ? 1 : 0;
         if (sync_submit) renderer_flush();  // old behaviour: finish the GPU work before returning
         else renderer_submit();  // the guest fences (nvnSyncWait) before reusing memory the GPU reads
+        if (counters_want_next()) {  // (a timing counter ended the list: its buffer after it, empty)
+            (void)cb();
+            renderer_submit();
+        }
     }
 }

@@ -99,7 +99,11 @@ static VkFmt fmt_of(uint32_t f) {
     case 0x4A: return (VkFmt){VK_FORMAT_BC4_SNORM_BLOCK};
     case 0x4B: return (VkFmt){VK_FORMAT_BC5_UNORM_BLOCK};
     // 0x4C = signed RGTC2; LARECOMP_BC5_UNORM=1 decodes it unsigned (see metal.m / notes/PLAN.md)
-    case 0x4C: return (VkFmt){getenv("LARECOMP_BC5_UNORM") ? VK_FORMAT_BC5_UNORM_BLOCK : VK_FORMAT_BC5_SNORM_BLOCK};
+    case 0x4C: {
+        static int unorm = -1;  // (per texture lookup: getenv scans the environment, notably on Windows)
+        if (unorm < 0) unorm = getenv("LARECOMP_BC5_UNORM") != NULL;
+        return (VkFmt){unorm ? VK_FORMAT_BC5_UNORM_BLOCK : VK_FORMAT_BC5_SNORM_BLOCK};
+    }
     case 0x4D: return (VkFmt){VK_FORMAT_BC7_UNORM_BLOCK};
     case 0x4E: return (VkFmt){VK_FORMAT_BC7_SRGB_BLOCK};
     case 0x4F: return (VkFmt){VK_FORMAT_BC6H_SFLOAT_BLOCK};
@@ -171,7 +175,9 @@ void renderer_set_scale(float sx, float sy) { g_rs_x = sx; g_rs_y = sy; }
 uint64_t renderer_present_count(void);
 
 static bool tex_scalable(const NvnTexture *t, bool render_target) {
-    if (getenv("LARECOMP_NO_SCALE")) return false;
+    static int off = -1;  // (per texture lookup: cached)
+    if (off < 0) off = getenv("LARECOMP_NO_SCALE") != NULL;
+    if (off) return false;
     // The compression hint is not a render-target requirement. ACNH uses ordinary R8/R16F/RG16F
     // screen buffers alongside compressed depth attachments. Scaling only the latter clips the
     // pass to a smaller rectangle, which then becomes a visible lighting/occlusion boundary.
