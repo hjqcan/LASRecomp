@@ -1163,7 +1163,7 @@ static VkPipeline clear_pipeline(int index, int kind, uint32_t mask, bool depth,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = pc_layout()};
     VkPipeline p = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p) != VK_SUCCESS) LOG("[vk] clear pipeline failed\n");
+    if (vk_create_graphics_pipelines(1, &pi, &p) != VK_SUCCESS) LOG("[vk] clear pipeline failed\n");
     clear_tab[slot].key = key;
     clear_tab[slot].pipe = p;
     return p;
@@ -1811,7 +1811,7 @@ static void build_pipeline(void *arg) {
                                        .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vs,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = k->prog->layout};
-    VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &pp->pipe);
+    VkResult r = vk_create_graphics_pipelines(1, &pi, &pp->pipe);
     if (r != VK_SUCCESS) {
         static int n;
         if (n++ < 10) LOG("[vk] pipeline creation failed: %d\n", r);
@@ -2872,7 +2872,7 @@ static void build_compute(void *arg) {
     uint64_t started = SDL_GetTicksNS();
     if (diagnostic) LOG("[compute] compiling %llx, %zu source bytes, driver optimization disabled\n",
                         (unsigned long long)cp->p.code[0], strlen(cp->si->msl));
-    VkResult r = vkCreateComputePipelines(g_vk.dev, g_vk.pcache, 1, &ci, NULL, &cp->pipe);
+    VkResult r = vk_create_compute_pipelines(1, &ci, &cp->pipe);
     if (diagnostic) LOG("[compute] compiled %llx in %.1f ms, result %d\n", (unsigned long long)cp->p.code[0],
                         (SDL_GetTicksNS() - started) / 1e6, r);
     atomic_fetch_add(&stat_compiles, 1);
@@ -4160,7 +4160,7 @@ void vk_convert_nv12(TexBackend *b, const void *nv12, uint32_t w, uint32_t h, ui
                                            .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia,
                                            .pViewportState = &vs, .pRasterizationState = &rs, .pMultisampleState = &ms,
                                            .pDepthStencilState = &ds, .pColorBlendState = &cbs, .pDynamicState = &dy, .layout = layout};
-        if (vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &pipes[bgra]) != VK_SUCCESS) {
+        if (vk_create_graphics_pipelines(1, &pi, &pipes[bgra]) != VK_SUCCESS) {
             LOG("[movie] NV12 pipeline failed\n");
             pipes[bgra] = VK_NULL_HANDLE;
             return;
@@ -4248,7 +4248,7 @@ static VkPipeline present_pipeline(VkFormat fmt) {
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = present_layout};
     VkPipeline p;
-    VK_CHECK(vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p));
+    VK_CHECK(vk_create_graphics_pipelines(1, &pi, &p));
     for (int i = 0; i < 4; i++) if (!cache[i].p) { cache[i].f = fmt; cache[i].p = p; break; }
     return p;
 }
@@ -4309,7 +4309,7 @@ static VkPipeline post_pipeline(const char *fs) {
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = post_layout};
     VkPipeline p;
-    VK_CHECK(vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p));
+    VK_CHECK(vk_create_graphics_pipelines(1, &pi, &p));
     for (int i = 0; i < 8; i++) if (!cache[i].p) { cache[i].fs = fs; cache[i].p = p; break; }
     return p;
 }

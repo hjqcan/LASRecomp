@@ -130,6 +130,15 @@ the device-idle/cache-save exit handler. Previously both producers could still
 be active there. Cache saves also report their requested byte count and retain
 the previous file if host allocation fails. These changes require another
 normal-close check; the observed driver cache-read crash is not yet qualified.
+The converted 3.0.1 save passed 24 hash-region checks across five files, with the
+original 1.0.0 source unchanged. The next run reproduced the cache-read crash in
+the three-minute background saver, independently of window close. Cache reads
+now hold an exclusive barrier across size query and data copy while graphics
+and compute pipeline creation share its read side. This preserves concurrent
+compilation and releases the barrier before disk I/O. A native mock-driver test
+checks those ordering properties. This is a conservative cache-snapshot change,
+not evidence that Vulkan requires external synchronization for ordinary caches;
+the observed Intel driver path still needs the actual scene regression.
 
 | Module | Guest base | Build ID |
 | --- | --- | --- |

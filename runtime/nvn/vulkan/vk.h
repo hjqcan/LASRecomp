@@ -96,6 +96,8 @@ void vk_mark_render_target(NvnTexture *t);  // attachment use also identifies un
 VkFormat vk_format(uint32_t nvn_format);
 VkFormat vk_image_format(uint32_t nvn_format, VkImageAspectFlags *aspect);  // (shader preparation)
 void vk_pipeline_cache_save(void);
+VkResult vk_create_graphics_pipelines(uint32_t count, const VkGraphicsPipelineCreateInfo *info, VkPipeline *out);
+VkResult vk_create_compute_pipelines(uint32_t count, const VkComputePipelineCreateInfo *info, VkPipeline *out);
 bool vk_format_alpha_one(uint32_t nvn_format);
 // View of t (optionally through an NVN texture view) for rendering or sampling.
 VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool render, int want_textype);

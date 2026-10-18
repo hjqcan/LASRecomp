@@ -181,7 +181,24 @@ void vk_log_memory(const char *why) {
 #define PCACHE_FILE "cache/vk_pipelines.bin"
 #define PCACHE_TAG "cache/vk_pipelines.bin.tag"
 static size_t pcache_saved;  // bytes of the last save (or load)
+// Pipeline creation may run concurrently, but serialize a cache snapshot against
+// every creator. This also keeps its size query and copy in the same cache state.
+static pthread_rwlock_t pcache_access = PTHREAD_RWLOCK_INITIALIZER;
 void vk_pipeline_cache_save(void);
+
+VkResult vk_create_graphics_pipelines(uint32_t count, const VkGraphicsPipelineCreateInfo *info, VkPipeline *out) {
+    pthread_rwlock_rdlock(&pcache_access);
+    VkResult result = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, count, info, NULL, out);
+    pthread_rwlock_unlock(&pcache_access);
+    return result;
+}
+
+VkResult vk_create_compute_pipelines(uint32_t count, const VkComputePipelineCreateInfo *info, VkPipeline *out) {
+    pthread_rwlock_rdlock(&pcache_access);
+    VkResult result = vkCreateComputePipelines(g_vk.dev, g_vk.pcache, count, info, NULL, out);
+    pthread_rwlock_unlock(&pcache_access);
+    return result;
+}
 
 static void pipeline_cache_tag(char *out, size_t n) {
     char gpu[400], uuid[2 * VK_UUID_SIZE + 1];
@@ -327,24 +344,26 @@ static void create_device(void) {
 void vk_pipeline_cache_save(void) {
     static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&lock);
+    pthread_rwlock_wrlock(&pcache_access);
     size_t sz = 0;
+    void *data = NULL;
+    bool copied = false;
     if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) == VK_SUCCESS && sz && sz != pcache_saved) {
         LOG("[vk] pipeline cache: reading %zu bytes\n", sz);
-        void *data = malloc(sz);
-        if (!data) {
-            LOG("[vk] pipeline cache: insufficient host memory; keeping the previous cache\n");
-            pthread_mutex_unlock(&lock);
-            return;
-        }
-        if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, data) == VK_SUCCESS && shader_cache_write(PCACHE_FILE, data, sz)) {
-            char tag[512];
-            pipeline_cache_tag(tag, sizeof tag);
-            if (!shader_cache_tag_ok(PCACHE_TAG, tag)) shader_cache_tag_write(PCACHE_TAG, tag);
-            pcache_saved = sz;
-            LOG("[vk] pipeline cache: saved %zu bytes\n", sz);
-        }
-        free(data);
+        data = malloc(sz);
+        if (data) copied = vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, data) == VK_SUCCESS;
+        else LOG("[vk] pipeline cache: insufficient host memory; keeping the previous cache\n");
     }
+    pthread_rwlock_unlock(&pcache_access);
+    // Disk I/O does not hold up new pipeline creation.
+    if (copied && shader_cache_write(PCACHE_FILE, data, sz)) {
+        char tag[512];
+        pipeline_cache_tag(tag, sizeof tag);
+        if (!shader_cache_tag_ok(PCACHE_TAG, tag)) shader_cache_tag_write(PCACHE_TAG, tag);
+        pcache_saved = sz;
+        LOG("[vk] pipeline cache: saved %zu bytes\n", sz);
+    }
+    free(data);
     pthread_mutex_unlock(&lock);
 }
 
