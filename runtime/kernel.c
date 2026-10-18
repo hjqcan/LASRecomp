@@ -761,7 +761,11 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
             else v = kernel_memory_info(id0);
             break;
         case 18: v = title_profile_current()->program_id; break;
-        case 20: v = 0; break;
+        case 20:  // UserExceptionContextAddress: the SDK stores its handler stack here.
+            if (x[3] != 0) r = R_INVALID_COMBINATION;
+            else if ((uint32_t)x[2] != PSEUDO_PROCESS) r = R_INVALID_HANDLE;
+            else v = PROCESS_LOCAL_BASE;
+            break;
         case 28:  // AliasRegionExtraSize (18.0.0+): no dedicated alias-extra subregion.
             if (x[3] != 0) r = R_INVALID_COMBINATION;
             else if ((uint32_t)x[2] != PSEUDO_PROCESS) r = R_INVALID_HANDLE;
@@ -858,6 +862,8 @@ void kernel_init(void) {
     kernel_region_add(HLE_BASE, HLE_SIZE, 3, 5);
     kernel_region_add(HLE_HEAP, HLE_HEAP_SIZE, 4, 3);
     kernel_region_add(TLS_BASE, TLS_SIZE, 0xC, 3);
+    plat_commit(PROCESS_LOCAL_BASE, PROCESS_LOCAL_SIZE);
+    kernel_region_add(PROCESS_LOCAL_BASE, PROCESS_LOCAL_SIZE, 0xC, 3);
     for (int i = 0; i < g_nmodules; i++) {
         Module *m = &g_modules[i];
         kernel_region_add(m->base + m->text_off, m->ro_off - m->text_off, 3, 5);

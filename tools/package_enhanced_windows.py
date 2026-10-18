@@ -60,7 +60,7 @@ def main():
     for name in ('lasgen', 'rando-gen'):
         copy(args.helpers/name, name)
     copy(args.zig, 'zig')
-    for name in ('SDL3.dll', 'avcodec-63.dll', 'avformat-63.dll', 'avutil-61.dll', 'swscale-10.dll',
+    for name in ('SDL3.dll', 'libopus-0.dll', 'avcodec-63.dll', 'avformat-63.dll', 'avutil-61.dll', 'swscale-10.dll',
                  'libiconv-2.dll', 'libshaderc_shared.dll', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll'):
         copy(args.dlls/name, name)
     for name in ('cpu.h', 'simd.h', 'simd_fp.h', 'gamelib.h', 'guest_jump.h'):

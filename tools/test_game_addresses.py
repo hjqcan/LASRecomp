@@ -34,7 +34,9 @@ fixture = json.loads((ROOT/'tools/tests/patches_v1_0_0.json').read_text())
 assert set(PATCHES) == {int(a, 16) for a in fixture['patches']}
 for address, expected in fixture['patches'].items():
     address = int(address, 16)
-    gen = SimpleNamespace(base=address, nso=SimpleNamespace(image=struct.pack('<I', int(expected['word'], 16))))
+    prefix = b''.join(struct.pack('<I', int(word, 16)) for word in expected.get('preceding_words', []))
+    gen = SimpleNamespace(base=address-len(prefix),
+                          nso=SimpleNamespace(image=prefix+struct.pack('<I', int(expected['word'], 16))))
     code = PATCHES[address](gen, address)
     assert hashlib.sha256(code.encode()).hexdigest() == expected['sha256'], f'Patch output changed at {address:x}'
 assert hashlib.sha256(json.dumps(HOOKS, sort_keys=True).encode()).hexdigest() == fixture['hooks_sha256']

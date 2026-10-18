@@ -380,12 +380,19 @@ PATCHES[BOTTLE3_USE_SITE] = _bottle3_use
 BOSS_SPAWN_SITE = A.BOSS_SPAWN_SITE
 
 
+# Enemy randomizer, mode Random (runtime/hle/enemy_random.c): the same spot first lets the runtime re-roll a randomized
+# enemy in the spawn info (type +8, the eight parameters +0x10, as in its room file's record), then takes the type
+# again (x23) and its table entry (x8 = x27 + type * 0x58, x27 = the table: main+0x1bcc898).
 def _boss_spawn(gen, a):
     w = patch_word(gen, a)
     assert w == 0xf9400118, hex(w)  # ldr x24, [x8]
+    w = patch_word(gen, a - 4)
+    assert w == 0x9b086ee8, hex(w)  # madd x8, x23, x8, x27
     return ('{ extern uint64_t rt_actor_create_fn(uint64_t fn, uint32_t type, uint64_t info); '
+            'extern void rt_enemy_spawn(uint64_t info); rt_enemy_spawn(c->x[2]); '
+            'c->x[23] = LD16(c->x[2] + 8); c->x[8] = c->x[27] + c->x[23] * 0x58ull; '
             'c->x[24] = rt_actor_create_fn(LD64(c->x[8]), (uint32_t)c->x[23], c->x[2]); }'
-            f'  /* {a:#x}: ldr x24, [x8] (actor create fn: boss souls) */')
+            f'  /* {a:#x}: ldr x24, [x8] (actor create fn: boss souls, enemy mode Random) */')
 
 
 PATCHES[BOSS_SPAWN_SITE] = _boss_spawn

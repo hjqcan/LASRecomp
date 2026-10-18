@@ -9,6 +9,7 @@ import tempfile
 from game_catalog import GAMES, catalog, code_identity
 from host_paths import io_path, logical_path
 from test_import_game import pfs_files, synthetic_nso, synthetic_romfs, ncz
+from test_cross_fragment_tables import adr
 
 helper = Path(sys.argv[1]).resolve()
 actual = json.loads(subprocess.check_output([str(helper), '--import-nsz', '--catalog'], text=True, encoding='utf-8'))
@@ -72,4 +73,21 @@ with tempfile.TemporaryDirectory(prefix='frozen-adapters-', dir=io_path(tempfile
     assert release.main_build_id in (generated / 'main_table.c').read_text()
     emitted = (generated / 'main_000.c').read_text()
     assert 'ldxp64(c,' in emitted and 'stxp64(c,' in emitted and 'rt_udf(' not in emitted
-    print('PASS: frozen catalog, all adapter imports, full receipts, real ARM64 generation and mismatched-helper rejection')
+    # A bounded table invokes Unicorn's native JIT. Straight-line generation
+    # alone does not catch a frozen Windows helper missing the pe_no_cfg step.
+    table_raw = bytearray(raw)
+    base = release.modules[0].base
+    struct.pack_into('<I', table_raw, 0x100, 0x94000002)  # BL text+8, skipping MOD0 offset
+    table_code = [0x7100091F, 0x54000188, adr(9, base + 0x10, base + 0x250),
+                  adr(10, base + 0x14, base + 0x30), 0x7868792B, 0x8B0B094A, 0xD61F0140]
+    struct.pack_into('<7I', table_raw, 0x108, *table_code)
+    struct.pack_into('<7I', table_raw, 0x124, *([0xD65F03C0] * 7))
+    struct.pack_into('<QQ', table_raw, 0x180, 0, 0)  # no relocations in this fixture
+    struct.pack_into('<3H', table_raw, 0x1D0, 0, 1, 2)
+    source.write_bytes(table_raw)
+    compiled = subprocess.run(command + [code_identity(game, release)], capture_output=True, encoding='utf-8')
+    assert compiled.returncode == 0, compiled.stdout + compiled.stderr
+    emitted = (generated / 'main_000.c').read_text()
+    for offset in (0x30, 0x34, 0x38):
+        assert f'case 0x{base + offset:x}ull:' in emitted, emitted
+    print('PASS: frozen catalog, all adapter imports, full receipts, ARM64/JIT table generation and mismatched-helper rejection')

@@ -55,10 +55,20 @@ for version in ('1.0.0', '1.1.0'):
         image=bytearray(0x104)
         gen=SimpleNamespace(base=actual-0x100,game_version=version,nso=SimpleNamespace(image=image))
         struct.pack_into('<I',image,0x100,word)
+        preceding = expected.get('preceding_words', [])
+        for i, previous in enumerate(preceding):
+            struct.pack_into('<I', image, 0x100-4*(len(preceding)-i), int(previous,16))
         code=mapped[actual](gen,actual)
         canonical=re.sub(r'(?<![0-9a-fA-F])700[0-9a-fA-F]{7}(?![0-9a-fA-F])',
                          lambda m:f'{original_address(int(m[0],16),version):x}',code)
         assert hashlib.sha256(canonical.encode()).hexdigest()==expected['sha256'], (version,text)
+        for i in range(len(preceding)):
+            offset=0x100-4*(len(preceding)-i)
+            image[offset]^=1
+            try: mapped[actual](gen,actual)
+            except AssertionError: pass
+            else: raise AssertionError(f'Changed preceding instruction accepted: {version} {text}')
+            image[offset]^=1
         if site==ADDRESS.FONT_BOX_GLYPH_SITE:
             assert f'goto L_{address(ADDRESS.FONT_BOX_GLYPH_SKIP,version):x}' in code
             image[0x100]^=1

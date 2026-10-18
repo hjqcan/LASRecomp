@@ -37,6 +37,8 @@ static inline void __attribute__((format(printf, 1, 2))) rt_log(const char *fmt,
 #define HLE_SIZE     0x0000100000ull
 #define TLS_BASE     0x7090000000ull
 #define TLS_SIZE     0x0000100000ull
+#define PROCESS_LOCAL_SIZE 0x1000ull
+#define PROCESS_LOCAL_BASE (TLS_BASE - PROCESS_LOCAL_SIZE)  // process exception context, before thread TLS
 #define HLE_HEAP     0x7092000000ull   // guest-visible memory owned by host code
 #define HLE_HEAP_SIZE 0x000E000000ull
 #define ALIAS_BASE   0x7100000000ull   // alias region (svcMapMemory targets)

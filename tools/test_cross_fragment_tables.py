@@ -94,6 +94,27 @@ class CrossFragmentTableTest(unittest.TestCase):
             adr(11,b+16,b+0x80),adr(9,b+20,b+0x100),0x7860796a,0x8b0a0929,0xd61f0120])
         self.assertEqual(m.jump_table(b+32,b+16,b+0x40),[b+0x110,b+0x180])
 
+    def test_taken_guard_before_long_stack_frame_prologue(self):
+        b=0x7008000000
+        # cmp w0,#1; b.ls body; ret; sub sp,sp,#32; stp x29,x30,[sp]; mov x29,sp.
+        prologue=[0xd10083ff,0xa9007bfd,0x910003fd]+[0xd503201f]*12
+        code=[0x7100041f,0x54000049,0xd65f03c0]+prologue
+        at=b+4*len(code)
+        code += [adr(11,at,b+0x80),adr(9,at+4,b+0x100),0x7860796a,0x8b0a0929,0xd61f0120]
+        m=self.table_module(code)
+        targets=[b+0x110,b+0x180]
+        self.assertEqual(m.jump_table(at+16,b,b+0x80),targets)
+        labels,external,tables=m.scan(b,b+0x80)
+        self.assertTrue(set(targets).issubset(external))
+        self.assertEqual(tables[at+16],targets)
+        emitted='\n'.join(m.emit_function(b,b+0x80,labels,tables,{}))
+        for target in targets:
+            self.assertIn(f'return f_{target:x}(c);',emitted)
+        # A call may clobber the index; do not walk through it to use the guard.
+        code[6]=0x94000030
+        m=self.table_module(code)
+        self.assertIsNone(m.jump_table(at+16,b,b+0x80))
+
     def test_index_copies_survive_a_call_before_the_guard(self):
         b=0x7008000000
         m=self.table_module([0x92407c13,0xaa0003f4,0xd2800540,0x9400000d,

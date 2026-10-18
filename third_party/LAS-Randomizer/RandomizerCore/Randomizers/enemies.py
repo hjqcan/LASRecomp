@@ -207,7 +207,7 @@ def kill_linked(room_data, pool):
     return out
 
 
-# (LARecomp: the 'one group per room' and 2D restrictions)
+# (LARecomp: the 'one group per room' and 2D restrictions, shared with tools/rando/enemy_random.py - Random mode)
 NO_2D = (0x1E, 0x30, 0x37, 0x38, 0x3F, 0x41, 0x4A, 0x4D)
 FLY_BOMBS = (0x26, 0x3E, 0x48)  # vires, zirros, bone-putters
 BLOCKING = (0x8, 0x9, 0x13, 0x14, 0x2E, 0x2F, 0x30, 0x35, 0x36, 0x41, 0x4D)  # shield/spear, mimics, color dungeon orbs
@@ -244,6 +244,11 @@ def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy
     )
     fly_bombs, blocking = FLY_BOMBS, BLOCKING
     excluded_actors = set(excluded_actors) | kill_linked(room_data, total_ids)  # (LARecomp)
+    # LARecomp, enemy mode Random: the actors re-rolled at every load (runtime/hle/enemy_random.c), recorded with what
+    # the roll needs (tools/rando/enemy_random.py writes them): exactly those this roll changes, minus mini-bosses
+    random_rooms = enemy_settings.get('random')
+    room_slots = [] if random_rooms is not None and enemy_settings['types'] else None
+    restr_start = list(restr)
     
     room_has_miniboss = False
 
@@ -255,6 +260,8 @@ def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy
         if enemy_settings['types']:
             enemy_type = [v for k,v in ENEMY_DATA['Actors'].items() if v['id'] == act.type][0]['type']
             new_enemy = -1
+            vanilla = (act.type, list(act.parameters), act.rotY, (act.scaleX, act.scaleY, act.scaleZ),
+                       act.relationships.e)
             
             if act.type in restr:
                 restr.remove(act.type)
@@ -347,6 +354,10 @@ def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy
                 act.scaleY = 1.0
                 act.scaleZ = 1.0
                 edited_room = True
+
+            if room_slots is not None:
+                cls = 'air_field' if enemy_type == 'air' and folder == 'Field' else enemy_type
+                room_slots.append({'key': act.key, 'cls': cls, 'vanilla': vanilla, 'name_len': len(act.name)})
         
         if enemy_settings['sizes']:
             new_scale = random.uniform(0.5, 1.5)
@@ -354,5 +365,9 @@ def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy
             act.scaleY = new_scale
             act.scaleZ = new_scale
             edited_room = True
+
+    if room_slots:  # (the room's file must be in the seed: the runtime re-rolls the seed's copy)
+        random_rooms[file[:-4]] = {'restr': restr_start, 'slots': room_slots}
+        edited_room = True
     
     return random.getstate(), edited_room

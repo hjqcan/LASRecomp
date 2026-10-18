@@ -22,6 +22,16 @@ unpack() { rm -rf "$S/$2" && mkdir -p "$S/$2" && tar -xf "$S/$1" -C "$S/$2" --st
 fetch https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz \
       8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e ffmpeg-9.0.2.tar.xz
 
+fetch https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz \
+      6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1 opus-1.6.1.tar.gz
+
+if [ ! -f "$P/lib/libopus.dll.a" ]; then
+    unpack opus-1.6.1.tar.gz opus
+    (cd "$S/opus" && CC=clang ./configure --prefix="$P" --host=x86_64-w64-mingw32 \
+        --enable-shared --disable-static --disable-extra-programs --disable-doc \
+        && make -j"$JOBS" && make install)
+fi
+
 if [ ! -f "$P/lib/libavcodec.dll.a" ]; then
     unpack ffmpeg-9.0.2.tar.xz ffmpeg
     (cd "$S/ffmpeg" && ./configure --prefix="$P" --cc=clang --cxx=clang++ --arch=x86_64 --target-os=mingw32 \

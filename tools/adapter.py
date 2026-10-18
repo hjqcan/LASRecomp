@@ -89,7 +89,7 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='command', required=True)
     check = commands.add_parser('check', help='Validate source descriptors and generated native tables')
     check.add_argument('--write', action='store_true', help='Regenerate native tables after review')
-    doctor = commands.add_parser('doctor', help='Report exact adapter requirements and missing runtime calls')
+    doctor = commands.add_parser('doctor', help='Report adapter requirements and observed CPU/GPU/service blockers')
     doctor.add_argument('--game', default='las')
     doctor.add_argument('--game-dir', type=Path)
     doctor.add_argument('--pending', action='store_true', help='Inspect an unpublished managed candidate, without certifying it')
@@ -147,11 +147,10 @@ def main(argv=None):
                 result['module_plan'] = plan
                 result['installation'] = installation
             if args.log:
-                # Only diagnostic records, not arbitrary instructions or full player logs.
-                records = args.log.read_text(encoding='utf-8', errors='replace').splitlines()
-                result['unimplemented_calls'] = list(dict.fromkeys(line[:500] for line in records
-                    if '[hle] UNIMPLEMENTED ' in line or '[ipc] STUB ' in line or 'missing host implementation:' in line or
-                    'missing service implementation:' in line))[:200]
+                from runtime_diagnostics import runtime_diagnostics
+                diagnostics = runtime_diagnostics(args.log)
+                result['unimplemented_calls'] = diagnostics.pop('unimplemented_calls')
+                result['runtime_diagnostics'] = diagnostics
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except (OSError, ValueError, KeyError) as error:

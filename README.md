@@ -14,6 +14,10 @@ and XCZ archives, imports them and builds their native game libraries.
 See [multi-game setup](docs/multi-game.md) and the
 [ACNH validation and limits](docs/ACNH-port.md).
 
+Pokémon Legends: Z-A development work is maintained directly on `enhanced`.
+It remains development-only and is not playable; see the
+[current probe results and blockers](docs/pokemon-za-port.md).
+
 > [!IMPORTANT]
 > **This project was made almost exclusively with AI.** Nearly all of the code, tooling, reverse engineering and
 > documentation in this repository was written by and will be maintained by an AI (Anthropic's Claude, through Claude Code),
@@ -149,14 +153,14 @@ own game files, with the bundled generator (`make gen-helper`) and compiler (`to
 
 ### macOS
 
-Requirements: Apple Silicon, Xcode command line tools (clang), [Homebrew](https://brew.sh) `sdl3` and `ffmpeg`,
+Requirements: Apple Silicon, Xcode command line tools (clang), [Homebrew](https://brew.sh) `sdl3`, `ffmpeg` and `opus`,
 Python 3.12.
 
 1. Build: `make -j10` -> `build/lasrecomp`. Set up your game files (above), then `make gen` and `make -j10` again.
 2. Randomizer: create the Python environment for LAS-Randomizer, from `third_party/LAS-Randomizer`:
    `python3.12 -m venv venv && venv/bin/pip install -r requirements.txt`.
 3. Run: `./build/lasrecomp extracted` (start screen) or `./build/lasrecomp extracted --play` (straight into the game).
-4. Package: `make deps` (once: SDL3, FFmpeg, keystone and Python from pinned sources, built for macOS 15),
+4. Package: `make deps` (once: SDL3, FFmpeg, libopus, keystone and Python from pinned sources, built for macOS 15),
    `make rando-helper` (the seed generator as a standalone helper, so players need no Python), `make gen-helper` and
    `tools/fetch_zig.sh` (what the start screen builds the game code with), then `make app` ->
    `build/LAS Recomp.app` (macOS 15+, Apple Silicon) and `make dmg` -> `build/dist/LAS Recomp-<version>-macOS.dmg`.
@@ -167,7 +171,7 @@ Requirements: Windows 10+ x86-64, a CPU with AVX2 and a GPU with Vulkan 1.3. Mor
 [docs/BUILD-windows.md](docs/BUILD-windows.md).
 
 1. One-time setup, in PowerShell from the repo root: `powershell -ExecutionPolicy Bypass -File tools\setup_windows.ps1`.
-   It installs MSYS2 (UCRT64: clang, make, SDL3, FFmpeg, Vulkan, shaderc), Python 3.12 for the tools and the
+   It installs MSYS2 (UCRT64: clang, make, SDL3, FFmpeg, libopus, Vulkan, shaderc), Python 3.12 for the tools and the
    randomizer (`third_party\LAS-Randomizer\venv`) and switches the clone to LF line endings.
 2. Build, from an MSYS2 UCRT64 shell (or Git Bash with `export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"`):
    `make -j` -> `build/lasrecomp.exe`. Set up your game files (above), then `make gen` and `make -j` again.
@@ -177,7 +181,7 @@ Requirements: Windows 10+ x86-64, a CPU with AVX2 and a GPU with Vulkan 1.3. Mor
 
 ### Linux
 
-Requirements: x86-64 with AVX2 (or aarch64, experimental), a GPU with Vulkan 1.3, clang, SDL 3, FFmpeg, shaderc and
+Requirements: x86-64 with AVX2 (or aarch64, experimental), a GPU with Vulkan 1.3, clang, SDL 3, FFmpeg, libopus, shaderc and
 Vulkan Memory Allocator from your distribution, Python 3.12. Packages, cross builds and details in
 [docs/linux.md](docs/linux.md).
 
@@ -286,6 +290,8 @@ none of their files are used):
 - **Ryujinx** by the Ryujinx Team and Contributors (MIT, `third_party/ryujinx/LICENSE.txt`) - the audio renderer's
   reverb is a port of its ReverbState / reverb command and the mixer is modelled on its AudioRenderer; its shader
   instruction decoders were the bit-layout reference for parts of the shader translator
+- **Dusklight** by the TwilitRealm team (https://github.com/TwilitRealm/dusklight) - design inspiration for the start
+  screen (Play / Settings / Game Files layout)
 - **SuperMarioWonderRecomp** by BelmanteGu (https://github.com/BelmanteGu/SuperMarioWonderRecomp) - its
   ahead-of-time shader approach is what the first-launch shader preparation follows (a shipped list of shader variants,
   built on the player's machine from their own game files)
@@ -301,7 +307,7 @@ this repository and not in release builds. You must provide your own legally obt
 
 LAS Recomp's own code (the recompiler tools, the runtime, the randomizer additions) is open source under the
 [MIT License](LICENSE). Third-party components keep their own licenses: LAS-Randomizer (MIT), code ported from Ryujinx (MIT), Dear ImGui (MIT),
-Vulkan Memory Allocator (MIT), SMAA (MIT), AMD FSR 1 (MIT), the Baloo 2 font (SIL OFL 1.1), the DejaVu Sans font (Bitstream Vera / DejaVu license), SDL 3 (zlib), FFmpeg (LGPL 2.1+, linked dynamically), the
+Vulkan Memory Allocator (MIT), SMAA (MIT), AMD FSR 1 (MIT), the Baloo 2 font (SIL OFL 1.1), the DejaVu Sans font (Bitstream Vera / DejaVu license), SDL 3 (zlib), libopus (BSD 3-clause), FFmpeg (LGPL 2.1+, linked dynamically), the
 Zig compiler (MIT; its LLVM / Clang / LLD: Apache 2.0 with LLVM exceptions; its C library headers keep their own
 licenses), and the generator helpers' bundled libraries listed under Credits (oead / evfl / Keystone in the seed
 generator and Unicorn in the game code generator are under the GPL, versions in the table below: each helper is a separate program the game runs, and its
@@ -327,6 +333,7 @@ Release builds include these components; their source code for the exact version
 | python-zstandard (NSZ importer; includes Zstandard) | 0.25.0 | BSD 3-clause (Zstandard: BSD 3-clause option) | https://github.com/indygreg/python-zstandard, https://github.com/facebook/zstd |
 | cryptography (NSP / NCA decryption) | 50.0.2 | Apache-2.0 OR BSD-3-Clause; bundled OpenSSL: Apache-2.0 | https://github.com/pyca/cryptography |
 | FFmpeg (LGPL configuration, macOS, Windows and Linux builds) | 9.0.2 | LGPL 2.1+ | https://ffmpeg.org/releases/ |
+| libopus (enhanced hwopus service) | 1.6.1 | BSD 3-clause | https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz |
 | SDL 3 | 3.4.18 (macOS, Windows), 3.4.16 (Linux) | zlib | https://github.com/libsdl-org/SDL/releases/tag/release-3.4.18, https://github.com/libsdl-org/SDL/releases/tag/release-3.4.16 |
 | shaderc (Windows, Linux: GLSL to SPIR-V; Linux: with glslang, SPIRV-Tools inside) | 2026.4 (Windows), 2026.3 (Linux) | Apache 2.0 | https://github.com/google/shaderc |
 | libiconv (Windows: used by SDL 3) | 1.19 | LGPL 2.1+ | https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.19.tar.gz |

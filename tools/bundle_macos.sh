@@ -50,6 +50,8 @@ cp third_party/fonts/DejaVu/DejaVuSans.ttf "$C/Resources/DejaVuSans.ttf"  # (the
 cp third_party/fonts/DejaVu/LICENSE "$C/Resources/DejaVu-LICENSE.txt"
 cp third_party/ryujinx/LICENSE.txt "$C/Resources/Ryujinx-LICENSE.txt"
 
+cp third_party/release-licenses/opus-COPYING "$C/Resources/"
+
 # ---- dylibs: copy every non-system dependency, recursively; point all references at @rpath/<name>
 is_system() { case "$1" in /usr/lib/*|/System/*) return 0;; esac; return 1; }
 find_dep() {  # dep as referenced by (the original of) $2 -> a real file
