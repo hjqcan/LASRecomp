@@ -134,7 +134,7 @@ CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime
 
 all: $(EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))
 
-$(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h runtime/guest_jump.h $(if $(wildcard $(GEN)/research-stores.json),runtime/research_store_probe.h runtime/research_stores.h)
+$(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/guest_jump.h $(if $(wildcard $(GEN)/research-stores.json),runtime/research_store_probe.h runtime/research_stores.h)
 	@mkdir -p $(dir $@)
 	@$(CC) $(GENFLAGS) -c $< -o $@
 

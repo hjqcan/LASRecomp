@@ -392,10 +392,8 @@ void renderer_sync(void) {
 uint64_t renderer_fence_seq(void) {
     pthread_mutex_lock(&seq_lock);
     Sub *s = &subs[cur_sub];
-    // After a ring wrap this slot still carries the previous generation's
-    // begun flags until sub() starts a new recording. An empty QueueFenceSync
-    // must name the last real submission, not a future value that submit's
-    // empty-work fast path will never signal.
+    // A reused slot still has its old begun flags until sub() prepares it. An empty queue fence must refer to
+    // the last submission, not a future value that submit's empty-work fast path will never signal.
     bool pending = s->seq == submit_seq + 1 && (s->main_begun || s->upload_begun);
     uint64_t q = submit_seq + (pending ? 1 : 0);
     pthread_mutex_unlock(&seq_lock);

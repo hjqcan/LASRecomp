@@ -136,6 +136,7 @@ struct GenOpts {
     bool pet_rooster = false, pet_ghost = false;  // pets in the pool (tools/rando/pets.py)
     bool pet_marin = false;   // Marin in the pool, the desert closed until she wakes the Walrus (open-desert off)
     int shopsanity = 0;       // off / vanilla prices / random prices (tools/rando/shopsanity.py)
+    int miniboss_freq = 0;    // miniboss-frequency: overworld mini-boss chance 1x / 2x / 3x / every room (enemies.py)
     bool trendsanity = false; // every Trendy Game prize is a check (tools/rando/trendsanity.py)
     bool boss_souls = false;  // boss-souls: a boss only appears once its soul is found (tools/rando/souls.py)
     bool hookshot_any = false;  // hookshot-anything: latches onto any surface (runtime/hle/hookshot.c, hookshot_logic.py)
@@ -154,6 +155,7 @@ static GenOpts g_opts;
 // prizes (v2 / v3 IDs had 20: they still load, the options they don't hold are off). The logic, skip-story and
 // entrance tier 3 fields stay in the layout but are fixed now (basic, on, tier 2 includes the connector caves).
 enum { SEED_ID_VERSION = 4, SEED_ID_BITS = 125, SEED_ID_BITS_V3 = 100, SEED_ID_FLAGS_V3 = 23 };
+enum { SEED_ID_MBFREQ = SEED_ID_BITS - 5 - 2 };  // mini-boss frequency: 2 bits at the end of the data (v4 IDs)
 static const char kB32[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 struct Bits {
@@ -191,6 +193,8 @@ static void seed_id_encode(GenOpts &o, char *out, size_t cap) {
     for (int i = 0; bool *f = opt_flags(o, i); i++) x.put(*f, 1);
     int data = x.n;
     x.put(0, SEED_ID_BITS - 5 - data);
+    x.n = SEED_ID_MBFREQ;  // (a fixed place before the checksum: IDs made before it hold 0 = normal)
+    x.put(o.miniboss_freq, 2);
     x.put(id_check(x, SEED_ID_BITS - 5), 5);
     std::string s;
     for (int c = 0; c < SEED_ID_BITS / 5; c++) {
@@ -233,6 +237,7 @@ static std::string seed_id_decode(const char *text, GenOpts &o) {
     t.room_shuffle = ver >= 3 ? (int)x.get(2) : 0;
     t.shopsanity = ver >= 4 ? (int)x.get(2) : 0;
     for (int i = 0; bool *f = opt_flags(t, i); i++) *f = ver >= 4 || i < SEED_ID_FLAGS_V3 ? x.get(1) : 0;
+    if (bits == SEED_ID_BITS) { x.n = SEED_ID_MBFREQ; t.miniboss_freq = (int)x.get(2); } else t.miniboss_freq = 0;
     if (t.room_shuffle > 3 || t.shopsanity > 2 || t.logic > 4 || t.traps > 4 || t.seashells > 5 || t.tunic >= 14 ||
         t.entrances > 3 || t.start_rupees > 999)
         return "not a valid seed ID";
@@ -337,6 +342,7 @@ static void start_generation(void) {
             g_opts.pets_in_dungeons ? "true" : "false");
     fprintf(f, " \"skip-story-events\": true, \"tunic-color\": \"default\", \"enemy-minibosses\": %s,\n",
             g_opts.randomize_enemies && g_opts.enemy_minibosses ? "true" : "false");
+    fprintf(f, " \"miniboss-frequency\": %d,\n", g_opts.randomize_enemies && g_opts.enemy_minibosses ? g_opts.miniboss_freq : 0);
     static const char *ks[] = {"off", "keys", "keys+nk", "all"};
     fprintf(f, " \"keysanity\": \"%s\",\n", ks[g_opts.keysanity]);
     static const char *rs[] = {"off", "coherent", "chaos", "madness"};
@@ -767,6 +773,14 @@ extern "C" void rando_tab_draw(float scale) {
     opt_toggle("Include mini-bosses", &g_opts.enemy_minibosses, false,
                "Some overworld enemies become mini-bosses: Hinox, Armos Knight, Dodongo Snake, Giant Buzz Blob, Smasher, "
                "Avalaunch, Rolling Bones, Cue Ball, Blaino, Master Stalfos, Moblin Chief or Lanmola.");
+    {
+        opt_indent(1);
+        if (!g_opts.randomize_enemies || !g_opts.enemy_minibosses) opt_disable_next();
+        static const char *const freq[] = {"Normal", "2x", "3x", "All"};
+        opt_choice("Mini-boss frequency", &g_opts.miniboss_freq, freq, 4, 0,
+                   "How often overworld enemies become mini-bosses. All: one in every screen with enemies.");
+        opt_indent(-1);
+    }
     opt_indent(-1);
     opt_toggle("Boss souls", &g_opts.boss_souls, false,
                "Each dungeon boss (and the Color Dungeon's) has a soul hidden among the items. Until you find it the boss "

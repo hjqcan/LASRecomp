@@ -50,12 +50,19 @@ jobs:
           cmake --install sdl-build
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp DEPS="$HOME/sdl3"
+      - name: Movie extractor lifecycle regression
+        run: |
+          clang -std=gnu11 -O1 tools/test_movie_extractor.c $(pkg-config --cflags --libs libavformat libavcodec libavutil libswscale) -pthread -o build/test-movie-extractor
+          mkdir -p build/movie-test
+          build/test-movie-extractor build/movie-test
       - name: Kernel condition-variable regression
         run: |
           clang -O2 -pthread tools/test_condvar.c -o build/test-condvar
           build/test-condvar
       - name: Settings regression tests
         run: python3 tools/test_settings.py
+      - name: Vulkan fence sequence regression
+        run: python3 tools/test_fence_sequence.py
       - name: Audio effect impulse and routing regressions
         run: |
           clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_delay.c -o build/test-audio-delay
@@ -103,6 +110,15 @@ jobs:
         run: brew install sdl3 ffmpeg
       - name: App builds
         run: make -j"$(sysctl -n hw.ncpu)" build/lasrecomp
+      - name: SIMD rounding and host-state regression
+        run: |
+          clang -std=gnu11 -O1 -pthread tools/test_simd_rounding.c -o build/test-simd-rounding
+          build/test-simd-rounding
+      - name: Movie extractor lifecycle regression
+        run: |
+          clang -std=gnu11 -O1 -I"$(brew --prefix ffmpeg)/include" -L"$(brew --prefix ffmpeg)/lib" tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -pthread -o build/test-movie-extractor
+          mkdir -p build/movie-test
+          build/test-movie-extractor build/movie-test
       - name: Kernel condition-variable regression
         run: |
           clang -O2 -pthread tools/test_condvar.c -o build/test-condvar
@@ -146,15 +162,22 @@ jobs:
         with:
           msystem: UCRT64
           update: true
-          install: make git
+          install: make git python
           pacboy: clang:p lld:p binutils:p sdl3:p ffmpeg:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
             vulkan-memory-allocator:p
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp.exe
+      - name: Movie extractor lifecycle regression
+        run: |
+          clang -std=gnu11 -O1 tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -o build/test-movie-extractor.exe
+          mkdir -p build/movie-test
+          build/test-movie-extractor.exe build/movie-test
       - name: Kernel condition-variable regression
         run: |
           clang -O2 -pthread tools/test_condvar.c -o build/test-condvar.exe
           build/test-condvar.exe
+      - name: Vulkan fence sequence regression
+        run: python tools/test_fence_sequence.py
       - name: Native runtime regressions (UCRT64 and FFmpeg headers)
         run: |
           for name in touch prepo nvn_pool_mapping; do

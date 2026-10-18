@@ -96,7 +96,7 @@ def default_settings(seed):
         'boss-cutscenes': True, 'randomize-enemies': False, 'randomize-enemy-sizes': False, 'shuffle-dungeons': False,
         'blur-removal': False, 'OHKO': False, 'lv1-beam': False, 'nice-rod': True, 'nice-bombs': False,
         'stealing': 'always', 'fast-chests': True, 'fast-keys': True, 'keysanity': 'off', 'randomize-environments': False,
-        'skip-story-events': True, 'tunic-color': 'default', 'enemy-minibosses': False, 'no-buff-drops': False,
+        'skip-story-events': True, 'tunic-color': 'default', 'enemy-minibosses': False, 'miniboss-frequency': 0, 'no-buff-drops': False,
         'bushes': False, 'boss-souls': False, 'miniboss-souls': False,
         'digs': False,  # digsanity: every diggable overworld tile is a check (tools/rando/digs.py)
         'hookshot-anything': False,  # the hookshot latches onto anything (tools/rando/hookshot_logic.py)
