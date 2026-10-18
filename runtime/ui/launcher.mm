@@ -604,7 +604,7 @@ static void *speedfix_thread(void *) {
         if (!prepared || !acnh60_profile(title,target.c_str(),why,sizeof why) ||
             !acnh60_validate(target.c_str(),why,sizeof why))
             set_job("Could not prepare 60 FPS + SpeedFix.",true,why);
-        else if (build_game_code(target)) {
+        else if (gamelib_verify(target.c_str(),why,sizeof why) || build_game_code(target)) {
             if (gamelib_verify(target.c_str(),why,sizeof why)) {
                 set_job("60 FPS + SpeedFix is ready.");ready=true;
             } else set_job("Game code build failed.",true,why);
