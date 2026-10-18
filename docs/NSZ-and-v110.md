@@ -65,7 +65,7 @@ Cache receipts verify generated source and object hashes. Changed game executabl
 
 Each save mount stores snapshots beside itself, for example `save/save_0.backups/` or `rando/<seed>/save/save_0.backups/`. All slots and screenshots in that save area are copied together before existing saves are opened and after the game commits a completed save. SD-card mounts are excluded. Unchanged automatic snapshots are skipped; the newest 20 valid snapshots are retained. A backup error is logged and does not block game saving.
 
-Open **Settings → Saves → Backups** to choose a game version and Vanilla/seed profile, inspect timestamp, executable version, reason and size, or create a manual backup. Manual creation and restore require a fresh start screen, before a game library has loaded. Returning to the title screen alone is insufficient: restart LAS Recomp so no old save handles remain open.
+Open **Settings → Saves → Backups** to choose a game version and Vanilla/seed profile, inspect timestamp, executable version, reason and size, or create a manual backup. Manual creation and restore require a fresh start screen, before a game library has loaded. Returning to the title screen alone is insufficient: restart Multi so no old save handles remain open.
 
 Restore validates the complete file list, sizes and CRC32 checksums, stages the selected files, backs up current progress, then swaps the save directory with rollback on installation failure. Corrupt or unsafe snapshots leave current saves intact. CRC32 detects accidental corruption; it is not an authenticity signature. Backups stay on the same drive, so they do not protect against drive failure.
 

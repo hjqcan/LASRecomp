@@ -1,4 +1,4 @@
-# Contributing to LAS Recomp
+# Contributing to Multi
 
 Thanks for wanting to help! Bug reports, randomizer logic fixes, testing on different hardware and code
 contributions are all welcome.
@@ -21,28 +21,21 @@ Pull requests that include Nintendo files can't be merged. Screenshots and short
 
 ## Reporting bugs
 
-Report bugs as a [GitHub issue](https://github.com/peiikai/LASRecomp/issues). Please include:
+Report bugs as a [GitHub issue](https://github.com/hjqcan/LASRecomp/issues). Please include:
 
 - your platform (macOS / Windows / Linux), hardware (CPU, GPU) and window size / aspect ratio
 - what you did, what happened, and what you expected
 - for randomizer problems: the **seed ID** (Randomizer tab, Copy button), the settings, and where you got stuck
-  (area / room, which items you had). A seed ID reproduces the exact seed on the same LAS Recomp version.
+  (area / room, which items you had). A seed ID reproduces the exact seed on the same Multi version.
 - a screenshot or short clip if it's visual
 - the log: `lasrecomp.log` in the data folder (see "Where files live" in the README), always the latest run - or if
   the problem was in an earlier run, that run's `lasrecomp-backup-*.log` (by date modified)
 
 ## Which branch to work from
 
-`main` holds the last release and isn't where development happens, so don't base your work on it. Work happens on
-the current development branch:
+Develop this fork on `multi` and open fork pull requests against `multi` in [hjqcan/LASRecomp](https://github.com/hjqcan/LASRecomp/tree/multi). Read [AGENTS.md](AGENTS.md) and [the branch guide](docs/multi.md) before changing shared runtime or game-specific behavior.
 
-- during the beta period: the latest `beta_<n>` branch (for example `beta_5`)
-- after 1.0: the latest `vX.Y.Zb` branch, for the next version (for example `v1.1.0b`)
-
-Pick the highest-numbered one in the [branch list](https://github.com/peiikai/LASRecomp/branches). Base your branch
-on it and open your pull request against it. Before you start, and again before opening the pull request, compare
-your change with what's already on that branch: it moves quickly, and the fix or feature you have in mind may
-already be there or in progress. Rebase onto it if it has moved since you branched.
+`main` and `beta_5` mirror upstream; they do not receive fork features. Contributions intended for [peiikai/LASRecomp](https://github.com/peiikai/LASRecomp) use separate, focused branches based on the current upstream `beta_5` and follow the upstream maintainer's scope.
 
 ## Building
 

@@ -1,6 +1,6 @@
 # Local companion co-op prototype / 本地伙伴合作原型
 
-This enhanced-only prototype lets two people share one 1.0.0 vanilla game: player 1 controls Link and player 2 controls BowWow. It is an asymmetric companion mode, with one camera, one story and one isolated host save. It is not two Links or network multiplayer.
+This multi-only prototype lets two people share one 1.0.0 vanilla game: player 1 controls Link and player 2 controls BowWow. It is an asymmetric companion mode, with one camera, one story and one isolated host save. It is not two Links or network multiplayer.
 
 ## Start
 

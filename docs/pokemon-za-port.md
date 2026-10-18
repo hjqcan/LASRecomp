@@ -1,6 +1,6 @@
 # Pokemon Legends: Z-A development port
 
-Z-A 1.0.0 is a development adapter on `enhanced`. It is not playable and is
+Z-A 1.0.0 is a development adapter on `multi`. It is not playable and is
 not available through normal installation. Update 2.0.2 and DLC are unsupported.
 
 ## Adapter

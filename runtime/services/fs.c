@@ -515,7 +515,7 @@ static Service *open_romfs_storage(void) {
 // ------------------------------------------------------------------ host-directory filesystem
 // A file opened for writing on a save mount works on a copy, <file>.pending, which Commit syncs and renames over the
 // file - so a crash or power loss mid-write leaves the last committed file, never a half-written one.
-// Enhanced keeps its snapshots after Commit, including the extended-flags sidecar. Reads see the pending copy. A
+// Multi keeps its snapshots after Commit, including the extended-flags sidecar. Reads see the pending copy. A
 // copy left by a crash is dropped at the next mount (uncommitted, as on the Switch). The SD card mount writes in place.
 #define PENDING_MAX 16
 typedef struct { char root[1024]; bool is_save, journaled; int npending; char pending[PENDING_MAX][1100]; } HostFs;
@@ -834,7 +834,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         ipc_return_object(resp, obj);
         break;
     }
-    case 10:  // Commit: publish data and extended flags before taking the enhanced snapshot
+    case 10:  // Commit: publish data and extended flags before taking the fork snapshot
         if (commit(fs)) backup_save(fs, "Automatic save");
         else resp->result = errno_result();
         break;

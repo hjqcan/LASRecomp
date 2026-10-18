@@ -47,7 +47,7 @@ int main(void) {
     check(22, 22, "cannot allocate", "Out of memory");
     gpu_fault = true; check(22, 22, NULL, "Your graphics driver crashed"); gpu_fault = false;
     guest_fault = true; check(22, 22, NULL, "The game crashed"); guest_fault = false;
-    check(22, 22, "unclassified stop", "LAS Recomp stopped because of an error");
+    check(22, 22, "unclassified stop", "Multi stopped because of an error");
     puts("PASS: adapter-aware crash explanations and existing failure categories");
     return 0;
 }

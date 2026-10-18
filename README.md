@@ -1,50 +1,35 @@
-# LAS Recomp Enhanced
+# Multi
 
-**Windows enhanced edition:** [Download prereleases](https://github.com/hjqcan/LASRecomp/releases) · [Features and setup / 功能与使用说明](docs/enhanced.md)
+**Windows multi branch:** [Download prereleases](https://github.com/hjqcan/LASRecomp/releases) · [Features and setup / 功能与使用说明](docs/multi.md)
 
-This fork maintains all enhancements on `enhanced`, while `main` and `beta_5` mirror upstream. Upstream project information follows; report enhanced-edition issues to [this fork](https://github.com/hjqcan/LASRecomp/issues).
+Multi is hjqcan's independently maintained multi-game branch of the [LAS Recomp fork](https://github.com/hjqcan/LASRecomp/tree/multi), based on [peiikai/LASRecomp](https://github.com/peiikai/LASRecomp). It is not an official LAS Recomp release. Development happens on `multi`; `main` and `beta_5` mirror upstream. Report branch-specific issues to [this fork](https://github.com/hjqcan/LASRecomp/issues).
 
-Enhanced Beta 5.3 adds Animal Crossing: New Horizons 1.0.0 support (Windows beta).
-增强版 Beta 5.3 现已支持《集合啦！动物森友会》1.0.0（Windows 测试版）。
+Multi Beta 5.3 adds Animal Crossing: New Horizons 1.0.0 support (Windows beta).
+Multi Beta 5.3 现已支持《集合啦！动物森友会》1.0.0（Windows 测试版）。
 
 Current source also supports ACNH 3.0.1 and an optional experimental 60 FPS +
 SpeedFix mode. Standard 30 FPS remains the default; see the support limits below.
 当前源码另支持动森 3.0.1 及可选的实验性 60 FPS＋速度修正，默认仍为标准 30 FPS。
 
-The enhanced edition supports separate installations and desktop shortcuts
+The multi branch supports separate installations and desktop shortcuts
 for Link's Awakening 1.0.0/1.1.0 and Animal Crossing: New Horizons 1.0.0/3.0.1
 (Windows beta). The launcher identifies supported releases from NSP, NSZ, XCI
 and XCZ archives, imports them and builds their native game libraries.
 See [multi-game setup](docs/multi-game.md) and the
 [ACNH support and limits](docs/ACNH-port.md).
 
-Pokémon Legends: Z-A development work is maintained directly on `enhanced`.
+Pokémon Legends: Z-A development work is maintained directly on `multi`.
 It remains development-only and is not playable; see the
 [current probe results and blockers](docs/pokemon-za-port.md).
 
-> [!IMPORTANT]
-> **This project was made almost exclusively with AI.** Nearly all of the code, tooling, reverse engineering and
-> documentation in this repository was written by and will be maintained by an AI (Anthropic's Claude, through Claude Code),
-> directed, tested and reviewed by a human. As a huge fan of this game, I made this for myself. Sharing it is a courtesy.
-> If you don't agree with the use of AI or don't trust code written by AI, that is your right, but I'm not interested
-> in the controversy in relation to this project. You may simply ignore this project and its code.
-> As with anything on the internet, you run the code at your own discretion.
+Multi extends the upstream static recompilation runtime with game adapters, separate installations and local development tools. The published fork builds are Windows betas. macOS/Metal and Linux build paths remain available, but their native gameplay is not certified by these Windows releases. See [support and limits](docs/multi.md).
 
-**LAS Recomp** is a static recompilation of *The Legend of Zelda: Link's Awakening* (Nintendo Switch, 2019) into a
-native Windows, macOS and Linux application.
-
-> [!NOTE]
-> Currently supported platforms:
-> - macOS - Apple Silicon only, Metal graphics backend + MetalFX
-> - Windows - x86-64 only, Vulkan graphics backend
-> - Linux - x86-64, Vulkan graphics backend (AppImage)
-> - Linux aarch64 (ARM) - **experimental**: built but untested on real hardware; reports welcome
->   ([docs/linux.md](docs/linux.md) lists what to include)
+Development on this branch is AI-assisted. Feature support and experimental limits are documented in the linked game guides.
 
 ![Mabe Village in a 21:9 window: the unlocked aspect ratio shows more of the island](docs/ultrawide.jpg)
 
 > [!NOTE]
-> **No game files are included.** LAS Recomp needs your own legally obtained copy of *Link's Awakening*:
+> **No game files are included.** Multi needs your own legally obtained copy of *Link's Awakening*:
 > extracted **v1.0.0 / v1.1.0** game files, or a base **NSP / NSZ / XCI / XCZ** with an optional **v1.1.0 update**. Encrypted content uses your own local keys.
 > For extracted files, select the game folder containing `exefs` and `romfs`.
 > Both versions support Vanilla mode. v1.1.0 Randomizer support is experimental and requires newly generated, version-specific seeds.
@@ -55,18 +40,17 @@ native Windows, macOS and Linux application.
 
 ![The start screen: choose vanilla or a randomizer seed, set up your game files, settings](docs/start_screen.jpg)
 
-## Project Discord
-https://discord.gg/DhrgdYqdcY
-
 ## Status
 
-This is a beta release. That means bugs are likely, crashes could occur, randomizer seeds could possibly be unsolvable (dungeon room shuffle modes are especially experimental at this point) and some graphics issues remain (especially in wide and ultrawide aspect ratios). This is a work in progress, hence the beta designation. To report a bug or a possible randomizer logic issue, open a [GitHub issue](https://github.com/peiikai/LASRecomp/issues) - see [CONTRIBUTING.md](CONTRIBUTING.md#reporting-bugs) for what to include.
+This is a beta release. That means bugs are likely, crashes could occur, randomizer seeds could possibly be unsolvable (dungeon room shuffle modes are especially experimental at this point) and some graphics issues remain (especially in wide and ultrawide aspect ratios). This is a work in progress, hence the beta designation. To report a bug or a possible randomizer logic issue, open a [GitHub issue](https://github.com/hjqcan/LASRecomp/issues) - see [CONTRIBUTING.md](CONTRIBUTING.md#reporting-bugs) for what to include.
 
 ### Known issues
 
-Known issues and their status are on the [GitHub issues page](https://github.com/peiikai/LASRecomp/issues).
+Known issues and their status are on the [GitHub issues page](https://github.com/hjqcan/LASRecomp/issues).
 
 ## Features
+
+The gameplay and randomizer options below apply to Link's Awakening. Other games have their own adapter support and limits in [multi-game setup](docs/multi-game.md).
 
 **Runs natively**
 - **This is not emulation.** Runs natively on Windows, macOS and Linux using static recompilation of the Switch code.
@@ -161,7 +145,7 @@ Python 3.12.
 4. Package: `make deps` (once: SDL3, FFmpeg, libopus, keystone and Python from pinned sources, built for macOS 15),
    `make rando-helper` (the seed generator as a standalone helper, so players need no Python), `make gen-helper` and
    `tools/fetch_zig.sh` (what the start screen builds the game code with), then `make app` ->
-   `build/LAS Recomp.app` (macOS 15+, Apple Silicon) and `make dmg` -> `build/dist/LAS Recomp-<version>-macOS.dmg`.
+   `build/Multi.app` (macOS 15+, Apple Silicon) and `make dmg` -> `build/dist/Multi-<version>-macOS.dmg`.
 
 ### Windows
 
@@ -175,7 +159,7 @@ Requirements: Windows 10+ x86-64, a CPU with AVX2 and a GPU with Vulkan 1.3. Mor
    `make -j` -> `build/lasrecomp.exe`. Set up your game files (above), then `make gen` and `make -j` again.
 3. Run: `./build/lasrecomp.exe extracted`, from a shell with `C:\msys64\ucrt64\bin` on PATH (for the DLLs).
 4. Package: `make deps-windows` (once: LGPL FFmpeg), `make rando-helper RANDO_PY="<path to python.org Python 3.12>"`
-   (MSYS2's Python has no oead wheel), then `make dist` -> `build/dist/LAS Recomp-<version>-windows.zip`.
+   (MSYS2's Python has no oead wheel), then `make dist` -> `build/dist/Multi-<version>-windows.zip`.
 
 ### Linux
 
@@ -186,12 +170,12 @@ Vulkan Memory Allocator from your distribution, Python 3.12. Packages, cross bui
 1. Build: `make -j` -> `build/lasrecomp`. Set up your game files (above), then `make gen` and `make -j` again.
 2. Run: `./build/lasrecomp extracted`.
 3. Package: `make appimage` (this machine's arch; `ARCH=aarch64` cross-compiles) or `make appimages` (both) ->
-   `build/dist/LAS Recomp-<version>-linux-<arch>.AppImage`, built in Ubuntu 22.04 containers (podman). `make smoketest`
+   `build/dist/Multi-<version>-linux-<arch>.AppImage`, built in Ubuntu 22.04 containers (podman). `make smoketest`
    checks the x86-64 AppImage before a release.
 
 Where files live (game files, saves, seeds, settings, caches, imported fonts):
 - macOS app: `~/Library/Application Support/com.peiikai.lasrecomp/` (the app itself is never written to).
-- Windows: next to `lasrecomp.exe`, so put the `LAS Recomp` folder somewhere writable (not Program Files).
+- Windows: next to `lasrecomp.exe`, so put the `Multi` folder somewhere writable (not Program Files).
 - Linux: `~/.local/share/lasrecomp/` (`$XDG_DATA_HOME/lasrecomp`).
 - Dev / portable mode: if the folder you start from has `extracted/` (a source checkout), that folder is used, as above.
 - `LARECOMP_DATA_ROOT=<dir>` overrides all of these.
@@ -207,7 +191,7 @@ game saves. Unchanged saves are skipped; the latest 20 snapshots are retained.
 Vanilla and each randomizer seed keep separate histories beside their save folders,
 for example `save/save_0.backups` and `rando/<seed>/save/save_0.backups`.
 
-To restore, restart LAS Recomp, select the profile and snapshot, then confirm
+To restore, restart Multi, select the profile and snapshot, then confirm
 **Restore selected backup**. The current files are backed up before replacement.
 Manual backups and restores are available before the game library is loaded.
 These local snapshots protect against accidental save changes; copy the save and
@@ -218,7 +202,7 @@ backup folders elsewhere if you also need protection against disk failure.
 The game-code build keeps completed pieces in the game folder's `.gamebuild/`
 directory. **Cancel (B / Esc)** stops the compiler helpers; **Resume game code**
 appears after cancellation or interruption and continues from verified completed
-pieces. An interrupted build also resumes when LAS Recomp starts again. Generated
+pieces. An interrupted build also resumes when Multi starts again. Generated
 source and object contents are checked before reuse. After success, only objects
 and their cache records are kept; generated C, logs, link files and compiler caches
 are removed. A generator update recompiles only changed pieces. Moving the app
@@ -230,6 +214,8 @@ game files and saves. Legacy build caches are upgraded automatically. Failed or
 cancelled builds keep the previous installed library until a replacement is ready.
 
 ## Credits
+
+**[peiikai/LASRecomp](https://github.com/peiikai/LASRecomp)** supplies the original recompiler, runtime and Link's Awakening implementation on which this branch is based. The upstream authors and contributors retain their original credit; Multi is maintained separately by hjqcan.
 
 **Contributors** - thank you to everyone who has sent code (GitHub handles, in order of first contribution):
 - **[@dvilelaf](https://github.com/dvilelaf)** - the System language setting (#15), packaging fix for the game code
@@ -301,19 +287,19 @@ none of their files are used):
 
 ## Legal
 
-LAS Recomp is a fan project. It is not affiliated with, endorsed by or sponsored by Nintendo. *The Legend of Zelda*
+Multi is a fan project. It is not affiliated with, endorsed by or sponsored by Nintendo. *The Legend of Zelda*
 and *Link's Awakening* are trademarks of Nintendo. No game files, game code, assets or fonts are included - not in
 this repository and not in release builds. You must provide your own legally obtained copy of the game files to play.
 
 ## License
 
-LAS Recomp's own code (the recompiler tools, the runtime, the randomizer additions) is open source under the
+Multi's own code (the recompiler tools, the runtime, the randomizer additions) is open source under the
 [MIT License](LICENSE). Third-party components keep their own licenses: LAS-Randomizer (MIT), code ported from Ryujinx (MIT), Dear ImGui (MIT),
 Vulkan Memory Allocator (MIT), SMAA (MIT), AMD FSR 1 (MIT), the Baloo 2 font (SIL OFL 1.1), the DejaVu Sans font (Bitstream Vera / DejaVu license), SDL 3 (zlib), libopus (BSD 3-clause), FFmpeg (LGPL 2.1+, linked dynamically), the
 Zig compiler (MIT; its LLVM / Clang / LLD: Apache 2.0 with LLVM exceptions; its C library headers keep their own
 licenses), and the generator helpers' bundled libraries listed under Credits (oead / evfl / Keystone in the seed
 generator and Unicorn in the game code generator are under the GPL, versions in the table below: each helper is a separate program the game runs, and its
-sources are this repository plus those projects' published sources). The license covers LAS Recomp's code only - it grants
+sources are this repository plus those projects' published sources). The license covers Multi's code only - it grants
 nothing for Nintendo's game, which you must supply yourself.
 
 ### Source code of bundled third-party components
@@ -327,7 +313,7 @@ Release builds include these components; their source code for the exact version
 | evfl (seed generator) | 1.2.0 | GPL 2.0+ | https://github.com/zeldamods/evfl/releases/tag/v1.2.0 |
 | quicktex (seed generator) | 0.2.1 | LGPL 3.0 | https://github.com/drewcassidy/quicktex/releases/tag/v0.2.1 |
 | PyInstaller (packs the seed and game code generators) | 6.22.3 | GPL 2.0+ with bootloader exception | https://github.com/pyinstaller/pyinstaller/releases/tag/v6.22.3 |
-| CPython (seed and game code generators) | 3.12.14 (macOS), 3.13.7 (Enhanced Windows), 3.12.15 (Linux) | PSF | https://github.com/python/cpython/releases/tag/v3.12.14, https://github.com/python/cpython/releases/tag/v3.13.7, https://github.com/python/cpython/releases/tag/v3.12.15 |
+| CPython (seed and game code generators) | 3.12.14 (macOS), 3.13.7 (Multi Windows), 3.12.15 (Linux) | PSF | https://github.com/python/cpython/releases/tag/v3.12.14, https://github.com/python/cpython/releases/tag/v3.13.7, https://github.com/python/cpython/releases/tag/v3.12.15 |
 | Zig (builds the game code during setup; includes LLVM, Clang, LLD) | 0.17.0 | MIT; LLVM: Apache 2.0 with LLVM exceptions | https://ziglang.org/download/0.17.0/zig-0.17.0.tar.xz |
 | Capstone (game code generator) | 5.0.9 | BSD 3-clause | https://pypi.org/project/capstone/5.0.9/ |
 | Unicorn (game code generator) | 2.1.4 | GPL 2.0 (Python bindings: BSD) | https://pypi.org/project/unicorn/2.1.4/, https://github.com/unicorn-engine/unicorn |
@@ -335,7 +321,7 @@ Release builds include these components; their source code for the exact version
 | python-zstandard (NSZ importer; includes Zstandard) | 0.25.0 | BSD 3-clause (Zstandard: BSD 3-clause option) | https://github.com/indygreg/python-zstandard, https://github.com/facebook/zstd |
 | cryptography (NSP / NCA decryption) | 50.0.2 | Apache-2.0 OR BSD-3-Clause; bundled OpenSSL: Apache-2.0 | https://github.com/pyca/cryptography |
 | FFmpeg (LGPL configuration, macOS, Windows and Linux builds) | 9.0.2 | LGPL 2.1+ | https://ffmpeg.org/releases/ |
-| libopus (enhanced hwopus service) | 1.6.1 | BSD 3-clause | https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz |
+| libopus (fork hwopus service) | 1.6.1 | BSD 3-clause | https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz |
 | SDL 3 | 3.4.18 (macOS, Windows), 3.4.16 (Linux) | zlib | https://github.com/libsdl-org/SDL/releases/tag/release-3.4.18, https://github.com/libsdl-org/SDL/releases/tag/release-3.4.16 |
 | shaderc (Windows, Linux: GLSL to SPIR-V; Linux: with glslang, SPIRV-Tools inside) | 2026.4 (Windows), 2026.3 (Linux) | Apache 2.0 | https://github.com/google/shaderc |
 | libiconv (Windows: used by SDL 3) | 1.19 | LGPL 2.1+ | https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.19.tar.gz |

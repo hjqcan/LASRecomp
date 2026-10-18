@@ -512,8 +512,8 @@ static void tab_quit(float scale, bool in_game) {
         ask = 0;
     const char *lost = in_game ? ui_tr("\n\nProgress since your last save is lost.") : "";
     char d1[600], d2[600];
-    snprintf(d1, sizeof d1, ui_tr("Leaves the game and goes back to the LAS Recomp start screen.%s"), lost);
-    snprintf(d2, sizeof d2, ui_tr("Closes LAS Recomp.%s"), lost);
+    snprintf(d1, sizeof d1, ui_tr("Leaves the game and goes back to the Multi start screen.%s"), lost);
+    snprintf(d2, sizeof d2, ui_tr("Closes Multi.%s"), lost);
     opt_begin("##quit", scale);
     opt_section("Quit");
     if (!ask) {

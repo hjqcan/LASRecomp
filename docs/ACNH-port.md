@@ -1,6 +1,6 @@
 # Animal Crossing: New Horizons
 
-The enhanced runtime supports ACNH **1.0.0 and 3.0.1** (application ID
+The Multi runtime supports ACNH **1.0.0 and 3.0.1** (application ID
 `01006F8002326000`) as Windows betas. The launcher accepts supported base and
 update archives or complete extracted folders. Other versions, DLC, online play
 and amiibo are unavailable. Early island, interior, dialogue and save/reopen

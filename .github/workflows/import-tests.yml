@@ -1,4 +1,4 @@
-name: Enhanced tests
+name: Multi tests
 
 on: [push, pull_request]
 

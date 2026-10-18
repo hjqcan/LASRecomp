@@ -35,7 +35,7 @@ extern "C" void save_backups_draw(float scale, bool in_game) {
     editor = false;
     ImGui::TextWrapped("%s", ui_tr("Automatic backups keep the latest 20 snapshots per save area, including all slots. Unchanged saves are skipped."));
     bool locked = gamelib_tables() != NULL;
-    if (locked) ImGui::TextWrapped("%s", ui_tr("Restart LAS Recomp to create or restore a backup from the start screen."));
+    if (locked) ImGui::TextWrapped("%s", ui_tr("Restart Multi to create or restore a backup from the start screen."));
     static std::string profile, selected, message;
     static bool confirmed;
     static int seen = -10;

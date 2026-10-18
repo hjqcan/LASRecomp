@@ -219,7 +219,7 @@ static bool import_helper(const char *base, const char *update, const char *keys
     if (!g_registered) g_registered = true, atexit(end_all);
     Tools t;
     if (!find_tools(&t)) {
-        snprintf(why, why_size, "The game import helper is missing from this copy of LAS Recomp.");
+        snprintf(why, why_size, "The game import helper is missing from this copy of Multi.");
         return false;
     }
     Args a = {0};
@@ -376,7 +376,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     if (!g_registered) g_registered = true, atexit(end_all);
     Tools t;
     if (!find_tools(&t)) {
-        snprintf(why, why_size, "the game code builder is missing from this copy of LAS Recomp");
+        snprintf(why, why_size, "the game code builder is missing from this copy of Multi");
         return false;
     }
     char work[1100], tmp[1100];

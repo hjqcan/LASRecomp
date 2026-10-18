@@ -12,7 +12,7 @@ The presentation and color paths are implemented for Vulkan and Metal. Windows V
 
 ## Resource mods
 
-Restart LAS Recomp and choose an installed version. In **Settings → Mods**, import a folder containing `mod.ini` and `romfs/`, select its row to inspect metadata, then enable it. Changes apply at the next game start. A populated current save is backed up before changing the selection; backup failure prevents the change. Mod changes are unavailable after game code has loaded, including after returning to the start screen.
+Restart Multi and choose an installed version. In **Settings → Mods**, import a folder containing `mod.ini` and `romfs/`, select its row to inspect metadata, then enable it. Changes apply at the next game start. A populated current save is backed up before changing the selection; backup failure prevents the change. Mod changes are unavailable after game code has loaded, including after returning to the start screen.
 
 Example manifest (UTF-8):
 

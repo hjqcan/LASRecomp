@@ -1,14 +1,14 @@
 # Resource mods
 
-The Mods tab imports a local folder of replacement resources for the selected installation. Enhanced game setup supports folders and archives; see [import and versions](NSZ-and-v110.md). Resource packs themselves contain replacement files, not executable patches.
+The Mods tab imports a local folder of replacement resources for the selected installation. Multi game setup supports folders and archives; see [import and versions](NSZ-and-v110.md). Resource packs themselves contain replacement files, not executable patches.
 
 ## Install and enable
 
-1. Set up your own game files through Game Files and restart LAS Recomp.
+1. Set up your own game files through Game Files and restart Multi.
 2. Open **Settings → Mods → Import mod folder**. Choose a folder containing `mod.ini` and `romfs/`.
 3. Select a row to inspect the pack's metadata, file count and size. Enable its checkbox, then start the game.
 
-Changes are locked after game code loads, including after returning to the start screen; restart LAS Recomp before changing the selection. Imported packs are disabled initially. Disabling a pack restores the original resource on the next game start. Back up saves before trying resource changes: the manager validates file paths and conflicts, not the contents' compatibility with the game.
+Changes are locked after game code loads, including after returning to the start screen; restart Multi before changing the selection. Imported packs are disabled initially. Disabling a pack restores the original resource on the next game start. Back up saves before trying resource changes: the manager validates file paths and conflicts, not the contents' compatibility with the game.
 
 ## Pack format
 
@@ -36,7 +36,7 @@ Packs live under `<data root>/mods/<id>/`; separate enable lists are maintained 
 
 Read priority is **randomizer seed → enabled mod → installed game** for the guest RomFS and movies. Built-in texture identification uses mod-or-original references, retaining its existing seed-independent cache; mod selection stays fixed until restart. A seed's additional virtual files remain managed by the existing randomizer code.
 
-Missing or invalid enabled packs cause startup to fail with an error, instead of silently changing resources. Restart, open Mods and disable the invalid row. If an enable list is malformed, close LAS Recomp and remove only the affected list to disable its packs; installed resources remain intact. Changing selection requires a successful backup when current saves exist.
+Missing or invalid enabled packs cause startup to fail with an error, instead of silently changing resources. Restart, open Mods and disable the invalid row. If an enable list is malformed, close Multi and remove only the affected list to disable its packs; installed resources remain intact. Changing selection requires a successful backup when current saves exist.
 
 ## Shareable presets
 

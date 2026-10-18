@@ -1,7 +1,7 @@
 // A fatal error, explained to the player: the crash dialog (plat_fatal_notice) says what went wrong in plain words
 // and what to do about it; the technical lines (FATAL / signal, backtrace, registers) stay in the log for bug reports.
 // Known causes are recognised from what the runtime knows when it stops: the fatal line, where the crash was (the
-// game code, LAS Recomp itself, the graphics driver), and the game files.
+// game code, Multi itself, the graphics driver), and the game files.
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -41,7 +41,7 @@ static bool contains_nocase(const char *hay, const char *needle) {  // (no strca
     return false;
 }
 
-// The graphics driver's own code (the crash was inside it, not in LAS Recomp): Vulkan drivers on Windows / Linux,
+// The graphics driver's own code (the crash was inside it, not in Multi): Vulkan drivers on Windows / Linux,
 // Apple's Metal driver
 static bool in_gpu_driver(uint64_t pc) {
     char m[512];
@@ -63,40 +63,40 @@ void rt_crash_explain(char *out, size_t n, const char *log_path) {
     unsigned minimum_files = profile ? profile->minimum_files : 0;
     if (rt_romfs_files >= 0 && (unsigned)rt_romfs_files < minimum_files) {
         snprintf(head, sizeof head, "Your game files are incomplete");
-        snprintf(what, sizeof what, "LAS Recomp found %d files; this game requires at least %u. Copy your complete "
+        snprintf(what, sizeof what, "Multi found %d files; this game requires at least %u. Copy your complete "
                  "game files again, then set them up again on the start screen (Game Files).",
                  rt_romfs_files, minimum_files);
     } else if (has("built for another version")) {
-        snprintf(head, sizeof head, "The game code is from another version of LAS Recomp");
-        snprintf(what, sizeof what, "Start LAS Recomp again: the start screen rebuilds the game code for this version "
+        snprintf(head, sizeof head, "The game code is from another version of Multi");
+        snprintf(what, sizeof what, "Start Multi again: the start screen rebuilds the game code for this version "
                  "by itself.");
     } else if (has("no font for the game's text")) {
         snprintf(head, sizeof head, "No font for the game's text");
-        snprintf(what, sizeof what, "Import the Switch fonts in Settings (Game font), or reinstall LAS Recomp - it "
+        snprintf(what, sizeof what, "Import the Switch fonts in Settings (Game font), or reinstall Multi - it "
                  "comes with a font of its own.");
     } else if (has("no function at") || has("unsupported instruction")) {
         snprintf(head, sizeof head, "Game code is not supported yet");
-        snprintf(what, sizeof what, "LAS Recomp could not translate or dispatch part of this game's code. %s", report);
+        snprintf(what, sizeof what, "Multi could not translate or dispatch part of this game's code. %s", report);
     } else if (has("get_terminate") || has("uncaught C++ exception")) {  // (the game threw: recompiled code can't
                                                                          // unwind; runtime/hle/warp.c rt_cxa_throw)
         snprintf(head, sizeof head, "The game ran into an error it couldn't recover from");
-        snprintf(what, sizeof what, "This is a bug in LAS Recomp, not a problem with your game files or PC. %s", report);
+        snprintf(what, sizeof what, "This is a bug in Multi, not a problem with your game files or PC. %s", report);
     } else if (in_gpu_driver(g_pc)) {
         snprintf(head, sizeof head, "Your graphics driver crashed");
         snprintf(what, sizeof what, "Update your graphics driver (NVIDIA, AMD or Intel) and try again. If it keeps "
                  "happening, please report it with the log file below.");
     } else if (has("VK_") || has("Vulkan")) {
         snprintf(head, sizeof head, "Graphics driver error");
-        snprintf(what, sizeof what, "LAS Recomp needs a graphics driver with Vulkan 1.3: install the latest driver for "
+        snprintf(what, sizeof what, "Multi needs a graphics driver with Vulkan 1.3: install the latest driver for "
                  "your GPU (NVIDIA, AMD or Intel). If it keeps happening, please report it with the log file below.");
     } else if (has("out of memory") || has("cannot allocate") || has("alloc failed")) {
         snprintf(head, sizeof head, "Out of memory");
         snprintf(what, sizeof what, "Close other programs and try again.");
     } else if (g_pc && rt_host_fn_name(g_pc, NULL)) {
         snprintf(head, sizeof head, "The game crashed");
-        snprintf(what, sizeof what, "This is a bug in LAS Recomp, not a problem with your game files or PC. %s", report);
+        snprintf(what, sizeof what, "This is a bug in Multi, not a problem with your game files or PC. %s", report);
     } else {
-        snprintf(head, sizeof head, "LAS Recomp stopped because of an error");
+        snprintf(head, sizeof head, "Multi stopped because of an error");
         snprintf(what, sizeof what, "%s", report);
     }
     fprintf(stderr, "[crash] %s\n", head);

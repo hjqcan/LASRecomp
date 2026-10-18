@@ -1,4 +1,4 @@
-"""Check atomic save publication and enhanced sidecars/backups without game files."""
+"""Check atomic save publication and fork sidecars/backups without game files."""
 import os
 from pathlib import Path
 import shlex

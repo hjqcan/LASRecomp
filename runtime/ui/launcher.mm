@@ -1,6 +1,6 @@
 // Start screen, shown before the game boots (user 2026-10-08, styled after Dusklight's launcher): PLAY (with
 // ‹ Vanilla / seed › picker), SETTINGS, QUIT, game-files status at the lower left. Nothing of the game ships with
-// LAS Recomp: on first launch the user picks the folder with their own game files (v1.0.0), we check the main
+// Multi: on first launch the user picks the folder with their own game files (v1.0.0), we check the main
 // module's build id, copy the files and build the game's data image; PLAY stays disabled until that worked. The background is a frame of the game's own title movie (from the user's files) once extracted.
 //
 // Skipped with --play, LARECOMP_NO_LAUNCHER=1, or any scripted test run (LARECOMP_INPUT): tests boot straight in.
@@ -98,7 +98,8 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 #endif
 
 // The release tag this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read
-// it): enhanced-beta<n>.<revision> for this fork. A test build (a pre-release for a few players to try a fix)
+// it): keep enhanced-beta<n>.<revision> so installed clients still find updates; the display name is Multi.
+// A test build (a pre-release for a few players to try a fix)
 // is test-<name>: the start screen says "Test build <name>", and it previews LARECOMP_TEST_OF - the update check
 // offers that release (or a later one) as soon as it's out, so its players move to it.
 #define LARECOMP_VERSION "enhanced-beta5.3"
@@ -107,12 +108,12 @@ extern "C" const char *larecomp_version(void) { return LARECOMP_VERSION; }  // (
 
 // ------------------------------------------------------------------ update check
 // The start screen asks GitHub for the project's releases once per launch (a background curl, which macOS and
-// Windows 10+ ship) and offers a newer enhanced release by beta and revision number. Other release channels are
+// Windows 10+ ship) and offers a newer Multi release by beta and revision number. Other release channels are
 // ignored. Offline / no curl / anything unexpected: nothing is shown.
 #define RELEASES_URL "https://api.github.com/repos/hjqcan/LASRecomp/releases?per_page=100"
 #define RELEASE_PAGE "https://github.com/hjqcan/LASRecomp/releases/tag/"
 
-// Enhanced releases follow their own channel; upstream tags never replace fork features.
+// Multi keeps the legacy release-tag channel for installed clients; upstream tags never replace fork features.
 static long long tag_rank(const std::string &t) {
     int beta, revision; char end;
     if (sscanf(t.c_str(), "enhanced-beta%d.%d%c", &beta, &revision, &end) == 2 &&
@@ -121,7 +122,7 @@ static long long tag_rank(const std::string &t) {
     return -1;
 }
 static std::string tag_label(const std::string &t, bool) {
-    if (t.rfind("enhanced-beta", 0) == 0) return "Enhanced Beta " + t.substr(13);
+    if (t.rfind("enhanced-beta", 0) == 0) return "Multi Beta " + t.substr(13);
     if (!t.compare(0, 5, "test-")) return "Test build " + t.substr(5);
     return t;
 }
@@ -147,7 +148,7 @@ static void *update_thread(void *) {
         std::string out = std::string(rt_data_root()) + "/cache/releases.json";
         mkdir((std::string(rt_data_root()) + "/cache").c_str(), 0755);
         const char *av[] = {curl.c_str(), "-fsSL", "--max-time", "15", "-H", "Accept: application/vnd.github+json",
-                            "-A", "LASRecomp/" LARECOMP_VERSION, RELEASES_URL, NULL};
+                            "-A", "Multi/" LARECOMP_VERSION, RELEASES_URL, NULL};
         PlatProc p = plat_spawn(av, out.c_str(), false);
         if (!p || plat_proc_wait(p, true) != 0) { remove(out.c_str()); return NULL; }
         if (FILE *f = fopen(out.c_str(), "rb")) {
@@ -258,7 +259,7 @@ static const char *status_hint(const std::string &why) {
     if (why.rfind("Game files incomplete", 0) == 0)
         return "Some of the game's files are missing, usually from a copy or unzip that stopped partway. Copy your game "
                "files again, then choose that folder and set them up again.";
-    if (why == "Wrong version of the game") return "LAS Recomp supports the verified v1.0.0 and v1.1.0 executable builds.";
+    if (why == "Wrong version of the game") return "Multi supports the verified v1.0.0 and v1.1.0 executable builds.";
     if (why == "Game code not built yet") return "Set up the game files to build it (a few minutes, only once).";
     return "Set up the game files to play.";
 }
@@ -307,7 +308,7 @@ static void set_failure(int k, int have = -1) {
         "Choose the folder that has the game's exefs and romfs folders in it.",
         "Choose a supported base archive or a folder containing exefs and romfs.",
         "Make sure there's about 12 GB free and try again.",
-        "LAS Recomp supports the verified v1.0.0 and v1.1.0 executable builds.",
+        "Multi supports the verified v1.0.0 and v1.1.0 executable builds.",
         "Some of the game's files are missing - usually a copy or unzip that stopped partway. Copy the game files "
         "again so none are missing, then choose the folder again.",
         "Make sure there's about 2 GB free and try again. If it keeps happening, report it on GitHub."};
@@ -492,7 +493,7 @@ static void *extract_thread(void *) {
     char speedfix_base[2048];
     bool speedfix = acnh60_base_path(g_root.c_str(), speedfix_base, sizeof speedfix_base);
     if (gamelib_tables()) {
-        set_job("Restart LAS Recomp before changing the game files.", true,
+        set_job("Restart Multi before changing the game files.", true,
                 "The current game code is still loaded. Your files have not been changed.");
         goto done;
     }
@@ -591,7 +592,7 @@ static void *speedfix_thread(void *) {
     const int profile=g_profile;
     const std::string base=game_profile_base_dir(profile), target=base+"/.acnh60";
     const TitleProfile *title=title_profile_validate(base.c_str(),why,sizeof why);
-    if (gamelib_tables()) set_job("Restart LAS Recomp before changing frame-rate mode.",true);
+    if (gamelib_tables()) set_job("Restart Multi before changing frame-rate mode.",true);
     else if (!title || strcmp(title->key,"acnh") || strcmp(title->version,"3.0.1"))
         set_job("Install the normal 3.0.1 game files first.",true,why);
     else {
@@ -828,7 +829,7 @@ extern "C" void launcher_play_seed(const char *seed) {
 }
 static float g_menu_gap = 0.35f;  // space under each item, in line heights
 
-// The first PLAY ever (settings.menu_tip_seen): a note on opening the LAS Recomp menu in game (it isn't obvious),
+// The first PLAY ever (settings.menu_tip_seen): a note on opening the Multi menu in game (it isn't obvious),
 // OK starts the game. Returns true once OK is pressed.
 static bool g_tip_test;  // (LARECOMP_LAUNCHER_SHOT=<frame>:tip)
 // First PLAY ever, before the menu note: authentic 16:9 or the unlocked (fill the window) aspect ratio.
@@ -889,7 +890,7 @@ static bool menu_tip(float s) {
         static const char *const home[] = {"Home button", "Xbox button", "PlayStation button"};  // (bind_label_family)
         static const char *const pad[] = {"Minus + Plus", "View + Menu", "Create + Options"};
         ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted(ui_tr("LAS Recomp has its own menu for settings, the randomizer, cosmetics and more."));
+        ImGui::TextUnformatted(ui_tr("Multi has its own menu for settings, the randomizer, cosmetics and more."));
         ImGui::Spacing();
         int fam = bind_label_family() % 3;
         ImGui::Text(ui_tr("Open it in game with F1 or Esc, or on a controller with the %s (or %s together)."), ui_tr(home[fam]), pad[fam]);
@@ -1206,7 +1207,7 @@ static void profile_picker(float sc) {
         ImGui::EndCombo();
     }
     ImGui::EndDisabled();
-    ImGui::TextWrapped("%s", ui_tr(locked ? "Restart LAS Recomp to switch games." :
+    ImGui::TextWrapped("%s", ui_tr(locked ? "Restart Multi to switch games." :
         "Each installation keeps its own game files, build cache and Vanilla saves. Existing saves stay with Existing installation."));
     ImGui::Spacing();
 }
@@ -1262,7 +1263,7 @@ static void prelaunch_tab(float sc) {
         ImGui::PushFont(g_font_menu);
         ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "%s", ui_tr("Are you sure?"));
         ImGui::PopFont();
-        ImGui::Text(ui_tr("This deletes LAS Recomp's copy of the game files (%.1f GB)."), gb);
+        ImGui::Text(ui_tr("This deletes Multi's copy of the game files (%.1f GB)."), gb);
         ImGui::TextDisabled("%s", ui_tr("Saves, seeds and settings are kept. Your own game files aren't touched."));
         if (rt_dev_mode()) {  // (a source checkout: the files are the project's own extracted/)
             bool abs = !g_root.empty() && (g_root[0] == '/' || (g_root.size() > 1 && g_root[1] == ':'));
@@ -1274,7 +1275,7 @@ static void prelaunch_tab(float sc) {
             stop_background_prep();
             bool ok = rt_remove_game_files(g_root.c_str());  // (runtime/paths.c: only what the extraction made)
             game_files_changed();
-            set_job(ok ? "Game files deleted." : "Could not delete the game files (not in LAS Recomp's data folder?).", !ok);
+            set_job(ok ? "Game files deleted." : "Could not delete the game files (not in Multi's data folder?).", !ok);
             g_files_deleted = true, gb = -1;
             ImGui::CloseCurrentPopup();
         }
@@ -1704,7 +1705,7 @@ extern "C" const char *launcher_run(const char *root) {
             ImGui::SetCursorPos(ImVec2(x0, 120 * s));
             ImGui::PushFont(g_font_title);
             if (page == MAIN) {  // gold to orange, shadowed (not behind the Settings / Game Files windows)
-                const char *t = "LAS Recompiled";
+                const char *t = "Multi";
                 ImVec2 p = ImGui::GetCursorScreenPos();
                 text_fx(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 232, 120, 255),
                         IM_COL32(255, 138, 48, 255), t, 3 * s);
@@ -1936,9 +1937,9 @@ extern "C" const char *launcher_run(const char *root) {
                 if (!src.empty() && !source_is_archive) src_d += "\n\n" + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
-                std::string ex_d = "Copies the game files LAS Recomp needs and recompiles the game from them. This only "
+                std::string ex_d = "Copies the game files Multi needs and recompiles the game from them. This only "
                                    "needs to be done once and may take a while. Your own files aren't changed.";
-                if (gamelib_tables()) ex_d = "Restart LAS Recomp before changing the game files.";
+                if (gamelib_tables()) ex_d = "Restart Multi before changing the game files.";
                 ex_d = ui_tr(ex_d.c_str());
                 if (!job.empty()) ex_d += "\n\n" + std::string(ui_tr(job.c_str())) + (job_hint.empty() ? "" : ".\n" + job_hint);
 
@@ -1958,7 +1959,7 @@ extern "C" const char *launcher_run(const char *root) {
                         const char *modes[]={"Normal 30 FPS","60 FPS + SpeedFix (experimental)"};
                         int mode=g_settings.acnh_speedfix60?1:0;
                         if (busy || gamelib_tables() || !check_copied_files(game_profile_base_dir(g_profile)).empty()) opt_disable_next();
-                        const char *hint=gamelib_tables()?"Restart LAS Recomp before changing frame-rate mode.":
+                        const char *hint=gamelib_tables()?"Restart Multi before changing frame-rate mode.":
                             "60 FPS + SpeedFix keeps normal game speed when your PC sustains 60 FPS. Below 60 FPS the game slows down. First use prepares and compiles a separate copy; both modes use the same 3.0.1 save. ACNH 60 FPS + SpeedFix by tmouh (CC BY-NC 4.0).";
                         if (opt_choice("Frame-rate mode",&mode,modes,2,0,hint)) {
                             if (!mode) {g_settings.acnh_speedfix60=false;g_profile_request=g_profile;}
@@ -2068,14 +2069,14 @@ extern "C" const char *launcher_run(const char *root) {
                 char speedfix_parent[2048];
                 bool speedfix_selected=acnh60_base_path(g_root.c_str(),speedfix_parent,sizeof speedfix_parent);
                 if (ready && !speedfix_selected) {
-                    // DELETE: frees LAS Recomp's copy (runtime/paths.c removes only what the setup made, only inside
+                    // DELETE: frees Multi's copy (runtime/paths.c removes only what the setup made, only inside
                     // the data root). Saves, seeds, settings and the user's own files stay.
                     if (files_gb < 0) files_gb = rt_game_files_size(g_root.c_str()) / 1e9;
                     char gb[32];
                     snprintf(gb, sizeof gb, "%.1f GB", files_gb);
                     opt_section("Game files");
                     if (!g_confirm_delete) {
-                        if (opt_action("Delete game files", gb, "Frees the space LAS Recomp's copy of the game files takes. "
+                        if (opt_action("Delete game files", gb, "Frees the space Multi's copy of the game files takes. "
                                        "Saves, seeds and settings are kept, and your own game files aren't touched: you can "
                                        "set the game files up again from them.", true))
                             g_confirm_delete = true;
@@ -2087,7 +2088,7 @@ extern "C" const char *launcher_run(const char *root) {
                             game_files_changed();
                             status = check_game_files(g_root);
                             if (ok) set_job("Game files deleted.");
-                            else set_job("Couldn't delete the game files", true, "They aren't in LAS Recomp's data folder, "
+                            else set_job("Couldn't delete the game files", true, "They aren't in Multi's data folder, "
                                          "so they were left alone.");
                             if (!status.empty()) g_bg = 0;
                             g_confirm_delete = false, files_gb = -1;

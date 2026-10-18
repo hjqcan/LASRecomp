@@ -1,10 +1,10 @@
 # Challenge workshop, route replay and frame timing
 
-These are local practice and research tools on the `enhanced` branch. They do not provide competitive verification, deterministic game replays, higher-rate simulation or online co-op.
+These are local practice and research tools on the `multi` branch. They do not provide competitive verification, deterministic game replays, higher-rate simulation or online co-op.
 
 ## Create and run a challenge
 
-1. Start a fresh LAS Recomp process and select the game installation and Vanilla/randomizer seed you want to practice. The selected save should belong to that version and seed.
+1. Start a fresh Multi process and select the game installation and Vanilla/randomizer seed you want to practice. The selected save should belong to that version and seed.
 2. Open **Settings → Workshop → Challenge rules**. Choose a lowercase filename, game version, destination level, time limit (10–3,600 seconds), damage multiplier (1–8), optional one-hit KO and optional failure on health loss.
 3. **Save challenge** writes a `.laschallenge` preset under `<data root>/workshop/presets/`. Existing files are preserved; use another name for a revision. **Load challenge** accepts a shared preset. Names use lowercase ASCII letters, digits, `-` or `_`, begin with a letter and have at most 63 characters.
 4. **Arm isolated attempt** copies the selected save mounts to a new `<data root>/workshop/runs/run-…/save/` folder. The source saves are read only. The current game/seed selection is pinned; changing it cancels preparation. Return to the launcher and press **Play**.

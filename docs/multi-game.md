@@ -1,6 +1,6 @@
 # Shared game installations
 
-The enhanced runtime reads reviewed `adapters/*/adapter.json` definitions through
+The Multi runtime reads reviewed `adapters/*/adapter.json` definitions through
 `tools/game_catalog.py` and generates its native catalog and installation list.
 It identifies each reviewed game/version by every module's full 32-byte
 Build ID. LAS 1.0.0 and 1.1.0 use two modules; ACNH 1.0.0 and 3.0.1 use three. Both ACNH
@@ -64,7 +64,7 @@ can cause first-use waits; it does not discard required draws or dispatches.
 Each preparation rebuilds its file index for the selected installation. Vulkan
 reboot drains queued work, releases prepared objects once even when several
 lookup entries reference them, and then clears the stage cache. Returning to
-the launcher can prepare the next boot again. The enhanced import progress,
+the launcher can prepare the next boot again. The Multi import progress,
 compilation cancellation and translated controls remain available. Metal takes
 the upstream preparation path while retaining compute shared-memory identity;
 its runtime behavior has not been tested on the Windows development host.

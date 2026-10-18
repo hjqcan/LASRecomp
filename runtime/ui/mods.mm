@@ -65,7 +65,7 @@ extern "C" void mods_draw(float scale, bool in_game) {
     }
     ImGui::TextWrapped("%s", ui_tr("Mods replace resources without changing the installed game files. Enabled mods are saved separately for each installation."));
     ImGui::TextWrapped("%s", ui_tr("Randomizer seed resources take priority. Two enabled mods cannot replace the same file."));
-    if (locked) ImGui::TextWrapped("%s", ui_tr("Choose an installed version and restart LAS Recomp before changing mods."));
+    if (locked) ImGui::TextWrapped("%s", ui_tr("Choose an installed version and restart Multi before changing mods."));
     ImGui::BeginDisabled(locked || busy);
     if (ImGui::Button(ui_label("Import mod folder").c_str())) SDL_ShowOpenFolderDialog(picked_mod, NULL, SDL_GetKeyboardFocus(), NULL, false);
     ImGui::EndDisabled();

@@ -1,4 +1,4 @@
-"""Package a Windows enhanced build from explicit distributable inputs only.
+"""Package a Windows Multi build from explicit distributable inputs only.
 
 The output directory must not exist. Game installations and previous full app
 directories are never copied wholesale. DLLs may come from an existing release,
@@ -28,7 +28,7 @@ def main():
                         if line.startswith('#define LARECOMP_VERSION '))
     version = version_line.split('"')[1]
     if not version.startswith('enhanced-'):
-        raise RuntimeError('Expected an enhanced version')
+        raise RuntimeError('Expected the legacy-compatible fork release tag (enhanced- prefix)')
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     source_dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True).strip())
     if source_dirty:
@@ -44,7 +44,7 @@ def main():
     if not license_text.startswith('LGPL') or '--enable-gpl' in configuration or '--enable-nonfree' in configuration:
         raise RuntimeError('This package requires the LGPL FFmpeg build')
     args.output.mkdir(parents=True, exist_ok=False)
-    stage = args.output/'LAS Recomp'
+    stage = args.output/'Multi'
     stage.mkdir()
 
     def copy(src, relative):
@@ -74,12 +74,12 @@ def main():
         copy(root/'third_party/fonts'/folder/license_name, folder+'-LICENSE.txt')
     for name in ('README.md', 'LICENSE', 'CONTRIBUTING.md'):
         copy(root/name, name)
-    for name in ('enhanced.md', 'NSZ-and-v110.md', 'photo-mods-randomizer.md',
+    for name in ('multi.md', 'NSZ-and-v110.md', 'photo-mods-randomizer.md',
                  'photo-mode.md', 'resource-mods.md', 'multi-game.md',
                  'adapter-development.md', 'ACNH-port.md', 'pokemon-za-port.md',
                  'local-coop.md', 'workshop.md', 'research-capture.md'):
         copy(root/'docs'/name, 'docs/'+name)
-    copy(root/'docs/enhanced.md', 'START-HERE-使用说明.md')
+    copy(root/'docs/multi.md', 'START-HERE-使用说明.md')
     copy(root/'examples/mods/template', 'examples/mods/template')
     copy(root/'examples/workshop/leave-house.laschallenge', 'examples/workshop/leave-house.laschallenge')
     copy(root/'fonts/README.md', 'fonts/README.md')
@@ -103,7 +103,7 @@ def main():
                     ffmpeg_configuration_without_build_prefix=re.sub(r'--prefix=\S+\s*', '', configuration),
                     files=records)
     (stage/'package-manifest.json').write_text(json.dumps(manifest, indent=2)+'\n', encoding='utf-8')
-    archive = args.output/f'LAS-Recomp-{version}-windows-x64.zip'
+    archive = args.output/f'Multi-{version}-windows-x64.zip'
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for path in sorted(p for p in stage.rglob('*') if p.is_file()):
             z.write(path, path.relative_to(args.output).as_posix())

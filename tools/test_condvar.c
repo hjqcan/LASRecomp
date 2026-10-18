@@ -32,7 +32,7 @@ void guest_call(Cpu *c, uint64_t addr) { abort(); }
 int ipc_handle_request(Cpu *c, uint32_t handle) { abort(); }
 uint32_t ipc_connect_named_port(const char *name) { abort(); }
 
-// Enhanced's unrelated memory/profile/research entry points also fail closed.
+// Multi's unrelated memory/profile/research entry points also fail closed.
 void kernel_memory_reset(void) { abort(); }
 uint64_t kernel_memory_info(unsigned id) { (void)id; abort(); }
 uint32_t kernel_set_heap_size(uint64_t size) { (void)size; abort(); }

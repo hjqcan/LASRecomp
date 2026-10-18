@@ -1,6 +1,6 @@
 # Experimental capture tools
 
-The `enhanced` branch includes developer tools for investigating LAS input,
+The `multi` branch includes developer tools for investigating LAS input,
 timing, RNG state and scene transitions. They are disabled during ordinary play
 and do not provide deterministic replay, higher-rate simulation or online co-op.
 

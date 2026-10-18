@@ -1,6 +1,6 @@
 # Developing a reviewed game adapter
 
-Development stays on `enhanced`. Each game and executable version needs reviewed
+Development stays on `multi`. Each game and executable version needs reviewed
 configuration and working gameplay. A matching archive, successful
 compilation or passing synthetic test does not establish playability.
 
@@ -146,10 +146,10 @@ Standalone `tools/gen.py` retains its LAS default for existing developer scripts
 ## Integration and release
 
 Keep unfinished adapters marked as development and unavailable for normal
-installation. Their source can live on `enhanced` while implementation continues.
+installation. Their source can live on `multi` while implementation continues.
 Enable installation only when the supported startup, gameplay and save paths work.
 
 Run `python tools/adapter.py check` after changing adapter definitions. Use the
 existing catalog/contract tests and the tests for the affected subsystem; avoid
 duplicating the complete runtime matrix for a documentation-only change.
-Use [the release checklist](enhanced.md#repeatable-release-checks) before packaging.
+Use [the release checklist](multi.md#repeatable-release-checks) before packaging.

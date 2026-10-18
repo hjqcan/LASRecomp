@@ -8,7 +8,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: ['main', 'beta_*', 'enhanced']
+    branches: ['main', 'beta_*', 'multi']
   workflow_dispatch:
 permissions:
   contents: read
@@ -96,7 +96,7 @@ jobs:
         run: |
           clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -lm -o build/test-simd-rounding
           build/test-simd-rounding
-      - name: Save commit and enhanced backup integration
+      - name: Save commit and fork backup integration
         run: python3 tools/test_save_commit.py
       - name: Game address table tests
         run: |
@@ -180,7 +180,7 @@ jobs:
           build/exclusive-test-env/bin/python tools/test_unbounded_tables.py
           build/exclusive-test-env/bin/python tools/test_fragment_guard.py
           build/exclusive-test-env/bin/python tools/test_masked_tables.py
-      - name: Save commit and enhanced backup integration
+      - name: Save commit and fork backup integration
         run: python3 tools/test_save_commit.py
       - name: Game address table tests
         run: |

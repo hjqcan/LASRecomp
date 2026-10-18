@@ -1,6 +1,6 @@
 #!/bin/bash
 # make smoketest (tools/linux/smoketest.sh [AppImage]): release check of the x86-64 AppImage on this machine, in four
-# launches of the AppImage itself (default build/dist/LAS Recomp-<version>-linux-x86_64.AppImage):
+# launches of the AppImage itself (default build/dist/Multi-<version>-linux-x86_64.AppImage):
 #   0. setup, as the start screen's Set up does it: this checkout's extracted/ (exefs, romfs) into an empty data folder,
 #      and the game code built from it with the bundled generator and compiler (runtime/gamebuild.c)
 #   1. start screen: rendered with the game files found ("Game files ready")
@@ -17,7 +17,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 REPO=$PWD
 VERSION=$(sed -n 's/^#define LARECOMP_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
-APP=$(realpath "${1:-build/dist/LAS Recomp-$VERSION-linux-x86_64.AppImage}")
+APP=$(realpath "${1:-build/dist/Multi-$VERSION-linux-x86_64.AppImage}")
 SAVE=${LARECOMP_SMOKE_SAVE:-$HOME/.local/share/lasrecomp-smoketest/save}
 O=$REPO/build/smoke
 [ -x "$APP" ] || { echo "smoketest: no AppImage at $APP (make appimage)"; exit 2; }

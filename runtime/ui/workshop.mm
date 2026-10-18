@@ -244,7 +244,7 @@ extern "C" void workshop_draw(float scale,bool in_game) {
         }
         if (ImGui::Button(ui_label("Finish and return to launcher").c_str())) rt_request_reboot(2);
         ImGui::TextWrapped("%s",ui_tr("This run keeps writing only to its isolated save until you return to the launcher."));
-    } else if (gamelib_tables()) ImGui::TextWrapped("%s",ui_tr("Restart LAS Recomp before arming another challenge."));
+    } else if (gamelib_tables()) ImGui::TextWrapped("%s",ui_tr("Restart Multi before arming another challenge."));
     if (!message.empty()) ui_user_text(ui_tr(message.c_str()),true);
     ImGui::Separator(); ImGui::TextUnformatted(ui_tr("Route replay"));
     ImGui::TextWrapped("%s",ui_tr("Replay the observed route, health and controller samples on a 2D map. This viewer does not drive the game or reproduce its simulation. Share route.csv separately from the run's save folder."));

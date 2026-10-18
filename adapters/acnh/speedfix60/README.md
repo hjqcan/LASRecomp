@@ -13,7 +13,7 @@ The three BCSV resources have been converted to 107 guarded four-byte edits
 in `manifest.json`; the complete resource files are not included. The runtime
 prepares all four resources from the player's own unmodified game files.
 
-LAS Recomp's NVN backend implements the SDK patch's one-refresh presentation
+Multi's NVN backend implements the SDK patch's one-refresh presentation
 policy after verifying the complete prepared installation. The module patches
 are applied before native compilation, including the 83 words in read-only and
 data segments. Normal and patched builds have distinct native library identities

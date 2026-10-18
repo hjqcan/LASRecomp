@@ -1,8 +1,8 @@
 #!/bin/bash
 # tools/linux/package.sh <x86_64|aarch64> (inside the amd64 build container, tools/linux/appimage.sh): the game built
 # against build/linux/<arch>/deps and the seed generator helper (tools/linux/rando_helper.sh) put together
-# as an AppDir and packed by appimagetool: build/dist/LAS Recomp-<version>-linux-<arch>.AppImage
-# (named like the macOS / Windows releases; GitHub shows it as LAS.Recomp-<version>-linux-<arch>.AppImage).
+# as an AppDir and packed by appimagetool: build/dist/Multi-<version>-linux-<arch>.AppImage
+# (named like the macOS / Windows releases; GitHub shows it as Multi-<version>-linux-<arch>.AppImage).
 # Shipped next to the executable (usr/bin, where runtime/paths.c rt_resource looks): rando-gen/, what the start screen
 # builds the game code with on the player's machine (runtime/gamebuild.c: lasgen/, zig/ from tools/fetch_zig.sh,
 # gamelib-src/), the window icon, the start screen font. No game code: that's built from the player's own files. usr/lib: the libraries from deps/ only - glibc, libstdc++, the Vulkan loader and the
@@ -15,7 +15,7 @@ P=$L/deps
 B=$L/game
 APPDIR=$L/AppDir
 VERSION=$(sed -n 's/^#define LARECOMP_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
-OUT="build/dist/LAS Recomp-$VERSION-linux-$ARCH.AppImage"
+OUT="build/dist/Multi-$VERSION-linux-$ARCH.AppImage"
 JOBS=$(nproc)
 
 tools/linux/build_deps.sh "$ARCH"

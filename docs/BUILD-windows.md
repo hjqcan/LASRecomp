@@ -1,4 +1,4 @@
-# Building LAS Recomp on Windows (x86-64)
+# Building Multi on Windows (x86-64)
 
 Status: part of main. Builds and runs the game on Vulkan (with your own game files); `make dist` packages the
 release zip.
@@ -34,9 +34,9 @@ Run from a shell that has `C:\msys64\ucrt64\bin` on PATH (SDL3, FFmpeg, Vulkan, 
     make rando-helper   # the seed generator without Python (build/helper/rando-gen)
     make gen-helper     # the game code generator without Python (build/helper/lasgen)
     tools/fetch_zig.sh  # the compiler the start screen builds the game code with (build/zig)
-    make dist           # -> build/dist/LAS Recomp-<version>-windows.zip (no game code inside)
+    make dist           # -> build/dist/Multi-<version>-windows.zip (no game code inside)
 
-The zip's `LAS Recomp/` folder holds `lasrecomp.exe` (icon from `docs/icon/icon.ico`, via windres),
+The zip's `Multi/` folder holds `lasrecomp.exe` (icon from `docs/icon/icon.ico`, via windres),
 `rando-gen/` and the MSYS2 DLLs. No installer: game files, saves, seeds and settings are kept next to the exe, so
 the folder must be writable (the app says so and quits if it isn't, e.g. under Program Files). A source checkout
 with `extracted/` in the starting folder keeps using that folder instead.

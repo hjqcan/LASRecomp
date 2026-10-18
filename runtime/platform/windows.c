@@ -397,8 +397,8 @@ static void log_to_file_without_console(void) {
 static void require_cpu(void) {
     __builtin_cpu_init();
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2")) return;
-    MessageBoxA(NULL, "LAS Recomp needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or newer).",
-                "LAS Recomp", MB_ICONERROR | MB_OK);
+    MessageBoxA(NULL, "Multi needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or newer).",
+                "Multi", MB_ICONERROR | MB_OK);
     ExitProcess(1);
 }
 
@@ -410,7 +410,7 @@ void plat_fatal_notice(void) {
     rt_crash_explain(text, sizeof text, g_log_path);
     if (!g_log_path[0]) return;
     fflush(stderr);
-    MessageBoxA(NULL, text, "LAS Recomp", MB_ICONERROR | MB_OK);
+    MessageBoxA(NULL, text, "Multi", MB_ICONERROR | MB_OK);
 }
 
 bool plat_module_name(uint64_t pc, char *out, size_t n) {
@@ -423,7 +423,7 @@ bool plat_module_name(uint64_t pc, char *out, size_t n) {
 
 void plat_init(void) {
     // abort() (rt_fatal_trace, after the crash dialog) without the C runtime's own "Microsoft Visual C++ Runtime
-    // Library - abort() has been called" box and the Windows error report: the player sees only LAS Recomp's dialog
+    // Library - abort() has been called" box and the Windows error report: the player sees only Multi's dialog
 #ifdef _WRITE_ABORT_MSG  // (MinGW's stdlib.h declares it with these flags)
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif

@@ -171,7 +171,7 @@ void plat_fatal_notice(void) {
     if (!g_log_path[0]) return;
     fflush(stderr);
     CFStringRef msg = CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8);
-    CFUserNotificationDisplayAlert(0, kCFUserNotificationStopAlertLevel, NULL, NULL, NULL, CFSTR("LAS Recomp"), msg,
+    CFUserNotificationDisplayAlert(0, kCFUserNotificationStopAlertLevel, NULL, NULL, NULL, CFSTR("Multi"), msg,
                                    CFSTR("OK"), NULL, NULL, NULL);
     if (msg) CFRelease(msg);
 }
