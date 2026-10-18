@@ -55,8 +55,9 @@ reviewed per-game adapter definitions, catalog-generated installation selection,
 release-scoped cache identities and Windows desktop shortcuts. Managed setup
 imports and builds a candidate before atomically selecting it; failed builds keep
 the previous installation. ABI 4 requires a one-time game-library rebuild while
-preserving saves and launch IDs. ACNH 1.0.0 is enabled as a Windows beta after
-local island, day-rollover, save/reopen and extended-play checks; see
+preserving saves and launch IDs. ACNH 1.0.0 and 3.0.1 are enabled as Windows betas
+after local island, day-rollover and save/reopen checks. The update uses its own
+save slot and the game's normal 30 FPS timing; see
 [its validation record and limits](ACNH-port.md). Other development adapters
 remain unavailable for normal installation. The shared runtime
 also includes audio effects, guest nonlocal-return handling, compute

@@ -1,153 +1,93 @@
 # Animal Crossing: New Horizons port
 
-The shared enhanced runtime supports Animal Crossing: New Horizons 1.0.0
-(program ID `01006F8002326000`) as a Windows beta. Normal archive setup is enabled
-for this exact base release after the local acceptance checks recorded below.
-Updates and DLC are not qualified. No game code, extracted files, fonts,
+The shared enhanced runtime supports Animal Crossing: New Horizons 1.0.0 and
+3.0.1 (program ID `01006F8002326000`) as Windows betas. Normal archive setup is
+enabled for these exact releases after the local checks recorded below.
+Other versions and DLC are not qualified. No game code, extracted files, fonts,
 generated C, compiled game library, or saves belong in commits.
 
 ## Module layout
 
-### 3.0.1 development inventory
+### 3.0.1 Windows beta
 
-The local update has content version 2097152 and main Build ID
+The update has content version 2097152 and main Build ID
 `8f2cb7a9774959c89189c994fe4cc98800000000000000000000000000000000`.
-It remains a development release until gameplay and save/reopen qualification.
-Its main image is 94,392,320 bytes, so the SDK/subsdk bases move to
-`0x7008000000` and `0x700a000000`; the 1.0.0 layout is unchanged. The SDK and
-multimedia modules use GNU-only dynamic symbol hashes. Both the generator and
-native loader now count their bounded GNU buckets/chains, retaining the former
-SysV path for older modules. Synthetic tests cover both paths and malformed
-table rejection.
+Its 94,392,320-byte main image moves the SDK and multimedia modules to
+`0x7008000000` and `0x700a000000`. The 1.0.0 layout is unchanged. The adapter
+selects NVN 55.15 and a separate save namespace,
+`save/01006f8002326000/v3.0.1`. To migrate an older save, copy it into that
+version's slot and let the game perform its conversion; retain the original.
+The 3.0.1 save format cannot be reopened by 1.0.0.
 
-The graphics initializer at main offset `0x37b6eb8` queries the NVN major/minor
-integers and compares them with 55 and 15. The release declares those values
-and an unqualified NVN 55 capability; this does not establish renderer support.
-Its separate managed namespace is `01006f8002326000/v3.0.1`. Existing 1.0.0 saves
-must not be converted in place or overwritten during development. Initial
-qualification uses the game's normal 30 FPS timing before any high-frame-rate
-work.
+Local checks on 2026-10-18 used the game's normal 30 FPS timing:
 
-The first real update import stopped before publication because the merged
-RomFS validator still selected LAS's content roots. Update assembly now passes
-the identified release's content rules through to that validator. A synthetic
-ACNH base/update reproduces the former failure and checks the corrected payload;
-the existing LAS, NSP and XCI import regressions remain in place.
-The next attempt reached resource extraction and exposed the old 100,000-file
-limit. Traversal is now bounded by the validated directory/file table capacities
-while retaining cycle, parent, name and extent checks. A synthetic 100,001-file
-table reproduces that former rejection without writing those files to disk.
-On Windows, final import-directory publication retries transient sharing/access
-errors for up to five seconds, preserving atomic rename and rollback behavior.
-Tests hold a real directory handle without delete sharing, release it, and
-verify publication; simulated permanent failures still preserve prior data.
-The complete 3.0.1 import contains 103,396 files and 10,414,305,140 payload
-bytes. Its first native build exposed unbounded lifted-instruction caching.
-Generation now retains at most 65,536 decoded instructions and stores text words
-compactly. Eviction repeats decoding without changing emitted C; synthetic
-regressions cover control flow, nonlocal continuations and unique unsupported
-instruction counts. `LARECOMP_BUILD_JOBS=1..64` can limit build concurrency when
-other applications need memory. An interrupted build keeps completed objects
-for the normal Resume action.
-One 3.0.1 function has 19,701 instruction labels and an every-instruction
-fallback dispatch. LLVM optimization of this dense control-flow graph crossed
-a 4 GiB guard even when compiled alone. Functions with this fallback and more
-than 8,192 guest instructions now use Clang's `optnone` attribute. Their emitted
-operations and valid entry targets remain intact; smaller functions retain
-normal optimization. The isolated failing unit compiled with about 0.62 GiB
-of sampled private memory after this change. A native synthetic regression
-enters an 8,193-instruction graph at several points, checks wrapping arithmetic
-and rejects invalid targets through the existing dispatcher. This compiler
-memory result does not establish gameplay compatibility or performance.
+| Check | Observed result |
+| --- | --- |
+| Fresh profile | Airport introduction rendered and accepted dialogue input under strict Vulkan validation. |
+| Copy of a 1.0.0 save | Game-managed conversion completed; 24 hash regions across five save files passed independent checks; original source hashes stayed unchanged. |
+| Island and interiors | Night island movement, two separate player-tent round trips, service-tent entry and advancing Tom Nook dialogue passed. |
+| Save and reopen | Manual save completed, all 24 save checks passed, normal window close succeeded, and a fresh process reopened the island. |
+| Date rollover | An extra copy advanced to the following midday, announced the correct date, loaded the daylight island and completed another validated manual save. The source copy stayed unchanged. |
+| GPU lifetime | Periodic pipeline-cache snapshots and normal shutdown completed repeatedly; the validated island/tent run reported no Vulkan errors. |
+| Audio capture | A 723-second stereo 48 kHz capture contained finite, nonzero output (RMS 0.0215, peak 0.467). This is a signal check, not exhaustive listening coverage. |
 
-The first completed 3.0.1 library loaded all three modules, then stalled before
-presentation. Profiling found millions of zero-timeout waits on an invalid
-event handle in the SDK's operation-mode query. Its application-functions
-command 210 had received an empty successful reply. That query now returns an
-unsignaled event for the runtime's fixed docked mode. The self-controller's
-suspended-tick query and event also return their typed outputs. A synthetic
-regression exercises the real IPC codec, service handlers and kernel polling
-with ordinary and domain sessions; the former empty reply fails it. This
-addresses the identified service contract, not yet complete 3.0.1 acceptance.
+These checks cover the tested early-island routes, not every activity, DLC or
+online service. Frame rate is also hardware- and scene-dependent. On the tested
+Intel Arc Pro 140T, the 900p service dialogue had a 29.8 FPS median, while a
+stationary outdoor interval had a 16.9 FPS median. A separate rainy daytime
+interval at 720p had an 18.7 FPS median. Strict Vulkan validation was substantially
+slower. These are local observations, not a 30/60 FPS performance guarantee.
+High-frame-rate speed correction is a separate feature and is not established
+by the version-support checks above. Both LAS releases and ACNH 1.0.0 remain
+required shared-runtime regressions before publishing a package.
 
-The next startup reached audio renderer REV15 and rejected its wider splitter
-records. Runtime audio now reads the 0x188-byte voice and 0xA8-byte splitter
-destination layouts, float biquad coefficients, REV12 Q14 splitter filters,
-REV13 explicit volume resets and REV9 enlarged effect status replies. The
-layouts follow the MIT-licensed [Ryujinx-derived parameter definitions](https://github.com/NextendoNetwork/Ryujinx-Nextendo/tree/2e6ff9ee8bc0072debd6584c3521586d1d4ab5ca/src/Ryujinx.Audio/Renderer/Parameter).
-Synthetic production-renderer tests cover legacy and newer request layouts,
-float precision, packet continuity, coefficient changes, filter fan-out,
-re-enable/reset, truncation rejection and output canaries. The two captured
-REV15 startup splitter packets also parse successfully. This is protocol and
-DSP regression evidence; full-game audio and gameplay qualification remain open.
+The common implementation changes include:
 
-The following startup diagnostic exhausted the game's sound heap before its
-speech manager could create a child heap. `audren:u` had always requested a
-16 MiB work buffer regardless of the renderer configuration. Its reply now
-uses the [reference renderer's capacity calculation](https://github.com/NextendoNetwork/Ryujinx-Nextendo/blob/2e6ff9ee8bc0072debd6584c3521586d1d4ab5ca/src/Ryujinx.Audio/Renderer/Server/AudioRenderSystem.cs),
-including mix/voice storage, splitter revision gates, filter state and performance
-history, with page alignment and checked arithmetic. Independent C# evaluations
-provide the native regression's expected capacities across REV1/2/4/5/8/12/15.
-Truncated requests, unaligned input and overflowing capacities are also covered.
-This corrects the oversized reservation; it does not establish full-game acceptance.
-The actual REV15 request now reserves `0x234000` bytes and startup progresses
-past speech initialization. The next stop exposed a guarded jump table whose
-branch followed twenty register initializers. Fallthrough-table discovery now
-uses the same bounded 64-instruction search as taken-table discovery, retaining
-call/transfer barriers. Synthetic byte/halfword tables reproduce the former
-missing-target failure; both captured tables' complete target sets also match
-independently decoded table entries.
+- The loader and generator support bounded GNU symbol hashes and ELF64 RELR
+  relocations while preserving SysV/RELA loading. Paired exclusive operations and
+  guarded jump-table discovery handle the newer SDK and game code. A bounded
+  decoded-instruction cache limits generator memory. Dense fallback functions
+  above 8,192 guest instructions use Clang `optnone`, preserving their operations
+  and entry targets instead of exhausting optimizer memory. Interrupted native
+  builds retain validated completed objects; `LARECOMP_BUILD_JOBS=1..64` controls
+  concurrency.
+- Update import uses the selected title's content rules. RomFS traversal is
+  bounded by validated table capacities, allowing this release's 103,396 files
+  and 10,414,305,140 payload bytes without the former 100,000-file cutoff.
+  Windows candidate publication retries temporary sharing failures while
+  retaining atomic publication and rollback.
+- Operation-mode and suspended-tick queries return typed events and values.
+  The time service initializes both continuous-adjustment slots at shared-memory
+  offset `0xD0` with the same clock-source UUID as the legacy clock context.
+  Clock snapshots and comparisons preserve elapsed time, calendar conversion,
+  user clock changes and error results. Native tests check both SDK layouts,
+  advancing time, calendar rollover, source mismatch, overflow and buffer bounds.
+  The shared-memory layout follows the
+  [public implementation](https://github.com/NextendoNetwork/Ryujinx-Nextendo/blob/2e6ff9ee8bc0072debd6584c3521586d1d4ab5ca/src/Ryujinx.HLE/HOS/Services/Time/TimeSharedMemory.cs).
+- Audio handles REV15 voice/splitter records, float and Q14 filters, explicit
+  volume resets and enlarged effect replies. Work-buffer sizing follows the
+  [renderer capacity calculation](https://github.com/NextendoNetwork/Ryujinx-Nextendo/blob/2e6ff9ee8bc0072debd6584c3521586d1d4ab5ca/src/Ryujinx.Audio/Renderer/Server/AudioRenderSystem.cs)
+  with checked arithmetic, instead of reserving a fixed 16 MiB from the game's
+  sound heap. Synthetic production-renderer tests cover legacy and current
+  layouts, coefficient/state transitions and malformed request bounds.
+- Offline cloud-backup queries report disabled status; enabling remote backup
+  remains unsupported. BCAT creates correctly typed empty-cache readers and
+  returns NotFound/NotOpen rather than empty successful reads. These interfaces
+  follow the [public service definitions](https://github.com/NextendoNetwork/Ryujinx-Nextendo/tree/2e6ff9ee8bc0072debd6584c3521586d1d4ab5ca/src/Ryujinx.HLE/HOS/Services).
+- A condition waiter publishes its flag before releasing the guest mutex.
+  Otherwise a user-space sender could queue a message, observe no waiter and
+  omit the signal syscall, leaving a scene worker asleep indefinitely. A
+  deterministic native regression reproduces that ordering failure and checks
+  timeout behavior and contended ownership transfer as well.
+- Texture retirement is synchronized. Pipeline-cache snapshots exclude active
+  pipeline creation while preserving parallel compilation; shutdown first stops
+  guest threads and drains shader jobs. The cache barrier addresses an observed
+  Intel driver crash, not a claim that ordinary Vulkan caches require external
+  synchronization. Depth/stencil copies have a tested GPU fallback when the
+  driver lacks depth blit support; see [renderer details](multi-game.md).
 
-The first rendered 3.0.1 screen reported an unsupported system date. The SDK's
-monotonic clock reads the 15.0.0+ continuous-adjustment point at time shared-memory
-offset `0xD0`; leaving it zero caused a clock-source mismatch and a failed time
-query. The service now initializes its two 0x38-byte slots with a matching source
-UUID and zero bounded adjustment, following the [public shared-memory layout](https://github.com/NextendoNetwork/Ryujinx-Nextendo/blob/2e6ff9ee8bc0072debd6584c3521586d1d4ab5ca/src/Ryujinx.HLE/HOS/Services/Time/TimeSharedMemory.cs).
-The production-service regression independently decodes both SDK layouts,
-checks local/network clock parity and 90-second progression, and rejects a
-mismatched UUID. It fails against the former uninitialized point. Actual
-gameplay and save/reopen checks are still required.
-With that point initialized, startup passes the date check and queries `olsc:u`.
-The offline service implements initialization and the disabled cloud-backup
-status using the [public application-service ABI](https://github.com/NextendoNetwork/Ryujinx-Nextendo/blob/2e6ff9ee8bc0072debd6584c3521586d1d4ab5ca/src/Ryujinx.HLE/HOS/Services/Olsc/IOlscServiceForApplication.cs).
-Enabling cloud backup and remote operations return unsupported. Its regression
-checks session initialization, UID/length validation, the one-byte status and
-empty handle/object outputs. Local saves and runtime backups are independent.
-The subsequent load creates a BCAT directory reader even when no delivery cache
-exists. The offline storage now creates typed file/directory readers whose Open
-returns BCAT NotFound and subsequent reads return NotOpen. Tests cover both
-interfaces, short names and untouched output buffers; enumeration remains empty.
-The fresh profile subsequently reached the airport introduction and accepted
-dialogue input under strict Vulkan validation. Its shutdown still crashed during
-Vulkan teardown, and the scene was slow under validation; neither is a completed
-playability or performance acceptance result. The game's time command 400 also
-revealed an empty clock-snapshot reply. The service now supplies the typed 0xD0
-snapshot and context-based variant, and distinguishes elapsed time from user
-clock changes in snapshot comparisons. Tests check calendar rollover, source
-UUIDs, network fallback, overflow rejection and output-buffer bounds.
-The close-window path now stops guest threads and drains pipeline jobs before
-the device-idle/cache-save exit handler. Previously both producers could still
-be active there. Cache saves also report their requested byte count and retain
-the previous file if host allocation fails. These changes require another
-normal-close check; the observed driver cache-read crash is not yet qualified.
-The converted 3.0.1 save passed 24 hash-region checks across five files, with the
-original 1.0.0 source unchanged. The next run reproduced the cache-read crash in
-the three-minute background saver, independently of window close. Cache reads
-now hold an exclusive barrier across size query and data copy while graphics
-and compute pipeline creation share its read side. This preserves concurrent
-compilation and releases the barrier before disk I/O. A native mock-driver test
-checks those ordering properties. This is a conservative cache-snapshot change,
-not evidence that Vulkan requires external synchronization for ordinary caches;
-The next validation run saved two periodic cache snapshots and closed normally,
-but stopped advancing while entering the player's tent. The suspended guest
-thread state showed a queued message with its receiver still asleep and the
-main thread waiting for that worker's completion event. The condition-variable
-wait path released the guest mutex before publishing its waiter flag; a sender
-could acquire it in user space and skip the signal syscall. The flag is now
-published first. A deterministic native test schedules a sender at that exact
-unlock boundary, fails with the old order, and verifies successful wakeup and
-mutex reacquisition with the corrected order. This also retains the existing
-timeout and contended-handoff checks. Scene transitions still require rerunning.
+### 1.0.0 module layout
+
 
 | Module | Guest base | Build ID |
 | --- | --- | --- |

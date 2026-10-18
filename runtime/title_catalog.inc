@@ -19,8 +19,8 @@ static const TitleProfile title_profiles[] = {
         {"subsdk0", "5a7ada8dd7447c10aa244944f64d0aff17c50539000000000000000000000000", UINT64_C(0x7006000000), false},
      }, {1, 2, 0},
      "e593dd88cf817654c68c13814a2244c2eb230e0ee1337c99f2f32ea4cfd605d9", {"Movie"}, 1, 66790, true, 312, 1, false, 53, 0},
-    {"acnh", "Animal Crossing: New Horizons", "3.0.1", "generic", "development",
-     UINT64_C(0x01006f8002326000), 1, 3, false, {
+    {"acnh", "Animal Crossing: New Horizons", "3.0.1", "generic", "beta",
+     UINT64_C(0x01006f8002326000), 1, 3, true, {
         {"main", "8f2cb7a9774959c89189c994fe4cc98800000000000000000000000000000000", UINT64_C(0x7000000000), false},
         {"sdk", "a226048605d3597f90cb1067d141cd36647b90cd000000000000000000000000", UINT64_C(0x7008000000), true},
         {"subsdk0", "6c6ceace7be94107a8bd440bc2d6070469bc90ce000000000000000000000000", UINT64_C(0x700a000000), false},

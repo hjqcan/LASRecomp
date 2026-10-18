@@ -76,8 +76,8 @@
       "version": "3.0.1",
       "role": "update",
       "content_version": 2097152,
-      "status": "development",
-      "installable": false,
+      "status": "beta",
+      "installable": true,
       "runtime": {
         "nvn_major": 55,
         "nvn_minor": 15,

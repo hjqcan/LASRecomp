@@ -92,12 +92,12 @@ class CatalogTests(unittest.TestCase):
         # The file picker no longer needs a manually selected title.
         self.assertEqual(inspect_package(archive)['game_id'], 'acnh')
 
-    def test_acnh_update_has_distinct_layout_save_namespace_and_gate(self):
+    def test_acnh_update_has_distinct_layout_and_save_namespace(self):
         game = get_game('acnh')
         base, update = game.releases
         self.assertEqual((update.version, update.role, update.content_version), ('3.0.1', 'update', 2097152))
-        self.assertFalse(update.installable)
-        self.assertEqual(update.status, 'development')
+        self.assertTrue(update.installable)
+        self.assertEqual(update.status, 'beta')
         self.assertEqual((update.runtime['nvn_major'], update.runtime['nvn_minor']), (55, 15))
         self.assertEqual([m.base for m in update.modules], [0x7000000000, 0x7008000000, 0x700a000000])
         self.assertEqual(update.installation['save_directory'], 'save/01006f8002326000/v3.0.1')
@@ -111,10 +111,6 @@ class CatalogTests(unittest.TestCase):
         (self.root/'sdk').write_bytes(synthetic_nso(base.modules[1].build_id))
         with self.assertRaisesRegex(ValueError, 'sdk Build ID mismatch'):
             inspect_exefs(self.root)
-        output = self.root/'not-created'/'update'
-        with self.assertRaisesRegex(ValueError, 'in development'):
-            import_game(self.root/'missing.nsz', None, output, game_id='acnh', expected_version='3.0.1')
-        self.assertFalse(output.parent.exists())
 
     def test_acnh_update_assembly_uses_its_own_content_roots(self):
         game = get_game('acnh')
@@ -139,7 +135,7 @@ class CatalogTests(unittest.TestCase):
             archives.append(archive)
         output = self.root/'installed'
         with patch('import_game.shutil.disk_usage', return_value=SimpleNamespace(free=100 << 30)), redirect_stdout(io.StringIO()):
-            result = import_game(*archives, output, expected_version='3.0.1', allow_development=True)
+            result = import_game(*archives, output, expected_version='3.0.1')
         self.assertEqual((result['game_id'], result['game_version']), ('acnh', '3.0.1'))
         self.assertEqual((output/'romfs/Movie/example.bin').read_bytes(), b'changed!')
         self.assertEqual(inspect_exefs(output/'exefs')['version'], '3.0.1')
