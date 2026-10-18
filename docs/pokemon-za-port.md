@@ -1,6 +1,6 @@
 # Pokemon Legends: Z-A integration probe
 
-Status on 2026-10-18: **base 1.0.0 passes audio workspace queries, exception-stack registration, host random-byte requests and three repaired table sites; blocked at a further cross-fragment guard; not playable**.
+Status on 2026-10-18: **base 1.0.0 passes the fragmented guards and presents only black startup frames; unsupported shaders and missing main target `0x166df70` block further progress; not playable**.
 This is third-title framework evidence, not a completed port. No Z-A release has
 been added to the installable catalog. Update 2.0.2 remains an inventory-only
 input. Tests used local files on Windows, starting
@@ -461,6 +461,111 @@ the structural results in the table above. These are bounded regressions, with
 no performance-parity or full-playthrough claim. The earlier LAS 1.1.0 startup
 failure remains unexplained, so this research candidate is still not qualified
 for publication despite the successful new runs.
+
+## Fragmented guards and first presentation attempt (2026-10-18)
+
+The next discovery change resolves a fallthrough guard across an artificial
+fragment boundary while staying inside the known function. Calls and rewritten
+condition flags prevent borrowing an earlier guard. It also tracks a masked
+index recomputed from the same unchanged source, including ABI-preserved
+registers across calls. A wider mask, overwritten source or basic-block join
+does not inherit that proof. This corrects both the `0x607d90` failure above
+and the subsequent `0x60f4e4` failure without inventing an index bound.
+
+Nine new asset-free cases include native-versus-Unicorn execution, default
+branches and rejected ambiguous cases. Together with the nine cross-fragment
+and seven relative-origin tests, all 25 cases pass locally. The final frozen
+generator passes adapter generation checks. These changes remain research
+work and are excluded from the separately published official-only sync.
+
+An intermediate Windows probe passed both repaired sites and reached NVN
+presentation frame 0. It reported unsupported Maxwell shader words
+`eb20018800f70804`, `eb5006080207000f` and `eb20018800f70408`, then terminated
+at main target `0x166df70` after about 119 seconds. A captured thread stack
+placed the presentation delay in the Intel shader compiler; this run did not
+establish a GPU submission timeout. The missing target belongs to another
+relative table in a function whose earlier bounded table still introduces a
+fragment boundary. No captured game image, title screen, audio playback or
+save/reopen is qualified by that presentation call.
+
+Comparing the final guarded discovery with the complete pre-table `5bb42bb`
+implementation gives the following structural results:
+
+| Input | Final guarded discovery comparison |
+| --- | --- |
+| LAS 1.0.0 and 1.1.0 | Main retains 86,669 entries and the same function ends; two tables now enumerate all 45 and 13 masked-index targets. SDK retains 34,982 identical entries. |
+| ACNH main | 177,426 to 177,434 entries; 43 retained records change, one entry is removed and nine are added. |
+| ACNH SDK | 44,716 to 44,705 entries; 30 retained records change and 11 are removed. |
+| ACNH subsdk | All 20,599 entries remain; 12 retained records change. |
+
+The discovery comparison and a completed library rebuild do not replace
+runtime regression. The earlier LAS 1.1.0 startup crash remains unresolved,
+so the research runtime is still withheld from publication.
+
+## Official synchronization and isolated legacy regression
+
+The official synchronization commit `c073733` incorporates `beta_5` through
+`290990e`, including rumble and launcher shader preparation, while retaining
+enhanced's shared compilation queue, prepared-object ownership, translated UI
+and managed imports. The published enhanced branch subsequently advanced to
+`aab8190`, which has `c073733` as a parent and includes official `0f5a5ab`.
+All seven remote workflows pass for both commits, including Windows, Linux and
+macOS builds. The later merge adds movie-resource cleanup, miniboss-frequency
+controls and upstream maintenance changes. The local research branch includes
+that published state through merge `03f7d88`; its Windows build, fresh frozen
+generator, movie lifecycle test and Vulkan fence-sequence test pass.
+
+A separate official-sync executable (`10f3a61056f706bb...`, source `c073733`)
+was used for the complete bounded gameplay batch below. It excludes the
+unqualified Z-A audio/context and discovery experiments.
+
+| Input | Official-sync gameplay evidence |
+| --- | --- |
+| LAS 1.0.0 | Load, move indoors and outdoors, open inventory, manually save, return to the launcher in process, then reload the complete 24,288-byte save. Normal exit after 195 seconds. All 895 prepared shader variants succeed before both boots. |
+| LAS 1.1.0 | The same movement, inventory and manual-save checks, followed by a separate restart and full save read. Normal exits after 160 and 64 seconds. |
+| ACNH 1.0.0 | Load the island, move, complete Save and End, then restart and return to the island. Normal exits after 240 and 119 seconds. All five version headers and 24 internal hashes pass after saving and again after reopening. |
+
+Actual captured checkpoints were inspected. Each game produced finite, nonzero
+48 kHz stereo mixer output, and all source-save manifests remained unchanged.
+The LAS 1.0.0 reboot stopped 44 guest threads, drained and released renderer
+resources, then prepared all variants again. An earlier interrupted run is
+retained separately and is not counted as a normal-exit result. These checks
+establish bounded functionality; they do not establish performance parity,
+listening-based audio quality, a full playthrough or updated-version randomizer
+qualification. The official executable, frozen generator, headers and three
+game libraries are retained privately for reproduction. No game data is added
+to the repository, and the player's installed application remains untouched.
+
+## Latest research probe after synchronization
+
+The merged research executable (`0719ef18969a321a...`, source `03f7d88`)
+rebuilt the complete Z-A library in 160 seconds, reusing 1,051 objects and
+compiling three. Strict startup then stopped at the same `main+0x166df70`
+target with LR `0x166de08`, exit status 3, after 7.19 seconds on this later
+run. The same three unsupported shader words were reported. Early captures
+at frames 1, 2, 3 and 5 contain only black output; inspected captures do not
+show a logo, title screen or gameplay. The shorter run does not resolve the
+compatibility failure or establish a performance improvement.
+
+The remaining branch failure requires a discovery repair, and the shader
+words still require translation support. Z-A remains development-only, and
+the earlier LAS 1.1.0 startup failure continues to block publication of the
+shared research runtime.
+
+The same final research executable then passed another bounded legacy batch.
+Each LAS rebuild reused 643 objects and compiled three; ACNH reused 553 and
+compiled 178. LAS 1.0.0 and 1.1.0 read the copied manual save, moved into and
+out of the house, opened inventory and exited normally after 82 and 81 seconds.
+Their copied saves did not change. ACNH reopened the saved island and exited
+normally after 100 seconds; all five version headers and 24 internal hashes
+remained valid after its ordinary autosave. Captured checkpoints were inspected
+and each run produced finite, nonzero 48 kHz stereo audio.
+
+Source-save manifests and the accepted player executable's SHA-256 remained
+unchanged. This last batch verifies reads and movement on the research
+candidate; manual-save writes and launcher reboot were exercised separately on
+the official-only executable above. Successful bounded runs do not explain or
+clear the earlier LAS 1.1.0 startup crash, so research publication stays blocked.
 
 ## Reproduction
 
