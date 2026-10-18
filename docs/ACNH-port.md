@@ -81,6 +81,16 @@ re-enable/reset, truncation rejection and output canaries. The two captured
 REV15 startup splitter packets also parse successfully. This is protocol and
 DSP regression evidence; full-game audio and gameplay qualification remain open.
 
+The following startup diagnostic exhausted the game's sound heap before its
+speech manager could create a child heap. `audren:u` had always requested a
+16 MiB work buffer regardless of the renderer configuration. Its reply now
+uses the [reference renderer's capacity calculation](https://github.com/NextendoNetwork/Ryujinx-Nextendo/blob/2e6ff9ee8bc0072debd6584c3521586d1d4ab5ca/src/Ryujinx.Audio/Renderer/Server/AudioRenderSystem.cs),
+including mix/voice storage, splitter revision gates, filter state and performance
+history, with page alignment and checked arithmetic. Independent C# evaluations
+provide the native regression's expected capacities across REV1/2/4/5/8/12/15.
+Truncated requests, unaligned input and overflowing capacities are also covered.
+This corrects the oversized reservation; it does not establish full-game acceptance.
+
 | Module | Guest base | Build ID |
 | --- | --- | --- |
 | main | 0x7000000000 | 7fc1baff976aeca414520cb89f4616cb |

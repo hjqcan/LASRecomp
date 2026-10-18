@@ -15,6 +15,7 @@
 #include "audio_reverb3d.h"
 #include "audio_aux.h"
 #include "audio_splitter.h"
+#include "audio_workbuffer.h"
 
 // ------------------------------------------------------------------ audren: a CPU mixer modelled on
 // Ryujinx's AudioRenderer (VoiceState / DataSourceHelper / StateUpdater; MIT, Ryujinx Team and Contributors,
@@ -1155,7 +1156,19 @@ SERVICE("audren:u", audren_u) {
         ipc_return_object(resp, service_new("IAudioRenderer", audio_renderer, r));
         break;
     }
-    case 1: OUT(uint64_t, 0) = 0x1000000; resp_size(resp, 8); break;  // GetWorkBufferSize: 16 MB
+    case 1: { // GetWorkBufferSize(AudioRendererConfiguration)
+        uint64_t size;
+        if (!audio_workbuffer_size(req->data, req->data_size, &size)) {
+            resp->result = MAKE_RESULT(153, 41); return;
+        }
+        OUT(uint64_t, 0) = size; resp_size(resp, 8);
+        if (ENV("LARECOMP_LOG_HEAPS")) {
+            uint32_t p[13]; memcpy(p, req->data, sizeof p);
+            LOG("[audren] work buffer %#llx: %u Hz samples=%u buffers=%u submixes=%u voices=%u sinks=%u effects=%u perf=%u splitters=%u destinations=%u revision=%#x\n",
+                (unsigned long long)size,p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],p[9],p[10],p[12]);
+        }
+        break;
+    }
     case 2: case 4: ipc_return_object(resp, service_new("IAudioDevice", audio_device, NULL)); break;
     default: LOG("[audren] cmd %u (ok)\n", req->cmd);
     }

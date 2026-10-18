@@ -72,6 +72,8 @@ jobs:
         run: clang -std=gnu11 -O1 -Iruntime tools/test_prepo.c -o test-prepo && ./test-prepo
       - run: clang -std=gnu11 -O1 tools/test_audio_biquad.c -o test-audio-biquad
       - run: ./test-audio-biquad
+      - run: clang -std=gnu11 -O1 tools/test_audio_workbuffer.c -o test-audio-workbuffer
+      - run: ./test-audio-workbuffer
       - run: clang -std=gnu11 -O1 tools/test_audio_splitter.c -o test-audio-splitter
       - run: ./test-audio-splitter
       - if: runner.os != 'Windows'
