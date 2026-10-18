@@ -88,6 +88,7 @@ def main():
     copy(root/'examples/workshop/leave-house.laschallenge', 'examples/workshop/leave-house.laschallenge')
     copy(root/'fonts/README.md', 'fonts/README.md')
     copy(root/'third_party/release-licenses', 'licenses')
+    copy(root/'third_party/ryujinx/LICENSE.txt', 'licenses/Ryujinx-LICENSE.txt')
     files = sorted(p for p in stage.rglob('*') if p.is_file())
     banned = {'.gamebuild', 'extracted', 'games', 'save', 'saves', 'seeds', 'photos', 'prod.keys', 'title.keys',
               'lasgame.dll', 'lasrecomp.log', 'larecomp.ini', 'settings.ini', 'romfs.bin', 'exefs', 'romfs'}
