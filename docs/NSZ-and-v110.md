@@ -111,7 +111,3 @@ python tools/test_save_backups.py
 ```
 
 Archive tests run in CI on Windows, Linux and macOS; native harnesses run on Linux/macOS in CI and Windows with the MSYS2 toolchain locally. They cover synthetic base/update imports, solid/block NCZ, gamecard partition hashes, relocation buckets, rollback, corruption, patch mapping, version isolation and actual compiler cancellation/resume. `tools/test_windows_processes.py` additionally checks Windows child-process cleanup. No game files, console keys, or generated game code are included in the repository. Encryption fixtures use arbitrary test bytes. Real encrypted NSP and XCI/XCZ imports have not yet been validated with player archives.
-
-For local two-version regression, run `python tools/compatibility_smoke.py --exe PATH --base-root PATH --updated-root PATH --output NEW_DIRECTORY`. Both installations must already have compiled libraries. The script isolates settings and saves, captures images and writes a JSON result. Optional `--base-save-copy SAVE_MOUNT` and `--updated-save-copy SAVE_MOUNT` use separate, version-compatible save copies without modifying their sources; `--menu` captures the Controls overlay. Inspect the images as well as the exit status.
-
-Windows validation with local game files: both main executable profiles pass all patch instruction assertions; v1.1.0 was recompiled, launched and tested through the opening dialogue and movement in the first room using the Vulkan backend. Full playthrough and native macOS/Linux gameplay validation remain outstanding.

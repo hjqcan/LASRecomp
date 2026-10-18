@@ -9,5 +9,3 @@ The presentation and color paths are implemented for Vulkan and Metal. Windows V
 ## Validation
 
 Run `python tools/test_photo.py` for asset-free state/crop/composite checks using `CC` (Clang by default). For gameplay testing, enter a scene, press F2, adjust each control, save twice without changing the scene, and verify matching images with no overlay. Resume and verify movement. Check window resizing, UI visibility and a scene without a recognized final composite. A frozen presentation does not constitute a save state or a complete simulation pause.
-
-`python tools/photo_smoke.py --exe PATH --game EXTRACTED_GAME --output NEW_DIRECTORY` automates the opening-room freeze, two matching captures and resume with isolated settings/saves. The game library must already be compiled. Optional `--save-copy SAVE_MOUNT` copies a version-compatible save without changing the source. Inspect the images and `runtime.log` even if `result.json` reports success; adjust scripted input timing when a machine reaches title/name-entry screens at a different frame.

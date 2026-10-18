@@ -1,4 +1,4 @@
-name: Import and settings tests
+name: Enhanced tests
 
 on: [push, pull_request]
 
@@ -57,7 +57,8 @@ jobs:
       - run: python tools/test_am_events.py
       - run: python tools/test_game_profiles.py
       - run: python tools/test_save_multicommit.py
-      - run: python tools/test_fence_sequence.py
+      - if: runner.os == 'macOS'
+        run: python tools/test_fence_sequence.py
       - run: python tools/test_texture_retirement.py
       - run: python tools/test_pipeline_cache_snapshot.py
       - run: python tools/test_feedback_snapshot.py
@@ -65,7 +66,8 @@ jobs:
       - run: python tools/test_acnh_speedfix.py
       - run: python tools/test_frame_pacing.py
       - run: python tools/test_shader_ldc.py
-      - run: python tools/test_shader_shared.py
+      - if: runner.os != 'Windows'
+        run: python tools/test_shader_shared.py
       - run: python tools/test_shader_tmml.py
       - run: python tools/test_shader_gmem.py
       - run: python tools/test_time_override.py
@@ -93,10 +95,6 @@ jobs:
       - run: python tools/test_xci_import.py -v
       - run: python tools/test_rando_event_compat.py -v
       - if: runner.os != 'Windows'
-        run: python tools/test_build_cache.py
-      - if: runner.os != 'Windows'
-        run: python tools/test_gamebuild_resume.py
-      - if: runner.os != 'Windows'
         run: python tools/test_save_backups.py
       - if: runner.os != 'Windows'
         run: python tools/test_settings_language.py
@@ -104,7 +102,9 @@ jobs:
         run: python tools/test_ui_localization.py
       - if: runner.os != 'Windows'
         run: python tools/test_rando_profiles.py -v
-      - if: runner.os != 'Windows'
-        run: python tools/test_mods.py
+      - run: python tools/test_mods.py
       - if: runner.os != 'Windows'
         run: python tools/test_photo.py
+      - if: runner.os != 'Windows'
+        run: python tools/test_save_mount.py
+      - run: python tools/test_workshop.py

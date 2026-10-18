@@ -68,7 +68,7 @@ FILLER_DEFS = {
 REFILLS = ('pot-arrows', 'pot-bombs', 'pot-powder')
 # rooms Link may never (again) reach: Eagle's Tower's 3rd floor exists twice - before the ceiling collapse (the ball
 # breaking the 4 pillars) and after it; each version's pots are their own (its chests share their flags: safe).
-# Their pots get junk only (settings 'junk-locations', LAS shuffler)
+# Their pots aren't checks at all (vanilla contents, no gold): a check there could be lost for good (user 2026-10-18)
 MISSABLE_ROOMS = ('Lv07EagleTower_02E', 'Lv07EagleTower_06E')
 REFILL_INDEX = 80
 QUICK = ('pot-heart',) + REFILLS  # picked up like rupees: no item-get animation
@@ -91,6 +91,8 @@ def scan(romfs, leb):
         if level.startswith(SKIP_LEVEL_PREFIX) or level in SKIP_LEVELS:
             continue
         room_name = os.path.basename(f)[:-4]
+        if room_name in MISSABLE_ROOMS:
+            continue
         with open(f, 'rb') as fh:
             room = leb.Room(fh.read())
         n = 0

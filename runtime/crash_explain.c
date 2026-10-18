@@ -77,7 +77,8 @@ void rt_crash_explain(char *out, size_t n, const char *log_path) {
     } else if (has("no function at") || has("unsupported instruction")) {
         snprintf(head, sizeof head, "Game code is not supported yet");
         snprintf(what, sizeof what, "LAS Recomp could not translate or dispatch part of this game's code. %s", report);
-    } else if (has("get_terminate")) {  // (an uncaught C++ exception in the game: recompiled code can't unwind)
+    } else if (has("get_terminate") || has("uncaught C++ exception")) {  // (the game threw: recompiled code can't
+                                                                         // unwind; runtime/hle/warp.c rt_cxa_throw)
         snprintf(head, sizeof head, "The game ran into an error it couldn't recover from");
         snprintf(what, sizeof what, "This is a bug in LAS Recomp, not a problem with your game files or PC. %s", report);
     } else if (in_gpu_driver(g_pc)) {

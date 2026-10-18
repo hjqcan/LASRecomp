@@ -20,6 +20,7 @@ PROFILE_INPUTS = {
     'las': ('tools/game_versions.py', 'tools/game_addresses.py', 'runtime/game_addresses/patches_v1_0_0.h',
             'tools/rando_profiles.py', 'tools/patches.py', 'tools/rando/patch_variants.json'),
 }
+ADAPTER_INPUTS = {'pokemon_za': ('tools/pokemon_za.py',)}
 
 
 @dataclass(frozen=True)
@@ -236,7 +237,7 @@ def code_identity(game, release, root=ROOT):
                   modules=[asdict(m) for m in release.modules], init_order=release.init_order,
                   instruction_patches=release.instruction_patches)
     digest = hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode())
-    for name in SHARED_GENERATOR_INPUTS + PROFILE_INPUTS[game.generator_profile]:
+    for name in SHARED_GENERATOR_INPUTS + PROFILE_INPUTS[game.generator_profile] + ADAPTER_INPUTS.get(game.id, ()):
         digest.update(name.encode() + b'\0')
         digest.update(hashlib.sha256((root / name).read_text(encoding='utf-8').encode('utf-8')).digest())
     return digest.hexdigest()

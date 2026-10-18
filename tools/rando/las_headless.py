@@ -95,7 +95,8 @@ def default_settings(seed):
         'seashells-important': True, 'trade-important': False, 'randomize-music': False, 'open-mabe': False,
         'boss-cutscenes': True, 'randomize-enemies': False, 'randomize-enemy-sizes': False, 'shuffle-dungeons': False,
         'blur-removal': False, 'OHKO': False, 'lv1-beam': False, 'nice-rod': True, 'nice-bombs': False,
-        'stealing': 'always', 'fast-chests': True, 'fast-keys': True, 'keysanity': 'off', 'randomize-environments': False,
+        'stealing': 'always',  # never / normal (needs the sword, vanilla) / always: the Randomizer tab's Stealing rows
+        'fast-chests': True, 'fast-keys': True, 'keysanity': 'off', 'randomize-environments': False,
         'skip-story-events': True, 'tunic-color': 'default', 'enemy-minibosses': False, 'miniboss-frequency': 0, 'no-buff-drops': False,
         'enemy-mode': 'seeded',  # seeded (fixed in the level files) / random (re-rolled at every load: enemy_random.py)
         'bushes': False, 'boss-souls': False, 'miniboss-souls': False,
@@ -188,6 +189,8 @@ def main():
         else:
             settings[k] = v
     settings['excluded-locations'] = set(settings['excluded-locations'])
+    if settings['stealing'] not in rd.STEALING_REQUIREMENTS:
+        raise SystemExit(f"bad stealing setting {settings['stealing']!r}")
     # optional location groups (Randomizer tab): included = real checks with logic instead of junk
     groups = {'include-fishing': rd.FISHING_REWARDS, 'include-rapids': rd.RAPIDS_REWARDS,
               'include-dampe': rd.DAMPE_REWARDS, 'include-trade-gifts': rd.TRADE_GIFT_LOCATIONS,
@@ -203,8 +206,9 @@ def main():
     # Escape Bottle (runtime/hle/escape.c): every seed starts with the game's third bottle as a warp item, so the pool
     # has one Bottle less (the logic only ever needs one), a 50 Rupees in its place. Not a logic item: nothing may
     # require it (the seed is marked only in the settings.json written at the end, never in LAS's access).
-    item_defs['bottle']['quantity'] -= 1
-    item_defs['rupee-50']['quantity'] += 1
+    # The Hint Sheet (runtime/hle/hint_sheet.c, tools/rando/hint_sheet.py) is the first bottle: one Bottle less again.
+    item_defs['bottle']['quantity'] -= 2
+    item_defs['rupee-50']['quantity'] += 2
     os.makedirs(out_dir, exist_ok=True)
     import shutil
     if os.path.isdir(os.path.join(out_dir, 'romfs')):  # regenerating into the same folder: start from vanilla files
@@ -241,10 +245,6 @@ def main():
                                                   settings.get('traps', 'none'), _rnd.Random(f"{settings['seed']}-pots"))
         print('pots:', len(pot_locs), 'locations', ('(no logic for: ' + ', '.join(sorted(skipped)) + ')') if skipped else '',
               flush=True)
-        for name, p in pot_locs.items():  # (pots Link may lose the way to: junk only)
-            if p['room'] in pots_mod.MISSABLE_ROOMS:
-                settings.setdefault('junk-locations', set()).add(name)
-                settings['excluded-locations'].add(name)
 
     bush_locs = {}
     if settings.get('bushes'):  # bushsanity: every overworld bush hides an item (tools/rando/bushes.py)
@@ -289,7 +289,7 @@ def main():
         import entrance_logic as el
         ed = el.load()
         decoupled = bool(settings.get('entrance-decoupled', False))
-        # (decoupled with the desert shut by the sleeping Walrus: its doors stay vanilla - entrance_logic.pool)
+        # (decoupled with the desert shut by the sleeping Walrus: its door, the Lanmola cave, stays vanilla - entrance_logic.pool)
         ent_doors = el.pool(ed, ('desert',) if decoupled and not settings.get('open-desert', True) else ())
         ent_entry, ent_exit = el.shuffle(ent_doors, decoupled, _random.Random(f"{settings['seed']}-entrances"))
         extra = {k: list(v) for k, v in sanity_inside.items()}
@@ -472,6 +472,9 @@ def main():
                                             lambda k, acc: sh.checkAccess(k, acc, settings['logic']))
     with open(os.path.join(out_dir, 'spheres.json'), 'w') as f:  # walkthrough for the readable spoiler
         json.dump(sph, f)
+    import hint_sheet  # the Hint Sheet's steps: progression items in playthrough order
+    print('hint sheet steps:', hint_sheet.steps(sh.logic_defs, pl, settings, lambda k, acc: sh.checkAccess(k, acc, settings['logic']),
+                                                sph, out_dir), flush=True)
     for k in [k for k, v in sh.logic_defs.items() if v.get('_check_only')]:
         del sh.logic_defs[k]
     missing = [i for i in playthrough.INSTRUMENTS + ['kill-nightmare'] if not access.get(i)]
@@ -493,15 +496,19 @@ def main():
     if missing:
         print('SHUFFLE ERROR unbeatable seed', missing, file=sys.stderr)
         sys.exit(3)
+    if os.environ.get('LARECOMP_CHECK_ONLY'):  # (test: tools/rando/seed_sweep.py - placements + logic, no game files)
+        with open(os.path.join(out_dir, 'placements.json'), 'w') as f:
+            json.dump({'placements': {k: v for k, v in pl.items() if isinstance(v, str)},
+                       'access': {k: 1 for k, v in settings.items() if v is True}}, f)
+        sys.exit(0)
 
     if pot_locs or bush_locs or dig_locs:  # bomb / powder / arrow refills anywhere: only once owned, else a blue rupee (runtime)
         import pots as _pots
         print('pot refills marked:', _pots.mark_refills(result['placements']), flush=True)
     pl = result['placements']
     bottles = {loc: i for loc, i in pl['indexes'].items() if pl.get(loc) == 'bottle'}
-    for loc, i in bottles.items():  # the third bottle slot (index 2) is the Escape Bottle's
-        if i == 2:
-            pl['indexes'][loc] = bottles[loc] = min({0, 1} - set(bottles.values()))
+    for loc, i in bottles.items():  # the third bottle slot (index 2) is the Escape Bottle's, the first the Hint Sheet's
+        pl['indexes'][loc] = 1
     if pets:
         print('pets placed:', pets_mod.mark_indexes(result['placements'], logic_defs), flush=True)
     from RandomizerCore.Randomizers import item_get as _item_get
@@ -606,6 +613,7 @@ def main():
 
     import escape_bottle  # Tarin gives it with the starting items, in the game's own get-item message box
     print('escape bottle:', escape_bottle.apply(out_dir, romfs), flush=True)
+    print('hint sheet:', hint_sheet.apply(out_dir, romfs, settings), flush=True)  # (after it: Tarin's next gift)
 
     if soul_kinds:  # where the souls' fairy models stand (after the rooms moved): drawn red there (souls.c)
         print('soul spots:', souls_mod.write_spots(out_dir, leb, result['placements']), flush=True)
@@ -642,12 +650,15 @@ def main():
         print('refill gets:', refill_gets.apply(out_dir, romfs, settings), flush=True)
     import bomb_bag_text  # (after every flow edit, digs too) found bombs: "You found your Bomb Bag!"
     print('bomb bag text:', bomb_bag_text.apply(out_dir, romfs, settings), flush=True)
+    import powder_bag_text  # (same) found powder: "You found your Powder Bag!"
+    print('powder bag text:', powder_bag_text.apply(out_dir, romfs, settings), flush=True)
     with open(os.path.join(out_dir, 'settings.json'), 'w') as f:
         s = dict(settings)
         s['excluded-locations'] = sorted(s['excluded-locations'])
         s['absent-locations'] = sorted(s.get('absent-locations', ()))
         s['junk-locations'] = sorted(s.get('junk-locations', ()))
         s['escape-bottle'] = True  # (runtime/hle/escape.c: older seeds keep three plain bottles)
+        s['hint-sheet'] = True  # (runtime/hle/hint_sheet.c: older seeds have no Hint Sheet)
         s['ghost-item'] = 'ghost' in pets  # (runtime/hle/pets.c: older seeds' Ghost follows Link)
         s['underwater-items'] = True  # (runtime: the sunken heart-piece actors don't hide for an owned heart piece)
         json.dump(s, f, indent=1)

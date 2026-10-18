@@ -1,4 +1,6 @@
-#include "../build_cache.h"
+// The game-code builder's cache: receipts validate completed objects; an OS lock keeps builders apart.
+// Generated source and logs survive interruption, but are removed after successful publication.
+#include "build_cache.h"
 #include "cache_sha256.h"
 #include <cstdio>
 #include <filesystem>
@@ -42,21 +44,27 @@ void error(char *out, size_t cap, const std::exception &e) {
         snprintf(out, cap, "%s", e.what());
 }
 bool is_link(const fs::path &p) {
-    if (fs::is_symlink(fs::symlink_status(p)))
-        return true;
 #ifdef _WIN32
-    auto a = GetFileAttributesW(p.c_str());
-    if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_REPARSE_POINT))
-        return true;
+    // Cloud placeholders also have REPARSE_POINT: only symlinks and junctions redirect the path.
+    WIN32_FIND_DATAW data;
+    HANDLE find = FindFirstFileW(p.c_str(), &data);
+    if (find == INVALID_HANDLE_VALUE) return false;
+    FindClose(find);
+    return (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+           (data.dwReserved0 == IO_REPARSE_TAG_SYMLINK || data.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT);
+#else
+    return fs::is_symlink(fs::symlink_status(p));
 #endif
-    return false;
 }
 void plain(const fs::path &p) {
     fs::path part;
+    bool inside = false;
     for (const auto &c : fs::absolute(p)) {
         part /= c;
-        need(!is_link(part), "Build paths cannot contain links or reparse points.");
+        if (c == ".gamebuild") inside = true;
+        if (inside) need(!is_link(part), "The build cache cannot contain symlinks or junctions.");
     }
+    if (!inside) need(!is_link(p), "Build files cannot be symlinks or junctions.");
 }
 void plain_tree(const fs::path &p) {
     plain(p);
@@ -128,9 +136,12 @@ std::string generation(BuildCache *c, const char *module, int chunks) {
 }
 std::unique_ptr<BuildCache> acquire(const char *game_dir) {
     auto c = std::make_unique<BuildCache>();
-    c->root = fs::absolute(fs::u8path(game_dir)) / ".gamebuild";
+    // The selected game folder may live below /home's symlink or a Windows junction.
+    c->root = fs::weakly_canonical(fs::absolute(fs::u8path(game_dir))) / ".gamebuild";
     plain(c->root);
     fs::create_directories(c->root);
+    // Keep the lock file in place: unlinking it would let a second builder lock a different file.
+    // Closing the OS handle releases ownership even when the application exits during a build.
     auto lock = c->root / ".lock";
     plain(lock);
 #ifdef _WIN32
@@ -149,6 +160,8 @@ bool library_name(const std::string &s) {
     return s == "lasgame.dll" || s == "lasgame.so" || s == "lasgame.dylib";
 }
 void recover(BuildCache *c) {
+    // The library and its ID cannot be replaced together. A remaining journal means restore the old pair
+    // before a retry or cleanup can discard the backups; repeatable recovery also survives another exit.
     auto journal = c->root / "install-journal";
     if (!fs::exists(journal))
         return;
@@ -172,6 +185,24 @@ void recover(BuildCache *c) {
     }
     fs::remove(journal);
 }
+void clear_old_zig_cache(BuildCache *c) {
+    auto old = c->root.parent_path() / ".zigcache";
+    if (fs::exists(old)) { plain_tree(old); fs::remove_all(old); }
+}
+void finish(BuildCache *c) {
+    // Only objects and their input identities are useful to the next update. Regeneration is cheap compared
+    // with compiling; its receipts cannot remain valid once the generated C has been removed.
+    // Keep source/object receipts for content comparison after regeneration, but drop the unfinished-build marker.
+    plain_tree(c->root);
+    for (auto &e : fs::directory_iterator(c->root)) {
+        auto name = e.path().filename().u8string();
+        if (name == ".lock" || name == "owner" || name == "identity" || name == "generation-identity") continue;
+        auto ext = e.path().extension();
+        if ((ext == ".o" || ext == ".receipt") && valid_stem(e.path().stem().u8string())) continue;
+        fs::remove_all(e.path());
+    }
+    clear_old_zig_cache(c);
+}
 } // namespace
 extern "C" BuildCache *build_cache_open(const char *game_dir, const char *spec, const char *const *inputs, int n,
                                         char *why, size_t cap) {
@@ -181,8 +212,10 @@ extern "C" BuildCache *build_cache_open(const char *game_dir, const char *spec, 
         if (fs::exists(owner))
             need(read(owner, 64) == "LASBUILD3\n", "Unknown build cache; clear it from Game Files and retry.");
         else {
+            // Pre-receipt beta_5 caches are ours too; upgrade them without asking every existing player to clear.
+            recover(c.get());
             for (auto &e : fs::directory_iterator(c->root))
-                need(e.path().filename() == ".lock", "Old build cache; clear it from Game Files and retry.");
+                if (e.path().filename() != ".lock") fs::remove_all(e.path());
             write(owner, "LASBUILD3\n");
         }
         recover(c.get());
@@ -200,6 +233,7 @@ extern "C" BuildCache *build_cache_open(const char *game_dir, const char *spec, 
                     fs::remove_all(e.path());
             write(record, identity);
         }
+        write(c->root / "in-progress", "LASBUILD3\n");
         return c.release();
     } catch (const std::exception &e) {
         error(why, cap, e);
@@ -234,6 +268,28 @@ extern "C" bool build_cache_prepare_generation(BuildCache *c, const char *spec, 
 }
 extern "C" void build_cache_close(BuildCache *c) {
     delete c;
+}
+extern "C" void build_cache_failed(BuildCache *c) {
+    std::error_code ec;
+    fs::remove(c->root / "in-progress", ec); // A reported failure is a normal retry, not an interrupted build.
+}
+extern "C" bool build_cache_resumable(const char *game_dir) {
+    try {
+        auto root = fs::weakly_canonical(fs::absolute(fs::u8path(game_dir))) / ".gamebuild";
+        return read(root / "owner", 64) == "LASBUILD3\n" && read(root / "in-progress", 64) == "LASBUILD3\n";
+    } catch (...) { return false; }
+}
+extern "C" bool build_cache_present(const char *game_dir) {
+    try {
+        auto game = fs::weakly_canonical(fs::absolute(fs::u8path(game_dir)));
+        if (fs::exists(game / ".zigcache")) return true;
+        std::error_code ec;
+        for (auto &e : fs::directory_iterator(game / ".gamebuild", ec)) {
+            auto name = e.path().filename();
+            if (name != ".lock" && name != "owner") return true;
+        }
+        return false;
+    } catch (...) { return false; }
 }
 extern "C" bool build_cache_generation(BuildCache *c, const char *module, int *chunks) {
     try {
@@ -310,6 +366,7 @@ extern "C" bool build_cache_publish(BuildCache *c, const char *name, const char 
             fs::copy_file(lib, c->root / "previous-library", fs::copy_options::overwrite_existing);
         if (had_id)
             fs::copy_file(id, c->root / "previous-id", fs::copy_options::overwrite_existing);
+        // Record recovery information before replacing either installed file. Removing it commits the pair.
         write(c->root / "install-journal",
               std::string("LASINSTALL1\n") + name + "\n" + (had_lib ? "1" : "0") + " " + (had_id ? "1" : "0") + "\n");
         replace(tmp, lib);
@@ -318,6 +375,11 @@ extern "C" bool build_cache_publish(BuildCache *c, const char *name, const char 
         std::error_code ec;
         fs::remove(c->root / "previous-library", ec);
         fs::remove(c->root / "previous-id", ec);
+        try { finish(c); }
+        catch (const std::exception &e) { // The installed library is already good; cleanup can be retried with Clear.
+            fprintf(stderr, "[gamebuild] cache cleanup: %s\n", e.what());
+            build_cache_failed(c);
+        }
         return true;
     } catch (const std::exception &e) {
         error(why, cap, e);
@@ -332,10 +394,16 @@ extern "C" bool build_cache_publish(BuildCache *c, const char *name, const char 
 
 extern "C" bool build_cache_clear(const char *game_dir, char *why, size_t cap) {
     try {
+        auto game = fs::weakly_canonical(fs::absolute(fs::u8path(game_dir)));
+        if (!fs::exists(game / ".gamebuild")) {  // (nothing to lock: don't create the cache just to clear it)
+            auto old = game / ".zigcache";
+            if (fs::exists(old)) { plain_tree(old); fs::remove_all(old); }
+            return true;
+        }
         auto c = acquire(game_dir);
         // Finish rollback before deleting the only copy of a previously working library.
         recover(c.get());
-        // Explicit cleanup is also how old, pre-receipt build directories are upgraded.
+        clear_old_zig_cache(c.get());
         for (auto &e : fs::directory_iterator(c->root))
             if (e.path().filename() != ".lock")
                 fs::remove_all(e.path());

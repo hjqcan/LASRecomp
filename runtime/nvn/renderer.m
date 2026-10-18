@@ -1063,7 +1063,11 @@ static int rt_kind(uint32_t f) {
 #define PROG_TAB 4096
 static struct { uint64_t key; void *prog; } prog_tab[PROG_TAB];
 
-// ------------------------------------------------------------------ binary archive (LARECOMP_METAL_ARCHIVE=0: none)
+// ------------------------------------------------------------------ binary archive (off; LARECOMP_METAL_ARCHIVE=1: on)
+// Off by default (#52): on macOS 26 Metal's archive writer can crash in serializeToURL (dispatch_retain(NULL) in
+// materializeAirNTFromOnlineForSlice, seen on an M4) when an entry it queued lacks a part. The preparation keeps macOS's
+// own shader cache warm, so the archive only helped when that cache was cleared without a macOS update. Off, a file
+// left by an earlier build is removed. (A check of Metal's queued entries before saving: branch metal-archive-crash.)
 // cache/shaders.metalarchive: the GPU code of every pipeline built here (prepared or at first use), kept across runs
 // (MTLBinaryArchive), used only with a matching cache/shaders.metalarchive.tag (shader_cache_tag: this build, the
 // translator, the GPU and the macOS build; another one, or an archive that doesn't load: a new one, silently). Saved
@@ -1171,7 +1175,11 @@ static void archive_open(void) {  // (at the first pipeline / preparation)
             closedir(cd);
         }
         const char *on = getenv("LARECOMP_METAL_ARCHIVE");
-        if (on && !atoi(on)) return;
+        if (!on || !atoi(on)) {
+            if (remove(ARCHIVE_FILE) == 0) LOG("[metal] removed the shader archive (off)\n");
+            remove(ARCHIVE_TAG);
+            return;
+        }
         atexit(archive_exit);
         char tag[700];
         archive_tag(tag, sizeof tag);
@@ -1345,9 +1353,13 @@ static Prog *get_program(NvnProgram *p, ShaderKey *vkey, ShaderKey *fkey) {
     uint32_t slot = (uint32_t)(h ^ (h >> 31)) & (PROG_TAB - 1);
     while (prog_tab[slot].key && prog_tab[slot].key != h) slot = (slot + 1) & (PROG_TAB - 1);
     if (prog_tab[slot].key) { Prog *fp = (__bridge Prog *)prog_tab[slot].prog; return fp->failed ? nil : fp; }
-    NSString *key = [NSString stringWithFormat:@"%llx/%llx/%@/%@%s", p->stages[0].code_addr, p->stages[1].code_addr,
-                     [NSData dataWithBytes:vkey length:sizeof *vkey], [NSData dataWithBytes:fkey->rt_kind length:8],
-                     vkey->flip_x ? "/mirror" : ""];  // (NSData's description elides the middle of the key's bytes)
+    // (every byte of the keys, in hex: NSData's description shows only the first 16 and last 8 bytes of the 52-byte
+    // key, so variants differing in attr_kind[16..], depth_minus_one, flip_y or a later field shared one entry -
+    // whichever variant came first served the others)
+    char kb[2 * (sizeof *vkey + 8) + 1], *kp = kb;
+    for (size_t i = 0; i < sizeof *vkey; i++) kp += snprintf(kp, 3, "%02x", vb[i]);
+    for (int i = 0; i < 8; i++) kp += snprintf(kp, 3, "%02x", fkey->rt_kind[i]);
+    NSString *key = [NSString stringWithFormat:@"%llx/%llx/%s", p->stages[0].code_addr, p->stages[1].code_addr, kb];
     Prog *pr = cache[key];
     if (!pr) {  // prepared before the game (the same code and keys)
         uint64_t vh = shader_stage_hash(&p->stages[0]), fh = shader_stage_hash(&p->stages[1]), ck = prog_content_key(vh, fh, vkey, fkey);
@@ -1637,6 +1649,16 @@ static void bind_textures(int stage, ShaderInfo *si) {
                 extern bool texpatch_is_item_cursor(int id);
                 int id = renderer_texpatch_of(e->tex);
                 if (!draw_bottle) draw_bottle = texpatch_bottle_kind(id);
+                if (texpatch_bottle_kind(id) == 1) {  // the Hint Sheet: the dungeon map's icon in place (hint_sheet.c)
+                    extern bool hint_sheet_icon_draw(const float *ui, uint32_t ui_size);
+                    extern NvnTexture *texpatch_hint_icon(void);
+                    NvnTexture *ht;
+                    if (hint_sheet_icon_draw((const float *)(uintptr_t)st.ubuf[0][0].addr, (uint32_t)st.ubuf[0][0].size) &&
+                        (ht = texpatch_hint_icon())) {
+                        static NvnTextureView none;
+                        tex = sampled_texture(ht, &none, false, st_->type);
+                    }
+                }
                 if (!draw_heart) draw_heart = texpatch_heart_kind(id);
                 draw_item_cursor |= texpatch_is_item_cursor(id);
             }
@@ -2407,22 +2429,42 @@ static void draw(CmdRec *r, bool indexed) {
     }
     [enc setRenderPipelineState:pipe];
 
+    // Decal colour passes (issue #52): the game draws floor decals twice with the same negative polygon offset - a
+    // depth pre-pass, then the colour pass with depth test EQUAL and no depth writes. An M4 (macOS 26.4) lands the two
+    // passes' biased depths a hair apart, so EQUAL failed: black decals. Those colour passes run as LESS_EQUAL with
+    // LARECOMP_BIAS_HW_SCALE times the game's offset (default 2) plus LARECOMP_BIAS_HW_EPS units (default 4): on or in
+    // front of their pre-pass. The margin is what the decal's colour may show through: anything in front of the decal
+    // by less than it. Key Cavern's entrance threshold (a slab just above the floor's border decal) showed it from
+    // 64 units / 4x the offset on; 256 units (the first try) drew the border over the slab. SCALE=1 EPS=0: as before.
+    static int nobias = -1;  // LARECOMP_NO_DEPTH_BIAS: ignore the game's polygon offset (A/B tests)
+    if (nobias < 0) nobias = getenv("LARECOMP_NO_DEPTH_BIAS") != NULL;
+    static float hw_scale = -1, hw_eps;
+    if (hw_scale < 0) {
+        hw_scale = getenv("LARECOMP_BIAS_HW_SCALE") ? fmaxf(1, (float)atof(getenv("LARECOMP_BIAS_HW_SCALE"))) : 2;
+        hw_eps = getenv("LARECOMP_BIAS_HW_EPS") ? fmaxf(0, (float)atof(getenv("LARECOMP_BIAS_HW_EPS"))) : 4;
+    }
+    bool decal_le = title_is_las() && (hw_scale > 1 || hw_eps > 0) && (st.poly[3] & 4) && !nobias &&
+                    (st.poly_offset[0] < 0 || st.poly_offset[1] < 0) && st.ds[0] && !st.ds[1] && st.ds[2] == 3;
     // depth / stencil
     static uint64_t last_dsk;
     static id<MTLDepthStencilState> last_dss;
-    uint64_t dsk = hmix(hmix(hmix(0xcbf29ce484222325ull, st.ds, 8), st.stencil_mask, sizeof st.stencil_mask), st.stencil_vmask, sizeof st.stencil_vmask);
+    uint64_t dsk = hmix(hmix(hmix(0xcbf29ce484222325ull, st.ds, 8), st.stencil_mask, sizeof st.stencil_mask), st.stencil_vmask, sizeof st.stencil_vmask) ^ decal_le;
     id<MTLDepthStencilState> dss = dsk == last_dsk ? last_dss : nil;
     NSString *dk = nil;
     if (!dss) {
-        dk = [NSString stringWithFormat:@"ds %02x%02x%02x%02x%02x%02x%02x%02x %x %x %x %x", st.ds[0], st.ds[1], st.ds[2], st.ds[3],
-                    st.ds[4], st.ds[5], st.ds[6], st.ds[7], st.stencil_mask[0], st.stencil_vmask[0], st.stencil_mask[1], st.stencil_vmask[1]];
+        dk = [NSString stringWithFormat:@"ds %02x%02x%02x%02x%02x%02x%02x%02x %x %x %x %x%s", st.ds[0], st.ds[1], st.ds[2], st.ds[3],
+                    st.ds[4], st.ds[5], st.ds[6], st.ds[7], st.stencil_mask[0], st.stencil_vmask[0], st.stencil_mask[1], st.stencil_vmask[1],
+                    decal_le ? " le" : ""];
         dss = cache[dk];
     }
     if (!dss) {
         MTLDepthStencilDescriptor *dd = [MTLDepthStencilDescriptor new];
         static int nodt = -1;
         if (nodt < 0) nodt = getenv("LARECOMP_NO_DEPTH_TEST") != NULL;
-        if (st.ds[0] && !nodt) { dd.depthCompareFunction = compare_fn(st.ds[2]); dd.depthWriteEnabled = st.ds[1] != 0; }
+        if (st.ds[0] && !nodt) {
+            dd.depthCompareFunction = decal_le ? MTLCompareFunctionLessEqual : compare_fn(st.ds[2]);
+            dd.depthWriteEnabled = st.ds[1] != 0;
+        }
         else { dd.depthCompareFunction = MTLCompareFunctionAlways; dd.depthWriteEnabled = NO; }
         if (st.ds[3]) {
             uint32_t ops = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16;
@@ -2457,9 +2499,12 @@ static void draw(CmdRec *r, bool indexed) {
     {   // polygon offset (decals on floors: without it they z-fight). Enables: bit 2 = fill (NVN PolygonOffsetEnable)
         static float last[3] = {0, 0, 0};
         float f[3] = {0, 0, 0};
-        static int off = -1;  // LARECOMP_NO_DEPTH_BIAS: ignore the game's polygon offset (A/B tests)
-        if (off < 0) off = getenv("LARECOMP_NO_DEPTH_BIAS") != NULL;
-        if ((st.poly[3] & 4) && !off) memcpy(f, st.poly_offset, sizeof f);
+        if ((st.poly[3] & 4) && !nobias) memcpy(f, st.poly_offset, sizeof f);
+        if (decal_le) {  // (EPS in float units, 2^-24 at depth 0.5..1; a D16 buffer's unit is 2^-16)
+            f[0] *= hw_scale;
+            f[1] = f[1] * hw_scale - (st.rt.depth && st.rt.depth->format == 0x32 ? hw_eps / 256 : hw_eps);
+            f[2] *= hw_scale;
+        }
         static int nlog;
         if ((st.poly[3] & 4) && nlog < 3 && getenv("LARECOMP_LOG_BIAS")) { nlog++; LOG("[bias] factor %g units %g clamp %g\n", st.poly_offset[0], st.poly_offset[1], st.poly_offset[2]); }
         if (memcmp(f, last, sizeof f) || enc != last_bias_enc) {

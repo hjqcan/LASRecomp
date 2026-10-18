@@ -116,7 +116,7 @@ class AdapterContract(unittest.TestCase):
                     self.assertEqual(code_identity(original, old), code_identity(loaded, new))
             runtime = root / 'runtime'; (runtime / 'ui').mkdir(parents=True)
             for name in ('title_profile.h', 'title_profile.c', 'game_profiles.h', 'game_install.h',
-                         'ui/title_content.mm', 'ui/game_profiles.mm', 'ui/game_install.mm', 'ui/cache_sha256.h', 'ui/host_path.h'):
+                         'ui/title_content.mm', 'ui/game_profiles.mm', 'ui/game_install.mm', 'cache_sha256.h', 'ui/host_path.h'):
                 shutil.copy2(ROOT / 'runtime' / name, runtime / name)
             (runtime / 'title_catalog.inc').write_text(render_c_catalog(games), encoding='utf-8')
             (runtime / 'game_installations.inc').write_text(render_installations(games), encoding='utf-8')

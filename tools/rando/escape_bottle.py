@@ -22,7 +22,8 @@ _PAGE = b'\x0e\x00\x00\x04\x00\x00\x00'
 
 def text(wait):
     return (b'You got the ' + _COLOR_ON + b'Escape Bottle' + _COLOR_OFF + b'! Use it to\nwarp out of trouble.' + wait +
-            _PAGE + b'In a dungeon: back to its entrance.\nAnywhere else: home to Mabe Village.' + wait + b'\0')
+            _PAGE + b'Uncork it in a dungeon to return\nto the entrance!' + wait +
+            _PAGE + b'Uncork it anywhere else to be\nwhisked home to Mabe Village!' + wait + b'\0')
 
 
 def _read(out_dir, romfs, rel):

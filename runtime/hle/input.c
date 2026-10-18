@@ -241,6 +241,15 @@ bool input_user_blocked(const SDL_Event *e) {
     }
 }
 
+// "Allow background inputs" (Controls tab, off by default): controllers keep working while the window isn't in front.
+// SDL drops controller events without keyboard focus unless this hint is set; it reads the hint live. (On macOS the
+// hint makes the system ask for Input Monitoring - reading HID input for a background app - so it was taken out as a
+// default there; the player opts in here.)
+SDL_JoystickID input_active_pad(void) { return pad ? SDL_GetGamepadID(pad) : 0; }
+void input_apply_background(void) {
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, g_settings.bg_input ? "1" : "0");
+}
+
 // A controller SDL has no mapping for (on macOS e.g. a generic Bluetooth HID pad, such as a phone app posing as one)
 // is only a joystick to SDL, and the game reads gamepads only. gamecontrollerdb.txt in the data root holds the
 // player's own mappings, in SDL's format (lines for other platforms are skipped, so SDL_GameControllerDB's file works

@@ -2537,15 +2537,19 @@ doors:
     transition: DungeonOut
   ladxr: animal_cave
   type: single
-  outer_region: desert
+  outer_region: animal-village
   outer_extra: null
-  door_req: bombs
+  door_req: break-bush & bombs
   exit_req: null
   inside:
   - location: animal-village-cave
     cond: (hookshot & feather) | rooster
   confidence: high
-  notes: Bombable wall (LADXR BOMB, exit free). LAS desert = animal-village & break-bush.
+  notes: Bombable wall (LADXR BOMB, exit free) in the village's north-east corner, on the village side of the cliff
+    (Field_13N, no Walrus on the way; the Walrus sleeps on the beach, Field_16N). One room, one exit - a dead end,
+    no way into the desert. LADXR files it under desert (= village & bush there, its Walrus is removed); LAS has
+    animal-village-cave in region animal-village with break-bush & bombs, so outer_region animal-village and the
+    bush kept in door_req (LAS parity) - not a desert door, never Marin-gated.
 - id: desert-lanmola-cave
   field_room: Field_13P
   zone_index: 0

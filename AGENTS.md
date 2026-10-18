@@ -8,4 +8,6 @@
 - Multi-game work also belongs on `enhanced`; follow `docs/multi-game.md`. Keep common runtime fixes reusable, gate title-specific behavior by adapter, and preserve existing LAS behavior and saves. A catalog entry or successful compilation alone must not mark a new game playable.
 - Source integration and release qualification are separate: unfinished ports may be checked into `enhanced` with explicit development gates and documented failures. They do not need to remain on unpublished branches until playable. Keep prerelease acceptance checks in place.
 - Verify the Windows package and the regression checklist in `docs/enhanced.md` before publishing a fork prerelease. Do not package game assets, generated game code, keys, saves, seeds or personal settings.
+- Keep documentation focused on current usage, architecture and limits. Do not commit dated validation diaries, per-run reports or machine-specific evidence.
+- Prefer focused tests for changed behavior and reuse existing CI jobs. Avoid duplicate smoke scripts, source-text assertions and repeated test runs that add no coverage.
 - Subagents, if explicitly authorized, must use GPT-6 or newer models.

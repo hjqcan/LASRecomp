@@ -20,11 +20,11 @@
 #ifndef GAMELIB_CFLAGS
 #define GAMELIB_CFLAGS "-O1 -fno-strict-aliasing -fvisibility=hidden"
 #endif
-#ifndef GAMELIB_BASE_ID
-#define GAMELIB_BASE_ID "dev"
-#endif
 #ifndef GAMELIB_SHARED
 #define GAMELIB_SHARED "-shared"
+#endif
+#ifndef GAMELIB_BASE_ID
+#define GAMELIB_BASE_ID "dev"
 #endif
 
 #ifdef _WIN32
@@ -39,8 +39,8 @@
 static pthread_mutex_t g_plock = PTHREAD_MUTEX_INITIALIZER;
 static PlatProc g_procs[MAX_PROCS];
 static int g_nprocs;
-static bool g_quitting;
 static bool g_registered;
+static bool g_quitting;
 
 static void end_all(void) {
     pthread_mutex_lock(&g_plock);
@@ -390,14 +390,24 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     // Generator changes should rebuild only chunks whose C changed, as in the existing incremental builder.
     // Compiler/header/flag changes invalidate every object; entry always rebuilds because it embeds GAMELIB_ID.
     const char *inputs[] = {input_paths[module_count], input_paths[module_count+1], input_paths[module_count+2], input_paths[module_count+3], input_paths[module_count+4], t.cc};
-    snprintf(spec, sizeof spec, "LASBUILD5\n%s\n%s\n%s\n%s\nzig=%d pointer=%d\n%s:%s\n", GAMELIB_BASE_ID,
-             GAMELIB_CFLAGS, GAMELIB_SHARED, t.cc, t.zig, (int)sizeof(void *),profile->key,profile->version);
+    // Compiler contents identify it; moving the app must not discard reusable objects.
+    snprintf(spec, sizeof spec, "LASBUILD6\n%s\n%s\n%s\nzig=%d pointer=%d\n%s:%s\n", GAMELIB_BASE_ID,
+             GAMELIB_CFLAGS, GAMELIB_SHARED, t.zig, (int)sizeof(void *),profile->key,profile->version);
     if (o->progress) o->progress(0, "Checking completed build files...");
+    bool resuming = build_cache_resumable(game_dir);
     BuildCache *cache = build_cache_open(game_dir, spec, inputs, 6, why, why_size);
     if (!cache) return false;
+    // an update keeps the last good build's objects (open drops them when compiler, headers or flags changed)
+    bool update = false;
+    if (!resuming) {
+        char rp[1200];
+        struct stat st;
+        snprintf(rp, sizeof rp, "%s" SEP "gamelib_entry.receipt", work);
+        update = stat(rp, &st) == 0;
+    }
     char entry_header[1200];
     snprintf(entry_header,sizeof entry_header,"%s" SEP "gamelib_modules.inc",work);
-    if (!title_profile_write_entry(profile,entry_header,why,why_size)) { build_cache_close(cache); return false; }
+    if (!title_profile_write_entry(profile,entry_header,why,why_size)) { build_cache_failed(cache); build_cache_close(cache); return false; }
     const char *gen_inputs[TITLE_MAX_MODULES+4];
     int ngen=0;
     for (unsigned i=0;i<module_count;i++) gen_inputs[ngen++]=input_paths[i];
@@ -405,6 +415,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     if (t.gen_script[0]) gen_inputs[ngen++] = t.gen_script;
     snprintf(spec, sizeof spec, "%s\n%s", GAMELIB_ID, profile->code_identity);
     if (!build_cache_prepare_generation(cache, spec, gen_inputs, ngen, why, why_size)) {
+        build_cache_failed(cache);
         build_cache_close(cache);
         return false;
     }
@@ -551,11 +562,12 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         double est_total = gens_done ? (double)written : gen_frac > 0.02 ? (double)written / gen_frac : 0;
         double comp_frac = est_total > 0 ? (double)done_bytes / est_total : 0;
         if (comp_frac > 1) comp_frac = 1;
-        double f = 0.2 * gen_frac + 0.75 * comp_frac;
+        // (an update that keeps the last build's pieces compiles little: generating the C is most of its time)
+        double f = update ? 0.85 * gen_frac + 0.1 * comp_frac : 0.2 * gen_frac + 0.75 * comp_frac;
         double secs = (double)(plat_now_ns() - t0) / 1e9;
         if (gen_frac == 0) f = 0.05 * (secs / (secs + 20));  // (the generator's first pass: no count yet)
         if (f > shown) shown = f;
-        if (o->progress) o->progress(shown, gen_frac < 1 && !gens_done ? "Reading the game code..." : reused ? "Resuming compilation..." : "Recompiling...");
+        if (o->progress) o->progress(shown, gen_frac < 1 && !gens_done ? "Reading the game code..." : resuming ? "Resuming compilation..." : "Recompiling...");
         sleep_ms(50);
     }
     for (int k = 0; k < nrun; k++) stop(run[k].p);  // (a failure: the rest is of no use - the failure shows at once)
@@ -630,10 +642,12 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         else if (!acnh60_validate(game_dir,why,why_size)) ok=false;
         else ok = build_cache_publish(cache, GAMELIB_NAME, GAMELIB_ID, build_id, profile->code_identity, why, why_size);
     }
+    bool cancelled = !ok && o->cancelled && o->cancelled();
+    if (!ok && !cancelled) build_cache_failed(cache);
     free(units.u);
     build_cache_close(cache);
     LOG("[gamebuild] reused %d objects, compiled %d objects\n", reused, compiled);
-    LOG("[gamebuild] %s in %.0fs\n", ok ? "done" : "failed", (double)(plat_now_ns() - t0) / 1e9);
+    LOG("[gamebuild] %s in %.0fs\n", ok ? "done" : cancelled ? "cancelled" : "failed", (double)(plat_now_ns() - t0) / 1e9);
     if (ok && o->progress) o->progress(1, "Finishing...");
     return ok;
 }

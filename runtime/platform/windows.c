@@ -204,27 +204,192 @@ void plat_thread_realtime(uint64_t period_ns) {
 }
 
 // ---- process
-// Release builds are GUI-subsystem executables (no console window): stdout / stderr go to lasrecomp-<pid>.log next to the
-// exe, and a fatal error shows a message box (plat_fatal_notice) instead of vanishing. Processes started by this one
-// (the start screen re-executing itself for the game) append to the same log.
-static char g_log_path[MAX_PATH];
+// GUI launches keep their own append-only log; lasrecomp.log names the latest run, with five recent backups.
+// A launcher and the game it starts share one session, so another launch cannot truncate either writer.
+static char g_log_path[MAX_PATH], g_log_latest[MAX_PATH];
+static char g_log_tag[MAX_PATH + 16];
+static HANDLE g_log_mutex;
+
+static bool lock_logs(void) {
+    DWORD r = g_log_mutex ? WaitForSingleObject(g_log_mutex, 5000) : WAIT_FAILED;
+    return r == WAIT_OBJECT_0 || r == WAIT_ABANDONED;
+}
+
+// A shared lock outside the log's data marks it as live, including across the launcher's child processes.
+// Pruning takes the exclusive form, so an older session still running keeps its path until the next cleanup.
+static bool log_live_lock(HANDLE file, bool exclusive) {
+    OVERLAPPED at = {.Offset = 0xffffffffu, .OffsetHigh = 0x7fffffffu};
+    return LockFileEx(file, LOCKFILE_FAIL_IMMEDIATELY | (exclusive ? LOCKFILE_EXCLUSIVE_LOCK : 0), 0, 1, 0, &at);
+}
+
+typedef struct { char name[MAX_PATH]; FILETIME created; } SessionLog;
+static int newest_log(const void *a, const void *b) {
+    const SessionLog *x = a, *y = b;
+    int time = CompareFileTime(&y->created, &x->created);
+    return time ? time : strcmp(y->name, x->name);
+}
+static bool session_log_name(const char *name) {  // lasrecomp-backup-<filetime hex>-<pid>.log
+    if (strncmp(name, "lasrecomp-backup-", 17)) return false;
+    const char *p = name + 17;
+    while ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || *p == '-') p++;
+    return p > name + 17 && !strcmp(p, ".log");
+}
+static void keep_legacy_log(const char *dir) {
+    WIN32_FILE_ATTRIBUTE_DATA old;
+    if (!GetFileAttributesExA(g_log_latest, GetFileExInfoStandard, &old) ||
+        old.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) return;
+    // The fallback copy has its own creation time, but still names the original session in its first line.
+    char old_tag[MAX_PATH + 16] = {0};
+    HANDLE old_file = CreateFileA(g_log_latest, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                  NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (old_file != INVALID_HANDLE_VALUE) {
+        DWORD got;
+        ReadFile(old_file, old_tag, sizeof old_tag - 1, &got, NULL); CloseHandle(old_file);
+    }
+    char path[MAX_PATH];
+    snprintf(path, sizeof path, "%slasrecomp-backup-*.log", dir);
+    WIN32_FIND_DATAA data;
+    HANDLE find = FindFirstFileA(path, &data);
+    bool kept = false;
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            char tag[MAX_PATH + 16]; snprintf(tag, sizeof tag, "[session] %s\n", data.cFileName);
+            kept |= !strncmp(old_tag, tag, strlen(tag)) || !CompareFileTime(&data.ftCreationTime, &old.ftCreationTime);
+        }
+        while (!kept && FindNextFileA(find, &data));
+        FindClose(find);
+    }
+    // The first launch after upgrading may only have the old lasrecomp.log; retain that report too.
+    if (!kept) {
+        unsigned long long stamp = ((unsigned long long)old.ftCreationTime.dwHighDateTime << 32) | old.ftCreationTime.dwLowDateTime;
+        if (snprintf(path, sizeof path, "%slasrecomp-backup-%016llx-0.log", dir, stamp) < (int)sizeof path)
+            CopyFileA(g_log_latest, path, TRUE);
+    }
+}
+static void prune_logs(const char *dir) {
+    char path[MAX_PATH];
+    if (snprintf(path, sizeof path, "%slasrecomp-backup-*.log", dir) >= (int)sizeof path) return;
+    WIN32_FIND_DATAA data;
+    HANDLE find = FindFirstFileA(path, &data);
+    if (find == INVALID_HANDLE_VALUE) return;
+    SessionLog *logs = NULL;
+    size_t n = 0;
+    do {
+        if (data.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) || !session_log_name(data.cFileName)) continue;
+        SessionLog *next = realloc(logs, (n + 1) * sizeof *logs);
+        if (!next) { free(logs); FindClose(find); return; }
+        logs = next;
+        snprintf(logs[n].name, sizeof logs[n].name, "%s", data.cFileName);
+        logs[n++].created = data.ftCreationTime;
+    } while (FindNextFileA(find, &data));
+    FindClose(find);
+    if (n > 1) qsort(logs, n, sizeof *logs, newest_log);
+    for (size_t i = 5; i < n; i++) {
+        if (snprintf(path, sizeof path, "%s%s", dir, logs[i].name) >= (int)sizeof path) continue;
+        HANDLE f = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (f == INVALID_HANDLE_VALUE) continue;
+        if (log_live_lock(f, true)) DeleteFileA(path);
+        CloseHandle(f);
+    }
+    free(logs);
+}
+
+// NTFS can give the newest session both names, keeping lasrecomp.log current even after a crash. On filesystems
+// without hard links, copy on exit instead. The unique session header identifies who owns the latest report;
+// creation times can collide for simultaneous launches. The startup mutex also covers this replacement.
+static void publish_log(void) {
+    if (!g_log_path[0] || !lock_logs()) return;
+    fflush(stdout); fflush(stderr);
+    HANDLE latest = CreateFileA(g_log_latest, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    BY_HANDLE_FILE_INFORMATION current, session;
+    HANDLE source = (HANDLE)_get_osfhandle(_fileno(stderr));
+    char tag[sizeof g_log_tag]; DWORD got = 0;
+    bool copy = latest != INVALID_HANDLE_VALUE && ReadFile(latest, tag, strlen(g_log_tag), &got, NULL) &&
+                got == strlen(g_log_tag) && !memcmp(tag, g_log_tag, got) && GetFileInformationByHandle(latest, &current) &&
+                GetFileInformationByHandle(source, &session) &&
+                (current.dwVolumeSerialNumber != session.dwVolumeSerialNumber || current.nFileIndexHigh != session.nFileIndexHigh ||
+                 current.nFileIndexLow != session.nFileIndexLow);
+    if (latest != INVALID_HANDLE_VALUE) CloseHandle(latest);
+    if (copy) CopyFileA(g_log_path, g_log_latest, FALSE);
+    ReleaseMutex(g_log_mutex);
+}
 
 static void log_to_file_without_console(void) {
-    if (GetStdHandle(STD_ERROR_HANDLE) && GetStdHandle(STD_ERROR_HANDLE) != INVALID_HANDLE_VALUE) return;  // console / pipe
-    char exe[MAX_PATH];
-    DWORD n = GetModuleFileNameA(NULL, exe, sizeof exe);
-    if (!n || n >= sizeof exe) return;
-    char *slash = strrchr(exe, '\\');
-    if (slash) slash[1] = 0;
+    // An inherited pipe/file (tools, terminal) is already somewhere useful. Only the GUI launch needs redirecting.
+    // A relaunched game must still join its GUI session and publish its fallback copy on exit.
     const char *inherited = getenv("LASRECOMP_LOG_FILE");
-    if (inherited && *inherited) snprintf(g_log_path, sizeof g_log_path, "%s", inherited);
-    else snprintf(g_log_path, sizeof g_log_path, "%slasrecomp-%lu.log", exe, (unsigned long)GetCurrentProcessId());
-    bool append = getenv("LASRECOMP_LOG_APPEND") != NULL;
-    if (!freopen(g_log_path, append ? "ab" : "wb", stderr)) { g_log_path[0] = 0; return; }
+    bool fresh = !inherited || !*inherited;
+    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+    if (fresh && err && err != INVALID_HANDLE_VALUE && GetFileType(err) != FILE_TYPE_UNKNOWN) return;
+    char dir[MAX_PATH];
+    DWORD n = GetModuleFileNameA(NULL, dir, sizeof dir);
+    if (!n || n >= sizeof dir) return;
+    char *slash = strrchr(dir, '\\');
+    if (!slash) return;
+    slash[1] = 0;
+    if (snprintf(g_log_latest, sizeof g_log_latest, "%slasrecomp.log", dir) >= (int)sizeof g_log_latest) return;
+    unsigned long long hash = 14695981039346656037ull;
+    for (const unsigned char *p = (const unsigned char *)g_log_latest; *p; p++) hash = (hash ^ *p) * 1099511628211ull;
+    char mutex[64]; snprintf(mutex, sizeof mutex, "Local\\LASRecomp.logs.%016llx", hash);
+    g_log_mutex = CreateMutexA(NULL, FALSE, mutex);
+    if (!lock_logs()) return;
+    FILETIME now; GetSystemTimeAsFileTime(&now);
+    unsigned long long stamp = ((unsigned long long)now.dwHighDateTime << 32) | now.dwLowDateTime;
+    int used = fresh ? snprintf(g_log_path, sizeof g_log_path, "%slasrecomp-backup-%016llx-%lu.log", dir, stamp,
+                               (unsigned long)GetCurrentProcessId())
+                     : snprintf(g_log_path, sizeof g_log_path, "%s", inherited);
+    HANDLE file = INVALID_HANDLE_VALUE;
+    if (used >= 0 && (size_t)used < sizeof g_log_path)
+        file = CreateFileA(g_log_path, GENERIC_READ | FILE_APPEND_DATA | FILE_READ_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           fresh ? CREATE_NEW : OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE || !log_live_lock(file, false)) {
+        if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+        g_log_path[0] = 0; ReleaseMutex(g_log_mutex); return;
+    }
+    const char *name = strrchr(g_log_path, '\\');
+    snprintf(g_log_tag, sizeof g_log_tag, "[session] %s\n", name ? name + 1 : g_log_path);
+    // A GUI-subsystem process with no inherited handles starts with invalid CRT stream descriptors.
+    // Give both streams real descriptors before duplicating the shared-delete log handle into them.
+    if (!freopen("NUL", "ab", stderr) || !freopen("NUL", "ab", stdout)) {
+        CloseHandle(file); g_log_path[0] = 0; ReleaseMutex(g_log_mutex); return;
+    }
+    int fd = _open_osfhandle((intptr_t)file, _O_WRONLY | _O_APPEND | _O_BINARY);
+    if (fd < 0 || _dup2(fd, _fileno(stderr)) != 0) {
+        if (fd < 0) CloseHandle(file); else _close(fd);
+        g_log_path[0] = 0; ReleaseMutex(g_log_mutex); return;
+    }
+    _close(fd);
     setvbuf(stderr, NULL, _IONBF, 0);
     _dup2(_fileno(stderr), _fileno(stdout));
-    _putenv("LASRECOMP_LOG_APPEND=1");
     _putenv_s("LASRECOMP_LOG_FILE", g_log_path);
+    if (fresh) {
+        fputs(g_log_tag, stderr);
+        keep_legacy_log(dir);
+        char next[MAX_PATH];
+        // A shorter name than the session path, which was already checked above.
+        snprintf(next, sizeof next, "%slasrecomp-current-%016llx-%lu.tmp", dir, stamp, (unsigned long)GetCurrentProcessId());
+        bool staged = CreateHardLinkA(next, g_log_path, NULL) != 0;
+        if (!staged) {
+            // Keep the session header in the placeholder too; the full copy at exit preserves it.
+            HANDLE marker = CreateFileA(next, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (marker != INVALID_HANDLE_VALUE) {
+                DWORD written;
+                staged = WriteFile(marker, g_log_tag, strlen(g_log_tag), &written, NULL) && written == strlen(g_log_tag);
+                CloseHandle(marker);
+                if (!staged) DeleteFileA(next);
+            }
+        }
+        if (staged) {
+            MoveFileExA(next, g_log_latest, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+            DeleteFileA(next);
+        }
+        prune_logs(dir);
+    }
+    atexit(publish_log);
+    ReleaseMutex(g_log_mutex);
 }
 
 // The recompiled game code is built for x86-64-v3 (Makefile GENARCH: AVX2, FMA, BMI2): say so instead of crashing
@@ -240,6 +405,7 @@ static void require_cpu(void) {
 // Fatal error (rt_fatal_trace): what happened in plain words (runtime/crash_explain.c) in a message box, when there is
 // no console; the technical lines stay in the log.
 void plat_fatal_notice(void) {
+    publish_log();
     char text[1600];
     rt_crash_explain(text, sizeof text, g_log_path);
     if (!g_log_path[0]) return;
@@ -433,17 +599,21 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     // A separate job per helper: cancelling one compiler also stops its children immediately,
     // without killing the other compilation jobs. Handles close on app exit as well.
     WinProcess *child = calloc(1, sizeof *child);
+    if (!child) {
+        TerminateProcess(pi.hProcess, 255);
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        return 0;
+    }
     HANDLE job = CreateJobObjectW(NULL, NULL);
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {0};
     li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    if (!child || !job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li) ||
+    if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li) ||
         !AssignProcessToJobObject(job, pi.hProcess)) {
-        fprintf(stderr, "[plat] could not supervise %s (error %lu)\n", argv[0], GetLastError());
-        TerminateProcess(pi.hProcess, 255);
-        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        // A restricted parent job can prevent assignment. Still run the helper, as before jobs were added;
+        // cancellation can stop this process only in that case, not its descendants.
+        fprintf(stderr, "[plat] could not supervise %s (error %lu); starting without a job\n", argv[0], GetLastError());
         if (job) CloseHandle(job);
-        free(child);
-        return 0;
+        job = NULL;
     }
     child->process = pi.hProcess, child->job = job;
     ResumeThread(pi.hThread);
@@ -453,9 +623,11 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
 
 void plat_proc_kill(PlatProc p) {
     WinProcess *child = (WinProcess *)p;
-    TerminateJobObject(child->job, 255);
+    if (child->job) TerminateJobObject(child->job, 255);
+    else TerminateProcess(child->process, 255);
     WaitForSingleObject(child->process, INFINITE);
-    CloseHandle(child->process); CloseHandle(child->job);
+    CloseHandle(child->process);
+    if (child->job) CloseHandle(child->job);
     free(child);
 }
 
@@ -465,7 +637,8 @@ int plat_proc_wait(PlatProc p, bool block) {
     if (w == WAIT_TIMEOUT) return -1;
     DWORD code = 255;
     if (w == WAIT_OBJECT_0) GetExitCodeProcess(child->process, &code);
-    CloseHandle(child->process); CloseHandle(child->job);
+    CloseHandle(child->process);
+    if (child->job) CloseHandle(child->job);
     free(child);
     return code > 255 ? 255 : (int)code;  // (a crash's NTSTATUS, e.g. 0xC0000409, is not "still running" (-1))
 }
@@ -481,5 +654,6 @@ bool plat_remove_tree(const char *dir) {
     return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
 }
 
-// End the process at once, skipping DLL teardown (from an atexit handler, after flushing).
-void plat_terminate(int status) { TerminateProcess(GetCurrentProcess(), (UINT)status); }
+// End the process at once, preserving its result and skipping DLL teardown after publishing the log.
+// Emergency failures must not wait on log-file or stdio locks.
+void plat_terminate(int status) { if (!status) publish_log(); TerminateProcess(GetCurrentProcess(), (UINT)status); }

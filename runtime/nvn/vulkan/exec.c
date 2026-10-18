@@ -3582,6 +3582,20 @@ static void draw_(CmdRec *r, bool indexed) {
         float sc[2]; uint32_t wh[2];
         texture_info(1, pr->fi, i, &fii[i], sc, wh);
         tex_sc[1][i][0] = sc[0]; tex_sc[1][i][1] = sc[1]; tex_wh[1][i][0] = wh[0]; tex_wh[1][i][1] = wh[1];
+        // the Hint Sheet (runtime/hle/hint_sheet.c): the dungeon map's icon in place of the first bottle's
+        NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
+        const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
+        extern int texpatch_bottle_kind(int id);
+        if (b && b->tp > 0 && texpatch_bottle_kind(b->tp - 1) == 1) {
+            extern bool hint_sheet_icon_draw(const float *ui, uint32_t ui_size);
+            extern NvnTexture *texpatch_hint_icon(void);
+            NvnTexture *ht;
+            if (hint_sheet_icon_draw((const float *)(uintptr_t)st.ubuf[0][0].addr, (uint32_t)st.ubuf[0][0].size) &&
+                (ht = texpatch_hint_icon())) {
+                static NvnTextureView none;
+                fii[i].imageView = vk_view(ht, &none, false, false, pr->fi->tex[i].type);
+            }
+        }
     }
     if (prof) prof_tex += SDL_GetTicksNS() - prof_tx_;
     if (fabsf(pass_sx - pass_sy) > 0.01f * pass_sy && st.rt.ncolor && renderer_texture_presented(st.rt.color[0])) {

@@ -55,6 +55,10 @@ jobs:
         run: python3 tools/test_hwopus.py
       - name: Random-byte service regression tests
         run: python3 tools/test_csrng.py
+      - name: Build cache and resume tests
+        run: |
+          python3 tools/test_build_cache.py
+          python3 tools/test_gamebuild_resume.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 tools/test_movie_extractor.c $(pkg-config --cflags --libs libavformat libavcodec libavutil libswscale) -pthread -o build/test-movie-extractor
@@ -140,6 +144,10 @@ jobs:
         run: |
           clang -std=gnu11 -O1 -pthread tools/test_simd_rounding.c -o build/test-simd-rounding
           build/test-simd-rounding
+      - name: Build cache and resume tests
+        run: |
+          python3 tools/test_build_cache.py
+          python3 tools/test_gamebuild_resume.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 -I"$(brew --prefix ffmpeg)/include" -L"$(brew --prefix ffmpeg)/lib" tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -pthread -o build/test-movie-extractor
@@ -204,12 +212,18 @@ jobs:
           msystem: UCRT64
           update: true
           install: make git python
-          pacboy: clang:p lld:p binutils:p sdl3:p ffmpeg:p opus:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
+          pacboy: clang:p lld:p binutils:p python:p sdl3:p ffmpeg:p opus:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
             vulkan-memory-allocator:p
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp.exe
       - name: Opus service regression tests
         run: clang -std=gnu11 -O1 -Wall -Wextra -Werror -pthread tools/test_hwopus.c -lopus -o build/test-hwopus.exe && build/test-hwopus.exe
+      - name: Build cache and resume tests
+        run: |
+          python3 tools/test_build_cache.py
+          python3 tools/test_gamebuild_resume.py
+          python3 tools/test_windows_processes.py
+          python3 tools/test_save_mount.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -o build/test-movie-extractor.exe
@@ -247,6 +261,8 @@ jobs:
           clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe
           build/test-thread-stack.exe
           sh tools/test_vk_texture_scale.sh
+      - name: Windows session log regression
+        run: python tools/test_windows_logs.py
       - name: Recompiled guest nonlocal returns
         env:
           WINDOWS_TEST_PYTHON: ${{ steps.native_python.outputs.python-path }}

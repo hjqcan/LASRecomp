@@ -1,5 +1,5 @@
 #include "../acnh_speedfix.h"
-#include "cache_sha256.h"
+#include "../cache_sha256.h"
 #include <atomic>
 #include <cstdio>
 #include <cstring>

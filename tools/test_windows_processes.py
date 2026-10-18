@@ -16,7 +16,14 @@ harness = r'''
 #include <assert.h>
 #include <stdio.h>
 #include "platform.h"
+static bool reject_job;
+static BOOL assign_job(HANDLE job, HANDLE process) {
+    if (reject_job) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    return AssignProcessToJobObject(job, process);
+}
+#define AssignProcessToJobObject assign_job
 '''+quote+process+r'''
+#undef AssignProcessToJobObject
 static DWORD read_pid(const char *path) {
     for(int i=0;i<250;++i) {
         FILE *f=fopen(path,"rb"); DWORD pid=0;
@@ -51,7 +58,13 @@ int main(int argc,char **argv) {
     const char *code[]={exe,"--code","7",NULL},*crash[]={exe,"--code",NULL};
     assert(plat_proc_wait(plat_spawn(code,NULL,false),true)==7);
     assert(plat_proc_wait(plat_spawn(crash,NULL,false),true)==255);
-    puts("Windows process trees: cancel one helper and all its descendants, preserve other jobs, normalize crash status passed");
+    reject_job=true;
+    assert(plat_proc_wait(plat_spawn(code,NULL,false),true)==7);
+    const char *sleeper[]={exe,"--sleep",NULL};
+    PlatProc fallback=plat_spawn(sleeper,NULL,false);
+    assert(fallback && !((WinProcess *)fallback)->job && plat_proc_wait(fallback,false)==-1);
+    plat_proc_kill(fallback);
+    puts("Windows process trees: isolated cancellation, crash status and fallback without job assignment passed");
     return 0;
 }
 '''

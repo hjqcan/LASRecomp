@@ -87,6 +87,7 @@ with tempfile.TemporaryDirectory() as temporary:
     cc = shlex.split(os.environ.get('CC','clang'))
     cxx = shlex.split(os.environ.get('CXX','clang++'))
     compiler = shutil.which(cc[0]); assert compiler
+    relocated = tmp/'relocated'/Path(compiler).name
     # The native helper receives its normal argv; the process bridge invokes the fixture script.
     os.environ['LARECOMP_GEN'] = str(generator)
     os.environ['LARECOMP_CC'] = compiler
@@ -103,7 +104,7 @@ with tempfile.TemporaryDirectory() as temporary:
     bridge=tmp/'bridge.cpp'; bridge.write_text(BRIDGE)
     libfile=tmp/('scheduler.dll' if os.name=='nt' else 'scheduler.so')
     subprocess.run(cxx+['-shared','-fPIC','-pthread','-std=c++17','-Iruntime','-x','c++',str(bridge),
-                        'runtime/ui/build_cache.mm','runtime/ui/game_install.mm','runtime/ui/acnh_speedfix.mm',
+                        'runtime/build_cache.cpp','runtime/ui/game_install.mm','runtime/ui/acnh_speedfix.mm',
                         '-x','none',*objects,'-o',str(libfile)]+
                    (['-Wl,--export-all-symbols'] if os.name=='nt' else []),cwd=ROOT,check=True)
     dll_search = os.add_dll_directory(str(Path(compiler).parent)) if os.name == 'nt' else None
@@ -122,6 +123,8 @@ with tempfile.TemporaryDirectory() as temporary:
         command=[];i=0
         while args[i]: command.append(args[i].decode()); i+=1
         launched.append(command.copy())
+        # The relocated compiler has identical bytes; invoke the installed copy with its platform resources.
+        if command[0] == str(relocated): command[0] = compiler
         if command[0]==str(generator): command=[sys.executable,*command]
         elif (fail_compile and '-c' in command) or (fail_link and '-c' not in command):
             fail_compile=fail_link=False
@@ -187,10 +190,12 @@ with tempfile.TemporaryDirectory() as temporary:
     def generators(): return [a for a in launched if a[0]==str(generator)]
     try:
         assert not run() and b'cancelled' in why.value,why.value
+        assert (work/'in-progress').exists()
         saved=len(list(work.glob('*.receipt'))); assert 0<saved<9
         cancel_enabled=False
         assert run(),why.value
         assert not generators() and len(compiles())==10-saved
+        assert not (work/'main').exists() and not (work/'sdk').exists() and not (work/'in-progress').exists()
         output=next(p for p in game.glob('lasgame.*') if p.suffix!='.id')
         assert library.gamelib_verify(str(game).encode(),why,len(why)),why.value
         receipt=output.with_name(output.name+'.id')
@@ -201,13 +206,15 @@ with tempfile.TemporaryDirectory() as temporary:
         before=hashlib.sha256(output.read_bytes()).digest()
         (work/'main_000.o').write_bytes(b'corrupt')
         assert run(),why.value
-        assert len(compiles())==2 and not generators()
+        assert len(compiles())==2 and len(generators())==2
+        (work/'main').mkdir()
         (work/'main/main_000.c').write_text('corrupt source\n')
         assert run(),why.value
-        assert len(generators())==1 and len(compiles())==1
+        assert len(generators())==2 and len(compiles())==1
         before=hashlib.sha256(output.read_bytes()).digest() # PE link timestamps may differ after a successful relink
         fail_link=True
         assert not run() and b'link' in why.value,why.value
+        assert not (work/'in-progress').exists()
         assert hashlib.sha256(output.read_bytes()).digest()==before
         (work/'sdk_000.o').write_bytes(b'corrupt')
         fail_compile=True
@@ -218,6 +225,11 @@ with tempfile.TemporaryDirectory() as temporary:
         (game/'exefs/main').write_bytes(main+b'changed input')
         assert run(),why.value
         assert len(generators())==2 and len(compiles())==1
+        relocated.parent.mkdir()
+        shutil.copy(compiler, relocated) # contents/mode only; macOS system file flags are not part of the identity
+        os.environ['LARECOMP_CC'] = str(relocated)
+        assert run(),why.value
+        assert len(generators())==2 and len(compiles())==1 # moving the same binary does not recompile every object
         (resources/'runtime/cpu.h').write_text((resources/'runtime/cpu.h').read_text()+'\n/* changed header */\n')
         assert run(),why.value
         assert len(generators())==2 and len(compiles())==9
@@ -232,7 +244,8 @@ with tempfile.TemporaryDirectory() as temporary:
         assert len(generators())==3 and len(compiles())==13
         assert all(a[a.index('--profile')+1]=='generic' for a in generators())
         assert (work/'subsdk0_table.o').exists()
-        assert run() and len(compiles())==1 and not generators(),why.value
+        assert run() and len(compiles())==1 and len(generators())==3,why.value
+        assert all(not (work/name).exists() for name in ('main','sdk','subsdk0','in-progress'))
         output=next(p for p in game.glob('lasgame.*') if p.suffix!='.id')
         acnh_hash=hashlib.sha256(output.read_bytes()).digest()
         sdk=bytearray((game/'exefs/sdk').read_bytes());sdk[-1]=1;(game/'exefs/sdk').write_bytes(sdk)
@@ -262,12 +275,13 @@ with tempfile.TemporaryDirectory() as temporary:
         finally:
             library.game_install_close(transaction)
         library.test_compiler_environment(compiler.encode(),compiler.encode())
-        assert run() and len(compiles())==1 and not generators(),why.value
+        # Successful publication removes generated C while retaining objects.
+        assert run() and len(compiles())==1 and len(generators())==3,why.value
         assert all(a[1]!='cc' for a in compiles()),'Explicit CC takes precedence'
         library.test_compiler_environment(b'',compiler.encode())
         assert run() and len(compiles())==13,why.value
         assert all(a[1]=='cc' for a in compiles()),'Pinned Zig must keep its driver mode'
-        assert run() and len(compiles())==1 and not generators(),why.value
+        assert run() and len(compiles())==1 and len(generators())==3,why.value
         print('Build scheduler and installation: cancel/resume, compiler selection, input isolation, real library verification, failed rebuild preservation and candidate publication passed')
     finally:
         for pid in list(processes): kill(pid)

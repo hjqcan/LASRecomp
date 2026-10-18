@@ -31,6 +31,9 @@ Settings g_settings = {
     .chaos_letters = CHAOS_LETTERS_MAP,
     .diff_damage = 1.0f,
     .upscaler = UPSCALE_SHARP,  // (MetalFX on macOS, AMD FSR 1 on Windows)
+#ifndef __APPLE__
+    .bg_input = true,  // (as before the setting; on macOS it needs Input Monitoring permission, so Off there)
+#endif
 };
 
 // The game's own text languages: its RomFS carries these per region (regionUS/USen|USes|USfr, regionEU/EUen|EUes|...,
@@ -129,6 +132,7 @@ void settings_load(void) {
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_move = atoi(val) != 0;
         else if (!strcmp(key, "rumble")) g_settings.rumble = atoi(val) != 0;
         else if (!strcmp(key, "rumble_strength")) g_settings.rumble_strength = atoi(val);
+        else if (!strcmp(key, "background_input")) g_settings.bg_input = atoi(val) != 0;
         else if (!strcmp(key, "move_360")) g_settings.move_360 = atoi(val) != 0;
         else if (!strcmp(key, "blur_removal")) g_settings.blur_removal = atoi(val) != 0;
         else if (!strcmp(key, "hide_hero_icon")) g_settings.hide_hero_icon = atoi(val) != 0;
@@ -191,6 +195,7 @@ void settings_save(void) {
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
     fprintf(f, "rumble = %d\n", g_settings.rumble);
     fprintf(f, "rumble_strength = %d\n", g_settings.rumble_strength);
+    fprintf(f, "background_input = %d\n", g_settings.bg_input);
     fprintf(f, "move_360 = %d\nblur_removal = %d\nhide_hero_icon = %d\n", g_settings.move_360, g_settings.blur_removal,
             g_settings.hide_hero_icon);
     static const char *const prompts[] = {"auto", "nintendo", "xbox", "playstation"};
