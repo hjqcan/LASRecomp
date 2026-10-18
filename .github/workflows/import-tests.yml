@@ -71,6 +71,8 @@ jobs:
         run: clang -std=gnu11 -O1 -Iruntime tools/test_touch.c -o test-touch && ./test-touch
       - if: runner.os != 'Windows'
         run: clang -std=gnu11 -O1 -Iruntime tools/test_prepo.c -o test-prepo && ./test-prepo
+      - if: runner.os != 'Windows'
+        run: clang -std=gnu11 -O1 -Iruntime tools/test_olsc.c -o test-olsc && ./test-olsc
       - run: clang -std=gnu11 -O1 tools/test_audio_biquad.c -o test-audio-biquad
       - run: ./test-audio-biquad
       - run: clang -std=gnu11 -O1 tools/test_audio_workbuffer.c -o test-audio-workbuffer

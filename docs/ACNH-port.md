@@ -107,6 +107,12 @@ The production-service regression independently decodes both SDK layouts,
 checks local/network clock parity and 90-second progression, and rejects a
 mismatched UUID. It fails against the former uninitialized point. Actual
 gameplay and save/reopen checks are still required.
+With that point initialized, startup passes the date check and queries `olsc:u`.
+The offline service implements initialization and the disabled cloud-backup
+status using the [public application-service ABI](https://github.com/NextendoNetwork/Ryujinx-Nextendo/blob/2e6ff9ee8bc0072debd6584c3521586d1d4ab5ca/src/Ryujinx.HLE/HOS/Services/Olsc/IOlscServiceForApplication.cs).
+Enabling cloud backup and remote operations return unsupported. Its regression
+checks session initialization, UID/length validation, the one-byte status and
+empty handle/object outputs. Local saves and runtime backups are independent.
 
 | Module | Guest base | Build ID |
 | --- | --- | --- |

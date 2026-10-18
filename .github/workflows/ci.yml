@@ -227,7 +227,7 @@ jobs:
         run: |
           python tools/test_hle_libc.py
           python tools/test_enemy_random.py
-          for name in touch prepo csrng nvn_pool_mapping; do
+          for name in touch prepo csrng olsc nvn_pool_mapping; do
             clang -std=gnu11 -O1 -Iruntime "tools/test_${name}.c" -o "build/test-${name}.exe"
             "build/test-${name}.exe"
           done
