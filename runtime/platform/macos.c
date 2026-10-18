@@ -9,6 +9,7 @@
 #include <mach/mach_vm.h>
 #include <mach/thread_policy.h>
 #include <pthread.h>
+#include <pthread/qos.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,6 +97,16 @@ void plat_thread_realtime(uint64_t period_ns) {
     };
     thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&pol,
                       THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+}
+
+// Guest threads start at the default QoS, and on a Mac with efficiency cores (an M1 Air: 4 + 4) the scheduler may run
+// the game's frame-critical threads there - the main thread (priority 44) builds and submits every frame. Priorities
+// 44 and more urgent get user-interactive (performance cores first), the rest user-initiated. LARECOMP_THREAD_QOS=0:
+// the default class as before.
+void plat_thread_guest(int prio) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_THREAD_QOS") || atoi(getenv("LARECOMP_THREAD_QOS")) != 0;
+    if (on) pthread_set_qos_class_self_np(prio <= 44 ? QOS_CLASS_USER_INTERACTIVE : QOS_CLASS_USER_INITIATED, 0);
 }
 
 bool plat_exe_path(char *buf, size_t size) {

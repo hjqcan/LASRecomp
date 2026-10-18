@@ -114,6 +114,8 @@ void plat_sleep_until_ns(uint64_t t) {
     }
 }
 
+void plat_thread_guest(int prio) { (void)prio; }  // (the OS's default scheduling serves the game here)
+
 void plat_thread_realtime(uint64_t period_ns) {
     (void)period_ns;
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);

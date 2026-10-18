@@ -606,6 +606,24 @@ def _prompt_pos(gen, a):
 PATCHES[PROMPT_POS_SITE] = _prompt_pos
 
 
+# Issue #45: setting up a font, the game looks up the glyph of "□" (U+25A1, its box for a missing character) and
+# marks it (main+0x111dfc0: the lookup at main+0x111dffc, then `ldrb w8, [x0, #0x38]` at main+0x111e000) without
+# checking for none - its second lookup in the same function does check. With a substitute font that has no such
+# glyph for the game (a Yu Gothic on one Windows PC, although its cmap lists it) that read crashed at 0x38. Now no
+# glyph skips the marking as the second lookup's check does (to the function's end).
+FONT_BOX_GLYPH_SITE = A.FONT_BOX_GLYPH_SITE
+
+
+def _font_box_glyph(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w == 0x3940e008, hex(w)  # ldrb w8, [x0, #0x38]
+    return (addr_text('if (c->x[0] == 0) goto L_@FONT_BOX_GLYPH_SKIP@; c->x[8] = LD8(c->x[0] + 0x38);') +
+            f'  /* {a:#x}: ldrb w8, [x0, #0x38] (font box glyph: none skips the marking) */')
+
+
+PATCHES[FONT_BOX_GLYPH_SITE] = _font_box_glyph
+
+
 # Issue #19: [this+0x10] is the delegate of a recycled "action" object (the class whose vtable is 0x7001c51358, and
 # the ~100 siblings sharing these forwarders). Its slot +0x28 (main+0x10cce50) and +0x30 (main+0x10cce30) forward to
 # that delegate without checking it, while the class's own slot +0x38 (main+0x10cce80) checks *its* delegate (+0x18)
@@ -635,6 +653,16 @@ for _a in DELEGATE_FORWARDER_SITES:
 # with Warp tab jumps; same family as NO_HANDLER_SITES (the action dispatcher's).
 EMPTY_HANDLER_SITE = A.EMPTY_HANDLER_SITE  # bl main+0x108dfc0
 
+# Issue #19 (the hang): the per-frame kick-off (main+0x15730, four inlined copies, one per owner X) rebuilds X's frame
+# job J (X+0xc8) in place. The job worker (main+0x13c21e0) runs J (main+0x10cceb0: sets X's done flag, wakes the main
+# thread, unlocks) and only then calls J's finish (main+0x10ccfa0 -> slot +0x00: base vtable, delegate cleared). A
+# worker preempted between the two lets the main thread kick off the next frame first; the late finish then wipes the
+# new J, whose release is dropped and the main thread waits for X's done flag forever. The kick-off hooks wait for the
+# previous run's finish (runtime/hle/delegate_null.c); the finish hook only serves a debug delay to force the race.
+FRAME_JOB_KICKOFF_SITES = [A.FRAME_JOB_KICKOFF_SITES_0, A.FRAME_JOB_KICKOFF_SITES_1, A.FRAME_JOB_KICKOFF_SITES_2,
+                           A.FRAME_JOB_KICKOFF_SITES_3]
+FRAME_JOB_FINISH_SITE = A.FRAME_JOB_FINISH_SITE
+
 
 # ---- hook sites: the instruction stays as it is; just before it the runtime's rt_hook (runtime/hle/hooks.c) is asked
 # what to do - 0 run it, 1 the hook did it all, 2.. jump to the site's first.. target (each a label in its function).
@@ -654,4 +682,9 @@ HOOKS = {
     HOLE_CAP_SITES[0]: (0xf101451f, (), 'cmp x8, #0x51: dug-hole limit (digs.c)'),
     HOLE_CAP_SITES[1]: (0xf101411f, (), 'cmp x8, #0x50: dug-hole limit (digs.c)'),
     EMPTY_HANDLER_SITE: (0x9400005e, (A.EMPTY_HANDLER_CATCH,), 'bl std::function call: an empty event handler, as its catch'),
+    FRAME_JOB_KICKOFF_SITES[0]: (0x910782d3, (), 'add x19, x22, #0x1e0: frame job kick-off, previous finish first'),
+    FRAME_JOB_KICKOFF_SITES[1]: (0x910782d3, (), 'add x19, x22, #0x1e0: frame job kick-off, previous finish first'),
+    FRAME_JOB_KICKOFF_SITES[2]: (0x910782d3, (), 'add x19, x22, #0x1e0: frame job kick-off, previous finish first'),
+    FRAME_JOB_KICKOFF_SITES[3]: (0x910782b3, (), 'add x19, x21, #0x1e0: frame job kick-off, previous finish first'),
+    FRAME_JOB_FINISH_SITE: (0xf9400008, (), 'ldr x8, [x0]: frame job finish (debug delay)'),
 }

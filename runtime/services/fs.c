@@ -8,6 +8,8 @@
 #include <unistd.h>
 #ifdef _WIN32
 #include <windows.h>
+#undef IN   // (windows.h's empty parameter markers; ipc.h defines its own)
+#undef OUT
 #endif
 
 #include <pthread.h>
@@ -536,12 +538,30 @@ static void commit(HostFs *fs) {
         snprintf(tmp, sizeof tmp, "%s.pending", fs->pending[i]);
         int fd = open(tmp, O_RDWR);
         if (fd >= 0) { fsync(fd); close(fd); }
-        if (replace_file(tmp, fs->pending[i])) LOG("[save] commit %s failed (%d)\n", fs->pending[i], errno);
+        if (replace_file(tmp, fs->pending[i])) {
+#ifdef _WIN32
+            LOG("[save] commit %s failed (Windows error %lu)\n", fs->pending[i], (unsigned long)GetLastError());
+#else
+            LOG("[save] commit %s failed (%d)\n", fs->pending[i], errno);
+#endif
+        }
         else { LOG("[save] committed %s\n", fs->pending[i]); sync_dir_of(fs->pending[i]); }
     }
     fs->npending = 0;
 }
 typedef struct { DIR *d; char path[1024]; int mode; } HostDir;
+
+// The game closed the file / directory: close the host one too. They used to stay open for the whole run - a leak
+// everywhere, and on Windows the open working copy blocked the Commit's replace, so saves never landed (a file can't
+// be replaced while it's open there; the game closes its files before it commits, as nn::fs requires).
+static void file_close(Service *s) {
+    HostFile *f = s->state;
+    if (f) { close(f->fd); free(f); s->state = NULL; }
+}
+static void dir_close(Service *s) {
+    HostDir *d = s->state;
+    if (d) { if (d->d) closedir(d->d); free(d); s->state = NULL; }
+}
 
 static const char *in_path(IpcReq *req, int i) {
     if (i < req->nx) return (const char *)(uintptr_t)req->x[i].addr;
@@ -705,7 +725,9 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         HostFile *f = calloc(1, sizeof *f);
         f->fd = fd;
         strlcpy(f->path, p, sizeof f->path);
-        ipc_return_object(resp, service_new("IFile", file, f));
+        Service *fsvc = service_new("IFile", file, f);
+        fsvc->on_close = file_close;
+        ipc_return_object(resp, fsvc);
         break;
     }
     case 9: {  // OpenDirectory(mode)
@@ -715,7 +737,9 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         hd->d = d;
         hd->mode = (int)IN(uint32_t, 0);
         snprintf(hd->path, sizeof hd->path, "%s", p);
-        ipc_return_object(resp, service_new("IDirectory", directory, hd));
+        Service *dsvc = service_new("IDirectory", directory, hd);
+        dsvc->on_close = dir_close;
+        ipc_return_object(resp, dsvc);
         break;
     }
     case 10: commit(fs); break;  // Commit

@@ -595,6 +595,15 @@ static void tab_about(void) {
     toggle("360-degree movement", &g_settings.move_360);
     hint("Link walks in the exact direction of the stick instead of snapping to 8 directions.");
     ImGui::Spacing();
+    header("Controller");
+    toggle("Rumble", &g_settings.rumble);
+    if (g_settings.rumble) {
+        static const char *const pct[] = {"25%", "50%", "75%", "100%"};
+        int i = g_settings.rumble_strength / 25 - 1;
+        if (i < 0 || i > 3) i = 3;
+        if (choice("Intensity", &i, pct, 4)) g_settings.rumble_strength = (i + 1) * 25;
+    }
+    ImGui::Spacing();
     header("Button prompts");
     {
         static const char *const fam[] = {"Nintendo", "Xbox", "PlayStation"};

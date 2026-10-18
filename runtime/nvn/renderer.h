@@ -20,5 +20,7 @@ bool renderer_format_is_depth(uint32_t f);
 bool renderer_format_has_stencil(uint32_t f);
 void renderer_mark_gpu_owned(NvnTexture *t);
 void input_handle_event(const SDL_Event *e);
+void input_rumble_poll(void);
+void input_rumble_stop(void);
 bool input_user_blocked(const SDL_Event *e);
 void input_load_user_mappings(void);  // after SDL_Init: the data root's gamecontrollerdb.txt, if there is one

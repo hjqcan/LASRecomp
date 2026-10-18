@@ -157,6 +157,8 @@ void plat_sleep_until_ns(uint64_t t) {
 
 // Real-time scheduling where the user may have it (rtkit / limits.conf), else just a higher priority: keeps the
 // vsync thread on time while the guest threads load every core.
+void plat_thread_guest(int prio) { (void)prio; }  // (the OS's default scheduling serves the game here)
+
 void plat_thread_realtime(uint64_t period_ns) {
     (void)period_ns;
     struct sched_param sp = {.sched_priority = 1};

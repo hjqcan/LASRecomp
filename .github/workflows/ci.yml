@@ -50,6 +50,10 @@ jobs:
           cmake --install sdl-build
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp DEPS="$HOME/sdl3"
+      - name: Kernel condition-variable regression
+        run: |
+          clang -O2 -pthread tools/test_condvar.c -o build/test-condvar
+          build/test-condvar
       - name: Settings regression tests
         run: python3 tools/test_settings.py
       - name: Game address table tests
@@ -69,6 +73,10 @@ jobs:
         run: brew install sdl3 ffmpeg
       - name: App builds
         run: make -j"$(sysctl -n hw.ncpu)" build/lasrecomp
+      - name: Kernel condition-variable regression
+        run: |
+          clang -O2 -pthread tools/test_condvar.c -o build/test-condvar
+          build/test-condvar
       - name: Settings regression tests
         run: python3 tools/test_settings.py
       - name: Game address table tests
@@ -99,6 +107,14 @@ jobs:
         run: make -j"$(nproc)" build/lasrecomp.exe
       - name: Photo state tests
         run: python tools/test_photo.py
+      - name: Kernel condition-variable regression
+        run: |
+          clang -O2 -pthread tools/test_condvar.c -o build/test-condvar.exe
+          build/test-condvar.exe
+      - name: Windows guest thread stack regression
+        run: |
+          clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe
+          build/test-thread-stack.exe
       # (GLSL only: the script's MSL comparison needs a reference commit that isn't in the history any more; REF=HEAD
       # just satisfies it. The GLSL half - every fuzzed translation compiles and validates - is the check)
       - name: Shader translator fuzz (GLSL)

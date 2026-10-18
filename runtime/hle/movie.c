@@ -457,6 +457,7 @@ static void dec_signal(Cpu *c, Decoder *d, int i) {
 
 typedef struct NvnTexture NvnTexture;
 void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t h, uint32_t stride);
+bool renderer_upload_nv12(NvnTexture *t, const void *nv12, uint32_t w, uint32_t h, uint32_t stride, uint32_t uv_off);
 
 static void dec_configure(Cpu *c) {
     Decoder *d = self_state(c);
@@ -707,6 +708,14 @@ static void dec_get_output_buffer(Cpu *c) {
         // texture output mode: the buffer points at the game's NVNtexture; write RGBA into it
         NvnTexture *t = *(NvnTexture **)(uintptr_t)b->base;
         int w = d->width, h = d->height;
+        // the GPU converts it (renderer_upload_nv12); LARECOMP_MOVIE_CPU_CONVERT=1: swscale + an RGBA upload, as before
+        static int gpu = -1;
+        if (gpu < 0) gpu = !getenv("LARECOMP_MOVIE_CPU_CONVERT");
+        if (gpu && renderer_upload_nv12(t, d->out_mem[i], (uint32_t)w, (uint32_t)h, (uint32_t)d->stride,
+                                        (uint32_t)(d->stride * ((h + 15) & ~15)))) {
+            c->x[0] = 0;
+            return;
+        }
         if (!d->sws)
             d->sws = sws_getContext(w, h, AV_PIX_FMT_NV12, w, h, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
         if (!d->rgba) d->rgba = malloc((size_t)w * h * 4);

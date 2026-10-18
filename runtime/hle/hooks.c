@@ -17,6 +17,8 @@ uint32_t rt_gohma_heading(uint64_t gohma, uint32_t track);
 int rt_crashout_skip(void);
 void rt_dig_hole(Cpu *c);  // digs.c
 uint64_t rt_hole_cap(void);
+void rt_frame_job_kickoff(uint64_t owner);  // delegate_null.c
+void rt_frame_job_finish(uint64_t job);
 
 int rt_hook(Cpu *c, uint64_t site) {
     switch (site) {
@@ -63,6 +65,17 @@ int rt_hook(Cpu *c, uint64_t site) {
         if (c->x[0]) return 0;
         LOG("[event] empty handler skipped (issue #41)\n");
         return 2;  // (the dispatcher's catch: returns 0)
+    case GA_FRAME_JOB_KICKOFF_SITES_0:  // FRAME_JOB_KICKOFF_SITES - a frame job's rebuild waits for its last finish (#19)
+    case GA_FRAME_JOB_KICKOFF_SITES_1:
+    case GA_FRAME_JOB_KICKOFF_SITES_2:
+        rt_frame_job_kickoff(c->x[22]);
+        return 0;
+    case GA_FRAME_JOB_KICKOFF_SITES_3:
+        rt_frame_job_kickoff(c->x[21]);
+        return 0;
+    case GA_FRAME_JOB_FINISH_SITE:  // FRAME_JOB_FINISH_SITE - ldr x8, [x0]: a frame job's finish (debug delay)
+        rt_frame_job_finish(c->x[0]);
+        return 0;
     }
     return 0;
 }

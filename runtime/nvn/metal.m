@@ -17,6 +17,7 @@
 #include "../game_addresses.h"
 #include "../photo.h"
 #include "renderer.h"
+#include "pace.h"
 #include "texpatch.h"
 
 static id<MTLDevice> dev;
@@ -98,7 +99,11 @@ static MtlFormat mtl_format(uint32_t f) {
     case 0x4B: return (MtlFormat){MTLPixelFormatBC5_RGUnorm};
     // 0x4C = signed RGTC2 (interior normal maps break if decoded unsigned). LARECOMP_BC5_UNORM=1 decodes it
     // unsigned: that removes the overworld grass hatch/moire (see notes/PLAN.md) but wrecks interiors.
-    case 0x4C: return (MtlFormat){getenv("LARECOMP_BC5_UNORM") ? MTLPixelFormatBC5_RGUnorm : MTLPixelFormatBC5_RGSnorm};
+    case 0x4C: {
+        static int unorm = -1;  // (per texture lookup: getenv scans the environment)
+        if (unorm < 0) unorm = getenv("LARECOMP_BC5_UNORM") != NULL;
+        return (MtlFormat){unorm ? MTLPixelFormatBC5_RGUnorm : MTLPixelFormatBC5_RGSnorm};
+    }
     case 0x4D: return (MtlFormat){MTLPixelFormatBC7_RGBAUnorm};
     case 0x4E: return (MtlFormat){MTLPixelFormatBC7_RGBAUnorm_sRGB};
     case 0x4F: return (MtlFormat){MTLPixelFormatBC6H_RGBFloat};
@@ -194,8 +199,8 @@ static void dump_largest_textures(const char *why) {
         TexBackend *b = g_reg[i] ? (TexBackend *)g_reg[i]->backend : NULL;
         if (!b || !b->tex) continue;
         uint64_t a = b->tex.allocatedSize;
-        int k = n < 16 ? n++ : 15;
-        if (k == 15 && n == 16 && a <= sz[15]) continue;
+        if (n == 16 && a <= sz[15]) continue;  // (full: smaller than the 16th. The check came after the 16th entry
+        int k = n < 16 ? n++ : 15;             //  was counted, against an unset sz[15] - an unset idx[15]: #102)
         while (k > 0 && sz[k - 1] < a) { sz[k] = sz[k - 1]; idx[k] = idx[k - 1]; k--; }
         sz[k] = a; idx[k] = i;
     }
@@ -219,7 +224,9 @@ void renderer_get_scale(float *sx, float *sy) { *sx = g_rs_x; *sy = g_rs_y; }
 void renderer_set_scale(float sx, float sy) { g_rs_x = sx; g_rs_y = sy; }
 
 static bool tex_scalable(const NvnTexture *t) {
-    if (getenv("LARECOMP_NO_SCALE")) return false;
+    static int off = -1;  // (per texture lookup: cached)
+    if (off < 0) off = getenv("LARECOMP_NO_SCALE") != NULL;
+    if (off) return false;
     if (t->target != 1 || t->samples > 1 || !(t->flags & 8) || t->width < 32 || t->height < 16) return false;
     float a = (float)t->width / (float)t->height;
     return a > 1.74f && a < 1.81f;  // 16:9 (1920x1080 and its fractions, 704x396, 60x33...)
@@ -553,6 +560,90 @@ void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t 
         [blit endEncoding];
         [cb commit];
     }
+}
+
+// Decoded video as NV12 (Y plane, then interleaved UV at uv_off; runtime/hle/movie.c), converted to RGBA on the GPU
+// into the game's texture: the CPU conversion (swscale) plus an RGBA upload four times the size of the planes cost
+// mid-range CPUs most of a frame at the movies' 60 fps. Limited range BT.601, as swscale did (the movies declare no
+// matrix). false: the texture's format isn't one this handles - the caller converts on the CPU.
+bool renderer_upload_nv12(NvnTexture *t, const void *nv12, uint32_t w, uint32_t h, uint32_t stride, uint32_t uv_off) {
+    TexBackend *b = tex_backend(t);
+    MTLPixelFormat pf = b->tex.pixelFormat, raw;  // (the bytes as written, as the RGBA upload did: no sRGB encoding)
+    if (pf == MTLPixelFormatRGBA8Unorm || pf == MTLPixelFormatRGBA8Unorm_sRGB) raw = MTLPixelFormatRGBA8Unorm;
+    else if (pf == MTLPixelFormatBGRA8Unorm || pf == MTLPixelFormatBGRA8Unorm_sRGB) raw = MTLPixelFormatBGRA8Unorm;
+    else return false;
+    static id<MTLTexture> ty, tuv;
+    static id<MTLRenderPipelineState> pipes[2];
+    static id<MTLSamplerState> samp;
+    if (!samp) {
+        static const char *src =
+            "#include <metal_stdlib>\n"
+            "using namespace metal;\n"
+            "struct V { float4 pos [[position]]; float2 uv; };\n"
+            "vertex V vs(uint vid [[vertex_id]]) {\n"
+            "  float2 p = float2((vid << 1) & 2, vid & 2);\n"
+            "  V o; o.pos = float4(p * 2.0 - 1.0, 0, 1); o.uv = float2(p.x, 1.0 - p.y); return o; }\n"
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> ty [[texture(0)]], texture2d<float> tuv [[texture(1)]],\n"
+            "                   sampler s [[sampler(0)]]) {\n"
+            "  float y = (ty.sample(s, in.uv).r - 16.0 / 255.0) * (255.0 / 219.0);\n"
+            "  float2 c = (tuv.sample(s, in.uv).rg - 128.0 / 255.0) * (255.0 / 224.0);\n"
+            "  return float4(saturate(float3(y + 1.402 * c.y, y - 0.344136 * c.x - 0.714136 * c.y, y + 1.772 * c.x)), 1.0); }\n";
+        NSError *err = nil;
+        id<MTLLibrary> lib = [dev newLibraryWithSource:@(src) options:nil error:&err];
+        if (!lib) { LOG("[movie] NV12 shader: %s\n", err.localizedDescription.UTF8String); return false; }
+        for (int i = 0; i < 2; i++) {
+            MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+            pd.vertexFunction = [lib newFunctionWithName:@"vs"];
+            pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
+            pd.colorAttachments[0].pixelFormat = i ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm;
+            pipes[i] = [dev newRenderPipelineStateWithDescriptor:pd error:&err];
+            if (!pipes[i]) { LOG("[movie] NV12 pipeline: %s\n", err.localizedDescription.UTF8String); return false; }
+        }
+        MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+        sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
+        sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+        samp = [dev newSamplerStateWithDescriptor:sd];
+        LOG("[movie] video frames converted to RGBA on the GPU\n");
+    }
+    if (!ty || ty.width != w || ty.height != h) {  // (the planes, reused: one movie size at a time)
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm width:w
+                                                                                    height:h mipmapped:NO];
+        d.storageMode = MTLStorageModePrivate;
+        d.usage = MTLTextureUsageShaderRead;
+        ty = [dev newTextureWithDescriptor:d];
+        d.pixelFormat = MTLPixelFormatRG8Unorm;
+        d.width = w / 2;
+        d.height = h / 2;
+        tuv = [dev newTextureWithDescriptor:d];
+    }
+    b->gpu_owned = true;
+    @autoreleasepool {
+        id<MTLBuffer> staging = [dev newBufferWithBytes:nv12 length:(NSUInteger)uv_off + (NSUInteger)stride * (h / 2)
+                                                options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> cb = [queue commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+        [blit copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:stride sourceBytesPerImage:(NSUInteger)stride * h
+                  sourceSize:MTLSizeMake(w, h, 1) toTexture:ty destinationSlice:0 destinationLevel:0
+           destinationOrigin:MTLOriginMake(0, 0, 0)];
+        [blit copyFromBuffer:staging sourceOffset:uv_off sourceBytesPerRow:stride sourceBytesPerImage:(NSUInteger)stride * (h / 2)
+                  sourceSize:MTLSizeMake(w / 2, h / 2, 1) toTexture:tuv destinationSlice:0 destinationLevel:0
+           destinationOrigin:MTLOriginMake(0, 0, 0)];
+        [blit endEncoding];
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        rp.colorAttachments[0].texture = pf == raw ? b->tex : [b->tex newTextureViewWithPixelFormat:raw];
+        rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+        [enc setRenderPipelineState:pipes[raw == MTLPixelFormatBGRA8Unorm]];
+        [enc setViewport:(MTLViewport){0, 0, MIN(w, b->tex.width), MIN(h, b->tex.height), 0, 1}];
+        [enc setFragmentTexture:ty atIndex:0];
+        [enc setFragmentTexture:tuv atIndex:1];
+        [enc setFragmentSamplerState:samp atIndex:0];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [enc endEncoding];
+        [cb commit];
+    }
+    return true;
 }
 
 // ================================================================== init / window
@@ -972,6 +1063,8 @@ void backend_present(NvnTexture *t) {
         uint64_t nd0 = SDL_GetTicksNS();
         id<CAMetalDrawable> drawable = [layer nextDrawable];
         uint64_t nd = SDL_GetTicksNS() - nd0;
+        extern __thread uint64_t g_blocked_ns;  // (kernel.c: waiting, not work - for the frame pacer, as Vulkan's acquire)
+        g_blocked_ns += nd;
         if (nd > 30000000) {
             static int warned;
             if (warned++ < 20) LOG("[metal] nextDrawable blocked %llums\n", (unsigned long long)(nd / 1000000));
@@ -1094,6 +1187,7 @@ void backend_present(NvnTexture *t) {
     frames++;
     total_frames++;
     g_frame_counter++;
+    pace_frame();  // (pace.c: the game's 30 fps mode when frames don't fit 60)
     extern void input_frame(uint64_t frame);
     input_frame(total_frames);
     static long slow_ms = -1;  // LARECOMP_SLOW_FRAME_MS=<ms>: sleep per presented frame (simulate a slow machine)
@@ -1174,6 +1268,10 @@ void ui_window_init(void) {
     dev = MTLCreateSystemDefaultDevice();
     layer.device = dev;
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    // The display's vsync stays on: without it frames show as soon as they're done, which tears (seen on a 5120x1440
+    // display), for ~2-3 fps near the limit at most (the game paces itself to vi.c's emulated 60 Hz vsync, and the two
+    // clocks drift). LARECOMP_DISPLAY_SYNC=0: off (tests).
+    layer.displaySyncEnabled = !getenv("LARECOMP_DISPLAY_SYNC") || atoi(getenv("LARECOMP_DISPLAY_SYNC")) != 0;
     layer.framebufferOnly = getenv("LARECOMP_WINDOW_SHOT") ? NO : YES;
 }
 
@@ -1195,12 +1293,14 @@ int ui_run(void) {
         if (rt_reboot_requested()) return rt_reboot_requested();  // (runtime/main.c tears the game down)
         SDL_Event e;
         while (SDL_WaitEventTimeout(&e, 16)) {
-            if (e.type == SDL_EVENT_QUIT) { LOG("window closed\n"); exit(0); }
+            input_rumble_poll();
+            if (e.type == SDL_EVENT_QUIT) { input_rumble_stop(); LOG("window closed\n"); exit(0); }
             if (input_user_blocked(&e)) continue;  // scripted test runs: the real keyboard / mouse / pads do nothing
             if (menu_handle_event(&e)) continue;
             input_handle_event(&e);
         }
         menu_apply_window_requests(window);
+        input_rumble_poll();
         int w, h;
         SDL_GetWindowSizeInPixels(window, &w, &h);
         layer.drawableSize = CGSizeMake(w, h);

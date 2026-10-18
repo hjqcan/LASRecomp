@@ -10,8 +10,13 @@
 #   ref: branch or commit to build (default: the dispatching branch's head).
 # Dry run of this workflow itself: a tag starting with ci-test- may differ from LARECOMP_VERSION (the files keep its
 # name); its draft is a prerelease, as for test-<name> builds.
+# Also on a release published on GitHub (its tag = LARECOMP_VERSION at the tagged commit): the files are built and
+# attached to it, with a "being built" line on top of its notes meanwhile and the sha256 table under them after. A
+# release that already has files (a draft this workflow made, then published) is left alone.
 name: Release
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -24,7 +29,7 @@ on:
 permissions:
   contents: read
 concurrency:  # (one run per tag at a time; a second waits instead of racing the first's draft)
-  group: release-${{ inputs.tag }}
+  group: release-${{ inputs.tag || github.event.release.tag_name }}
   cancel-in-progress: false
 
 jobs:
@@ -33,6 +38,7 @@ jobs:
     outputs:
       sha: ${{ steps.v.outputs.sha }}
       version: ${{ steps.v.outputs.version }}
+      skip: ${{ steps.v.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,9 +47,12 @@ jobs:
       - name: Tag = LARECOMP_VERSION
         id: v
         env:
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          ASSETS: ${{ github.event_name == 'release' && toJSON(github.event.release.assets) || '[]' }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          # (a published release that already has its files: made by a dispatched run - nothing to do)
+          if [ "$(jq length <<< "$ASSETS")" != 0 ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; echo "$TAG already has files"; exit 0; fi
           [[ $TAG =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::tag '$TAG': letters, digits, . _ - only"; exit 1; }
           SHA=$(git rev-parse HEAD)
           VERSION=$(sed -n 's/^#define LARECOMP_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
@@ -65,6 +74,7 @@ jobs:
 
   macos:
     needs: check
+    if: needs.check.outputs.skip != 'true'
     runs-on: macos-15  # (arm64; the app's minimum is macOS 15)
     steps:
       - uses: actions/checkout@v4
@@ -125,6 +135,7 @@ jobs:
 
   windows:
     needs: check
+    if: needs.check.outputs.skip != 'true'
     runs-on: windows-2022
     defaults:
       run:
@@ -196,6 +207,7 @@ jobs:
   # (package.sh, appimagetool) under emulation.
   linux:
     needs: check
+    if: needs.check.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -256,8 +268,27 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  # (a release published on GitHub: a line on top of its notes while the files build)
+  announce:
+    needs: check
+    if: github.event_name == 'release' && needs.check.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Building line
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$TAG" --json body -q .body > notes.md
+          { echo "> The download files are being built and will appear here in a few minutes."; echo; cat notes.md; } > new.md
+          gh release edit "$TAG" --notes-file new.md
+
   release:
     needs: [check, macos, windows, linux]
+    if: needs.check.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: write  # (only here: the draft release)
@@ -268,7 +299,8 @@ jobs:
           merge-multiple: true
       - name: Draft release
         env:
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          EVENT: ${{ github.event_name }}
           SHA: ${{ needs.check.outputs.sha }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -276,6 +308,15 @@ jobs:
           cd dist
           ls -la
           [ "$(ls | wc -l)" = 4 ] || { echo "::error::expected 4 files"; exit 1; }
+          if [ "$EVENT" = release ]; then  # (published on GitHub: attach the files, the notes get the sha256 table)
+            gh release view "$TAG" --json body -q .body | grep -v '^> The download files are being built' > ../body.md || true
+            { cat ../body.md; echo; echo "| File | sha256 |"; echo "|---|---|"
+              for f in *; do echo "| \`${f// /.}\` | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"; done; } > ../notes.md
+            gh release upload "$TAG" --clobber *
+            gh release edit "$TAG" --notes-file ../notes.md
+            gh release view "$TAG" --json url,assets -q '.url, (.assets[] | "\(.name) \(.size)")'
+            exit 0
+          fi
           # (GitHub stores asset names with dots for spaces: LAS.Recomp-<version>-...)
           {
             echo "Release notes: (to be written)"
@@ -297,3 +338,20 @@ jobs:
             gh release create "$TAG" --draft --target "$SHA" --title "$TAG" --notes-file ../notes.md "${PRE[@]}" *
           fi
           gh release view "$TAG" --json url,isDraft,assets -q '.url, .isDraft, (.assets[] | "\(.name) \(.size)")'
+
+  # (a release published on GitHub whose build failed: the "being built" line says so instead)
+  failed:
+    needs: [check, macos, windows, linux, release]
+    if: failure() && github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Building line
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$TAG" --json body -q .body | sed 's/^> The download files are being built and will appear here in a few minutes\./> The download files will be added here shortly./' > notes.md
+          gh release edit "$TAG" --notes-file notes.md
