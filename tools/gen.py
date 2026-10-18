@@ -488,6 +488,90 @@ class Module:
 
     # ------------------------------------------------------------ functions
 
+    def relative_table_base(self, pc, target):
+        """An ADR consumed only by a local byte/halfword relative-table branch.
+
+        Its code address is an arithmetic origin, not an independently callable
+        entry. Keep other references to that address: symbols, relocations, BLs
+        and separate callback materializations still create their own boundaries.
+        No table length or range of valid indices is inferred here.
+        """
+        if pc + 16 > self.hi:
+            return False
+        word, load, add, branch = (self.word(pc + i * 4) for i in range(4))
+        base = word & 31
+        # LDRB/H Woffset,[Xtable,Xindex{,LSL #1}]; ADD Xbase,Xbase,Xoffset,LSL #2; BR Xbase.
+        if (word & 0x9F000000) != 0x10000000 or base == 31:
+            return False
+        if (load & 0xFFE0EC00) not in (0x38606800, 0x78606800):
+            return False
+        offset = load & 31
+        if offset == 31 or base in (offset, bits(load, 5, 5), bits(load, 16, 5)):
+            return False
+        if ((add & 0xFFE0FC00) != 0x8B000800 or bits(add, 5, 5) != base or
+                bits(add, 16, 5) != offset or (add & 31) != base or
+                branch != (0xD61F0000 | (base << 5))):
+            return False
+        entries = self.function_entries()
+        i = bisect.bisect_right(entries, pc) - 1
+        if i < 0:
+            return False
+        end = entries[i + 1] if i + 1 < len(entries) else self.hi
+        if not (entries[i] <= target < end and pc + 16 <= end):
+            return False
+        # Bounded tables already have explicit destinations. Preserve their
+        # established partitioning; this fallback only repairs unresolved ones.
+        return self.jump_table(pc + 12, entries[i], end) is None
+
+    def code_address_targets(self):
+        """Materialized callbacks, excluding proven local table arithmetic origins."""
+        targets, adrp_regs = set(), {}
+        for i, w in enumerate(self.words):
+            pc = self.lo + i * 4
+            if (w & 0x9F000000) == 0x10000000:  # ADR
+                imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
+                target = pc + imm
+                if self.in_text(target) and not self.relative_table_base(pc, target):
+                    targets.add(target)
+            elif (w & 0x9F000000) == 0x90000000:  # ADRP
+                imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
+                adrp_regs[w & 31] = ((pc & ~0xFFF) + (imm << 12), i)
+            elif (w & 0xFFC00000) == 0x91000000:  # ADD (imm, 64-bit, no shift)
+                rn = (w >> 5) & 31
+                if rn in adrp_regs and i - adrp_regs[rn][1] <= 8:
+                    target = adrp_regs[rn][0] + ((w >> 10) & 0xFFF)
+                    if self.in_text(target):
+                        targets.add(target)
+        return targets
+
+    def discover_functions(self, starts):
+        """Partition text at independently referenced entries to a fixed point."""
+        start_set = set(starts) | self.code_address_targets()
+        for i, w in enumerate(self.words):
+            if (w & 0xFC000000) == 0x94000000:
+                target = self.lo + i * 4 + sext26(w) * 4
+                if self.in_text(target):
+                    start_set.add(target)
+        scanned, rounds = {}, 0
+        while True:
+            rounds += 1
+            order, new = sorted(start_set), set()
+            for i, entry in enumerate(order):
+                end = order[i + 1] if i + 1 < len(order) else self.hi
+                key = (entry, end)
+                if key not in scanned:
+                    scanned[key] = self.scan(entry, end)
+                new |= scanned[key][1] - start_set
+            if not new:
+                break
+            start_set |= new
+        entries = {}
+        for i, entry in enumerate(order):
+            end = order[i + 1] if i + 1 < len(order) else self.hi
+            labels, _, tables = scanned[(entry, end)]
+            entries[entry] = (end, labels, tables)
+        return entries, rounds
+
     def computed_target(self, br_pc, entry):
         """True if the br register comes from address arithmetic (a table) rather than a load."""
         rn = bits(self.word(br_pc), 5, 5)
@@ -805,56 +889,7 @@ def main():
             if shndx and name in want:
                 hle[args.base + value] = name
 
-    # Partition text into functions; any branch/call target outside its function becomes a new
-    # boundary (splitting the containing function) until a fixpoint is reached.
-    start_set = set(starts)
-    for i, w in enumerate(m.words):
-        if (w & 0xFC000000) == 0x94000000:
-            t = m.lo + i * 4 + sext26(w) * 4
-            if m.in_text(t):
-                start_set.add(t)
-    # Code addresses materialized in registers (callbacks, vtables built at runtime): ADR, or
-    # ADRP followed shortly by ADD on the same register.
-    adrp_regs = {}
-    for i, w in enumerate(m.words):
-        pc = m.lo + i * 4
-        if (w & 0x9F000000) == 0x10000000:  # ADR
-            imm = ((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3)
-            if imm & (1 << 20):
-                imm -= 1 << 21
-            if m.in_text(pc + imm):
-                start_set.add(pc + imm)
-        elif (w & 0x9F000000) == 0x90000000:  # ADRP
-            imm = ((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3)
-            if imm & (1 << 20):
-                imm -= 1 << 21
-            adrp_regs[w & 31] = ((pc & ~0xFFF) + (imm << 12), i)
-        elif (w & 0xFFC00000) == 0x91000000:  # ADD (imm, 64-bit, no shift)
-            rn, rd = (w >> 5) & 31, w & 31
-            if rn in adrp_regs and i - adrp_regs[rn][1] <= 8:
-                t = adrp_regs[rn][0] + ((w >> 10) & 0xFFF)
-                if m.in_text(t):
-                    start_set.add(t)
-    scanned = {}
-    rounds = 0
-    while True:
-        rounds += 1
-        order = sorted(start_set)
-        new = set()
-        for i, a in enumerate(order):
-            end = order[i + 1] if i + 1 < len(order) else m.hi
-            key = (a, end)
-            if key not in scanned:
-                scanned[key] = m.scan(a, end)
-            new |= scanned[key][1] - start_set
-        if not new:
-            break
-        start_set |= new
-    entries = {}
-    for i, a in enumerate(order):
-        end = order[i + 1] if i + 1 < len(order) else m.hi
-        labels, ext, tables = scanned[(a, end)]
-        entries[a] = (end, labels, tables)
+    entries, rounds = m.discover_functions(starts)
     print(f'{args.name}: {len(starts)} boundaries, {len(entries)} functions, {rounds} rounds, {dict(m.stats)}, '
           f'{time.time() - t0:.0f}s', file=sys.stderr)
 
