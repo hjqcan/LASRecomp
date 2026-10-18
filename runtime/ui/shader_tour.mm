@@ -1,8 +1,6 @@
 // Shader preparation tour (first-launch shader compile, user 2026-10-08): LARECOMP_SHADER_TOUR=<frames per spot>
 // warps through every warp spot of the game (runtime/ui/warp_data.h), letting each scene render for a moment so
-// its shaders get translated and compiled - they land in cache/shaders/ and Metal's disk cache, which the boot
-// warm-up (runtime/nvn/renderer.m shader_cache_warm) loads every later start: no first-use pop-in. Nothing derived
-// from the game ships: the cache is built on the player's machine from their own copy. Exits when done.
+// its shaders get translated and compiled. Exits when done.
 // With LARECOMP_RECORD_KEYS=<file> (+ LARECOMP_SYNC_SHADERS=1) it records the shader variant list the first-launch
 // preparation ships (runtime/nvn/shader_prep.h, runtime/nvn/shader_variants.txt).
 #include "../game_addresses.h"

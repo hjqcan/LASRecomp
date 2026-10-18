@@ -1051,6 +1051,8 @@ void backend_present(NvnTexture *t) {
     photo_mode_frame(total_frames);
     g_last_presented = t;
     extern void renderer_submit(void);
+    extern void renderer_texture_will_read(NvnTexture *t);
+    renderer_texture_will_read(t);  // (a recorded clear of the image becomes its pass first)
     renderer_submit();  // same queue: the present pass runs after the frame's work
     TexBackend *b = t->backend;
     if (b) b->presented = true;

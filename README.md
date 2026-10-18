@@ -53,7 +53,7 @@ This is a beta release. That means bugs are likely, crashes could occur, randomi
 - **This is not emulation.** Runs natively on Windows, macOS and Linux using static recompilation of the Switch code.
 - Unlocked aspect ratio: wider (or taller) windows show more of the island, up to ultrawide; houses and dungeons
   keep their framing. The original 16:9 framing is one option away.
-- Start screen: play vanilla or any randomizer seed, set up game files from your own dump, import fonts.
+- Start screen: play vanilla or any randomizer seed, set up your own extracted game files, import fonts.
   - Switch games use fonts built into the Switch operating system for some text. Sensible replacements are used by default, but you may optionally set up the Switch fonts for an authentic look. Switch fonts are Nintendo IP; you must provide them from your own hardware.
 - In-game overlay menu (F1, or Minus + Plus on a controller).
 - [Photo mode](docs/photo-mode.md) (F2): freeze the scene, adjust framing/color and save a PNG (F12).
@@ -168,10 +168,12 @@ Vulkan Memory Allocator from your distribution, Python 3.12. Packages, cross bui
 Where files live (game files, saves, seeds, settings, caches, imported fonts):
 - macOS app: `~/Library/Application Support/com.peiikai.lasrecomp/` (the app itself is never written to).
 - Windows: next to `lasrecomp.exe`, so put the `LAS Recomp` folder somewhere writable (not Program Files).
-- Linux: `~/.local/share/lasrecomp/` (`$XDG_DATA_HOME/lasrecomp`); the log is `lasrecomp.log` there when started
-  without a terminal.
+- Linux: `~/.local/share/lasrecomp/` (`$XDG_DATA_HOME/lasrecomp`).
 - Dev / portable mode: if the folder you start from has `extracted/` (a source checkout), that folder is used, as above.
 - `LARECOMP_DATA_ROOT=<dir>` overrides all of these.
+- The log (started without a terminal) is `lasrecomp.log` in that folder, always the latest run; up to five recent
+  runs are kept as `lasrecomp-backup-*.log`. For a bug report attach `lasrecomp.log`, or if the problem was in an
+  earlier run, that run's backup (by date modified).
 
 ## Credits
 
@@ -187,7 +189,9 @@ Where files live (game files, saves, seeds, settings, caches, imported fonts):
 - **[@hjqcan](https://github.com/hjqcan)** - centralized game patch and runtime addresses (#57); CRLF settings
   parsing and Traditional Chinese locale detection (#53); Windows game thread stacks reserved instead of committed,
   about 9 GB less memory committed (#107); the Vulkan fence fix for reused submission slots (#108); x86 rounding
-  without x87 state changes (#115)
+  without x87 state changes (#115); movie memory freed on close, source change and reboot (#112); Vulkan stopping
+  cleanly on GPU timeouts (#127); a strict Vulkan validation mode for automated tests (#128); Windows session logs:
+  `lasrecomp.log` always the latest run, with five backups (#114)
 - **[@gitarre1234rr5](https://github.com/gitarre1234rr5)** - controller rumble: the game's vibration on your controller
   (#104), and a regression test for the kernel's timed condition-variable wait (#88)
 
@@ -234,6 +238,8 @@ none of their files are used):
 - **Ryujinx** by the Ryujinx Team and Contributors (MIT, `third_party/ryujinx/LICENSE.txt`) - the audio renderer's
   reverb is a port of its ReverbState / reverb command and the mixer is modelled on its AudioRenderer; its shader
   instruction decoders were the bit-layout reference for parts of the shader translator
+- **Dusklight** by the TwilitRealm team (https://github.com/TwilitRealm/dusklight) - design inspiration for the start
+  screen (Play / Settings / Game Files layout)
 - **SuperMarioWonderRecomp** by BelmanteGu (https://github.com/BelmanteGu/SuperMarioWonderRecomp) - its
   ahead-of-time shader approach is what the first-launch shader preparation follows (a shipped list of shader variants,
   built on the player's machine from their own game files)

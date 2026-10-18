@@ -20,6 +20,9 @@ FIELD_MINIBOSSES = {
     0x59: [],              # Master Stalfos (starts by himself)
     0x57: [],              # Lanmola (his rail from Field_13O; copies give no item: tools/rando/miniboss_guard.py)
     0x52: ['Bossblin'],    # Moblin Chief (his hideout's story check skipped on the Field: tools/patches.py)
+    0x55: [],              # Ball-and-chain Soldier (Dampe's chamber dungeons only; fights on his own)
+    0x21E: [],             # Shadow Link (Dampe's chamber, unlocked by an amiibo in the original; rises from a shadow and
+    #                        fights on his own; his defeat event only plays his fade - no flags, a rupee drops)
 }
 MINIBOSS_VARIANTS = {0x53: [['HinoxStart'], [2]]}  # (one picked per mini-boss: Hinox 2 = Turtle Rock's blue one)
 ANY_TERRAIN_MINIBOSSES = {0x58}  # (also on water / shallow water / air / tree / hole spots: Cue Ball, tested 2026-10-12)
@@ -179,7 +182,41 @@ def fit_rail(room_data, act, points, rail):
 
 
 
+# LARecomp: enemies that another actor watches (relationship section 1 from a non-enemy actor) stay vanilla, as the
+# Excluded_Actors do: the kill-all triggers - TagHolocaust (all dead -> its switch: shutters open, a chest / key / stairs
+# appear), TagPopChecker (all dead -> the room's switch 1: Angler's Tunnel 04D key chest, Catfish's Maw 03B / 06E,
+# Face Shrine 06F, Tal Tal cave Tamaranch04_03B stairs), TagHistoricalHolocaustChecker, Kanalet's crow. The list
+# missed 8 such rooms (2026-10-17: Turtle Rock 04D shutter, Eagle's Tower 07B / 08D, the 5 above); this finds them
+# all, also the checkers LAS adds itself (golden_leaves.py) since the room is read after those.
+# Also kept vanilla, to be safe: every enemy in a room with a shutter (ObjClosedDoor) that no switch drives - its opening
+# condition isn't in the room data (Catfish's Maw 05E / 06D, Eagle's Tower 01F / 03E / 04F / 05F / 07E / 08F, Color
+# Dungeon 05C: maybe the room's own all-enemies-dead check).
+OBJ_CLOSED_DOOR = 0xEF
+
+
+def kill_linked(room_data, pool):
+    out = set()
+    if any(a.type == OBJ_CLOSED_DOOR and not any(sw[0] in (1, 2) for sw in a.switches) for a in room_data.actors):
+        out.update(i for i, a in enumerate(room_data.actors) if a.type in pool)
+    for a in room_data.actors:
+        if a.type in pool:
+            continue
+        for s in a.relationships.section_1:
+            if 0 <= s[1] < len(room_data.actors) and room_data.actors[s[1]].type in pool:
+                out.add(s[1])
+    return out
+
+
+# (LARecomp: the 'one group per room' and 2D restrictions, shared with tools/rando/enemy_random.py - Random mode)
+NO_2D = (0x1E, 0x30, 0x37, 0x38, 0x3F, 0x41, 0x4A, 0x4D)
+FLY_BOMBS = (0x26, 0x3E, 0x48)  # vires, zirros, bone-putters
+BLOCKING = (0x8, 0x9, 0x13, 0x14, 0x2E, 0x2F, 0x30, 0x35, 0x36, 0x41, 0x4D)  # shield/spear, mimics, color dungeon orbs
+
+
 def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy_settings: dict, rand_state: tuple):
+    # LARecomp: miniboss-frequency 0 / 1 / 2 / 3 = normal, 2x, 3x, every room with a randomized land enemy
+    miniboss_chance = (MINIBOSS_CHANCE, MINIBOSS_CHANCE * 2, MINIBOSS_CHANCE * 3, 1.0)[
+        min(3, max(0, int(enemy_settings.get('miniboss-frequency', 0))))]
     """"""
 
     random.setstate(rand_state)
@@ -187,15 +224,14 @@ def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy
 
     excluded_actors = []
     if file[:-4] in list(ENEMY_DATA['Excluded_Actors'].keys()):
-        excluded_actors = ENEMY_DATA['Excluded_Actors'][file[:-4]]
+        excluded_actors = list(ENEMY_DATA['Excluded_Actors'][file[:-4]])
     
     restr = list(enemy_ids['restr'])
 
     # we want to exclude certain enemies from being in 2D rooms
     # some can block your path, others might just be annoying
     if file[:-4] in ENEMY_DATA['2D_Rooms']:
-        no_2D = (0x1E, 0x30, 0x37, 0x38, 0x3F, 0x41, 0x4A, 0x4D)
-        restr.extend(no_2D)
+        restr.extend(NO_2D)
 
     total_ids = (
         *enemy_ids['land'],
@@ -206,8 +242,13 @@ def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy
         *enemy_ids['tree'],
         *enemy_ids['hole']
     )
-    fly_bombs = (0x26, 0x3E, 0x48) # vires, zirros, bone-putters
-    blocking = (0x8, 0x9, 0x13, 0x14, 0x2E, 0x2F, 0x30, 0x35, 0x36, 0x41, 0x4D) # shield/spear, mimics, color dungeon orbs
+    fly_bombs, blocking = FLY_BOMBS, BLOCKING
+    excluded_actors = set(excluded_actors) | kill_linked(room_data, total_ids)  # (LARecomp)
+    # LARecomp, enemy mode Random: the actors re-rolled at every load (runtime/hle/enemy_random.c), recorded with what
+    # the roll needs (tools/rando/enemy_random.py writes them): exactly those this roll changes, minus mini-bosses
+    random_rooms = enemy_settings.get('random')
+    room_slots = [] if random_rooms is not None and enemy_settings['types'] else None
+    restr_start = list(restr)
     
     room_has_miniboss = False
 
@@ -219,6 +260,8 @@ def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy
         if enemy_settings['types']:
             enemy_type = [v for k,v in ENEMY_DATA['Actors'].items() if v['id'] == act.type][0]['type']
             new_enemy = -1
+            vanilla = (act.type, list(act.parameters), act.rotY, (act.scaleX, act.scaleY, act.scaleZ),
+                       act.relationships.e)
             
             if act.type in restr:
                 restr.remove(act.type)
@@ -231,7 +274,7 @@ def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy
                 room = enemy_settings['arena'](file[:-4])
                 fits = [m for m in fits if m not in NEEDS_ROOM or roomy(room, act, NEEDS_ROOM[m])]
             if (enemy_settings.get('minibosses') and fits and folder == 'Field'
-                    and (_ONLY or (not room_has_miniboss and random.random() < MINIBOSS_CHANCE))):
+                    and (_ONLY or (not room_has_miniboss and random.random() < miniboss_chance))):
                 mini = random.choice(fits)
                 room_has_miniboss = True
                 new_enemy = mini
@@ -311,6 +354,10 @@ def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy
                 act.scaleY = 1.0
                 act.scaleZ = 1.0
                 edited_room = True
+
+            if room_slots is not None:
+                cls = 'air_field' if enemy_type == 'air' and folder == 'Field' else enemy_type
+                room_slots.append({'key': act.key, 'cls': cls, 'vanilla': vanilla, 'name_len': len(act.name)})
         
         if enemy_settings['sizes']:
             new_scale = random.uniform(0.5, 1.5)
@@ -318,5 +365,9 @@ def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy
             act.scaleY = new_scale
             act.scaleZ = new_scale
             edited_room = True
+
+    if room_slots:  # (the room's file must be in the seed: the runtime re-rolls the seed's copy)
+        random_rooms[file[:-4]] = {'restr': restr_start, 'slots': room_slots}
+        edited_room = True
     
     return random.getstate(), edited_room

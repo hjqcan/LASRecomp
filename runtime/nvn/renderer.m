@@ -25,6 +25,7 @@ static id<MTLRenderPipelineState> clear_pipes[64];
 static NSMutableDictionary<NSString *, id> *cache;
 // (stats) GPU wait time by cause: 0 = guest fence (nvnSyncWait), 1 = full flush (CPU reads GPU results / ring), 2 = sync all
 static uint64_t stat_wait_by[3], stat_wait_n[3];
+static uint64_t stat_clears_as_load, stat_clear_passes;  // (deferred clears)
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static double stat_gpu_s;
 uint64_t g_gpu_total_ns;  // GPU time of all completed command buffers (dynamic resolution: output_scale.c)
@@ -111,9 +112,9 @@ const char *renderer_stats(void) {
     struct task_vm_info vmi;
     mach_msg_type_number_t vn = TASK_VM_INFO_COUNT;
     uint64_t foot = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vmi, &vn) == KERN_SUCCESS ? vmi.phys_footprint : 0;
-    snprintf(stats_text, sizeof stats_text, "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, gpu %.0fms, wait %.0fms, compile %d/%.0fms, fbcopy %llu | tex %d (%.0f MB) views %d snaps %lu mem %.0f MB | waits fence %.0fms/%llu flush %.0fms/%llu all %.0fms/%llu | counters gpu %llu | pace %s, %llu frames over", stat_draws, stat_skipped,
+    snprintf(stats_text, sizeof stats_text, "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, gpu %.0fms, wait %.0fms, compile %d/%.0fms, fbcopy %llu | tex %d (%.0f MB) views %d snaps %lu mem %.0f MB | waits fence %.0fms/%llu flush %.0fms/%llu all %.0fms/%llu | deferred: clears as load %llu, clear passes %llu | counters gpu %llu | pace %s, %llu frames over", stat_draws, stat_skipped,
              stat_passes, stat_dispatches, stat_flushes, stat_gpu_s * 1000.0, (double)stat_wait_ns / 1e6 * 125.0 / 3.0, stat_compiles, stat_compile_ms, stat_feedback_copies,
-             g_tex_live, g_tex_live_bytes / 1048576.0, g_views_live, (unsigned long)(g_snap_copies ? g_snap_copies.count : 0), foot / 1048576.0, stat_wait_by[0] / 24e3, (unsigned long long)stat_wait_n[0], stat_wait_by[1] / 24e3, (unsigned long long)stat_wait_n[1], stat_wait_by[2] / 24e3, (unsigned long long)stat_wait_n[2],
+             g_tex_live, g_tex_live_bytes / 1048576.0, g_views_live, (unsigned long)(g_snap_copies ? g_snap_copies.count : 0), foot / 1048576.0, stat_wait_by[0] / 24e3, (unsigned long long)stat_wait_n[0], stat_wait_by[1] / 24e3, (unsigned long long)stat_wait_n[1], stat_wait_by[2] / 24e3, (unsigned long long)stat_wait_n[2], (unsigned long long)stat_clears_as_load, (unsigned long long)stat_clear_passes,
              (unsigned long long)stat_counters_gpu, pace_is_slow() ? "30" : "60", (unsigned long long)pace_frames_over());
     stat_counters_gpu = 0;
     stat_compiles = 0;
@@ -122,6 +123,7 @@ const char *renderer_stats(void) {
     stat_draws = stat_skipped = stat_passes = stat_dispatches = stat_flushes = stat_wait_ns = 0;
     memset(stat_wait_by, 0, sizeof stat_wait_by); memset(stat_wait_n, 0, sizeof stat_wait_n);
     stat_gpu_s = 0;
+    stat_clears_as_load = stat_clear_passes = 0;
     return stats_text;
 }
 
@@ -172,20 +174,101 @@ static int debug_pass_no;
 // also re-sets the targets it already has between draw groups, which ended the pass (store + load of everything,
 // 3840x2160 depth, stencil and colour at 2x). Measured, Field_11C: 488 -> 343 MB of attachment traffic per frame at 1x,
 // 1701 -> 1297 MB at 2x, 45 -> 42 passes, picture unchanged. ~2 ms a frame on a 68 GB/s M1 Air.
-// - A full clear while no pass is open on its targets is recorded and becomes the load action of the pass that opens
-//   next on them (no load, no clear quad). If something else comes first (other targets, a copy, a dispatch, a submit),
-//   the clear gets a pass of its own that only stores. LARECOMP_MTL_LOAD_CLEAR=0: clears are quads again.
+// - A full clear is recorded on its texture and becomes the load action of the next pass that binds the texture as a
+//   target (no load, no clear quad), whatever comes in between (other targets, dispatches, submits: the clear stays
+//   with the texture). It gets a pass of its own, which only stores, only if the texture is read first (sampled,
+//   copied, presented). That took the remaining 12 clear-only passes of the frame (65 MB at 1x). LARECOMP_MTL_LOAD_CLEAR=0:
+//   clears are quads again; LARECOMP_MTL_DEFER_CLEAR=0: a recorded clear is flushed as soon as its targets change.
 // - SetRenderTargets with the targets already bound keeps the pass open. LARECOMP_MTL_RT_DEDUP=0: ends it as before.
-static struct {
-    bool on, color[8], depth, stencil;
-    double cc[8][4], dval;
+// (Don't-care depth / stencil stores were tried here too: the next pass loads the depth in nearly every case, only ~2
+// of the ~8 stores a frame precede a clear of the texture, and a guess learned from the previous frame read stale
+// depth at scene changes. Not worth a wrong frame.)
+typedef struct {
+    NvnTexture *t;
+    void *backend;  // (the texture's TexBackend: a new texture at a reused address isn't this one)
+    bool clear_on, clear_color, clear_depth, clear_stencil;  // a recorded clear (full target, every channel)
+    double cc[4], dval;
     uint32_t sval;
-} pending_clear;
-static bool opening_pass;  // begin_pass is ending the previous pass: end_pass must not open one for the recorded clear
+} TexDefer;
+#define TD_TAB 2048
+static TexDefer td_tab[TD_TAB];
+static int td_pending;  // textures with a recorded clear
+static bool opening_pass;  // begin_pass is ending the previous pass (end_pass must not open one)
 static void begin_pass(void);
+static void end_pass(void);
+static NvnTexture *shader_texture_object(int stage, ShaderTexture *st_);
 
+static int td_defer_on(void) { static int v = -1; if (v < 0) { const char *e = ENV("LARECOMP_MTL_DEFER_CLEAR"); v = !e || atoi(e); } return v; }
+
+static TexDefer *td_get(NvnTexture *t, bool create) {
+    if (!t) return NULL;
+    uint32_t h = (uint32_t)(((uintptr_t)t >> 4) * 0x9E3779B1u) & (TD_TAB - 1);
+    for (int probe = 0; probe < TD_TAB; probe++, h = (h + 1) & (TD_TAB - 1)) {
+        TexDefer *e = &td_tab[h];
+        if (e->t == t) {
+            // (the Metal object may not exist yet when a clear is recorded: adopt it; a different one means a new
+            // texture at a reused address)
+            if (!e->backend) e->backend = t->backend;
+            else if (t->backend && e->backend != t->backend) { if (e->clear_on) td_pending--; memset(e, 0, sizeof *e); e->t = t; e->backend = t->backend; }
+            return e;
+        }
+        if (!e->t) {
+            if (!create) return NULL;
+            memset(e, 0, sizeof *e);
+            e->t = t; e->backend = t->backend;
+            return e;
+        }
+    }
+    return NULL;
+}
+
+static void td_forget(NvnTexture *t) {  // (the texture is gone: drain_gone)
+    TexDefer *e = td_get(t, false);
+    if (!e) return;
+    if (e->clear_on) td_pending--;
+    e->t = NULL;  // (a tombstone keeps the probe chains intact: the slot stays unusable until a reset)
+    e->backend = (void *)1;
+}
+
+// The recorded clear of a texture that is about to be read: a pass of its own on that texture (load action clear,
+// store, nothing drawn), like a clear-only pass used to be.
+static bool td_flushing;
+static void td_flush(NvnTexture *t) {
+    TexDefer *e = t ? td_get(t, false) : NULL;
+    if (!e || !e->clear_on || td_flushing) return;
+    td_flushing = true;
+    RtState saved = st.rt;
+    bool dirty = st.rt_dirty;
+    end_pass();
+    memset(&st.rt, 0, sizeof st.rt);
+    if (renderer_format_is_depth(t->format)) st.rt.depth = t;
+    else { st.rt.ncolor = 1; st.rt.color[0] = t; }
+    st.rt_dirty = true;
+    begin_pass();  // (consumes the recorded clear)
+    end_pass();
+    stat_clear_passes++;
+    st.rt = saved;
+    st.rt_dirty = true;
+    td_flushing = false;
+    (void)dirty;
+}
+
+// The shaders' textures of a draw / dispatch that have a recorded clear get it applied before the pass opens.
+static void td_flush_shader_textures(int stage, ShaderInfo *si) {
+    if (!td_pending || !si) return;
+    for (int i = 0; i < si->ntex; i++) td_flush(shader_texture_object(stage, &si->tex[i]));
+}
+
+// Off mode (LARECOMP_MTL_DEFER_CLEAR=0): the recorded clears of the current targets become passes now.
+static void td_flush_targets(const RtState *rt) {
+    if (!td_pending) return;
+    for (int i = 0; i < rt->ncolor; i++) td_flush(rt->color[i]);
+    td_flush(rt->depth);
+}
+
+void renderer_texture_will_read(NvnTexture *t) { td_flush(t); }  // (metal.m: the presented image)
 static void end_pass(void) {
-    if (pending_clear.on && !opening_pass) begin_pass();  // the recorded clear becomes a pass of its own
+    if (!td_defer_on() && !opening_pass) td_flush_targets(&st.rt);  // (off mode: as before, the clear gets its pass now)
     if (enc) {
         [enc endEncoding];
         enc = nil;
@@ -302,6 +385,7 @@ static void drain_gone(void) {
     for (int i = 0; i < n; i++) {
         if (local[i].mtl) views_forget(local[i].mtl);
         if (local[i].nvn) {
+            td_forget(local[i].nvn);
             if (g_snap_copies) [g_snap_copies removeObjectForKey:[NSValue valueWithPointer:local[i].nvn]];
             for (int k = 0; k < 8; k++) if (snap_tex[k] == local[i].nvn) { snap_tex[k] = NULL; snap_ok[k] = false; }
         }
@@ -488,7 +572,7 @@ static __unsafe_unretained id last_bias_enc;  // encoder the depth bias was last
 
 static void begin_pass(void) {
     if (enc && !st.rt_dirty) return;
-    opening_pass = true;  // (until the recorded clear is consumed below: the chunk submit's end_pass must not re-enter)
+    opening_pass = true;  // (the chunk submit's end_pass below must not flush anything into this pass)
     end_pass();
     st.rt_dirty = false;
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -509,10 +593,13 @@ static void begin_pass(void) {
             rp.colorAttachments[i].loadAction = MTLLoadActionClear;
             rp.colorAttachments[i].clearColor = MTLClearColorMake(0, 0, 0, fresh ? 0 : 1);
         }
-        if (pending_clear.on && pending_clear.color[i]) {
-            const double *c = pending_clear.cc[i];
+        TexDefer *e = td_pending ? td_get(t, false) : NULL;
+        if (e && e->clear_on && e->clear_color) {
             rp.colorAttachments[i].loadAction = MTLLoadActionClear;
-            rp.colorAttachments[i].clearColor = MTLClearColorMake(c[0], c[1], c[2], c[3]);
+            rp.colorAttachments[i].clearColor = MTLClearColorMake(e->cc[0], e->cc[1], e->cc[2], e->cc[3]);
+            e->clear_on = false;
+            td_pending--;
+            stat_clears_as_load++;
         }
         rp.colorAttachments[i].storeAction = MTLStoreActionStore;
         if (!w) renderer_texture_scale(t, &pass_sx, &pass_sy);
@@ -521,24 +608,23 @@ static void begin_pass(void) {
     if (st.rt.depth) {
         renderer_mark_gpu_owned(st.rt.depth);
         id<MTLTexture> tex = view_texture(st.rt.depth, &st.rt.dview, st.rt.has_dview, true, nil);
-        if (renderer_format_is_depth(st.rt.depth->format) && st.rt.depth->format != 0x31) {
+        TexDefer *e = td_pending ? td_get(st.rt.depth, false) : NULL;
+        bool has_d = renderer_format_is_depth(st.rt.depth->format) && st.rt.depth->format != 0x31;
+        bool has_s = renderer_format_has_stencil(st.rt.depth->format);
+        bool clr_d = e && e->clear_on && e->clear_depth, clr_s = e && e->clear_on && e->clear_stencil;
+        if (has_d) {
             rp.depthAttachment.texture = tex;
-            rp.depthAttachment.loadAction = MTLLoadActionLoad;
+            rp.depthAttachment.loadAction = clr_d ? MTLLoadActionClear : MTLLoadActionLoad;
+            rp.depthAttachment.clearDepth = clr_d ? e->dval : 1.0;
             rp.depthAttachment.storeAction = MTLStoreActionStore;
-            if (pending_clear.on && pending_clear.depth) {
-                rp.depthAttachment.loadAction = MTLLoadActionClear;
-                rp.depthAttachment.clearDepth = pending_clear.dval;
-            }
         }
-        if (renderer_format_has_stencil(st.rt.depth->format)) {
+        if (has_s) {
             rp.stencilAttachment.texture = tex;
-            rp.stencilAttachment.loadAction = MTLLoadActionLoad;
+            rp.stencilAttachment.loadAction = clr_s ? MTLLoadActionClear : MTLLoadActionLoad;
+            rp.stencilAttachment.clearStencil = clr_s ? e->sval : 0;
             rp.stencilAttachment.storeAction = MTLStoreActionStore;
-            if (pending_clear.on && pending_clear.stencil) {
-                rp.stencilAttachment.loadAction = MTLLoadActionClear;
-                rp.stencilAttachment.clearStencil = pending_clear.sval;
-            }
         }
+        if (e && e->clear_on) { e->clear_on = false; td_pending--; stat_clears_as_load++; }
         if (!w) { renderer_texture_scale(st.rt.depth, &pass_sx, &pass_sy); w = (int)tex.width; h = (int)tex.height; }
     }
     if (!w) {
@@ -554,7 +640,6 @@ static void begin_pass(void) {
     if (chunk < 0) { const char *e = ENV("LARECOMP_CHUNK_PASSES"); chunk = e ? atoi(e) : 8; }
     if (chunk > 0 && cmdbuf && ++g_passes_in_cb >= chunk) renderer_submit();
     enc = [cb() renderCommandEncoderWithDescriptor:rp];
-    memset(&pending_clear, 0, sizeof pending_clear);
     opening_pass = false;
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
     stat_passes++;
@@ -631,6 +716,22 @@ static void attachment_formats(MTLRenderPipelineDescriptor *pd) {
         if (st.rt.color[i] && st.rt.color[i]->samples > 1) pd.rasterSampleCount = st.rt.color[i]->samples;
 }
 
+// A full clear of texture t recorded for its next pass (an earlier one still recorded is replaced: it never ran).
+static void td_record(NvnTexture *t, bool is_color, int kind, const void *color, bool depth, float dval, bool stencil, uint32_t sval) {
+    renderer_mark_gpu_owned(t);  // (as the pass would: the guest copy is stale from here on)
+    TexDefer *e = td_get(t, true);
+    if (!e) return;
+    if (!e->clear_on) { td_pending++; e->clear_color = e->clear_depth = e->clear_stencil = false; }
+    e->clear_on = true;
+    if (is_color) {
+        e->clear_color = true;
+        for (int k = 0; k < 4; k++) e->cc[k] = kind == 0 ? ((const float *)color)[k] : kind == 1 ? ((const int32_t *)color)[k] : ((const uint32_t *)color)[k];
+    } else {
+        if (depth) { e->clear_depth = true; e->dval = dval; }
+        if (stencil) { e->clear_stencil = true; e->sval = sval; }
+    }
+}
+
 // (shader preparation) attachment_formats from a variant record: the formats the draw's targets would have
 static void attachment_formats_rec(MTLRenderPipelineDescriptor *pd, const ShaderRec *r) {
     bool any = false;
@@ -644,8 +745,8 @@ static void attachment_formats_rec(MTLRenderPipelineDescriptor *pd, const Shader
     if (any && r->samples > 1) pd.rasterSampleCount = r->samples;
 }
 
-// A full clear (whole target, every channel) while no pass is open on the current targets: recorded for the next
-// pass's load action (see pending_clear). Partial clears and clears into an open pass stay quads.
+// A full clear (whole target, every channel) while no pass is open on the current targets: recorded on the texture for
+// its next pass (see TexDefer). Partial clears, view clears and clears into an open pass stay quads.
 static bool record_clear(int index, int kind, const void *color, uint32_t mask, bool depth, float dval, bool stencil,
                          uint32_t sval, uint32_t smask) {
     static int on = -1;
@@ -656,17 +757,11 @@ static bool record_clear(int index, int kind, const void *color, uint32_t mask, 
     const int32_t *sc = st.scissor[0];
     if (sc[0] != 0 || sc[1] != 0 || sc[2] < (int32_t)t->width || sc[3] < (int32_t)t->height) return false;
     if (index >= 0 ? mask != 0xF : (!depth && !stencil) || (stencil && smask != 0xFF)) return false;
-    renderer_mark_gpu_owned(t);  // (as the pass would: the guest copy is stale from here on)
-    pending_clear.on = true;
-    if (index >= 0) {
-        pending_clear.color[index] = true;
-        for (int k = 0; k < 4; k++)
-            pending_clear.cc[index][k] = kind == 0 ? ((const float *)color)[k] : kind == 1 ? ((const int32_t *)color)[k] : ((const uint32_t *)color)[k];
-    } else {
-        if (depth) { pending_clear.depth = true; pending_clear.dval = dval; }
-        if (stencil) { pending_clear.stencil = true; pending_clear.sval = sval; }
-    }
-    if (g_debug_frame) LOG("[clear] recorded idx %d depth %d (%g) stencil %d for the next pass's load action\n", index, depth, dval, stencil);
+    // (a view of one level or layer: the quad clears just that; a format view covers the whole texture)
+    const NvnTextureView *v = index >= 0 ? (st.rt.has_cview[index] ? &st.rt.cview[index] : NULL) : (st.rt.has_dview ? &st.rt.dview : NULL);
+    if (v && (((v->setmask & 1) && v->base_level) || ((v->setmask & 2) && v->min_layer))) return false;
+    td_record(t, index >= 0, kind, color, depth, dval, stencil, sval);
+    if (g_debug_frame) LOG("[clear] recorded idx %d depth %d (%g) stencil %d on texture %p\n", index, depth, dval, stencil, (void *)t);
     return true;
 }
 
@@ -949,51 +1044,194 @@ static int rt_kind(uint32_t f) {
 #define PROG_TAB 4096
 static struct { uint64_t key; void *prog; } prog_tab[PROG_TAB];
 
-// Shader warm-up cache: every translated shader's MSL is kept in cache/shaders/ (v_/f_<hash>.metal). At startup
-// they're all compiled once on a background queue, which fills Metal's own on-disk shader cache so that a later
-// first use in-game costs ~0.1 ms instead of ~40 ms. Delete cache/ to reset it.
-static uint64_t fnv64(const char *t) {
-    uint64_t h = 0xcbf29ce484222325ull;
-    for (; *t; t++) { h ^= (uint8_t)*t; h *= 0x100000001B3ull; }
-    return h;
+// ------------------------------------------------------------------ binary archive (off; LARECOMP_METAL_ARCHIVE=1: on)
+// Off by default (#52): on macOS 26 Metal's archive writer can crash in serializeToURL (dispatch_retain(NULL) in
+// materializeAirNTFromOnlineForSlice, seen on an M4) when an entry it queued lacks a part. The preparation keeps macOS's
+// own shader cache warm, so the archive only helped when that cache was cleared without a macOS update. Off, a file
+// left by an earlier build is removed. (A check of Metal's queued entries before saving: branch metal-archive-crash.)
+// cache/shaders.metalarchive: the GPU code of every pipeline built here (prepared or at first use), kept across runs
+// (MTLBinaryArchive), used only with a matching cache/shaders.metalarchive.tag (shader_cache_tag: this build, the
+// translator, the GPU and the macOS build; another one, or an archive that doesn't load: a new one, silently). Saved
+// (temp file + rename) when the preparation ends and 10 s after the last pipeline added at first use.
+// What it holds is the cheap half (pipelines from compiled functions: ~1 s of CPU for all 895 variants on an M3 Max);
+// compiling the MSL source into functions (~300 s of CPU when macOS's shader cache lost them) still goes through
+// macOS's cache. It loads in the background (3-6 s for 43 MB).
+// The MSL text cache (cache/shaders/*.metal + a boot warm-up compile) is gone: the preparation on every start keeps
+// macOS's cache warm for the listed variants; that folder is removed.
+#define ARCHIVE_FILE "cache/shaders.metalarchive"
+#define ARCHIVE_TAG ARCHIVE_FILE ".tag"
+static id<MTLBinaryArchive> g_archive;
+static _Atomic bool g_archive_ready;  // (loaded in the background: archive_open)
+static id<MTLBinaryArchive> archive_get(void) { return g_archive_ready ? g_archive : nil; }
+static pthread_rwlock_t g_archive_lock = PTHREAD_RWLOCK_INITIALIZER;  // adds: read side (any number); save: write side
+static _Atomic int g_archive_dirty, g_archive_hits, g_archive_adds;
+static _Atomic uint64_t g_pipe_us, g_lib_us, g_archive_open_us;  // (preparation's log: time in pipeline builds, library
+                                                                  // compiles - summed over threads - and the archive's load)
+static _Atomic uint64_t g_archive_gen;
+
+static void archive_tag(char *out, size_t n) {
+    char gpu[400];
+    snprintf(gpu, sizeof gpu, "%s, %s", dev.name.UTF8String, NSProcessInfo.processInfo.operatingSystemVersionString.UTF8String);
+    shader_cache_tag(out, n, gpu);
 }
 
-static void shader_cache_note(const char *vs, const char *fs) {
-    static int made;
-    if (!made) { made = 1; mkdir("cache", 0755); mkdir("cache/shaders", 0755); }
-    const char *src[2] = {vs, fs};
-    for (int i = 0; i < 2; i++) {
-        char path[96];
-        snprintf(path, sizeof path, "cache/shaders/%c_%016llx.metal", i ? 'f' : 'v', (unsigned long long)fnv64(src[i]));
-        if (access(path, F_OK) == 0) continue;
-        FILE *f = fopen(path, "w");
-        if (f) { fputs(src[i], f); fclose(f); }
+static void remove_old_text_cache(void) {  // (cache/shaders/*.metal: up to ~130 MB on players' machines)
+    DIR *d = opendir("cache/shaders");
+    if (!d) return;
+    struct dirent *e;
+    int n = 0;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char path[300];
+        snprintf(path, sizeof path, "cache/shaders/%s", e->d_name);
+        n += unlink(path) == 0;
     }
+    closedir(d);
+    rmdir("cache/shaders");
+    LOG("[metal] removed the old shader text cache (%d files)\n", n);
 }
 
-void shader_cache_warm(void) {
-    static int started;
-    if (started++ || getenv("LARECOMP_NO_SHADER_WARM")) return;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        DIR *d = opendir("cache/shaders");
-        if (!d) return;
-        MTLCompileOptions *vopts = [MTLCompileOptions new];
-        vopts.preserveInvariance = YES;
+static void archive_save(bool at_exit) {
+    if (!archive_get() || !g_archive_dirty) return;
+    if (at_exit ? pthread_rwlock_trywrlock(&g_archive_lock) : pthread_rwlock_wrlock(&g_archive_lock)) return;
+    int adds = g_archive_dirty;
+    g_archive_dirty = 0;
+    double t0 = now_ms();
+    NSError *err = nil;
+    mkdir("cache", 0755);
+    remove(ARCHIVE_FILE ".tmp");
+    bool ok = [g_archive serializeToURL:[NSURL fileURLWithPath:@(ARCHIVE_FILE ".tmp")] error:&err];
+    pthread_rwlock_unlock(&g_archive_lock);
+    if (ok) ok = rename(ARCHIVE_FILE ".tmp", ARCHIVE_FILE) == 0;
+    if (!ok) { LOG("[metal] shader archive not saved: %s\n", err ? err.localizedDescription.UTF8String : "rename"); return; }
+    char tag[700];
+    archive_tag(tag, sizeof tag);
+    if (!shader_cache_tag_ok(ARCHIVE_TAG, tag)) shader_cache_tag_write(ARCHIVE_TAG, tag);
+    struct stat sb;
+    LOG("[metal] shader archive saved: %d new pipelines, %.1f MB, %.0f ms\n", adds,
+        stat(ARCHIVE_FILE, &sb) == 0 ? sb.st_size / 1048576.0 : 0.0, now_ms() - t0);
+}
+
+static void archive_exit(void) { archive_save(true); }
+
+// Loading a large archive takes seconds (3-5 s for ~900 pipelines, 43 MB, on an M3 Max) while macOS's own shader
+// cache usually still has them (~0.5 s for all): it loads in the background, and pipelines built before it's there
+// go through macOS's cache alone (the archive is for when that cache dropped them, ~20 s then).
+
+static void archive_publish(id<MTLBinaryArchive> a, double t0, bool loaded) {
+    g_archive = a;
+    g_archive_ready = a != nil;
+    g_archive_open_us = (uint64_t)((now_ms() - t0) * 1000);
+    struct stat sb;
+    if (loaded) LOG("[metal] shader archive loaded: %.1f MB in %.0f ms\n", stat(ARCHIVE_FILE, &sb) == 0 ? sb.st_size / 1048576.0 : 0.0,
+                    g_archive_open_us / 1e3);
+}
+
+static id<MTLBinaryArchive> archive_new(void) {
+    remove(ARCHIVE_FILE);
+    remove(ARCHIVE_TAG);
+    NSError *err = nil;
+    id<MTLBinaryArchive> a = [dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&err];
+    if (!a) LOG("[metal] no shader archive: %s\n", err.localizedDescription.UTF8String);
+    return a;
+}
+
+static void archive_open(void) {  // (at the first pipeline / preparation)
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
         double t0 = now_ms();
-        int n = 0;
-        struct dirent *e;
-        while ((e = readdir(d))) {
-            if (e->d_name[0] != 'v' && e->d_name[0] != 'f') continue;
-            char path[300];
-            snprintf(path, sizeof path, "cache/shaders/%s", e->d_name);
-            NSString *src = [NSString stringWithContentsOfFile:@(path) encoding:NSUTF8StringEncoding error:nil];
-            if (!src) continue;
-            @autoreleasepool { (void)[dev newLibraryWithSource:src options:e->d_name[0] == 'v' ? vopts : nil error:nil]; }
-            n++;
+        remove_old_text_cache();
+        remove(ARCHIVE_FILE ".tmp");  // (a save cut short: what it left - Metal writes <uuid>.metallib files beside it)
+        DIR *cd = opendir("cache");
+        if (cd) {
+            struct dirent *e;
+            while ((e = readdir(cd))) {
+                size_t l = strlen(e->d_name);
+                if (l == 36 + 9 && !strcmp(e->d_name + 36, ".metallib")) {
+                    char path[300];
+                    snprintf(path, sizeof path, "cache/%s", e->d_name);
+                    unlink(path);
+                }
+            }
+            closedir(cd);
         }
-        closedir(d);
-        LOG("[shader] warm-up: %d cached shaders compiled in %.0f ms\n", n, now_ms() - t0);
+        const char *on = getenv("LARECOMP_METAL_ARCHIVE");
+        if (!on || !atoi(on)) {
+            if (remove(ARCHIVE_FILE) == 0) LOG("[metal] removed the shader archive (off)\n");
+            remove(ARCHIVE_TAG);
+            return;
+        }
+        atexit(archive_exit);
+        char tag[700];
+        archive_tag(tag, sizeof tag);
+        bool have = access(ARCHIVE_FILE, F_OK) == 0;
+        if (!have || !shader_cache_tag_ok(ARCHIVE_TAG, tag)) {
+            if (have) LOG("[metal] shader archive from another build / GPU / macOS: a new one\n");
+            archive_publish(archive_new(), t0, false);
+            return;
+        }
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            MTLBinaryArchiveDescriptor *d = [MTLBinaryArchiveDescriptor new];
+            d.url = [NSURL fileURLWithPath:@(ARCHIVE_FILE)];
+            NSError *err = nil;
+            id<MTLBinaryArchive> a = [dev newBinaryArchiveWithDescriptor:d error:&err];
+            if (!a) LOG("[metal] shader archive unreadable (%s): a new one\n", err.localizedDescription.UTF8String);
+            archive_publish(a ? a : archive_new(), t0, a != nil);
+        });
     });
+}
+
+static void archive_added(void) {  // saved 10 s after the last add (first-use builds come in bursts)
+    g_archive_dirty++, g_archive_adds++;
+    uint64_t my = ++g_archive_gen;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        if (g_archive_gen == my) archive_save(false);
+    });
+}
+
+// A render / compute pipeline through the archive: loaded from it when it's there, else compiled into it (saved
+// later) and loaded. Any thread.
+static id<MTLRenderPipelineState> archive_render_pipeline_(MTLRenderPipelineDescriptor *pd, NSError **err) {
+    archive_open();
+    id<MTLBinaryArchive> archive = archive_get();
+    if (!archive) return [dev newRenderPipelineStateWithDescriptor:pd error:err];
+    pd.binaryArchives = @[archive];
+    id<MTLRenderPipelineState> ps = [dev newRenderPipelineStateWithDescriptor:pd options:MTLPipelineOptionFailOnBinaryArchiveMiss
+                                                                    reflection:nil error:nil];
+    if (ps) { g_archive_hits++; return ps; }
+    bool added = false;  // (not while a save runs: it can take a while - this one goes in a later run)
+    if (!pthread_rwlock_tryrdlock(&g_archive_lock)) {
+        added = [archive addRenderPipelineFunctionsWithDescriptor:pd error:nil];
+        pthread_rwlock_unlock(&g_archive_lock);
+    }
+    if (added) archive_added();
+    return [dev newRenderPipelineStateWithDescriptor:pd error:err];
+}
+
+static id<MTLRenderPipelineState> archive_render_pipeline(MTLRenderPipelineDescriptor *pd, NSError **err) {
+    double t0 = now_ms();
+    id<MTLRenderPipelineState> ps = archive_render_pipeline_(pd, err);
+    g_pipe_us += (uint64_t)((now_ms() - t0) * 1000);
+    return ps;
+}
+
+static id<MTLComputePipelineState> archive_compute_pipeline(id<MTLFunction> f, NSError **err) {
+    archive_open();
+    MTLComputePipelineDescriptor *cd = [MTLComputePipelineDescriptor new];
+    cd.computeFunction = f;
+    id<MTLBinaryArchive> archive = archive_get();
+    if (!archive) return [dev newComputePipelineStateWithDescriptor:cd options:MTLPipelineOptionNone reflection:nil error:err];
+    cd.binaryArchives = @[archive];
+    id<MTLComputePipelineState> ps = [dev newComputePipelineStateWithDescriptor:cd options:MTLPipelineOptionFailOnBinaryArchiveMiss
+                                                                      reflection:nil error:nil];
+    if (ps) { g_archive_hits++; return ps; }
+    bool added = false;  // (not while a save runs: it can take a while - this one goes in a later run)
+    if (!pthread_rwlock_tryrdlock(&g_archive_lock)) {
+        added = [archive addComputePipelineFunctionsWithDescriptor:cd error:nil];
+        pthread_rwlock_unlock(&g_archive_lock);
+    }
+    if (added) archive_added();
+    return [dev newComputePipelineStateWithDescriptor:cd options:MTLPipelineOptionNone reflection:nil error:err];
 }
 
 static bool sync_shaders(void) {  // LARECOMP_SYNC_SHADERS: compile on first use, blocking (deterministic tests)
@@ -1014,6 +1252,7 @@ static void compile_program(Prog *pr) {
     if (!vl) { LOG("[shader] VS compile failed: %s\n%s\n", err.localizedDescription.UTF8String, pr->vi->msl); pr->failed = true; return; }
     id<MTLLibrary> fl = [dev newLibraryWithSource:[@(pr->fi->msl) stringByAppendingString:salt] options:nil error:&err];
     if (!fl) { LOG("[shader] FS compile failed: %s\n%s\n", err.localizedDescription.UTF8String, pr->fi->msl); pr->failed = true; return; }
+    g_lib_us += (uint64_t)((now_ms() - t0) * 1000);
     pr->vs = [vl newFunctionWithName:@"main0"];
     pr->fs = [fl newFunctionWithName:@"main0"];
     __atomic_fetch_add(&stat_compiles, 1, __ATOMIC_RELAXED);
@@ -1051,7 +1290,6 @@ static bool translate_program(Prog *pr, const uint8_t *vcode, size_t vmax, const
         snprintf(path, sizeof path, "build/msl/%llx_fs.metal", faddr);
         f = fopen(path, "w"); fputs(pr->fi->msl, f); fclose(f);
     }
-    shader_cache_note(pr->vi->msl, pr->fi->msl);
     return true;
 }
 
@@ -1085,7 +1323,6 @@ static Prog *prep_find_prog(uint64_t k) {
 }
 
 static Prog *get_program(NvnProgram *p, ShaderKey *vkey, ShaderKey *fkey) {
-    shader_cache_warm();
     if (!(p->stage_mask & 1) || !(p->stage_mask & 2)) return nil;
     // fast path: hash of the code addresses and keys
     uint64_t h = 0xcbf29ce484222325ull;
@@ -1532,9 +1769,10 @@ static NSMutableDictionary *g_cs_progs;  // code address -> CsProg
 static void compile_compute(CsProg *cp) {
     NSError *err = nil;
     double t0 = now_ms();
-    id<MTLLibrary> lib = [dev newLibraryWithSource:@(cp->si->msl) options:nil error:&err];
+    NSString *salt = getenv("LARECOMP_SHADER_SALT") ? [NSString stringWithFormat:@"\n// %s\n", getenv("LARECOMP_SHADER_SALT")] : @"";
+    id<MTLLibrary> lib = [dev newLibraryWithSource:[@(cp->si->msl) stringByAppendingString:salt] options:nil error:&err];
     id<MTLFunction> f = lib ? [lib newFunctionWithName:@"main0"] : nil;
-    id<MTLComputePipelineState> pipe = f ? [dev newComputePipelineStateWithFunction:f error:&err] : nil;
+    id<MTLComputePipelineState> pipe = f ? archive_compute_pipeline(f, &err) : nil;
     @synchronized(cache) { stat_compile_ms += now_ms() - t0; }
     __atomic_fetch_add(&stat_compiles, 1, __ATOMIC_RELAXED);
     if (!pipe) {
@@ -1618,6 +1856,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
 #define CST(x) do { if (trace) { fprintf(stderr, "[cs] %s\n", x); fflush(stderr); } } while (0)
     CST("end_pass");
     end_pass();
+    td_flush_shader_textures(5, cp->si);
     CST("encoder");
     id<MTLComputeCommandEncoder> ce = [cb() computeCommandEncoder];
     CST("pipeline");
@@ -2070,6 +2309,7 @@ static void draw(CmdRec *r, bool indexed) {
     if (g_debug_frame || addr_hit || (log_rt_w && st.rt.ncolor && st.rt.color[0] && (int)st.rt.color[0]->width == log_rt_w &&
                           (int)st.rt.color[0]->height == log_rt_h))
         debug_draw(pr, r, indexed);
+    if (td_pending) { td_flush_shader_textures(0, pr->vi); td_flush_shader_textures(1, pr->fi); }
     resolve_feedback(pr);
     // this draw's writes make snapshots of its attachments stale
     snap_reason = "draw-depthwrite";
@@ -2120,7 +2360,7 @@ static void draw(CmdRec *r, bool indexed) {
     if (!pobj) {
         if (sync_shaders()) {
             NSError *err;
-            pobj = TIMED_COMPILE([dev newRenderPipelineStateWithDescriptor:pd error:&err]);
+            pobj = TIMED_COMPILE(archive_render_pipeline(pd, &err));
             if (!pobj) {
                 static int n;
                 if (n++ < 10) LOG("[metal] pipeline failed: %s\n", err.localizedDescription.UTF8String);
@@ -2131,12 +2371,16 @@ static void draw(CmdRec *r, bool indexed) {
             cache[pk] = pending;
             NSString *k = [pk copy];
             double t0 = now_ms();
-            [dev newRenderPipelineStateWithDescriptor:pd completionHandler:^(id<MTLRenderPipelineState> ps, NSError *e) {
+            static dispatch_queue_t pq;  // (off the render thread; through the binary archive)
+            if (!pq) pq = dispatch_queue_create("larecomp.pipelines", DISPATCH_QUEUE_CONCURRENT);
+            dispatch_async(pq, ^{
+                NSError *e = nil;
+                id<MTLRenderPipelineState> ps = archive_render_pipeline(pd, &e);
                 if (!ps) { static int n; if (n++ < 10) LOG("[metal] pipeline failed: %s\n", e.localizedDescription.UTF8String); }
                 @synchronized(ready_pipes) { ready_pipes[k] = ps ? (id)ps : (id)[NSNull null]; }
                 @synchronized(cache) { stat_compile_ms += now_ms() - t0; }
                 __atomic_fetch_add(&stat_compiles, 1, __ATOMIC_RELAXED);
-            }];
+            });
             stat_skipped++;
             return;
         }
@@ -2495,6 +2739,7 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
     snap_reason = "buf2tex"; snapshots_invalidate(NULL);
     NvnTexture *t = (NvnTexture *)(uintptr_t)dst->tex;
     if (!t || !src) return;
+    td_flush(t);  // (a recorded clear happens before the upload)
     end_pass();
     const FormatInfo *fi;
     int32_t rg[6];
@@ -2587,6 +2832,7 @@ static void draw_copy(id<MTLTexture> s, int sx0, int sy0, int sw, int sh, id<MTL
 static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     NvnTexture *t = (NvnTexture *)(uintptr_t)src->tex;
     if (!t || !dst || dst < HEAP_BASE) return;
+    td_flush(t);
     end_pass();
     const FormatInfo *fi;
     int32_t rg[6];
@@ -2629,6 +2875,7 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     snap_reason = "tex2tex"; snapshots_invalidate(NULL);
     NvnTexture *st_ = (NvnTexture *)(uintptr_t)src->tex, *dt = (NvnTexture *)(uintptr_t)dst->tex;
     if (!st_ || !dt) return;
+    td_flush(st_); td_flush(dt);  // (recorded clears happen before the copy)
     end_pass();
     id<MTLTexture> s = sampled_texture(st_, &src->view, src->has_view, TEXTYPE_2D);
     renderer_mark_gpu_owned(dt);
@@ -2821,10 +3068,10 @@ static void exec_list(uint64_t handle, int depth) {
             static int dedup = -1;
             if (dedup < 0) { const char *e = ENV("LARECOMP_MTL_RT_DEDUP"); dedup = !e || atoi(e); }
             if (dedup && same && enc && !st.rt_dirty) break;  // the targets already bound: the pass goes on
-            if (pending_clear.on && !(dedup && same)) {  // the recorded clear belongs to the targets being replaced
+            if (!td_defer_on() && !(dedup && same)) {  // (off mode: the old targets' recorded clears become passes now)
                 RtState new = st.rt;
                 st.rt = old;
-                begin_pass();
+                td_flush_targets(&old);
                 st.rt = new;
             }
             st.rt_dirty = true;
@@ -2875,6 +3122,20 @@ static void exec_list(uint64_t handle, int depth) {
             NvnTexture *t = (NvnTexture *)(uintptr_t)ct->tex;
             if (!t) break;
             snap_reason = "clear-texture"; snapshots_invalidate(NULL);
+            {   // the whole texture, every channel, not a target of the open pass: recorded for its next pass
+                static int on = -1;
+                if (on < 0) { const char *e = ENV("LARECOMP_MTL_LOAD_CLEAR"); on = !e || atoi(e); }
+                const int32_t *rg = ct->region;
+                bool whole = rg[3] <= 0 || rg[4] <= 0 || (rg[0] == 0 && rg[1] == 0 && rg[3] >= (int32_t)t->width && rg[4] >= (int32_t)t->height);
+                bool open_here = enc && !st.rt_dirty && (st.rt.depth == t || (st.rt.ncolor > 0 && st.rt.color[0] == t) || (st.rt.ncolor > 1 && st.rt.color[1] == t) ||
+                                                        (st.rt.ncolor > 2 && st.rt.color[2] == t) || (st.rt.ncolor > 3 && st.rt.color[3] == t));
+                uint32_t mask = (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 0xF;
+                if (on && whole && !ct->has_view && !open_here && mask == 0xF && !renderer_format_is_depth(t->format)) {
+                    td_record(t, true, (int)r->x[6], ct->color, false, 0, false, 0);
+                    if (!td_defer_on()) td_flush(t);
+                    break;
+                }
+            }
             RtState saved = st.rt;
             int32_t sc[4];
             memcpy(sc, st.scissor[0], sizeof sc);
@@ -3043,7 +3304,12 @@ bool renderer_prepare_begin(void) {
 }
 
 int renderer_prepare_pending(void) { return g_prep_pending; }
-void renderer_prepare_end(void) {}  // (phase 2: keep the built pipelines in a binary archive)
+void renderer_prepare_end(void) {  // (the binary archive: saved now, off this thread - a PLAY waiting on the
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ archive_save(false); });  // preparation doesn't wait for it)
+    LOG("[metal] shader archive: %d pipelines loaded from it, %d added; ready after %.0f ms; library compiles %.0f ms, "
+        "pipeline builds %.0f ms (summed over threads)\n", (int)g_archive_hits, (int)g_archive_adds, g_archive_open_us / 1e3,
+        g_lib_us / 1e3, g_pipe_us / 1e3);
+}
 
 static void prep_run(void (^job)(void)) {
     dispatch_semaphore_wait(g_prep_slots, DISPATCH_TIME_FOREVER);
@@ -3099,7 +3365,7 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
         NSString *body = pipeline_key(pd, pr);
         if (prep_find_pipe(body)) return;
         NSError *err = nil;
-        id<MTLRenderPipelineState> ps = [dev newRenderPipelineStateWithDescriptor:pd error:&err];
+        id<MTLRenderPipelineState> ps = archive_render_pipeline(pd, &err);
         if (!ps) { static int n; if (n++ < 10) LOG("[shader] prepared pipeline failed: %s\n", err.localizedDescription.UTF8String); return; }
         pthread_mutex_lock(&g_prep_lock);
         g_prep_pipes[body] = ps;
@@ -3109,7 +3375,8 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
 }
 
 void renderer_reset(void) {
-    memset(&pending_clear, 0, sizeof pending_clear);  // (recorded for the old boot's textures)
+    memset(td_tab, 0, sizeof td_tab);  // (recorded clears and depth guesses of the old boot's textures)
+    td_pending = 0;
     renderer_flush();
     pthread_mutex_lock(&gone_lock);
     ngone = 0;

@@ -400,6 +400,8 @@ static ssize_t romfs_read(uint8_t *dst, uint64_t size, uint64_t off) {
             } else {
                 if (ov[i].fd < 0) ov[i].fd = open(ov[i].path, O_RDONLY);
                 r = in < ov[i].size ? pread(ov[i].fd, dst + done, n < ov[i].size - in ? n : ov[i].size - in, (off_t)in) : 0;
+                extern void enemy_random_filter(const char *host, uint64_t off, uint8_t *dst, uint64_t n);
+                if (r > 0) enemy_random_filter(ov[i].path, in, dst + done, (uint64_t)r);  // (enemy mode Random)
             }
             if (r < 0) r = 0;
             if ((uint64_t)r < n) memset(dst + done + r, 0, n - r);

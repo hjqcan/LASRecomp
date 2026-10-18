@@ -18,7 +18,8 @@ The start screen asks for the folder with your own game files and sets them up.
 
 Everything the app writes lives in `~/.local/share/lasrecomp` (`$XDG_DATA_HOME/lasrecomp`): game files (`extracted/`),
 saves, seeds, settings (`larecomp.ini`), shader caches, imported fonts. Started without a terminal the log is
-`~/.local/share/lasrecomp/lasrecomp.log` (from a terminal it prints there instead). `LARECOMP_DATA_ROOT=<dir>` uses
+`~/.local/share/lasrecomp/lasrecomp.log`, always the latest run; up to five recent runs are kept as
+`lasrecomp-backup-*.log` (from a terminal it prints there instead). `LARECOMP_DATA_ROOT=<dir>` uses
 another folder.
 
 Controllers work as on the other systems (SDL3's gamepad support, bundled): Xbox, PlayStation (DualShock 4,
@@ -111,7 +112,8 @@ The aarch64 AppImage is experimental: built on x86-64, only its start screen has
 3. **What happened**: start screen? extraction? in game? where it stopped, any visual problems (screenshots help).
    With a controller: its model, and whether it works (the log names it: `[input] gamepad: ...`).
 4. **The log**: `~/.local/share/lasrecomp/lasrecomp.log` (or the terminal output when started from a terminal).
-   A crash writes `*** signal ...` and a backtrace there; attach the whole file.
+   A crash writes `*** signal ...` and a backtrace there; attach the whole file (or if the problem was in
+   an earlier run, that run's `lasrecomp-backup-*.log`, by date modified).
 5. **A crash backtrace with gdb** when the log's isn't enough:
 
        ./LAS.Recomp-beta_4-linux-aarch64.AppImage --appimage-extract    # -> squashfs-root/

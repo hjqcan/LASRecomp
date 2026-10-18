@@ -16,6 +16,8 @@
 #include "../output_scale.h"
 #include "../renderer.h"
 #include "../pace.h"
+#include "../shader_prep.h"
+#include <pthread.h>
 
 VkG g_vk;
 static SDL_Window *window;
@@ -26,19 +28,28 @@ static VkDebugUtilsMessengerEXT messenger;
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev, VkDebugUtilsMessageTypeFlagsEXT type,
                                                const VkDebugUtilsMessengerCallbackDataEXT *d, void *user) {
     (void)type, (void)user;
-    static int n;
-    if (sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT && n++ < 500) LOG("[vk] %s\n", d->pMessage);
+    static atomic_uint n;
+    bool stop = sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT && getenv("LARECOMP_VK_VALIDATION_STOP");
+    if (sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT &&
+        (stop || atomic_fetch_add_explicit(&n, 1, memory_order_relaxed) < 500)) LOG("[vk] %s\n", d->pMessage);
+    if (stop) {
+        LOG("[vk] stopping at the first validation error\n");
+        fflush(stderr);
+        _Exit(EXIT_FAILURE);  // do not run GPU cleanup after the validation failure
+    }
     return VK_FALSE;
 }
 
 // LARECOMP_VK_VALIDATION=1: Khronos validation layer (MSYS2 package vulkan-validation-layers)
+// LARECOMP_VK_VALIDATION_STOP=1: require that layer and its callback, and exit nonzero on the first error.
 static void create_instance(void) {
     Uint32 n_sdl = 0;
     const char *const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&n_sdl);
     const char *ext[16];
     uint32_t n_ext = 0;
     for (Uint32 i = 0; i < n_sdl && n_ext < 14; i++) ext[n_ext++] = sdl_ext[i];
-    bool validate = getenv("LARECOMP_VK_VALIDATION") != NULL;
+    bool strict = getenv("LARECOMP_VK_VALIDATION_STOP") != NULL;
+    bool validate = strict || getenv("LARECOMP_VK_VALIDATION") != NULL;
     if (validate) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "LARecomp",
@@ -48,6 +59,11 @@ static void create_instance(void) {
                                .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers};
     VkResult r = vkCreateInstance(&ci, NULL, &g_vk.inst);
     if (r != VK_SUCCESS && validate) {
+        if (strict) {
+            LOG("[vk] cannot create an instance with required validation (%d)\n", r);
+            fflush(stderr);
+            _Exit(EXIT_FAILURE);
+        }
         LOG("[vk] validation layer unavailable (%d); continuing without\n", r);
         ci.enabledLayerCount = 0;
         ci.enabledExtensionCount--;
@@ -64,7 +80,13 @@ static void create_instance(void) {
             .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
             .pfnUserCallback = debug_cb};
-        if (f) f(g_vk.inst, &mi, NULL, &messenger);
+        VkResult result = f ? f(g_vk.inst, &mi, NULL, &messenger) : VK_ERROR_EXTENSION_NOT_PRESENT;
+        if (result != VK_SUCCESS && strict) {
+            LOG("[vk] required validation callback unavailable (%d)\n", result);
+            fflush(stderr);
+            _Exit(EXIT_FAILURE);
+        }
+        if (result == VK_SUCCESS) LOG("[vk] validation enabled%s\n", strict ? " (stop on error)" : "");
     }
 }
 
@@ -151,6 +173,29 @@ void vk_log_memory(const char *why) {
             (unsigned long long)(mp->memoryHeaps[i].size >> 20), (unsigned long long)(b[i].budget >> 20),
             (unsigned long long)(b[i].usage >> 20), (unsigned long long)(b[i].statistics.allocationBytes >> 20),
             b[i].statistics.allocationCount);
+}
+
+// ---- pipeline cache file
+#define PCACHE_FILE "cache/vk_pipelines.bin"
+#define PCACHE_TAG "cache/vk_pipelines.bin.tag"
+static size_t pcache_saved;  // bytes of the last save (or load)
+void vk_pipeline_cache_save(void);
+
+static void pipeline_cache_tag(char *out, size_t n) {
+    char gpu[400], uuid[2 * VK_UUID_SIZE + 1];
+    for (int i = 0; i < VK_UUID_SIZE; i++) snprintf(uuid + 2 * i, 3, "%02x", g_vk.props.pipelineCacheUUID[i]);
+    snprintf(gpu, sizeof gpu, "%s, vendor %x device %x, driver %u, cache %s", g_vk.props.deviceName, g_vk.props.vendorID,
+             g_vk.props.deviceID, g_vk.props.driverVersion, uuid);
+    shader_cache_tag(out, n, gpu);
+}
+
+static void *pipeline_cache_saver(void *a) {  // every 3 minutes, when it grew
+    (void)a;
+    for (;;) {
+        SDL_Delay(180000);
+        vk_pipeline_cache_save();
+    }
+    return NULL;
 }
 
 static void create_device(void) {
@@ -246,10 +291,14 @@ static void create_device(void) {
                                   .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = g_vk.qfam};
     VK_CHECK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &g_vk.pool));
 
-    // pipeline cache: cache/vk_pipelines.bin (written by vk_pipeline_cache_save)
+    // pipeline cache: cache/vk_pipelines.bin (written by vk_pipeline_cache_save), used only with its tag
+    // (vk_pipelines.bin.tag: this build, the translator, the GPU and its driver - another one starts it empty)
+    char tag[512];
+    pipeline_cache_tag(tag, sizeof tag);
     size_t sz = 0;
     void *data = NULL;
-    FILE *fp = fopen("cache/vk_pipelines.bin", "rb");
+    FILE *fp = shader_cache_tag_ok(PCACHE_TAG, tag) ? fopen(PCACHE_FILE, "rb") : NULL;
+    if (!fp && !access(PCACHE_FILE, F_OK)) LOG("[vk] pipeline cache from another build / GPU / driver: starting a new one\n");
     if (fp) {
         fseek(fp, 0, SEEK_END);
         sz = (size_t)ftell(fp);
@@ -265,22 +314,30 @@ static void create_device(void) {
         VK_CHECK(vkCreatePipelineCache(g_vk.dev, &pc, NULL, &g_vk.pcache));
     }
     free(data);
+    if (pc.initialDataSize) LOG("[vk] pipeline cache: loaded %zu bytes\n", pc.initialDataSize);
+    pcache_saved = pc.initialDataSize;
+    pthread_t t;  // (kept every few minutes while it grows, not only at a clean exit)
+    pthread_create(&t, NULL, pipeline_cache_saver, NULL);
+    pthread_detach(t);
 }
 
+// Saved atomically (temp file + rename: a crash mid-write leaves the previous one), with its tag; one save at a time
 void vk_pipeline_cache_save(void) {
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&lock);
     size_t sz = 0;
-    if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) != VK_SUCCESS || !sz) return;
-    void *data = malloc(sz);
-    if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, data) == VK_SUCCESS) {
-        mkdir("cache", 0755);
-        FILE *f = fopen("cache/vk_pipelines.bin.tmp", "wb");
-        if (f) {
-            bool ok = fwrite(data, 1, sz, f) == sz;
-            fclose(f);
-            if (ok) { remove("cache/vk_pipelines.bin"); rename("cache/vk_pipelines.bin.tmp", "cache/vk_pipelines.bin"); }
+    if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) == VK_SUCCESS && sz && sz != pcache_saved) {
+        void *data = malloc(sz);
+        if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, data) == VK_SUCCESS && shader_cache_write(PCACHE_FILE, data, sz)) {
+            char tag[512];
+            pipeline_cache_tag(tag, sizeof tag);
+            if (!shader_cache_tag_ok(PCACHE_TAG, tag)) shader_cache_tag_write(PCACHE_TAG, tag);
+            pcache_saved = sz;
+            LOG("[vk] pipeline cache: saved %zu bytes\n", sz);
         }
+        free(data);
     }
-    free(data);
+    pthread_mutex_unlock(&lock);
 }
 
 // ================================================================== swapchain

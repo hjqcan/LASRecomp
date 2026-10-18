@@ -116,6 +116,20 @@ static void scan_seen(uint64_t o, uint64_t vt) {
         }
 }
 
+// LARECOMP_MB_DIFF (RE, with LARECOMP_MB_SCAN): at each state change of a scanned actor, its 32-bit fields (first
+// 0x2000 bytes) that went down by 1..64 since the last change - its hit points among them
+static void scan_diff(int i, uint64_t o) {
+    static uint32_t snap[8][0x800];
+    static uint64_t snap_obj[8];
+    const uint32_t *now = (const uint32_t *)(uintptr_t)o;
+    if (snap_obj[i] == o)
+        for (int w = 0; w < 0x800; w++)
+            if (now[w] < snap[i][w] && snap[i][w] - now[w] <= 64 && snap[i][w] < 0x10000)
+                LOG("[mb-diff]   +%#x: %u -> %u\n", w * 4, snap[i][w], now[w]);
+    memcpy(snap[i], now, sizeof snap[i]);
+    snap_obj[i] = o;
+}
+
 static void scan_tick(uint64_t frame) {
     for (int i = 0; i < 8; i++) {
         uint64_t o = g_scan_obj[i];
@@ -125,16 +139,20 @@ static void scan_tick(uint64_t frame) {
         if (!alive) { g_scan_obj[i] = 0; continue; }
         for (int j = 0; j < 8 && g_scan_sm[i][j]; j++) {
             uint8_t st = *(uint8_t *)(uintptr_t)(o + g_scan_sm[i][j] + 0xd);
-            if (st != g_scan_last[i][j])
+            if (st != g_scan_last[i][j]) {
                 LOG("[mb-scan] f%llu actor %llx sm +%#llx: %u -> %u\n", (unsigned long long)frame, (unsigned long long)o,
                     (unsigned long long)g_scan_sm[i][j], g_scan_last[i][j], st);
+                if (ENV("LARECOMP_MB_DIFF") && j == 0) scan_diff(i, o);
+            }
             g_scan_last[i][j] = st;
         }
     }
 }
 
+static void shadow_link_seen(uint64_t o);
 void rt_mb_seen(uint64_t o) {
     uint64_t vt = LD64(o);
+    if (vt == GA_SHADOW_LINK_VTABLE) shadow_link_seen(o);
     if (ENV("LARECOMP_MB_LOG")) log_new_vtable(o, vt);
     if (ENV("LARECOMP_MB_SCAN") || ENV("LARECOMP_MB_SCAN_NAME")) scan_seen(o, vt);
     int k = 0;
@@ -361,6 +379,69 @@ static void cueball_tick(Cpu *c, Seen *s, const Kind *k, uint64_t frame) {
 // warp (its start only exists in his ring).
 int rt_crashout_skip(void) { return rt_gohma_free(); }
 
+// Shadow Link on the Field (a chamber mini-boss: "Include mini-bosses"). As a shadow he follows Link; within 3 units
+// his own code requests his Appear event (main+0xd157f0: ShadowLink.bfevfl - the camera looks at him, his Sign glow,
+// PopStart) and marks it at +0x1703 (requested) / +0x1704 (running); once +0x1704 is cleared again (the event's end)
+// he pops up. An event stops Link and takes the camera, so on the Field the request itself is skipped
+// (tools/patches.py SHADOW_LINK_APPEAR_SITE): the marks are set as it would, his Sign glow plays here (his tailor at
+// [+0x16c0]+0x58, channel "Other", as his own code plays its effects) and, after the event's own timing, +0x1704 is
+// cleared - he pops up with Link still in control and the camera on Link.
+static struct { uint64_t obj, last, at; } g_sl[8];
+RT_ON_RESET(shadow_link_reset) { memset(g_sl, 0, sizeof g_sl); }
+#define SL_REQUESTED 0x1703
+#define SL_RUNNING 0x1704
+
+static void shadow_link_seen(uint64_t o) {
+    for (int i = 0; i < 8; i++)
+        if (g_sl[i].obj == o) g_sl[i].last = renderer_present_count();
+}
+
+int rt_shadow_link_appear(uint64_t o) {  // (SHADOW_LINK_APPEAR_SITE: 1 = the request is skipped)
+    extern const char *rando_seed_dir(void);
+    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+    if (!rando_seed_dir() || !ps || strcmp((const char *)(uintptr_t)ps, "Field")) return 0;  // (Dampe's chamber: as is)
+    uint64_t f = renderer_present_count();
+    int slot = -1;
+    for (int i = 0; i < 8 && slot < 0; i++)
+        if (g_sl[i].obj == o || !g_sl[i].obj || f - g_sl[i].last > 120) slot = i;
+    if (slot < 0) slot = 0;
+    g_sl[slot].obj = o, g_sl[slot].last = f, g_sl[slot].at = f;
+    ST8(o + SL_REQUESTED, 1), ST8(o + SL_RUNNING, 1);
+    LOG("[miniboss] f%llu Shadow Link %llx: appears (no event)\n", (unsigned long long)f, (unsigned long long)o);
+    return 1;
+}
+
+static void shadow_link_sign(Cpu *c, uint64_t o) {
+    static uint64_t mem;  // ({"Other", 5}, {"Sign", 4}: the tailor's channel and animation names)
+    if (!mem) mem = (uint64_t)(uintptr_t)hle_alloc(0x20);
+    uint64_t holder = LD64(o + 0x16c0), t = holder ? LD64(holder + 0x58) : 0;
+    if (!t) return;
+    ST64(mem, GA_STRING_OTHER), ST64(mem + 8, 5), ST64(mem + 0x10, GA_STRING_SIGN), ST64(mem + 0x18, 4);
+    uint64_t saved[31], sp = c->sp;
+    memcpy(saved, c->x, sizeof saved);
+    c->x[0] = t, c->x[1] = mem, c->x[2] = mem + 0x10;
+    guest_call(c, GA_TAILOR_PREPARE);
+    c->x[0] = LD64(holder + 0x58), c->x[1] = mem, c->x[2] = mem + 0x10;
+    guest_call(c, GA_TAILOR_PLAY);
+    memcpy(c->x, saved, sizeof saved);
+    c->sp = sp;
+}
+
+static void shadow_link_tick(Cpu *c, uint64_t frame) {
+    for (int i = 0; i < 8; i++) {
+        uint64_t o = g_sl[i].obj;
+        if (!o) continue;
+        if (frame - g_sl[i].last > 2 || LD64(o) != GA_SHADOW_LINK_VTABLE || !LD8(o + SL_RUNNING)) {
+            if (frame - g_sl[i].last > 120 || (LD64(o) == GA_SHADOW_LINK_VTABLE && !LD8(o + SL_RUNNING)))
+                memset(&g_sl[i], 0, sizeof g_sl[i]);  // (up, or gone)
+            continue;
+        }
+        uint64_t t = frame - g_sl[i].at;  // (the Appear event's timing: Sign after 0.5 s, up 1.25 s later)
+        if (t == 30) shadow_link_sign(c, o);
+        if (t >= 105) ST8(o + SL_RUNNING, 0);
+    }
+}
+
 void miniboss_tick(Cpu *c, uint64_t frame) {
     if (ENV("LARECOMP_MB_SCAN") || ENV("LARECOMP_MB_SCAN_NAME")) scan_tick(frame);
     force_tick(c, frame);
@@ -373,6 +454,7 @@ void miniboss_tick(Cpu *c, uint64_t frame) {
     const float *lp = (const float *)(uintptr_t)(pc + 0x80);
     memcpy(g_link, lp, sizeof g_link), g_have_link = true;
     miniboss_marker_set();
+    shadow_link_tick(c, frame);
     for (int i = 0; i < 32; i++) {
         Seen *s = &g_seen[i];
         if (!s->obj || frame - s->last > 2 || frame - s->first < 30 || LD64(s->obj) != g_kinds[s->kind].vt) continue;

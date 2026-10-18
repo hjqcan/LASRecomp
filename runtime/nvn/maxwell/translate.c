@@ -428,10 +428,14 @@ static bool emit_half(Ctx *c, uint64_t w) {
         sp(&c->body, "      bool l = %s, h = %s;\n", lx, ly);
         if (setp) {
             int pa = (int)bits(w, 3, 3), pb = (int)bits(w, 0, 3);
-            bool hand = bits(w, 49, 1);
-            if (hand) sp(&c->body, "      l = l && h; h = !l;\n");
-            if (pa != PT) { c->pred_used[pa] = 1; sp(&c->body, "      p%d = l %s pp;\n", pa, bool_op(bop)); }
-            if (pb != PT) { c->pred_used[pb] = 1; sp(&c->body, "      p%d = h %s pp;\n", pb, bool_op(bop)); }
+            if (bits(w, 49, 1)) {  // .H_AND: each half is combined with the predicate first, then they're ANDed
+                sp(&c->body, "      l = (l %s pp) && (h %s pp); h = !l;\n", bool_op(bop), bool_op(bop));
+                if (pa != PT) { c->pred_used[pa] = 1; sp(&c->body, "      p%d = l;\n", pa); }
+                if (pb != PT) { c->pred_used[pb] = 1; sp(&c->body, "      p%d = h;\n", pb); }
+            } else {
+                if (pa != PT) { c->pred_used[pa] = 1; sp(&c->body, "      p%d = l %s pp;\n", pa, bool_op(bop)); }
+                if (pb != PT) { c->pred_used[pb] = 1; sp(&c->body, "      p%d = h %s pp;\n", pb, bool_op(bop)); }
+            }
         } else {
             bool bf = bits(w, 49, 1);
             if (d != RZ) {
@@ -1360,8 +1364,13 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         if (bits(w, 45, 1)) { sprintf(u, "(-%s)", src); strcpy(src, u); }
         int dsz = dt & 3;
         bool dsg = dt & 4, sat = bits(w, 50, 1);
-        if (dsz == 0) sprintf(t, sat ? (dsg ? "uint(clamp(%s, -128, 127))" : "uint(clamp(%s, 0, 255))") : "(uint(%s) & 0xFFu)", src);
+        if (sat && !ssg) {  // .SAT from an unsigned source: compare unsigned (a U32 value above 0x7FFFFFFF isn't negative)
+            static const char *const hi[2][3] = {{"0xFFu", "0xFFFFu", ""}, {"0x7Fu", "0x7FFFu", "0x7FFFFFFFu"}};
+            if (dsz < 2 || dsg) sprintf(t, "min(uint(%s), %s)", src, hi[dsg][dsz < 2 ? dsz : 2]);
+            else sprintf(t, "uint(%s)", src);
+        } else if (dsz == 0) sprintf(t, sat ? (dsg ? "uint(clamp(%s, -128, 127))" : "uint(clamp(%s, 0, 255))") : "(uint(%s) & 0xFFu)", src);
         else if (dsz == 1) sprintf(t, sat ? (dsg ? "uint(clamp(%s, -32768, 32767))" : "uint(clamp(%s, 0, 65535))") : "(uint(%s) & 0xFFFFu)", src);
+        else if (sat && !dsg) sprintf(t, "uint(max(%s, 0))", src);  // S32 -> U32 .SAT: negatives become 0
         else sprintf(t, "uint(%s)", src);
         set_reg(c, d, t);
         if (bits(w, 47, 1)) {  // .CC: zero/sign flags of the result
@@ -1379,12 +1388,26 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         set_reg(c, d, t);
     } else if (OPM(0x5cf8000000000000ull, 0xfff8000000000000ull) || OPM(0x38f8000000000000ull, 0xfef8000000000000ull) ||
                OPM(0x5bf8000000000000ull, 0xfff8000000000000ull) || OPM(0x36f8000000000000ull, 0xfef8000000000000ull)) {  // SHF
+        // funnel shift of hi:lo (C:A). .W (bit 50) wraps the shift amount, otherwise it's clamped to the width;
+        // bits 37-38: 2 .U64 / 3 .S64 shift the full 64 bits (width 64), else 32. The immediate is 6 bits (20-25:
+        // bits 37-38 of the 19-bit B immediate are the width field). .CC / .X / .HI (47-49) aren't modelled.
         bool right = (w >> 56) == 0x5c || (w >> 57) == (0x38 >> 1);
-        const char *sh = ((w >> 60) == 3) ? B(false) : R((int)bits(w, 20, 8));
+        if (bits(w, 47, 3)) { fail(c, "shf cc/x/hi"); return; }
+        char shb[16];
+        const char *sh = ((w >> 60) == 3) ? (sprintf(shb, "%uu", (unsigned)bits(w, 20, 6)), shb) : R((int)bits(w, 20, 8));
         const char *hi = R((int)bits(w, 39, 8));
-        if (right) sprintf(t, "uint((((ulong(%s) << 32) | ulong(%s)) >> (%s & 31u)))", hi, R(a), sh);
-        else sprintf(t, "uint((((ulong(%s) << 32) | ulong(%s)) << (%s & 31u)) >> 32)", hi, R(a), sh);
-        set_reg(c, d, t);
+        int width = bits(w, 38, 1) ? 64 : 32;
+        bool s64 = bits(w, 37, 2) == 3, wrap = bits(w, 50, 1);
+        sp(&c->body, wrap ? "    { uint s = %s & %du; ulong v = (ulong(%s) << 32) | ulong(%s);\n"
+                          : "    { uint s = min(%s, %du); ulong v = (ulong(%s) << 32) | ulong(%s);\n",
+           sh, wrap ? width - 1 : width, hi, R(a));
+        if (right && width == 64)
+            sprintf(t, "s >= 64u ? %s : uint(%s >> s)", s64 ? "uint(int(v >> 32) >> 31)" : "0u", s64 ? "long(v)" : "v");
+        else if (right) sprintf(t, "uint(v >> s)");
+        else if (width == 64) sprintf(t, "s >= 64u ? 0u : uint((v << s) >> 32)");
+        else sprintf(t, "uint((v << s) >> 32)");
+        if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = %s;\n", d, t); }
+        sp(&c->body, "    }\n");
     } else if (OPM(0xeed0000000000000ull, 0xfff8000000000000ull) || OPM(0xeed8000000000000ull, 0xfff8000000000000ull)) {  // LDG / STG
         bool store = bits(w, 51, 1);
         bool wide = bits(w, 45, 1);
@@ -1642,9 +1665,9 @@ static void glsl_rewrite(Ctx *c, Str *o, const char *src) {
     static const char *const map[][2] = {
         {"float2", "vec2"}, {"float3", "vec3"}, {"float4", "vec4"}, {"int2", "ivec2"}, {"int3", "ivec3"},
         {"int4", "ivec4"}, {"uint2", "uvec2"}, {"uint3", "uvec3"}, {"uint4", "uvec4"}, {"bool2", "bvec2"},
-        {"ulong", "uint64_t"}, {"rsqrt", "inversesqrt"}, {"rint", "roundEven"}, {"front_facing", "gl_FrontFacing"},
-        {"point_coord", "gl_PointCoord"}, {"lane", "gl_SubgroupInvocationID"}, {"vid", "uint(gl_VertexIndex)"},
-        {"iid", "uint(gl_InstanceIndex)"},
+        {"ulong", "uint64_t"}, {"long", "int64_t"}, {"rsqrt", "inversesqrt"}, {"rint", "roundEven"},
+        {"front_facing", "gl_FrontFacing"}, {"point_coord", "gl_PointCoord"}, {"lane", "gl_SubgroupInvocationID"},
+        {"vid", "uint(gl_VertexIndex)"}, {"iid", "uint(gl_InstanceIndex)"},
     };
     const char *p = src;
     while (*p) {

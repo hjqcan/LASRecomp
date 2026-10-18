@@ -58,7 +58,7 @@ static bool in_gpu_driver(uint64_t pc) {
 }
 
 void rt_crash_explain(char *out, size_t n, const char *log_path) {
-    static const char *const report = "Please report it (GitHub issues or Discord) and attach the log file below. "
+    static const char *const report = "Please report it as a GitHub issue and attach the log file below. "
                                       "Your progress up to your last save or autosave is safe.";
     char head[160], what[400];
     if (rt_romfs_files >= 0 && rt_romfs_files < ROMFS_FILES) {

@@ -12,6 +12,7 @@
 #include "../rt.h"
 
 void rt_mb_seen(uint64_t o);  // miniboss.c
+int rt_shadow_link_appear(uint64_t o);
 int rt_gohma_free(void);
 uint32_t rt_gohma_heading(uint64_t gohma, uint32_t track);
 int rt_crashout_skip(void);
@@ -25,6 +26,8 @@ int rt_hook(Cpu *c, uint64_t site) {
     case GA_MB_SEEN_SITE:  // MB_SEEN_SITE - ldr x8, [x21]: an actor seen
         rt_mb_seen(c->x[21]);
         return 0;
+    case GA_SHADOW_LINK_APPEAR_SITE:  // SHADOW_LINK_APPEAR_SITE - ldr x9, [x0, #0x230]: his Appear event, none on the Field
+        return rt_shadow_link_appear(c->x[0]) ? 2 : 0;
     case GA_CRASHOUT_SITE:  // CRASHOUT_SITE - str wzr, [x0, #0xb8]: Blaino's knock-out, no crash-out on the Field
         if (!rt_crashout_skip()) return 0;
         ST32(c->x[0] + 0xb8, 0);

@@ -23,12 +23,13 @@ Pull requests that include Nintendo files can't be merged. Screenshots and short
 
 Report bugs as a [GitHub issue](https://github.com/peiikai/LASRecomp/issues). Please include:
 
-- your platform (macOS / Windows), hardware (CPU, GPU) and window size / aspect ratio
+- your platform (macOS / Windows / Linux), hardware (CPU, GPU) and window size / aspect ratio
 - what you did, what happened, and what you expected
 - for randomizer problems: the **seed ID** (Randomizer tab, Copy button), the settings, and where you got stuck
   (area / room, which items you had). A seed ID reproduces the exact seed on the same LAS Recomp version.
 - a screenshot or short clip if it's visual
-- for crashes: the log the app prints to the terminal (run it from a terminal to capture it)
+- the log: `lasrecomp.log` in the data folder (see "Where files live" in the README), always the latest run - or if
+  the problem was in an earlier run, that run's `lasrecomp-backup-*.log` (by date modified)
 
 ## Which branch to work from
 
@@ -83,6 +84,9 @@ them, then `make -j10`. The randomizer needs its Python environment in
   reachable). For dungeon room shuffle, `tools/doorjump_test.sh <seed>` walks every mismatched doorway.
 - State that belongs to a seed must be reset when the player switches seeds in place: use an `RT_ON_RESET` hook
   (see `runtime/hle.h`).
+- For an automated Vulkan validation run, set `LARECOMP_VK_VALIDATION_STOP=1`. This requires the Khronos validation
+  layer and its debug callback, and exits with a failure status on the first validation error. Warnings continue.
+  `LARECOMP_VK_VALIDATION=1` keeps the existing best-effort, log-only behavior.
 
 For address-table changes, run `python tools/test_game_addresses.py`. It checks native/Python agreement,
 patch-output fingerprints from the pre-refactor `beta_5` build, hook records and uncentralized addresses without

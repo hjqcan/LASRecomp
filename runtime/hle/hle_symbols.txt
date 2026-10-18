@@ -1,0 +1,10 @@
+# SDK functions replaced by host versions (tools/gen.py --hle: the function calls hle_<name>; runtime/hle/libc.c)
+memcpy
+memmove
+memset
+memcmp
+bcmp
+strlen
+strcmp
+strncmp
+memchr

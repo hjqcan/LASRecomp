@@ -1,8 +1,9 @@
 # LAS Recomp's checks: the app (build/lasrecomp: everything but the game code, which the start screen builds on the
 # player's machine) builds on Linux, macOS and Windows, and the tests that need no game files or GPU run: the FP/SIMD
-# lowering against a CPU emulator (tools/test_simd.py, x86-64 Linux) and the shader translator's GLSL against shaderc +
-# SPIRV-Tools (tools/test_translate.sh, Windows). Nothing is published. Feature tests that need no game files go in as
-# steps here, not as workflows of their own.
+# lowering against a CPU emulator (tools/test_simd.py, x86-64 Linux), the shader translator's GLSL against shaderc +
+# SPIRV-Tools (tools/test_translate.sh, Windows) and its instruction semantics on the CPU (tools/test_translate_ops.sh,
+# Linux / macOS). Nothing is published. Feature tests that need no game files go in as steps here, not as workflows of
+# their own.
 name: CI
 on:
   pull_request:
@@ -50,6 +51,8 @@ jobs:
           cmake --install sdl-build
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp DEPS="$HOME/sdl3"
+      - name: Photo mode regression tests
+        run: python3 tools/test_photo.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 tools/test_movie_extractor.c $(pkg-config --cflags --libs libavformat libavcodec libavutil libswscale) -pthread -o build/test-movie-extractor
@@ -63,14 +66,18 @@ jobs:
         run: python3 tools/test_settings.py
       - name: Vulkan fence sequence regression
         run: python3 tools/test_fence_sequence.py
+      - name: Vulkan validation failure regression
+        run: python3 tools/test_vulkan_validation.py
       - name: SIMD rounding and host-state regression
         run: |
           clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -lm -o build/test-simd-rounding
           build/test-simd-rounding
       - name: Game address table tests
         run: python3 tools/test_game_addresses.py
-      - name: Photo state tests
-        run: python3 tools/test_photo.py
+      - name: Vulkan synchronization failure regression
+        run: python3 tools/test_vulkan_sync_errors.py
+      - name: Shader translator instruction semantics
+        run: tools/test_translate_ops.sh
       - name: FP/SIMD lowering vs a CPU emulator (a sample)
         run: |
           python3 -m venv tools/venv && tools/venv/bin/pip install -q unicorn capstone lz4
@@ -88,6 +95,8 @@ jobs:
         run: |
           clang -std=gnu11 -O1 -pthread tools/test_simd_rounding.c -o build/test-simd-rounding
           build/test-simd-rounding
+      - name: Photo mode regression tests
+        run: python3 tools/test_photo.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 -I"$(brew --prefix ffmpeg)/include" -L"$(brew --prefix ffmpeg)/lib" tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -pthread -o build/test-movie-extractor
@@ -101,8 +110,10 @@ jobs:
         run: python3 tools/test_settings.py
       - name: Game address table tests
         run: python3 tools/test_game_addresses.py
-      - name: Photo state tests
-        run: python3 tools/test_photo.py
+      - name: Vulkan synchronization failure regression
+        run: python3 tools/test_vulkan_sync_errors.py
+      - name: Shader translator instruction semantics
+        run: tools/test_translate_ops.sh
 
   windows:
     runs-on: windows-2022
@@ -121,12 +132,12 @@ jobs:
           msystem: UCRT64
           update: true
           install: make git python
-          pacboy: clang:p lld:p binutils:p sdl3:p ffmpeg:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
-            vulkan-memory-allocator:p python:p
+          pacboy: clang:p lld:p binutils:p python:p sdl3:p ffmpeg:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
+            vulkan-memory-allocator:p
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp.exe
-      - name: Photo state tests
-        run: python tools/test_photo.py
+      - name: Photo mode regression tests
+        run: python3 tools/test_photo.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -o build/test-movie-extractor.exe
@@ -138,10 +149,14 @@ jobs:
           build/test-condvar.exe
       - name: Vulkan fence sequence regression
         run: python tools/test_fence_sequence.py
+      - name: Vulkan validation failure regression
+        run: python tools/test_vulkan_validation.py
       - name: Windows guest thread stack regression
         run: |
           clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe
           build/test-thread-stack.exe
+      - name: Windows session log regression
+        run: python tools/test_windows_logs.py
       - name: SIMD rounding and host-state regression
         run: |
           clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -o build/test-simd-rounding.exe
@@ -150,3 +165,5 @@ jobs:
       # just satisfies it. The GLSL half - every fuzzed translation compiles and validates - is the check)
       - name: Shader translator fuzz (GLSL)
         run: REF=HEAD tools/test_translate.sh 4000 "$(nproc)" glsl
+      - name: Vulkan synchronization failure regression
+        run: python tools/test_vulkan_sync_errors.py

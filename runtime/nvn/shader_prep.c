@@ -425,6 +425,46 @@ static uint8_t *blob_read(const IdxEnt *e, ShaderBlob *b, FILE **files) {
     return d;
 }
 
+// ------------------------------------------------------------------ cache tags
+#ifndef SHADER_TRANSLATOR_ID
+#define SHADER_TRANSLATOR_ID "dev"
+#endif
+const char *larecomp_version(void);  // runtime/ui/launcher.mm
+
+void shader_cache_tag(char *out, size_t n, const char *gpu) {
+    snprintf(out, n, "%s translator %s cache %d | %s", larecomp_version(), SHADER_TRANSLATOR_ID, SHADER_CACHE_VERSION, gpu);
+}
+
+bool shader_cache_tag_ok(const char *tag_path, const char *tag) {
+    FILE *f = fopen(tag_path, "rb");
+    if (!f) return false;
+    char have[1024];
+    size_t got = fread(have, 1, sizeof have - 1, f);
+    fclose(f);
+    have[got] = 0;
+    return !strcmp(have, tag);
+}
+
+bool shader_cache_write(const char *path, const void *data, size_t n) {
+    char tmp[1100];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    mkdir("cache", 0755);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return false;
+    bool ok = fwrite(data, 1, n, f) == n;
+    ok &= fclose(f) == 0;
+    if (ok) {
+#ifdef _WIN32
+        remove(path);  // (rename doesn't replace on Windows; a crash here loses the cache, never corrupts it)
+#endif
+        ok = rename(tmp, path) == 0;
+    }
+    if (!ok) remove(tmp);
+    return ok;
+}
+
+void shader_cache_tag_write(const char *tag_path, const char *tag) { shader_cache_write(tag_path, tag, strlen(tag)); }
+
 // ------------------------------------------------------------------ the run
 static const char shipped_list[] =
 #include "shader_variants.inc"

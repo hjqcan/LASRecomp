@@ -380,12 +380,20 @@ PATCHES[BOTTLE3_USE_SITE] = _bottle3_use
 BOSS_SPAWN_SITE = A.BOSS_SPAWN_SITE
 
 
+# Enemy randomizer, mode Random (runtime/hle/enemy_random.c): the same spot first lets the runtime re-roll a randomized
+# enemy in the spawn info (type +8, the eight parameters +0x10, as in its room file's record), then takes the type
+# again (x23) and its table entry (x8 = x27 + type * 0x58, x27 = the table: main+0x1bcc898).
 def _boss_spawn(gen, a):
     w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
     assert w == 0xf9400118, hex(w)  # ldr x24, [x8]
+    if a - 4 >= gen.base:  # (the address table test gives this one word only)
+        w = struct.unpack_from('<I', gen.nso.image, a - 4 - gen.base)[0]
+        assert w == 0x9b086ee8, hex(w)  # madd x8, x23, x8, x27
     return ('{ extern uint64_t rt_actor_create_fn(uint64_t fn, uint32_t type, uint64_t info); '
+            'extern void rt_enemy_spawn(uint64_t info); rt_enemy_spawn(c->x[2]); '
+            'c->x[23] = LD16(c->x[2] + 8); c->x[8] = c->x[27] + c->x[23] * 0x58ull; '
             'c->x[24] = rt_actor_create_fn(LD64(c->x[8]), (uint32_t)c->x[23], c->x[2]); }'
-            f'  /* {a:#x}: ldr x24, [x8] (actor create fn: boss souls) */')
+            f'  /* {a:#x}: ldr x24, [x8] (actor create fn: boss souls, enemy mode Random) */')
 
 
 PATCHES[BOSS_SPAWN_SITE] = _boss_spawn
@@ -664,6 +672,13 @@ FRAME_JOB_KICKOFF_SITES = [A.FRAME_JOB_KICKOFF_SITES_0, A.FRAME_JOB_KICKOFF_SITE
 FRAME_JOB_FINISH_SITE = A.FRAME_JOB_FINISH_SITE
 
 
+# Shadow Link's Appear event (main+0xd157f0: requested once Link is within 3 units, ShadowLink.bfevfl) stops Link and
+# turns the camera to him; on the Field (seeds) the request is skipped and runtime/hle/miniboss.c plays his appearance
+# (Sign glow, then he pops up) without an event. The site is right after the function's already-requested check; the
+# skip goes to its return.
+SHADOW_LINK_APPEAR_SITE = A.SHADOW_LINK_APPEAR_SITE
+
+
 # ---- hook sites: the instruction stays as it is; just before it the runtime's rt_hook (runtime/hle/hooks.c) is asked
 # what to do - 0 run it, 1 the hook did it all, 2.. jump to the site's first.. target (each a label in its function).
 # The game code they generate never changes when a hook's behaviour does: only a new site needs the game code
@@ -677,6 +692,7 @@ HOOKS = {
     GOHMA_ARRIVED_SITE: (0x3dc58260, (A.GOHMA_ARRIVED_SKIP,), 'ldr q0, [x19, #0x1600]: Gohma, no track end on the Field'),
     MSTALFOS_BODY_SITE: (0x320003e8, (), 'mov w8, #1: Master Stalfos body collision flag, off on the Field'),
     MSTALFOS_JUMP_SITE: (0x1e213800, (), 'fsub s0, s0, s1: Master Stalfos jump arc from his takeoff height'),
+    SHADOW_LINK_APPEAR_SITE: (0xf9411809, (A.SHADOW_LINK_APPEAR_SKIP,), 'ldr x9, [x0, #0x230]: Shadow Link, no Appear event on the Field'),
     MCHIEF_STORY_SITE: (0x37380148, (A.MCHIEF_STORY_SKIP,), 'tbnz w8, #7: Moblin Chief, no story check on the Field'),
     DIG_HOLE_SITE: (0xf94007f6, (), 'ldr x22, [sp, #8]: a hole was dug (digs.c)'),
     HOLE_CAP_SITES[0]: (0xf101451f, (), 'cmp x8, #0x51: dug-hole limit (digs.c)'),

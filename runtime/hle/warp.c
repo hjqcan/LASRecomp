@@ -178,9 +178,31 @@ static void crash_test(uint64_t frame) {
     (void)*p;
 }
 
+// LARECOMP_SHOTS=<frame>,<frame>,... (test): a screenshot at each of those frames, build/shots_<SHOT_ID>_<frame>.png
+// (one run, a filmstrip: a fight, an animation)
+static void shots_test(uint64_t frame) {
+    static const char *e;
+    static int init;
+    if (!init) init = 1, e = getenv("LARECOMP_SHOTS");
+    if (!e) return;
+    for (const char *p = e; *p; ) {
+        if ((uint64_t)strtoull(p, NULL, 10) == frame) {
+            extern char g_window_shot_request[256];  // runtime/hle/hookshot.c
+            const char *id = getenv("SHOT_ID");
+            snprintf(g_window_shot_request, sizeof g_window_shot_request, "build/shots_%s_%llu.png", id ? id : "x",
+                     (unsigned long long)frame);
+            return;
+        }
+        const char *c = strchr(p, ',');
+        if (!c) break;
+        p = c + 1;
+    }
+}
+
 void warp_frame(uint64_t frame) {
     g_frame_now = frame;
     crash_test(frame);
+    shots_test(frame);
     { extern void shader_tour_tick(uint64_t); shader_tour_tick(frame); }
     warp_test(frame);
     warp_on_load(frame);

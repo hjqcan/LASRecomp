@@ -96,7 +96,8 @@ def default_settings(seed):
         'boss-cutscenes': True, 'randomize-enemies': False, 'randomize-enemy-sizes': False, 'shuffle-dungeons': False,
         'blur-removal': False, 'OHKO': False, 'lv1-beam': False, 'nice-rod': True, 'nice-bombs': False,
         'stealing': 'always', 'fast-chests': True, 'fast-keys': True, 'keysanity': 'off', 'randomize-environments': False,
-        'skip-story-events': True, 'tunic-color': 'default', 'enemy-minibosses': False, 'no-buff-drops': False,
+        'skip-story-events': True, 'tunic-color': 'default', 'enemy-minibosses': False, 'miniboss-frequency': 0, 'no-buff-drops': False,
+        'enemy-mode': 'seeded',  # seeded (fixed in the level files) / random (re-rolled at every load: enemy_random.py)
         'bushes': False, 'boss-souls': False, 'miniboss-souls': False,
         'digs': False,  # digsanity: every diggable overworld tile is a check (tools/rando/digs.py)
         'hookshot-anything': False,  # the hookshot latches onto anything (tools/rando/hookshot_logic.py)
@@ -617,6 +618,12 @@ def main():
         print('roam:', roam.write(out_dir, _uw_leb, romfs), flush=True)
         import miniboss_guard  # (copies of a mini-boss whose flow gives a check don't give it again)
         print('miniboss guard:', miniboss_guard.apply(out_dir, romfs, _uw_leb, _uw_ev, _ot, settings), flush=True)
+    if mods.enemy_random is not None:  # enemy mode Random: last room edit is done - where each re-rolled actor is
+        import enemy_random
+        from RandomizerCore.randomizer_data import ENEMY_DATA as _ed
+        from RandomizerCore.Randomizers import enemies as _en
+        print('enemy random:', enemy_random.write(out_dir, mods.enemy_random, _ed, _en,
+                                                   settings.get('randomize-enemy-sizes', False), _uw_leb), flush=True)
     if pot_locs or bush_locs or dig_locs:  # (after every flow edit) refills at real checks are refills, not the item
         import refill_gets
         print('refill gets:', refill_gets.apply(out_dir, romfs, settings), flush=True)
