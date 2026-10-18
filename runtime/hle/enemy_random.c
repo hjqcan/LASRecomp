@@ -354,7 +354,7 @@ static void roll_one(RFile *rf, int k, int fd) {
 // fs.c: `n` bytes of the seed's replacement file `host` (a host path) starting at file offset `off` were just read
 // into `dst` - give this load's roll instead.
 void enemy_random_filter(const char *host, uint64_t off, uint8_t *dst, uint64_t n) {
-    if (!host || !n) return;
+    if (!title_is_las() || !host || !n) return;
     pthread_mutex_lock(&g_lock);
     if (g_loaded && !same_seed()) enemy_random_reset();
     if (!g_loaded) load();
@@ -415,7 +415,7 @@ static int slot_of(uint64_t key) {
 }
 
 void rt_enemy_spawn(uint64_t info) {
-    if (!info || (g_loaded && !g_nslots && same_seed()) || !LD64(info)) return;
+    if (!title_is_las() || !info || (g_loaded && !g_nslots && same_seed()) || !LD64(info)) return;
     pthread_mutex_lock(&g_lock);
     if (g_loaded && !same_seed()) enemy_random_reset();
     if (!g_loaded) load();

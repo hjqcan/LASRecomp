@@ -66,6 +66,10 @@ jobs:
           build/test-condvar
       - name: Settings regression tests
         run: python3 tools/test_settings.py
+      - name: Shared libc and title-specific randomizer boundaries
+        run: |
+          python3 tools/test_hle_libc.py
+          python3 tools/test_enemy_random.py
       - name: Vulkan fence sequence regression
         run: python3 tools/test_fence_sequence.py
       - name: Audio effect impulse and routing regressions
@@ -144,6 +148,10 @@ jobs:
           build/test-condvar
       - name: Settings regression tests
         run: python3 tools/test_settings.py
+      - name: Shared libc and title-specific randomizer boundaries
+        run: |
+          python3 tools/test_hle_libc.py
+          python3 tools/test_enemy_random.py
       - name: Rumble and prepared shader ownership
         run: |
           python3 tools/test_rumble.py
@@ -211,6 +219,8 @@ jobs:
         run: python tools/test_vulkan_validation.py
       - name: Native runtime regressions (UCRT64 and FFmpeg headers)
         run: |
+          python tools/test_hle_libc.py
+          python tools/test_enemy_random.py
           for name in touch prepo csrng nvn_pool_mapping; do
             clang -std=gnu11 -O1 -Iruntime "tools/test_${name}.c" -o "build/test-${name}.exe"
             "build/test-${name}.exe"

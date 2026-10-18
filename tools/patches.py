@@ -386,9 +386,8 @@ BOSS_SPAWN_SITE = A.BOSS_SPAWN_SITE
 def _boss_spawn(gen, a):
     w = patch_word(gen, a)
     assert w == 0xf9400118, hex(w)  # ldr x24, [x8]
-    if a - 4 >= gen.base:  # (the address table test gives this one word only)
-        w = struct.unpack_from('<I', gen.nso.image, a - 4 - gen.base)[0]
-        assert w == 0x9b086ee8, hex(w)  # madd x8, x23, x8, x27
+    w = patch_word(gen, a - 4)
+    assert w == 0x9b086ee8, hex(w)  # madd x8, x23, x8, x27
     return ('{ extern uint64_t rt_actor_create_fn(uint64_t fn, uint32_t type, uint64_t info); '
             'extern void rt_enemy_spawn(uint64_t info); rt_enemy_spawn(c->x[2]); '
             'c->x[23] = LD16(c->x[2] + 8); c->x[8] = c->x[27] + c->x[23] * 0x58ull; '
