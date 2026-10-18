@@ -394,3 +394,25 @@ coverage. The ACNH import regression now succeeds without a development
 override. These checks do not certify every commercial archive or every game
 scene. Full-game progression, additional hardware/platforms, updates and DLC
 remain further compatibility work. Online play and amiibo are unavailable.
+
+## Extracted-folder mounting correction after Beta 5.3
+
+Beta 5.3's raw-storage opener still used LAS's `region_common` directory as a
+folder sentinel. A complete ACNH folder could pass the adapter's installation
+checks, then fail at its first RomFS mount if `romfs.bin` could not be opened.
+The real NSZ acceptance imports retained that image and did not expose this
+folder-only path. This failure occurs before game rendering and does not by
+itself indicate an NVIDIA or Vulkan problem.
+
+The corrected opener uses adapter content rules for complete folders, preserves
+image preference for image-backed adapters and keeps LAS's folder-first behavior.
+Failure messages include both the folder validation reason and image-open error.
+The launcher also displays the selected adapter's version instead of LAS's
+version enum, which previously labeled ACNH as `vunsupported`.
+
+`tools/test_romfs_source.py` exercises production mounting and data reads with
+eight synthetic cases. The former implementation reproduces the reported fatal
+message; the correction passes all eight. A read-only check of the local ACNH
+folder, without an adjacent image, mounted all 66,790 files and matched 32 sampled
+payload reads. These data-layer checks do not constitute a new NVIDIA gameplay
+acceptance run.

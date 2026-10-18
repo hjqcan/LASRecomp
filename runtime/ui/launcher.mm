@@ -2075,7 +2075,7 @@ extern "C" const char *launcher_run(const char *root) {
                 ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", ui_tr("Game files ready."));
                 ImGui::SetCursorPosX(x0);
                 ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), ui_tr("Nintendo Switch  \xc2\xb7  v%s"),
-                                   game_version_name(game_version_current()));
+                                   title_profile_current()->version);
             } else {
                 ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), ui_tr("!  %s"), busy ? "Setting up the game files..." : status.c_str());
                 ImGui::SetCursorPosX(x0);

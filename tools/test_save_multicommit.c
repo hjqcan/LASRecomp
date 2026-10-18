@@ -21,6 +21,7 @@ const char *g_romfs_dir;
 int rt_romfs_files;
 static TitleProfile profile = {.version="1.0.0"};
 const TitleProfile *title_profile_current(void) { return &profile; }
+bool title_content_validate(const TitleProfile *p,const char *root,bool image,int *count,char *why,size_t cap) { abort(); }
 bool title_is_las(void) { return false; }
 void save_editor_file_read(const char *p,uint64_t a,int64_t o,int64_t n) { abort(); }
 void flags_ext_save_read(const char *p,uint64_t a,int64_t o,int64_t n,bool pending) { abort(); }

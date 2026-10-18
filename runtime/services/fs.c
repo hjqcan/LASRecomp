@@ -37,11 +37,11 @@ const char *g_save_dir = "save";
 // ------------------------------------------------------------------ the base RomFS image
 // The game reads its data as one raw RomFS image. It's served from the player's romfs/ folder: the header and tables
 // laid out in memory (runtime/romfs_build.c), each file's bytes read from its own file, the gaps between files zeros -
-// no image file on disk, so the game data isn't kept twice. A romfs.bin from an older version is used only when the
-// folder isn't there.
+// no image file on disk is required. Adapters whose imports retain an image prefer romfs.bin; a complete extracted
+// folder also works. LAS keeps its folder-first behavior, with legacy images as a fallback.
 static RomfsLayout g_base;
 static bool g_base_open;
-static int g_base_fd = -1;  // (an older version's romfs.bin)
+static int g_base_fd = -1;  // an imported or legacy romfs.bin
 static pthread_mutex_t g_base_lock = PTHREAD_MUTEX_INITIALIZER;
 #define BASE_FDS 32  // files kept open (macOS allows 256 open files by default)
 static struct { int file, fd; uint64_t used; } g_base_fds[BASE_FDS];
@@ -115,16 +115,36 @@ static void base_close(void) {
 static void base_open(void) {
     if (g_base_open) return;
     char path[1100], why[256] = "";
-    snprintf(path, sizeof path, "%s/region_common", g_romfs_dir);
-    struct stat sb;
-    if (stat(path, &sb) == 0 && romfs_layout(g_romfs_dir, &g_base, why, sizeof why)) {
-        LOG("[fs] romfs: %d files served from %s\n", g_base.nfiles, g_romfs_dir);
-    } else {
-        snprintf(path, sizeof path, "%s.bin", g_romfs_dir);  // (an older version's image)
+    const TitleProfile *profile = title_profile_current();
+    snprintf(path, sizeof path, "%s.bin", g_romfs_dir);
+    int image_error = 0;
+    if (profile->image_satisfies_count) {
         g_base_fd = open(path, O_RDONLY);
-        if (g_base_fd < 0) FATAL("cannot read the game data in %s %s(set up the game files on the start screen)\n",
-                                 g_romfs_dir, why);
+        if (g_base_fd < 0) image_error = errno;
     }
+    if (g_base_fd < 0) {
+        int count = -1;
+        bool folder = title_content_validate(profile, g_romfs_dir, false, &count, why, sizeof why) &&
+                      romfs_layout(g_romfs_dir, &g_base, why, sizeof why);
+        if (folder && (unsigned)g_base.nfiles < profile->minimum_files) {
+            snprintf(why, sizeof why, "Only %d of %u game files could be read", g_base.nfiles, profile->minimum_files);
+            romfs_layout_free(&g_base);
+            folder = false;
+        }
+        if (folder) {
+            LOG("[fs] romfs: %d files served from %s\n", g_base.nfiles, g_romfs_dir);
+            g_base_open = true;
+            return;
+        }
+        if (!profile->image_satisfies_count) {
+            g_base_fd = open(path, O_RDONLY);
+            if (g_base_fd < 0) image_error = errno;
+        }
+        if (g_base_fd < 0)
+            FATAL("cannot read the game data in %s: %s; cannot open %s: %s (set up the game files on the start screen)\n",
+                  g_romfs_dir, why, path, strerror(image_error));
+    }
+    LOG("[fs] romfs image: %s\n", path);
     g_base_open = true;
 }
 
