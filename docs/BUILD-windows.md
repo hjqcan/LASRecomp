@@ -23,6 +23,11 @@ Without `generated/` only the app is built: the start screen builds the game cod
 files (as for players), given the generator and the compiler (`make gen-helper`, `tools/fetch_zig.sh`).
 `make runtime-objs` compiles the runtime only (quick check).
 
+For local build diagnostics, `LARECOMP_BUILD_JOBS=1..64` overrides the automatic
+parallel-job count. `LARECOMP_ZIG` selects a pinned Zig executable and retains its
+`zig cc` driver mode; `LARECOMP_CC` selects an ordinary C compiler and takes
+precedence. Leaving both unset uses the bundled toolchain.
+
 Run from a shell that has `C:\msys64\ucrt64\bin` on PATH (SDL3, FFmpeg, Vulkan, shaderc DLLs).
 
 ## Package

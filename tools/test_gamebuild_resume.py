@@ -25,12 +25,20 @@ BRIDGE = r'''
 #include <filesystem>
 #include <string>
 #include <cstdio>
+#include <cstdlib>
 static std::string root;
 static intptr_t (*start_cb)(const char *const *, const char *, bool);
 static int (*wait_cb)(intptr_t, bool);
 static void (*kill_cb)(intptr_t);
 extern "C" void test_init(const char *r, intptr_t (*s)(const char *const *,const char *,bool),
                           int (*w)(intptr_t,bool), void (*k)(intptr_t)) { root=r;start_cb=s;wait_cb=w;kill_cb=k; }
+extern "C" void test_compiler_environment(const char *cc, const char *zig) {
+#ifdef _WIN32
+    _putenv_s("LARECOMP_CC",cc); _putenv_s("LARECOMP_ZIG",zig);
+#else
+    setenv("LARECOMP_CC",cc,1); setenv("LARECOMP_ZIG",zig,1);
+#endif
+}
 extern "C" bool rt_resource(const char *,const char *dev,char *out,size_t n) {
     if(!dev)return false;
     std::string p=root+"/"+dev;
@@ -117,6 +125,10 @@ with tempfile.TemporaryDirectory() as temporary:
         elif (fail_compile and '-c' in command) or (fail_link and '-c' not in command):
             fail_compile=fail_link=False
             command=[sys.executable,'-c','import sys;print("synthetic failure");sys.exit(7)']
+        # Exercise production Zig driver selection without downloading Zig:
+        # translate only its extra driver argument to this fixture's real CC.
+        elif command[0]==compiler and command[1]=='cc':
+            command=[command[0],*command[2:]]
         stream=open(log.decode(),'ab' if append else 'wb')
         try:
             p=subprocess.Popen(command,stdout=stream,stderr=subprocess.STDOUT,
@@ -147,6 +159,7 @@ with tempfile.TemporaryDirectory() as temporary:
     options=Options(progress,1,cancelled)
     library.test_init.argtypes=[ct.c_char_p,SPAWN,WAIT,KILL]
     library.test_init(str(resources).encode(),spawn,wait,kill)
+    library.test_compiler_environment.argtypes=[ct.c_char_p,ct.c_char_p]
     library.gamebuild_run.argtypes=[ct.c_char_p,ct.POINTER(Options),ct.c_void_p,ct.c_size_t]
     library.gamebuild_run.restype=ct.c_bool
     why=ct.create_string_buffer(1024)
@@ -247,7 +260,14 @@ with tempfile.TemporaryDirectory() as temporary:
             assert hashlib.sha256(output.read_bytes()).digest()==acnh_hash
         finally:
             library.game_install_close(transaction)
-        print('Build scheduler and installation: cancel/resume, input isolation, real library verification, failed rebuild preservation and candidate publication passed')
+        library.test_compiler_environment(compiler.encode(),compiler.encode())
+        assert run() and len(compiles())==1 and not generators(),why.value
+        assert all(a[1]!='cc' for a in compiles()),'Explicit CC takes precedence'
+        library.test_compiler_environment(b'',compiler.encode())
+        assert run() and len(compiles())==13,why.value
+        assert all(a[1]=='cc' for a in compiles()),'Pinned Zig must keep its driver mode'
+        assert run() and len(compiles())==1 and not generators(),why.value
+        print('Build scheduler and installation: cancel/resume, compiler selection, input isolation, real library verification, failed rebuild preservation and candidate publication passed')
     finally:
         for pid in list(processes): kill(pid)
         if os.name=='nt':

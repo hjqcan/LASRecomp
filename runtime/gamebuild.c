@@ -127,6 +127,10 @@ static bool find_tools(Tools *t) {
         return false;
     e = getenv("LARECOMP_CC");
     if (e && *e) snprintf(t->cc, sizeof t->cc, "%s", e);
+    else if ((e = getenv("LARECOMP_ZIG")) && *e) {
+        snprintf(t->cc, sizeof t->cc, "%s", e);
+        t->zig = true;
+    }
     else if (rt_resource("zig" SEP "zig" PLAT_EXE_SUFFIX, NULL, t->cc, sizeof t->cc)) t->zig = true;
 #ifndef _WIN32
     else if (rt_dev_mode() && file_exists("/usr/bin/clang")) snprintf(t->cc, sizeof t->cc, "/usr/bin/clang");
