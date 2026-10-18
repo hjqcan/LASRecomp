@@ -28,6 +28,12 @@ must not be converted in place or overwritten during development. Initial
 qualification uses the game's normal 30 FPS timing before any high-frame-rate
 work.
 
+The first real update import stopped before publication because the merged
+RomFS validator still selected LAS's content roots. Update assembly now passes
+the identified release's content rules through to that validator. A synthetic
+ACNH base/update reproduces the former failure and checks the corrected payload;
+the existing LAS, NSP and XCI import regressions remain in place.
+
 | Module | Guest base | Build ID |
 | --- | --- | --- |
 | main | 0x7000000000 | 7fc1baff976aeca414520cb89f4616cb |

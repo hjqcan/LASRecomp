@@ -360,7 +360,7 @@ class PatchView:
         return b''.join(result)
 
 
-def update_view(base, update, sections):
+def update_view(base, update, sections, game=None):
     candidates = []
     relocation = getattr(update, 'relocation', None)
     if relocation:
@@ -401,7 +401,7 @@ def update_view(base, update, sections):
                 require(physical <= source.size and end - virtual <= source.size - physical,
                         'BKTR extent exceeds its source')
             merged = PatchView(base, patch, entries, size)
-            find_romfs(merged, [(0, size)])
+            find_romfs(merged, [(0, size)], game)
             candidates.append(merged)
         except (ValueError, UnicodeError, struct.error):
             continue
@@ -514,7 +514,7 @@ def import_game(base_path, update_path, output, replace=False, keys_path=None, t
                 update, update_sections, exefs, build_id, metadata = open_program(update_path, scratch, stack, 'update', keys, game)
                 require(game.release(build_id).role == 'update', 'Only a verified update is supported')
                 print('import: applying update extents', flush=True)
-                romfs = update_view(base.sub(section_start, section_size), update, update_sections)
+                romfs = update_view(base.sub(section_start, section_size), update, update_sections, game.release(build_id))
                 offset, header, _, _ = find_romfs(romfs, [(0, romfs.size)], game.release(build_id))
                 executable = update
             require(expected_version is None or game.release(build_id).version == expected_version,

@@ -1,6 +1,7 @@
 """Adapter boundaries and cross-title rejection; synthetic headers only."""
 import io
 import json
+import struct
 from pathlib import Path
 import tempfile
 import unittest
@@ -114,6 +115,34 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'in development'):
             import_game(self.root/'missing.nsz', None, output, game_id='acnh', expected_version='3.0.1')
         self.assertFalse(output.parent.exists())
+
+    def test_acnh_update_assembly_uses_its_own_content_roots(self):
+        game = get_game('acnh')
+        archives = []
+        for updated, release in enumerate(game.releases):
+            files = {m.name: synthetic_nso(m.build_id) for m in release.modules}
+            files.update({'main.npdm': b'fixture metadata', 'rtld': b'fixture loader'})
+            exefs = pfs_files(files)
+            section = synthetic_romfs(game.romfs_roots)
+            if updated:
+                section = bytearray(len(section))
+                section[:8] = b'changed!'
+                struct.pack_into('<IIQQQ', section, 0x4000, 0, 2, 0x10000, 0, 0x1000)
+                struct.pack_into('<IIQ', section, 0x8000, 0, 1, 0x1000)
+                struct.pack_into('<QQI', section, 0x8010, 0, 0, 0)
+                struct.pack_into('<IIQ', section, 0xc000, 0, 2, 0x10000)
+                struct.pack_into('<QQI', section, 0xc010, 0x1000, 0, 1)
+                struct.pack_into('<QQI', section, 0xc024, 0x1008, 0x1008, 0)
+            archive = self.root/f'{release.version}.nsz'
+            archive.write_bytes(pfs_files({'fixture.ncz': ncz(bytes(section)+exefs,
+                sections=[(0x4000, len(section)), (0x4000+len(section), len(exefs))])}))
+            archives.append(archive)
+        output = self.root/'installed'
+        with patch('import_game.shutil.disk_usage', return_value=SimpleNamespace(free=100 << 30)), redirect_stdout(io.StringIO()):
+            result = import_game(*archives, output, expected_version='3.0.1', allow_development=True)
+        self.assertEqual((result['game_id'], result['game_version']), ('acnh', '3.0.1'))
+        self.assertEqual((output/'romfs/Movie/example.bin').read_bytes(), b'changed!')
+        self.assertEqual(inspect_exefs(output/'exefs')['version'], '3.0.1')
 
     def test_metadata_free_auto_detection_and_default_acnh_import(self):
         game = get_game('acnh')
