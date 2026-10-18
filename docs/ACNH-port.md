@@ -38,8 +38,30 @@ stationary outdoor interval had a 16.9 FPS median. A separate rainy daytime
 interval at 720p had an 18.7 FPS median. Strict Vulkan validation was substantially
 slower. These are local observations, not a 30/60 FPS performance guarantee.
 High-frame-rate speed correction is a separate feature and is not established
-by the version-support checks above. Both LAS releases and ACNH 1.0.0 remain
-required shared-runtime regressions before publishing a package.
+by the version-support checks above. The subsequent package regression passed
+LAS 1.0.0 and 1.1.0 house round trips, manual saves, in-process reboots and fresh
+process reloads under strict Vulkan validation. ACNH 1.0.0 also passed manual
+save/reopen and tent round trips; the original source saves remained unchanged.
+
+### 60 FPS + SpeedFix integration (in development)
+
+The optional 3.0.1 integration uses **ACNH 60 FPS + SpeedFix by tmouh**, pinned
+to `c3f162eb3e7e76b6cd30d2366d21233840673a9d`; see its
+[attribution and CC BY-NC 4.0 license](../adapters/acnh/speedfix60/README.md).
+The preparation helper validates the player's original module and resource
+hashes, applies 6,303 main words, one SDK word, the StaticParam IPS and 107 BCSV
+parameter words, then publishes a separate `.acnh60` installation. No original
+executable, parameter file or save is modified. Text, read-only and data changes
+are all present before code generation. Distinct native library identities
+prevent mixing normal and patched code; the NVN backend implements the SDK
+patch's one-refresh policy only after all seven prepared files pass validation.
+
+Patch parsing, resource guards, native mode rejection/reset, 30/60 presentation
+intervals and the existing build/resume tests pass. Actual 60 FPS gameplay,
+speed comparisons and a launcher mode selector are still being qualified.
+The default remains normal 30 FPS. This community correction assumes sustained
+60 FPS: lower rendering performance slows the game, so it is not a dynamic
+frame-rate solution.
 
 The common implementation changes include:
 
@@ -510,4 +532,5 @@ Queue growth, appends and completed-submission collection now share a mutex;
 the submission sequence read by finalizers is atomic. The test also checks
 pending entries, compaction, view/image ordering and exactly-once destruction.
 The repaired queue passes it, together with fence and feedback-copy regressions.
-Actual scene requalification is still required for the observed tent-entry crash.
+The later shared-runtime acceptance runs above completed tent entry and exit in
+both ACNH versions under strict Vulkan validation.

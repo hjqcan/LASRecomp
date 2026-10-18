@@ -2,6 +2,7 @@
 #include "gamebuild.h"
 #include "gameversion.h"
 #include "build_cache.h"
+#include "acnh_speedfix.h"
 
 #include <pthread.h>
 #include <stdint.h>
@@ -344,8 +345,8 @@ static PlatProc start_compile(const Tools *t, const Unit *u, const char *work) {
 
 // ------------------------------------------------------------------ the build
 bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size_t why_size) {
-    const TitleProfile *profile=title_profile_validate(game_dir,why,why_size);
-    if (!profile) return false;
+    const TitleProfile *profile=acnh60_profile(title_profile_validate(game_dir,why,why_size),game_dir,why,why_size);
+    if (!profile || !acnh60_validate(game_dir,why,why_size)) return false;
     unsigned module_count=profile->module_count;
     uint64_t t0 = plat_now_ns();
     if (!g_registered) g_registered = true, atexit(end_all);
@@ -424,7 +425,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         add(&a,"--profile"); add(&a,profile->generator_profile);
         add(&a,"--adapter"); add(&a,profile->key);
         add(&a,"--release"); add(&a,profile->version);
-        add(&a,"--adapter-id"); add(&a,profile->code_identity);
+        add(&a,"--adapter-id"); add(&a,acnh60_generator_identity(profile));
         if (profile->modules[i].hle) { add(&a, "--hle"); add(&a, t.hle); }
         g->p = spawn(a.v, g->log);
         args_free(&a);

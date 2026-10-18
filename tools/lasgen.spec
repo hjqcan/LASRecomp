@@ -15,6 +15,9 @@ from game_catalog import PROFILE_INPUTS, SHARED_GENERATOR_INPUTS
 adapter_data = [(path, 'adapters/' + os.path.basename(os.path.dirname(path)))
                 for path in glob.glob(os.path.join(TOOLS, '..', 'adapters', '*', 'adapter.json'))]
 adapter_data += [(os.path.join(TOOLS, '..', 'adapters', 'core-capabilities.json'), 'adapters')]
+adapter_data += [(path, 'adapters/acnh/speedfix60')
+                 for path in glob.glob(os.path.join(TOOLS, '..', 'adapters', 'acnh', 'speedfix60', '*'))
+                 if os.path.isfile(path)]
 profile_data = [(os.path.join(TOOLS, '..', name), os.path.dirname(name))
                 for name in sorted(set(SHARED_GENERATOR_INPUTS) | {name for inputs in PROFILE_INPUTS.values() for name in inputs})]
 

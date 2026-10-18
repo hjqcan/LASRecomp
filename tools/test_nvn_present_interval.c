@@ -5,11 +5,12 @@
 #define HLE_FUNC(sym, fn) static void fn(Cpu *c)
 #include "../runtime/nvn/objects.c"
 
-static bool las;
+static bool las, speedfix;
 static uint64_t now = 1000000000, render_cost, oversleep, presented[1024];
 static unsigned presents, sleeps;
 static NvnTexture texture;
 bool title_is_las(void) { return las; }
+bool acnh60_active(void) { return speedfix; }
 uint64_t plat_now_ns(void) { return now; }
 void plat_sleep_until_ns(uint64_t deadline) {
     assert(deadline >= now && deadline - now <= 66666667);
@@ -46,6 +47,16 @@ int main(void) {
         assert(presented[i] - presented[i-1] == 33333334);
     }
     assert(presented[300] - presented[0] == 10000000200ull);
+
+    speedfix=true;
+    for (unsigned i=0; i<60; ++i) {
+        uint64_t prior=presented[presents-1];
+        present(&w,0);
+        assert(presented[presents-1]-prior==16666667);
+    }
+    speedfix=false;
+    uint64_t restored=presented[presents-1];present(&w,0);
+    assert(presented[presents-1]-restored==33333334);
 
     unsigned before = sleeps;
     now += 250000000; present(&w, 0); assert(sleeps == before);

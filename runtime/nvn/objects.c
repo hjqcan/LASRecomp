@@ -1,4 +1,5 @@
 #include "../photo.h"
+#include "../acnh_speedfix.h"
 // NVN objects, builders, and state objects (everything except command recording).
 #include <stdlib.h>
 #include <string.h>
@@ -780,7 +781,10 @@ static void window_wait_present_interval(NvnWindow *w) {
     // LAS already waits through its emulated VI event and has a separate frame-mode policy.
     // Generic adapters also rely on NVN's window interval: 2 on the guest's 60 Hz display
     // requests 30 FPS, regardless of the host monitor's refresh rate.
-    int interval = w->interval;
+    // The community SDK patch sits below NVN in Android Surface, which this
+    // backend replaces. Apply that one-refresh policy only after the entire
+    // reviewed speed-corrected installation has passed its boot checks.
+    int interval = acnh60_active() ? 1 : w->interval;
     if (title_is_las() || interval < 1 || interval > 4) {
         w->present_time_ns = 0;
         return;

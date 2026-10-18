@@ -89,6 +89,8 @@ def main():
     copy(root/'fonts/README.md', 'fonts/README.md')
     copy(root/'third_party/release-licenses', 'licenses')
     copy(root/'third_party/ryujinx/LICENSE.txt', 'licenses/Ryujinx-LICENSE.txt')
+    copy(root/'adapters/acnh/speedfix60/LICENSE', 'licenses/ACNH-SpeedFix-LICENSE.txt')
+    copy(root/'adapters/acnh/speedfix60/README.md', 'licenses/ACNH-SpeedFix-README.md')
     files = sorted(p for p in stage.rglob('*') if p.is_file())
     banned = {'.gamebuild', 'extracted', 'games', 'save', 'saves', 'seeds', 'photos', 'prod.keys', 'title.keys',
               'lasgame.dll', 'lasrecomp.log', 'larecomp.ini', 'settings.ini', 'romfs.bin', 'exefs', 'romfs'}

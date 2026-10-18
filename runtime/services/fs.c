@@ -19,6 +19,7 @@
 #include "../hle.h"
 #include "../rando.h"
 #include "../mods.h"
+#include "../acnh_speedfix.h"
 #include "../workshop.h"
 #include "../ipc.h"
 #include "../save_backup.h"
@@ -377,7 +378,8 @@ static void rom_index(void) {
     // (in a copy) to point them at data appended past the end of the image; reads there go to host files.
     for (int i = 0; i < rom_nfiles; i++) {
         char host[1200];
-        if (!rando_romfs_override(rom_files[i].path, host, sizeof host) &&
+        if (!acnh60_romfs_override(rom_files[i].path, host, sizeof host) &&
+            !rando_romfs_override(rom_files[i].path, host, sizeof host) &&
             !mods_romfs_override(rom_files[i].path, host, sizeof host)) continue;
         struct stat sb;
         if (stat(host, &sb)) continue;

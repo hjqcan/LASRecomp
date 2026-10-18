@@ -567,6 +567,8 @@ def main(argv=None):
             stream.reconfigure(encoding='utf-8', errors='replace')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base', type=Path)
+    parser.add_argument('--prepare-speedfix60', type=Path,
+                        help='Prepare ACNH 3.0.1 60 FPS + SpeedFix from an installed game folder')
     parser.add_argument('--catalog', action='store_true', help='List reviewed adapters and their installation status')
     parser.add_argument('--game', choices=['auto'] + [g.id for g in GAMES], default='auto',
                         help='Identify the game from package metadata or executable IDs (default: auto)')
@@ -581,6 +583,13 @@ def main(argv=None):
     parser.add_argument('--expected-version', help='Require this installation slot version')
     args = parser.parse_args(argv)
     try:
+        if args.prepare_speedfix60:
+            require(not any((args.base, args.update, args.output, args.keys, args.title_keys,
+                             args.catalog, args.inspect, args.replace, args.expected_version)),
+                    '--prepare-speedfix60 cannot be combined with archive import options')
+            from acnh_speedfix import prepare
+            prepare(args.prepare_speedfix60)
+            return 0
         if args.catalog:
             print(json.dumps(catalog(), ensure_ascii=False))
             return 0

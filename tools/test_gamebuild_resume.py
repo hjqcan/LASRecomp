@@ -103,7 +103,8 @@ with tempfile.TemporaryDirectory() as temporary:
     bridge=tmp/'bridge.cpp'; bridge.write_text(BRIDGE)
     libfile=tmp/('scheduler.dll' if os.name=='nt' else 'scheduler.so')
     subprocess.run(cxx+['-shared','-fPIC','-pthread','-std=c++17','-Iruntime','-x','c++',str(bridge),
-                        'runtime/ui/build_cache.mm','runtime/ui/game_install.mm','-x','none',*objects,'-o',str(libfile)]+
+                        'runtime/ui/build_cache.mm','runtime/ui/game_install.mm','runtime/ui/acnh_speedfix.mm',
+                        '-x','none',*objects,'-o',str(libfile)]+
                    (['-Wl,--export-all-symbols'] if os.name=='nt' else []),cwd=ROOT,check=True)
     dll_search = os.add_dll_directory(str(Path(compiler).parent)) if os.name == 'nt' else None
     library=ct.CDLL(str(libfile))

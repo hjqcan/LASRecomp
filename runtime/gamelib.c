@@ -1,6 +1,7 @@
 // Loads the recompiled game code library (runtime/gamelib.h).
 #include "gamelib.h"
 #include "gameversion.h"
+#include "acnh_speedfix.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,7 +39,7 @@ static bool id_matches(const char *lib, const char *game_dir) {
     build[strcspn(build, "\r")] = 0;
     char main_path[1100], current_id[65], why[256];
     snprintf(main_path, sizeof main_path, "%s/exefs/main", game_dir);
-    const TitleProfile *p = title_profile_validate(game_dir, why, sizeof why);
+    const TitleProfile *p = acnh60_profile(title_profile_validate(game_dir, why, sizeof why), game_dir, why, sizeof why);
     return p && !strcmp(id, GAMELIB_ID) && title_build_id(main_path, current_id) && !strcmp(build, current_id) &&
            !strcmp(adapter, p->code_identity);
 }
@@ -64,7 +65,7 @@ static int candidates(const char *game_dir, char out[3][1100]) {
 bool gamelib_present(const char *game_dir) {
     if (g_tables) {
         char why[256];
-        const TitleProfile *p=title_profile_validate(game_dir,why,sizeof why);
+        const TitleProfile *p=acnh60_profile(title_profile_validate(game_dir,why,sizeof why),game_dir,why,sizeof why);
         return p && !strcmp(g_tables->modules[0].build_id,p->modules[0].build_id) &&
                g_tables->adapter_id && !strcmp(g_tables->adapter_id,p->code_identity);
     }
@@ -80,7 +81,7 @@ static const GameLibTables *validate_tables(const GameLibTables *t, const char *
         snprintf(g_error, sizeof g_error, "%s was built for another version", path);
         return NULL;  // (left loaded: nothing of it runs)
     }
-    const TitleProfile *p=title_profile_validate(game_dir,g_error,sizeof g_error);
+    const TitleProfile *p=acnh60_profile(title_profile_validate(game_dir,g_error,sizeof g_error),game_dir,g_error,sizeof g_error);
     if (!p) return NULL;
     if (!t->game_id || !t->version || strcmp(t->game_id,p->key) || strcmp(t->version,p->version) ||
         t->adapter_revision!=p->adapter_revision || t->module_count!=p->module_count || !t->modules ||
@@ -136,6 +137,7 @@ static const GameLibTables *open_lib(const char *path, const char *game_dir) {
 }
 
 bool gamelib_verify(const char *game_dir, char *why, size_t size) {
+    if (!acnh60_validate(game_dir, why, size)) return false;
     char path[2048];
     snprintf(path, sizeof path, "%s/%s", game_dir, GAMELIB_NAME);
     if (!id_matches(path, game_dir)) { snprintf(why, size, "The candidate library does not match this release and runtime"); return false; }

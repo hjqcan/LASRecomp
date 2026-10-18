@@ -228,6 +228,7 @@ $(GEN)/gamelib_modules.inc: $(ADAPTER_SRCS) tools/gen_game.py
 	$(PY) tools/gen_game.py --game-dir $(GAME_DIR) --outdir $(GEN) --metadata-only
 
 $(B)/rt/title_profile.o: runtime/title_catalog.inc
+$(B)/rt/ui/acnh_speedfix.o: runtime/acnh_speedfix_data.inc
 
 runtime/title_catalog.inc: $(ADAPTER_SRCS) $(GAMELIB_SRCS)
 	$(PY) tools/game_catalog.py --write-c $@

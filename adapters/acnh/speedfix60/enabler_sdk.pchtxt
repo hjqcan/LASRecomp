@@ -1,0 +1,11 @@
+@nsobid-A226048605D3597F90CB1067D141CD36647B90CD
+// Animal Crossing: New Horizons 3.0.3, 60 FPS (SDK module)
+// Use together with the SpeedFix code patch and parameter pack
+@flag print_values
+@flag offset_shift 0x100
+
+// Present interval: swap interval of each queued frame 2 -> 1 (surface setting ignored), 30 -> 60 FPS
+@enabled
+0019CFF0 2B008052
+
+@stop

@@ -10,6 +10,7 @@
 #include "game_shortcut.h"
 #include "game_install.h"
 #include "mods.h"
+#include "acnh_speedfix.h"
 #include "photo.h"
 #include "workshop.h"
 #include "performance.h"
@@ -146,6 +147,7 @@ static void reboot_idle(void) {  // (main thread, while guest threads stop) keep
 static void teardown(void) {
     uint64_t t0 = plat_now_ns();
     kernel_stop_threads(reboot_idle);
+    acnh60_clear();
     research_finish();
     workshop_reset();
     performance_reset();
@@ -167,6 +169,7 @@ static void teardown(void) {
 static void boot(const char *root) {
     char why[512];
     if (!title_profile_select(root,why,sizeof why)) FATAL("%s\n",why);
+    if (!acnh60_boot(root,why,sizeof why)) FATAL("%s\n",why);
     if (!kernel_memory_configure(title_profile_current()->system_resource_size))
         FATAL("cannot configure this game's virtual memory reservation\n");
     game_profile_activate(root, rt_data_root());
