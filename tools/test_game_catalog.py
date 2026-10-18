@@ -135,6 +135,26 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual([g['id'] for g in json.loads(output.getvalue())['games']], [game.id for game in GAMES])
         self.assertEqual({r.main_build_id[:40]: r.version for r in get_game().releases}, VERSIONS)
 
+    def test_new_adapters_preserve_existing_runtime_and_save_contracts(self):
+        # These are the supported installation contracts, independent of the new
+        # adapter's defaults. Changing them requires a reviewed migration.
+        expected = {
+            ('las', '1.0.0'): (207, 4, ('las_extensions',), 'games/v1.0.0', 'save/v1.0.0', 1),
+            ('las', '1.1.0'): (207, 4, ('las_extensions',), 'games/v1.1.0', 'save/v1.1.0', 2),
+            ('acnh', '1.0.0'): (312, 1, (), 'games/acnh/v1.0.0', 'save/acnh/v1.0.0', 3),
+        }
+        for (key, version), contract in expected.items():
+            release = next(r for r in get_game(key).releases if r.version == version)
+            runtime, install = release.runtime, release.installation
+            with self.subTest(game=key, version=version):
+                self.assertTrue(release.installable)
+                self.assertEqual(runtime.get('nvn_major', 53), 53)
+                self.assertEqual(runtime.get('system_resource_size', 0), 0)
+                self.assertEqual((runtime['nvn_minor'], runtime['heap_scale'], tuple(runtime['features']),
+                                  install['directory'], install['save_directory'], install['legacy_index']), contract)
+                self.assertEqual([(m.name, m.base) for m in release.modules[:2]],
+                                 [('main', 0x7000000000), ('sdk', 0x7004000000)])
+
     def test_za_requires_development_and_qualified_capabilities(self):
         game = get_game('pokemon_za'); release = game.releases[0]
         self.assertEqual((release.runtime['nvn_major'],release.runtime['nvn_minor']),(55,15))

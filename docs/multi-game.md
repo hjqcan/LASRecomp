@@ -62,6 +62,35 @@ cache, exercises simultaneous requests, checks a first-use compute dispatch's
 output, resets the cache, and verifies that compile failures wake every waiter.
 The intentional invalid-shader diagnostic in that test is expected.
 
+## Regression gates when adding a game
+
+New-game work must preserve the supported LAS 1.0.0, LAS 1.1.0 and ACNH 1.0.0
+paths. Keep game-specific addresses, ABI versions and opt-in memory layouts in
+the reviewed adapter. A shared implementation change needs an impact review
+covering the existing adapters that use that subsystem. For example, LAS's GPU
+counter adjustment remains LAS-only even when its frame pacer is shared by both
+renderers; generic titles retain their requested presentation interval.
+
+`test_game_catalog.py` pins existing installation/save namespaces, legacy indices,
+NVN defaults and zero virtual-memory resource budgets independently of new adapter
+definitions. Native profile, memory, NVN object, presentation and pacing tests
+exercise behavior across both legacy and new configurations. Run the relevant
+production tests for each changed subsystem, including save and audio regressions
+when their code or dependencies change.
+
+Before accepting a shared runtime change, use the same candidate executable and
+frozen helper for all three supported releases. Use separate writable build/data
+directories and copied saves, retain source-save hashes, and exercise loading,
+input, scene rendering, audio, saving and reopening. Compare diagnostics and
+screenshots with the accepted baseline; a title screen alone is insufficient.
+Record any scenario that could not be repeated as unverified. Do not replace the
+user's installed app or original saves during these checks. A release still needs
+the broader [release checklist](enhanced.md#repeatable-release-checks).
+
+An unexplained crash or save mismatch keeps the candidate unqualified. Preserve
+the failing run when later retries pass; repeat with the accepted baseline and
+record the comparison without treating a few successful retries as a fix.
+
 ## Managed locations
 
 | Launch ID | Stable installation slot | Vanilla save folder |

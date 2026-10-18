@@ -615,7 +615,7 @@ FONT_BOX_GLYPH_SITE = A.FONT_BOX_GLYPH_SITE
 
 
 def _font_box_glyph(gen, a):
-    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    w = patch_word(gen, a)
     assert w == 0x3940e008, hex(w)  # ldrb w8, [x0, #0x38]
     return (addr_text('if (c->x[0] == 0) goto L_@FONT_BOX_GLYPH_SKIP@; c->x[8] = LD8(c->x[0] + 0x38);') +
             f'  /* {a:#x}: ldrb w8, [x0, #0x38] (font box glyph: none skips the marking) */')
