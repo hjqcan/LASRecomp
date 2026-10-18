@@ -1,6 +1,6 @@
 # Pokemon Legends: Z-A integration probe
 
-Status on 2026-10-18: **base 1.0.0 passes audio workspace queries and exception-stack registration; blocked by an unresolved indirect branch target; not playable**.
+Status on 2026-10-18: **base 1.0.0 passes audio workspace queries, exception-stack registration, host random-byte requests and three repaired table sites; blocked at a further cross-fragment guard; not playable**.
 This is third-title framework evidence, not a completed port. No Z-A release has
 been added to the installable catalog. Update 2.0.2 remains an inventory-only
 input. Tests used local files on Windows, starting
@@ -364,6 +364,103 @@ are bounded gameplay regressions, not full-playthrough or performance-parity
 results, and they do not cover the experimental 1.1.0 randomizer. The shared
 audio/context changes must stay out of the published runtime until the LAS
 startup failure has been explained and the affected checks pass again.
+
+## Relative-table discovery follow-up (2026-10-18)
+
+Enhanced now includes official `beta_5` through `ca7cd3e`. The first official-only
+merge was published as `b8aae96`, with the enhanced segmented GPU-store
+path retained and the upstream Ryujinx notice included in all package layouts.
+The Windows runtime build, GPU-memory regression and stronger Windows thread
+wait/TLS-cleanup regression pass; all seven remote CI workflows pass for that
+merge. Follow-up `609c33f` adds the latest upstream condition-variable regression
+and contributor credit without changing runtime behavior. Its test fixture uses
+the enhanced module count and aborting stubs for unrelated memory/profile/research
+entry points; the test passes in both the published and research checkouts.
+All seven remote CI workflows also pass for `609c33f`.
+The audio/context and discovery experiments
+remain local while the earlier LAS 1.1.0 startup failure is unresolved.
+
+The discovery candidate recognizes an exact `ADR; LDRB/H; ADD; BR` sequence in
+which the ADR is only a local relative-table arithmetic origin. It removes that
+one discovery reference only when the existing resolver cannot enumerate a
+bounds-checked table and the origin stays inside the same known function. It
+does not infer an index range. Independent symbols, relocations, direct calls
+and callback materializations continue to create entries; already-resolved
+tables keep their previous partitioning. A scheduled `MOV Xd/Wd, ZR` before the
+branch is also accepted when it cannot overwrite the branch register.
+
+Seven asset-free tests cover byte/halfword tables, retained independent entries,
+ambiguous register use, cross-function origins, bounded-table preservation and
+the scheduled return-value clear.
+The emitted native functions also match ARM64 execution for each synthetic
+case. Nine cross-fragment table tests and frozen adapter
+generation tests pass. Both table suites are wired into the three-platform CI.
+
+A separate bounded-table repair searches through stack-frame setup before a
+taken guard's table body, within the existing 64-step emulation budget. The
+former 12-instruction search stopped partway through a prologue. The actual
+table in `main+0x5e2a68` now resolves all seven targets, including `0x5e2e58`;
+its synthetic fixture also checks cross-fragment emission and a call barrier.
+
+Comparing real modules against the preceding discovery implementation gives:
+
+| Input | Discovery comparison |
+| --- | --- |
+| LAS 1.0.0 and 1.1.0 | Each main module retains all 86,669 entries; each SDK retains all 34,982. Function ends, labels and resolved tables are identical. |
+| ACNH 1.0.0 | Main changes 38 entry records and removes 31 boundaries; SDK changes 12 records and removes six boundaries. The subsdk module is identical. |
+| Z-A 1.0.0 | Strict native startup passes the formerly missing `main+0x166d8a0` case and continues to the `csrng` service. |
+
+These structural comparisons do not replace the saved-game regression matrix.
+No Z-A gameplay qualification follows from this generator result alone.
+
+The next strict run reached `csrng` command 0. Following the
+[libnx wire contract](https://github.com/switchbrew/libnx/blob/master/nx/source/services/csrng.c),
+the runtime now fills its output map-alias buffer using OS entropy: checked
+`rand_s` on Windows, `getrandom` with interruption/short-read handling on Linux,
+and `arc4random_buf` on macOS. Empty buffers succeed without querying the OS;
+missing or overflowing descriptors and host failures return errors. No weak
+fallback or game-randomizer seed is used. Tests exercise output canaries for
+every length from zero through 1,024 bytes, invalid descriptors and injected
+host failures; the Linux path also tests short reads and interruption.
+
+Actual Windows startup then completed two eight-byte requests and stopped at
+`main+0x27f5fac`. Its table has a return-value clear scheduled between the target
+addition and branch, which motivated the additional recognition rule above.
+Strict native startup now passes that site, input initialization and the
+`0x5e2e58` site repaired by the bounded-table change. Windows service tests and
+the runtime build pass. Linux/macOS service execution has not been checked on
+this host.
+
+The final strict probe stops at `main+0x607d90`, from the signed 32-bit relative
+table at `main+0x607b20`. An ADR materializes its own arithmetic origin at
+`0x607b14`, creating a fragment boundary after the `b.hi` guard. A read-only
+probe using the whole function resolves 14 targets, including the failing one;
+the same resolver starting at the emitted fragment finds no bounds. This
+fallthrough-guard visibility issue is the next unresolved discovery case.
+No game frame, title screen, actual Opus playback or save/reopen is qualified.
+
+The final Windows research executable (`cbf4dfbf1ff6f87c...`) was used for all
+three new legacy checks. Each LAS rebuild reused 645 objects and recompiled only
+the library entry object. LAS 1.0.0 and 1.1.0 then read the complete 24,288-byte
+copied manual save, moved into and out of Marin/Tarin's house, opened the item
+menu and exited normally after 94 and 90 seconds. Their copied save files did
+not change. This batch checks existing save reads; it does not repeat the earlier
+manual save-write tests or qualify the experimental updated-version randomizer.
+
+ACNH rebuilt 37 objects and reused 693. A 290-second run loaded the copied
+island, moved and completed Save and End with backups and all five data/header
+pairs committed. A separate 130-second run read all five full data files and
+returned to the island. All five version headers and 24 internal hashes passed
+after saving and again after reopening. Reopening performs an ordinary autosave,
+so the copied ACNH files can change during that check. Both runs exited normally.
+
+Source-save SHA-256 manifests remained unchanged, as did the accepted player
+executable. Captured frames were inspected. A full old/new generator comparison
+includes the preceding `Module` implementation as well as discovery, and gives
+the structural results in the table above. These are bounded regressions, with
+no performance-parity or full-playthrough claim. The earlier LAS 1.1.0 startup
+failure remains unexplained, so this research candidate is still not qualified
+for publication despite the successful new runs.
 
 ## Reproduction
 
