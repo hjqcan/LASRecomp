@@ -2,9 +2,9 @@
 
 During gameplay press **F2**. The next complete scene is frozen. **F2** or **Escape** resumes; **Tab** hides the controls; **F12** saves a PNG under `photos/` in the application's data directory. The panel also has Save and Resume buttons.
 
-Drag the photo with the mouse to pan; use the scroll wheel or **+ / -** (including the numeric keypad) to zoom between 1x and 4x. Panning stays inside the rendered image. Exposure, saturation and **Hide game interface** remain in the panel.
+Drag the photo with the mouse to pan; the picture follows the drag. Use the scroll wheel or **+ / -** (including the numeric keypad) to zoom between 1x and 4x. Panning stays inside the rendered image. Exposure, saturation and **Hide game interface** remain in the panel.
 
-With a controller, select **Frame photo**. The panel fades away and the lower-right legend shows the controls: **left stick** pans and **right stick up/down** zooms. The game's mapped confirm button takes a photo and returns to the panel; its mapped cancel button restores the previous view. The legend follows **Button prompts**, including Auto controller detection and remapping: PlayStation symbols, Xbox letters or Nintendo letters. Focus returns to Frame photo. Mouse and keyboard framing also work while the controls are hidden with Tab.
+With a controller, select **Frame photo**. The panel fades away and the lower-right legend shows the controls: **left stick** moves the picture in the stick's direction and **right stick up/down** zooms. The game's mapped confirm button takes a photo and returns to the panel; its mapped cancel button restores the previous view. The legend follows **Button prompts**, including Auto controller detection and remapping: PlayStation symbols, Xbox letters or Nintendo letters. Focus returns to Frame photo. Mouse and keyboard framing also work while the controls are hidden with Tab.
 
 The saved message shows only the file name. The adjacent **Show in Finder** / **Show in Explorer** / **Open folder** button reveals the photo (or opens its folder on Linux).
 

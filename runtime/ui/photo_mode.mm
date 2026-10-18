@@ -20,6 +20,7 @@ extern "C" {
 int game_in_play(void);
 void input_reset(void);
 uint64_t renderer_present_count(void);
+bool renderer_origin_lower_left(void);
 }
 static PhotoState state;
 static std::atomic<unsigned> requests;
@@ -122,7 +123,11 @@ extern "C" void photo_mode_compose(float crop[4], double width, double height,
         *x = base_rect[0] * width; *y = base_rect[1] * height;
         *w = base_rect[2] * width; *h = base_rect[3] * height;
     }
+    float base_y = crop[1], base_h = crop[3];
     photo_state_crop(&state, crop);
+    // Input moves the displayed image. A lower-left source is flipped by both present shaders,
+    // so mirror the vertical crop offset within the original image before that flip.
+    if (renderer_origin_lower_left()) crop[1] = base_y + base_h - (crop[1] - base_y) - crop[3];
 }
 extern "C" void photo_mode_color(float color[4]) {
     color[0] = state.active ? exp2f(state.exposure) : 1;
@@ -219,8 +224,8 @@ extern "C" void photo_mode_draw(float scale) {
     float dt = fminf(io.DeltaTime, 0.05f);
     bool was_framing = state.framing;
     if (state.framing) {
-        photo_state_pan(&state, -stick(ImGuiKey_GamepadLStickRight, ImGuiKey_GamepadLStickLeft) * dt * 0.4f,
-                                -stick(ImGuiKey_GamepadLStickDown, ImGuiKey_GamepadLStickUp) * dt * 0.4f);
+        photo_state_pan(&state, stick(ImGuiKey_GamepadLStickRight, ImGuiKey_GamepadLStickLeft) * dt * 0.4f,
+                               stick(ImGuiKey_GamepadLStickDown, ImGuiKey_GamepadLStickUp) * dt * 0.4f);
         photo_state_zoom(&state, stick(ImGuiKey_GamepadRStickUp, ImGuiKey_GamepadRStickDown) * dt * 4);
     }
     // This transparent window sits behind the panel. A drag starts only on the photo, so sliders/buttons
