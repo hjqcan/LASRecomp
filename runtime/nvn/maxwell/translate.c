@@ -1596,6 +1596,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                 }
             } else {
                 c->uses_gmem_store = true;
+                c->info->uses_gmem_store = true;  // draws invalidate cached copies of GPU-written pages
                 if (size < 4) {
                     uint32_t mask = size < 2 ? 0xFFu : 0xFFFFu;
                     sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); uint sh = uint(ga & %s) * 8u; ", size < 2 ? "3ul" : "2ul");

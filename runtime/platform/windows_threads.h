@@ -1,3 +1,5 @@
+// Windows guest threads reserve room for recompiled recursion without committing the whole stack. The CRT entry
+// point keeps thread-local cleanup; the returned handle remains owned by the caller until the thread is joined.
 #pragma once
 #ifdef _WIN32
 #include <windows.h>

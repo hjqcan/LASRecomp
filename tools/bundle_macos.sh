@@ -48,6 +48,7 @@ cp third_party/fonts/Baloo2/Baloo2-SemiBold.ttf "$C/Resources/Baloo2-SemiBold.tt
 cp third_party/fonts/Baloo2/OFL.txt "$C/Resources/Baloo2-OFL.txt"
 cp third_party/fonts/DejaVu/DejaVuSans.ttf "$C/Resources/DejaVuSans.ttf"  # (the game text's last-resort font)
 cp third_party/fonts/DejaVu/LICENSE "$C/Resources/DejaVu-LICENSE.txt"
+cp third_party/ryujinx/LICENSE.txt "$C/Resources/Ryujinx-LICENSE.txt"
 
 # ---- dylibs: copy every non-system dependency, recursively; point all references at @rpath/<name>
 is_system() { case "$1" in /usr/lib/*|/System/*) return 0;; esac; return 1; }

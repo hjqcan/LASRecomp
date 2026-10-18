@@ -43,6 +43,7 @@ cp third_party/fonts/Baloo2/Baloo2-SemiBold.ttf "$APPDIR/usr/bin/"  # (start scr
 cp third_party/fonts/Baloo2/OFL.txt "$APPDIR/usr/bin/Baloo2-OFL.txt"
 cp third_party/fonts/DejaVu/DejaVuSans.ttf "$APPDIR/usr/bin/"  # (the game text's last-resort font, free license)
 cp third_party/fonts/DejaVu/LICENSE "$APPDIR/usr/bin/DejaVu-LICENSE.txt"
+cp third_party/ryujinx/LICENSE.txt "$APPDIR/usr/bin/Ryujinx-LICENSE.txt"
 cp README.md LICENSE "$APPDIR/usr/bin/"  # (licenses and source links of the bundled components: README "License")
 [ -d "$L/helper/rando-gen" ] || { echo "no seed generator helper: tools/linux/rando_helper.sh $ARCH first"; exit 1; }
 cp -R "$L/helper/rando-gen" "$APPDIR/usr/bin/"
