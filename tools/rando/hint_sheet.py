@@ -47,7 +47,8 @@ JUNK = re.compile(r'^((pot-|dig-)?rupee-\d+|pot-heart|pot-arrows|pot-bombs|pot-p
                   r'bombs?-\d+|powder-\d+|heart|fairy)$')
 
 
-GATED = ('seashell', 'golden-leaf')  # (steps shown only when the next real step needs them: steps())
+GATED = ('seashell', 'golden-leaf')
+TRIFORCE = 'triforce-piece'  # (Triforce hunt, tools/rando/triforce.py: the first `needed` pieces found are goal steps)  # (steps shown only when the next real step needs them: steps())
 
 
 def step_entry(i):
@@ -66,6 +67,7 @@ def _reach_fn(logic_defs, settings, check):
     import playthrough
     junk = set(settings.get('excluded-locations', ())) | set(settings.get('absent-locations', ()))
     goal = set(playthrough.INSTRUMENTS) | {'kill-nightmare'}
+    tri = int(settings.get('triforce-needed', 0) or 0)  # (Triforce hunt: the goal is that many pieces)
     word = re.compile(r'[A-Za-z0-9][A-Za-z0-9\-\[\]]*')
     readers = {}  # token -> nodes whose conditions read it
     for k, node in logic_defs.items():
@@ -128,7 +130,7 @@ def _reach_fn(logic_defs, settings, check):
                 if b != item:
                     give(b)
         return (frozenset(k for k in seen if logic_defs[k].get('type') == 'item' and k not in junk),
-                sum(1 for g in goal if access.get(g)))
+                min(access.get(TRIFORCE, 0), tri) if tri else sum(1 for g in goal if access.get(g)))
     return reach
 
 
@@ -172,7 +174,7 @@ def steps(logic_defs, placements, settings, check, sph, out_dir):
         groups.setdefault(base_item(item), []).append(loc)
     # (an item no logic condition reads can't matter: no playthrough needed - but the instruments open the egg)
     import playthrough
-    goal_items = set(playthrough.INSTRUMENTS)
+    goal_items = set(playthrough.INSTRUMENTS) | {TRIFORCE}
     read = set()
     word = re.compile(r'[A-Za-z0-9][A-Za-z0-9\-\[\]]*')
     for node in logic_defs.values():
@@ -188,7 +190,7 @@ def steps(logic_defs, placements, settings, check, sph, out_dir):
         if len(locs) == 1:
             effect[locs[0]] = without(locs)
             continue
-        if len(locs) > 12:  # (many copies - seashells, leaves: the first k found are the ones that count)
+        if len(locs) > 12 or b == TRIFORCE:  # (many copies - seashells, leaves, Triforce pieces: the first k found count)
             lo, hi = 1, len(locs)
             while lo < hi:
                 mid = (lo + hi) // 2
@@ -310,7 +312,7 @@ ITEM = {'sword': 'a Sword', 'shield': 'a Shield', 'bracelet': 'a Power Bracelet'
         'surf-harp': 'the Surf Harp', 'wind-marimba': 'the Wind Marimba', 'coral-triangle': 'the Coral Triangle',
         'evening-calm-organ': 'the Evening Calm Organ', 'thunder-drum': 'the Thunder Drum',
         'seashell': 'a Secret Seashell', 'bottle': 'a Bottle', 'heart-container': 'a Heart Container',
-        'heart-piece': 'a Piece of Heart', 'bomb-capacity': 'a Bomb Bag upgrade', 'arrow-capacity': 'a Quiver upgrade',
+        'heart-piece': 'a Piece of Heart', 'triforce-piece': 'a Triforce piece', 'bomb-capacity': 'a Bomb Bag upgrade', 'arrow-capacity': 'a Quiver upgrade',
         'powder-capacity': 'a Magic Powder upgrade', 'shell-sensor': 'the Seashell Sensor', 'medicine': 'Secret Medicine',
         'red-tunic': 'the Red Tunic', 'blue-tunic': 'the Blue Tunic', 'chamber-stone': 'a Chamber Stone',
         'bomb': 'the Bombs', 'powder': 'the Magic Powder', 'stalfos-note': "Master Stalfos' Note",

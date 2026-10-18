@@ -26,6 +26,7 @@
 #include "imgui_internal.h"  // (SetKeyOwner)
 #include "option_rows.h"
 #include "osk.h"
+#include "pad_nav.h"
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
 #else
@@ -992,26 +993,9 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
     return clicked;
 }
 
-// Controllers, as in the in-game menu (runtime/ui/menu.mm): read straight from SDL, Nintendo layout - the right face
-// button (A) confirms, the bottom one (B) goes back; d-pad / left stick move. (ImGui's own SDL gamepad handling is
-// switched off: it used the Xbox layout and, per the user, didn't work on the start screen.)
-static ImGuiKey launcher_pad_key(Uint8 b) {
-    switch (b) {
-    case SDL_GAMEPAD_BUTTON_EAST: return ImGuiKey_GamepadFaceDown;   // A: activate
-    case SDL_GAMEPAD_BUTTON_SOUTH: return ImGuiKey_GamepadFaceRight; // B: back
-    case SDL_GAMEPAD_BUTTON_NORTH: return ImGuiKey_GamepadFaceUp;
-    case SDL_GAMEPAD_BUTTON_WEST: return ImGuiKey_GamepadFaceLeft;
-    case SDL_GAMEPAD_BUTTON_DPAD_UP: return ImGuiKey_GamepadDpadUp;
-    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return ImGuiKey_GamepadDpadDown;
-    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return ImGuiKey_GamepadDpadLeft;
-    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return ImGuiKey_GamepadDpadRight;
-    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return ImGuiKey_GamepadL1;
-    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return ImGuiKey_GamepadR1;
-    case SDL_GAMEPAD_BUTTON_START: return ImGuiKey_GamepadStart;
-    case SDL_GAMEPAD_BUTTON_BACK: return ImGuiKey_GamepadBack;
-    default: return ImGuiKey_None;
-    }
-}
+// Controllers, as in the in-game menu (runtime/ui/menu.mm): read straight from SDL, the controller's own layout
+// (pad_nav.h: confirm on the bottom button for Xbox / PlayStation pads, the right one for Nintendo pads); d-pad / left
+// stick move. (ImGui's own SDL gamepad handling is switched off: per the user, it didn't work on the start screen.)
 
 static void launcher_pad_open_all(void) {
     int n = 0;
@@ -1029,7 +1013,7 @@ static bool launcher_pad_event(const SDL_Event &e) {
         io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: {
-        ImGuiKey k = launcher_pad_key(e.gbutton.button);
+        ImGuiKey k = ui_pad_key(e.gbutton.which, e.gbutton.button, e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
         if (k != ImGuiKey_None) io.AddKeyEvent(k, e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
         return true;
     }
@@ -1126,21 +1110,24 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
     ImVec2 ls = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, line);
     fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ls.x) * 0.5f, bb.y + 26 * sc), IM_COL32(220, 216, 205, 255), line);
     if (recompiling) {
-        ImVec2 ca((a.x + b.x) * 0.5f - 150 * sc, b.y - 66 * sc), cb(ca.x + 300 * sc, ca.y + 44 * sc);
+        char cancel[192];
+        snprintf(cancel, sizeof cancel, "%s  (Esc / %s)", ui_tr(g_cancel_build ? "Stopping..." : "Cancel compilation"),
+                 ui_pad_back_label());
+        ImVec2 cs = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, cancel);
+        float cw = fmaxf(300 * sc, cs.x + 44 * sc);
+        ImVec2 ca((a.x + b.x - cw) * 0.5f, b.y - 66 * sc), cb(ca.x + cw, ca.y + 44 * sc);
         ImGui::SetNextWindowPos(ca);
-        ImGui::SetNextWindowSize(ImVec2(300 * sc, 44 * sc));
+        ImGui::SetNextWindowSize(ImVec2(cw, 44 * sc));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::Begin("##build_cancel", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground);
-        if (ImGui::InvisibleButton("##cancel_build", ImVec2(300 * sc, 44 * sc), ImGuiButtonFlags_EnableNav) ||
+        if (ImGui::InvisibleButton("##cancel_build", ImVec2(cw, 44 * sc), ImGuiButtonFlags_EnableNav) ||
             ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
             g_cancel_build = true;
         bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
         ImGui::End();
         ImGui::PopStyleVar();
         fg->AddRectFilled(ca, cb, hot ? IM_COL32(80, 80, 55, 255) : IM_COL32(45, 55, 45, 255), 8 * sc);
-        const char *cancel = ui_tr(g_cancel_build ? "Stopping..." : "Cancel compilation");
-        ImVec2 cs = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, cancel);
         fg->AddText(g_font_small, sfs, ImVec2((ca.x + cb.x - cs.x) * 0.5f, (ca.y + cb.y - cs.y) * 0.5f),
                     IM_COL32(236, 194, 84, 255), cancel);
     }
@@ -1149,7 +1136,7 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
         fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ns.x) * 0.5f, bb.y + 26 * sc + (i + 1) * line_h + 14 * sc),
                     IM_COL32(150, 148, 140, 255), notes[i]);
     }
-    if (preparing) {  // Skip: the game then compiles what it needs as it goes (B / Esc too)
+    if (preparing) {  // Skip: the game then compiles what it needs as it goes (back / Esc too)
         const char *sk = ui_tr(g_prep_skip ? "Skipping..." : "Skip");
         ImVec2 ks = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, sk);
         ImVec2 ka((a.x + b.x - ks.x) * 0.5f - 22 * sc, b.y - 40 * sc - line_h - 10 * sc);

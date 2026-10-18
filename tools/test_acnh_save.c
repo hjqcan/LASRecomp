@@ -10,8 +10,8 @@ const TitleProfile *title_profile_current(void) { abort(); }
 bool title_content_validate(const TitleProfile *p,const char *root,bool image,int *count,char *why,size_t cap) { abort(); }
 bool title_is_las(void) { return false; }
 void save_editor_file_read(const char *path, uint64_t addr, int64_t off, int64_t size) { abort(); }
-void flags_ext_save_read(const char *path, uint64_t addr, int64_t off, int64_t size, bool pending) { abort(); }
-void flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size, bool pending) { abort(); }
+void flags_ext_save_read(const char *path, uint64_t addr, int64_t off, int64_t size) { abort(); }
+bool flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size) { abort(); }
 int game_profile_active(void) { abort(); }
 const char *game_profile_save_dir(int profile) { abort(); }
 const char *workshop_save_dir(void) { abort(); }
@@ -26,6 +26,7 @@ void romfs_file_read_hook(const char *p) { abort(); }
 bool research_io_begin(void) { abort(); }
 void research_io_end(int64_t bytes) { abort(); }
 void rt_fatal_msg(const char *fmt, ...) { abort(); }
+void plat_notice(const char *text) { abort(); }
 void rt_fatal_trace(void) { abort(); }
 bool rt_fault_watch(uint64_t a, uint64_t pc) { return false; }
 void rt_crash_explain(char *out, size_t n, const char *path) { abort(); }

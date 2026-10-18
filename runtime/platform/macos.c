@@ -176,6 +176,22 @@ void plat_fatal_notice(void) {
     if (msg) CFRelease(msg);
 }
 
+static void *notice_thread(void *text) {
+    CFStringRef msg = CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8);
+    CFUserNotificationDisplayAlert(0, kCFUserNotificationCautionAlertLevel, NULL, NULL, NULL, CFSTR("Multi"), msg,
+                                   CFSTR("OK"), NULL, NULL, NULL);
+    if (msg) CFRelease(msg);
+    free(text);
+    return NULL;
+}
+void plat_notice(const char *text) {
+    if (!g_log_path[0]) return;
+    pthread_t t;
+    char *copy = strdup(text);
+    if (copy && !pthread_create(&t, NULL, notice_thread, copy)) pthread_detach(t);
+    else free(copy);
+}
+
 void plat_print_backtrace(void) {
     void *bt[64];
     int n = backtrace(bt, 64);

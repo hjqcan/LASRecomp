@@ -276,6 +276,9 @@ static bool screen_room(Cpu *c, uint64_t pair, int screen, uint64_t *sctrl) {
     return false;
 }
 
+// (bushsanity: a cut bush's item is spawned into its screen's room too - runtime/hle/pot_glow.c)
+bool digs_screen_room(Cpu *c, uint64_t pair, int screen, uint64_t *sctrl) { return screen_room(c, pair, screen, sctrl); }
+
 static uint64_t scratch(void) {
     if (!g_scratch) g_scratch = (uint64_t)(uintptr_t)hle_alloc(0x400);
     memset((void *)(uintptr_t)g_scratch, 0, 0x400);

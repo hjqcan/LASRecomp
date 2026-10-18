@@ -17,6 +17,8 @@ static uint8_t live_save[0x6000];
 static const char *save_root;
 static int snapshots, automatic_snapshots, editor_reads;
 static unsigned expected_data, expected_flags;
+static int notices;
+void plat_notice(const char *text) { (void)text; ++notices; }
 
 #ifdef _WIN32
 ssize_t pread(int fd, void *buf, size_t size, off_t offset) {
@@ -82,12 +84,13 @@ static void write_save(Service *mount, unsigned data, unsigned flags) {
     memset(g_buf + 256, 0, EXT); g_buf[256] = (uint8_t)flags;
     IpcResp opened = open_file(mount, "/savedata0.bin", 2); assert(!opened.result);
     Service *s = opened.objects[0]; HostFile *f = s->state;
-    assert(f->pending && !strstr(f->path, ".pending"));
+    assert(!f->scratch && strstr(f->path, ".pending"));
     uint64_t args[3] = {0, 0, sizeof bytes};
     IpcReq req = {.cmd = 1, .data = (const uint8_t *)args, .na = 1};
     req.a[0] = (IpcBuf){(uintptr_t)bytes, sizeof bytes};
     IpcResp resp = {0}; file(s, &req, &resp); assert(!resp.result);
-    assert(!strcmp(g_current, f->path)); close_file(s);
+    char canonical[1100]; assert(save_path(f->path, canonical, sizeof canonical));
+    assert(!strcmp(g_current, canonical)); close_file(s);
 }
 static uint32_t commit_mount(Service *mount) {
     IpcReq req = {.cmd = 10}; IpcResp resp = {0}; filesystem(mount, &req, &resp); return resp.result;
@@ -134,18 +137,27 @@ int main(int argc, char **argv) {
 
     // Staging failure must never fall back to overwriting the committed file.
     HostFs *fs = mount->state; fs->npending = PENDING_MAX;
-    assert(open_file(mount, "/savedata0.bin", 2).result);
+    opened = open_file(mount, "/savedata0.bin", 2); assert(!opened.result && notices == 1);
+    assert(((HostFile *)opened.objects[0]->state)->scratch); close_file(opened.objects[0]);
     assert(first_byte(path) == 0x23); fs->npending = 0;
-    // Failed publication keeps the working copy and suppresses the snapshot; retry succeeds.
+    assert(!commit_mount(mount) && automatic_snapshots == 2);
+    // LAS is told success, but failed publication drops the working copy and
+    // suppresses the backup. A later complete save can still succeed.
     write_save(mount, 0x44, 0x44); assert(!unlink(path) && !mkdir(path, 0755));
-    assert(commit_mount(mount) && fs->npending == 1 && automatic_snapshots == 2);
+    assert(!commit_mount(mount) && fs->npending == 0 && automatic_snapshots == 2);
+    assert(access(pending, F_OK) && access(pending_flags, F_OK));
     assert(!rmdir(path)); put_file(path, 0x23, BODY_CRC + 4);
+    write_save(mount, 0x44, 0x44);
     expected_data = expected_flags = 0x44;
     assert(!commit_mount(mount) && automatic_snapshots == 3);
-    // A sidecar failure after the data rename is retryable without losing the pending flags.
+    // A sidecar failure after the data rename survives for recovery at the next
+    // mount. Even another empty Commit must not snapshot the incomplete pair.
     write_save(mount, 0x55, 0x55); assert(!unlink(sidecar) && !mkdir(sidecar, 0755));
-    assert(commit_mount(mount) && fs->npending == 1 && automatic_snapshots == 3);
+    assert(!commit_mount(mount) && fs->npending == 0 && automatic_snapshots == 3);
+    assert(!commit_mount(mount) && automatic_snapshots == 3);
     assert(first_byte(path) == 0x55 && !rmdir(sidecar)); put_file(sidecar, 0x44, EXT);
+    free_mount(mount); mount = open_host_fs("save_0");
+    assert(first_byte(sidecar) == 0x55 && access(pending_flags, F_OK));
     expected_data = expected_flags = 0x55;
     assert(!commit_mount(mount) && automatic_snapshots == 4);
 
@@ -159,15 +171,28 @@ int main(int argc, char **argv) {
     assert(!read_resp.result && bytes[0] == 0x66 && editor_reads == 1 && g_slots[0].crc == previous_crc);
     close_file(opened.objects[0]); expected_data = 0x66; expected_flags = 0x55;
     assert(!commit_mount(mount) && automatic_snapshots == 5 && access(pending, F_OK));
+    // A title that handles write errors may repair and retry the working copy;
+    // LAS's failed-write suppression must not discard that successful retry.
+    opened = open_file(mount, "/savedata0.bin", 2); assert(!opened.result);
+    Service *retry = opened.objects[0]; HostFile *retry_file = retry->state;
+    int retry_fd = retry_file->fd; retry_file->fd = -1;
+    memset(bytes, 0x77, sizeof bytes);
+    IpcReq write_req = {.cmd = 1, .data = (const uint8_t *)args, .na = 1};
+    write_req.a[0] = (IpcBuf){(uintptr_t)bytes, sizeof bytes};
+    IpcResp write_resp = {0}; file(retry, &write_req, &write_resp); assert(write_resp.result);
+    retry_file->fd = retry_fd; write_resp = (IpcResp){0};
+    file(retry, &write_req, &write_resp); assert(!write_resp.result);
+    close_file(retry); expected_data = 0x77;
+    assert(!commit_mount(mount) && automatic_snapshots == 6 && access(pending, F_OK));
     title_profile_preview("las", "1.0.0");
     free_mount(mount);
 
     int before_sd = snapshots; mount = open_host_fs("sdcard");
     snprintf(path, sizeof path, "%s/sdcard/note.txt", save_root); put_file(path, 'a', 1);
     opened = open_file(mount, "/note.txt", 2); assert(!opened.result);
-    HostFile *sd = opened.objects[0]->state; assert(!sd->pending);
+    HostFile *sd = opened.objects[0]->state; assert(!sd->fs && !strstr(sd->path, ".pending"));
     assert(pwrite(sd->fd, "b", 1, 0) == 1); close_file(opened.objects[0]);
     assert(first_byte(path) == 'b' && !commit_mount(mount) && snapshots == before_sd);
     free_mount(mount);
-    puts("Save commit: staged reads, LAS-only flags/editor, backup order, abandoned writes, failed publication/retry, close and SD isolation passed");
+    puts("Save commit: staged reads, LAS-only flags/editor, backup order, abandoned writes, failed-save suppression, sidecar recovery, close and SD isolation passed");
 }

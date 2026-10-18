@@ -13,8 +13,11 @@
 int texpatch_identify(const NvnTexture *t);
 // Known texture `id` is the empty bottle's item icon (1), its 3D model's colour map (2), the fairy's model map (3:
 // boss / mini-boss souls drawn red, runtime/hle/souls.c), the Magic Powder sack's (4), the dungeon map model's (5: the
-// Hint Sheet's hand-over, runtime/hle/hint_sheet.c), else 0 (the gold Escape Bottle: runtime/hle/escape.c).
+// Hint Sheet's hand-over, runtime/hle/hint_sheet.c), the Piece of Power's (6: Triforce pieces drawn gold,
+// runtime/hle/triforce.c), else 0 (the gold Escape Bottle: runtime/hle/escape.c).
 int texpatch_bottle_kind(int id);
+// One of the game's own UI textures by name (e.g. "MapMark_05^w") as RGBA8 (malloc'd; NULL if missing)
+uint8_t *texpatch_ui_rgba(const char *name, int *w, int *h);
 // The Hint Sheet's icon: the dungeon map's, on a bottle-icon-sized canvas (drawn in place of the first bottle's icon;
 // runtime/hle/hint_sheet.c hint_sheet_icon_draw says which draws). NULL: not in the game files.
 NvnTexture *texpatch_hint_icon(void);

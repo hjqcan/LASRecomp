@@ -54,7 +54,7 @@ int bind_pad_from_name(const char *name) {
 
 const char *bind_input_name(int slot) { return slot >= 0 && slot < BIND_KEY_COUNT ? k_names[slot] : "?"; }
 
-// fam: 0 Nintendo (and pads SDL doesn't name), 1 Xbox, 2 PlayStation
+// fam: 0 Nintendo, 1 Xbox (and pads SDL labels like one), 2 PlayStation
 const char *bind_pad_label(int host, int fam) {
     static const char *const nin[PADB_HOST_COUNT] = {
         "B", "A", "Y", "X", "Minus", "Home", "Plus", "Left stick press", "Right stick press", "L", "R",
@@ -88,9 +88,9 @@ int bind_label_family(void) {
     int n = 0, t = 0;  // start screen: input.c hasn't opened a pad yet
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
     if (ids && n > 0) t = SDL_GetGamepadTypeForID(ids[0]);
+    bool any = ids && n > 0;
     SDL_free(ids);
-    return t == SDL_GAMEPAD_TYPE_XBOX360 || t == SDL_GAMEPAD_TYPE_XBOXONE ? 1 :
-           t == SDL_GAMEPAD_TYPE_PS3 || t == SDL_GAMEPAD_TYPE_PS4 || t == SDL_GAMEPAD_TYPE_PS5 ? 2 : 0;
+    return any ? input_family_of_type(t) : 0;
 }
 
 static void result(int kind, int dev, int slot, int other);

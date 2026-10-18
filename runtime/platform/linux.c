@@ -292,6 +292,19 @@ void plat_fatal_notice(void) {
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Multi", text, NULL);
 }
 
+static void *notice_thread(void *text) {
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Multi", text, NULL);
+    free(text);
+    return NULL;
+}
+void plat_notice(const char *text) {
+    if (!g_log_path[0]) return;
+    pthread_t t;
+    char *copy = strdup(text);
+    if (copy && !pthread_create(&t, NULL, notice_thread, copy)) pthread_detach(t);
+    else free(copy);
+}
+
 bool plat_module_name(uint64_t pc, char *out, size_t n) {
     Dl_info di = {0};
     if (!dladdr((void *)(uintptr_t)pc, &di) || !di.dli_fname) return false;

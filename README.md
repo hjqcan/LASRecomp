@@ -106,6 +106,8 @@ The gameplay and randomizer options below apply to Link's Awakening. Other games
   - Switch companions from the pause menu, or send yours away.
 - Boss souls - a boss doesn't appear, can't be beaten and its reward stays locked until you find its soul.
 - Mini-boss souls - the same for dungeon mini-bosses (a separate option).
+- Triforce hunt - collect Triforce pieces (3, 12, 24 or any number up to 50, optionally with extra pieces hidden) instead
+  of waking the Wind Fish; the last one needed rolls the credits.
 - Entrance Randomizer - shuffles dungeon entrances, houses and caves, and connector caves. Includes a decoupled option.
 - Dungeon Room Shuffler - shuffles all dungeon rooms, creating unique custom dungeons every seed. Three modes:
   - Coherent: dungeon rooms are shuffled but connecting rooms are lined up. To keep this workable in logic, dungeons
@@ -231,7 +233,7 @@ cancelled builds keep the previous installed library until a replacement is read
   about 9 GB less memory committed (#107); the Vulkan fence fix for reused submission slots (#108); x86 rounding
   without x87 state changes (#115); movie memory freed on close, source change and reboot (#112); Vulkan stopping
   cleanly on GPU timeouts (#127); a strict Vulkan validation mode for automated tests (#128); Windows session logs:
-  `lasrecomp.log` always the latest run, with five backups (#114); resumable game-code builds: a cancelled or interrupted setup picks up where it stopped (#56)
+  `lasrecomp.log` always the latest run, with five backups (#114); resumable game-code builds: a cancelled or interrupted setup picks up where it stopped (#56); randomizer check flags kept with committed saves (#170)
 - **[@gitarre1234rr5](https://github.com/gitarre1234rr5)** - controller rumble: the game's vibration on your controller
   (#104), and a regression test for the kernel's timed condition-variable wait (#88)
 

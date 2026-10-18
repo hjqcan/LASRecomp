@@ -60,9 +60,7 @@ static int slot_cat(int slot) {
 struct Device { SDL_JoystickID id; char name[64]; int fam; bool pad; };
 static int pad_fam(SDL_JoystickID id) {
     if (!id || getenv("LARECOMP_PAD_TYPE")) return bind_label_family();  // (none / a test pretending one)
-    int t = SDL_GetGamepadTypeForID(id);
-    return t == SDL_GAMEPAD_TYPE_XBOX360 || t == SDL_GAMEPAD_TYPE_XBOXONE ? 1 :
-           t == SDL_GAMEPAD_TYPE_PS3 || t == SDL_GAMEPAD_TYPE_PS4 || t == SDL_GAMEPAD_TYPE_PS5 ? 2 : 0;
+    return input_family_of_type(SDL_GetGamepadTypeForID(id));
 }
 static int list_devices(Device *d, int cap) {
     int n = 0, np = 0;
@@ -300,7 +298,8 @@ extern "C" void controls_tab_draw(float scale) {
         snprintf(autol, sizeof autol, ui_tr("Auto (%s)"), fam[input_pad_family() % 3]);
         const char *names[] = {autol, "Nintendo", "Xbox", "PlayStation"};
         opt_choice("Button icons", &g_settings.prompts, names, 4, PROMPTS_AUTO,
-                   "The button icons the game shows. Auto: the connected controller's.");
+                   "The button icons the game shows, and which button confirms in these menus. Auto: the "
+                   "connected controller's.");
     }
 
     opt_end();

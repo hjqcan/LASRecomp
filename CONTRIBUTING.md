@@ -107,6 +107,8 @@ sites; it does not yet discover addresses automatically from code patterns.
 
 ## Tests
 
+`python tools/test_save.py` exercises the production save handlers against temporary files, without game data.
+
 Build-cache regression tests use synthetic inputs and the production scheduler:
 `python tools/test_build_cache.py` and `python tools/test_gamebuild_resume.py`.
 On Windows, also run `python tools/test_windows_processes.py` to check independent

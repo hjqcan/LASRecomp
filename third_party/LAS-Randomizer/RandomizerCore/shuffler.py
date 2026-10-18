@@ -407,6 +407,38 @@ class ItemShuffler(QtCore.QThread):
         return False
     
 
+    def verifyFreeLocations(self, placements, starting_access, logic, goal):
+        """LAS Recomp Triforce hunt: are at least [goal] empty item locations reachable with what's placed so far?"""
+        locations = 0
+        access = starting_access.copy()
+        access_added = True
+        while access_added and self.thread_active:
+            access_added = False
+            for key in self.logic_defs:
+                if key in access or not self.thread_active:
+                    continue
+                if self.checkAccess(key, access, logic) or logic == 'none':
+                    access = self.addAccess(access, key)
+                    access_added = True
+                    if self.logic_defs[key]['type'] in ['item', 'follower'] and placements.get(key) is not None:
+                        access = self.addAccess(access, placements[key])
+                    if self.logic_defs[key]['type'] == 'item' and placements.get(key) is None and \
+                            key not in placements['force-junk'] and \
+                            key not in self.settings.get('absent-locations', ()) and \
+                            key not in self.settings.get('junk-locations', ()):
+                        locations += 1
+                    if self.logic_defs[key]['type'] == 'enemy':
+                        access = self.addAccess(access, key + '[pit]')
+                        access = self.addAccess(access, key + '[heavy]')
+                elif self.logic_defs[key]['type'] == 'enemy':
+                    for v in ('pit', 'heavy'):
+                        if 'condition-' + v in self.logic_defs[key] and not self.hasAccess(access, key + f'[{v}]'):
+                            if self.checkAccess(key + f'[{v}]', access, logic):
+                                access = self.addAccess(access, key + f'[{v}]')
+                                access_added = True
+        return locations >= goal
+
+
     def verifySeashellsAttainable(self, placements, starting_access, logic, goal):
         # Verify, given the starting access to items, whether it is possible to get up to [goal] seashells. This includes already placed shells (vanilla) or 
         locations = []
@@ -474,6 +506,7 @@ class ItemShuffler(QtCore.QThread):
         access = {}
         important_items = []
         seashell_items = []
+        triforce_items = []  # (LAS Recomp Triforce hunt: tools/rando/triforce.py)
         good_items = []
         junk_items = []
         dungeon_items = []
@@ -495,6 +528,10 @@ class ItemShuffler(QtCore.QThread):
                              'bottle': list(range(3)),
                              'golden-leaf': list(range(5)),
                              'chamber-stone': [3, 4, 8, 10, 11, 12, 13, 20, 21, 22, 23, 24, 25, 26]}
+        # LAS Recomp Triforce hunt: each piece its own index (the runtime counts pieces by their bits)
+        if self.settings.get('triforce-placed'):
+            indexes_available['triforce-piece'] = list(range(int(self.settings['triforce-placed'])))
+        tri_needed = int(self.settings.get('triforce-needed', 0) or 0)
         
         for key in self.logic_defs:
             if not self.thread_active:
@@ -522,6 +559,8 @@ class ItemShuffler(QtCore.QThread):
                 important_items += [key] * self.item_defs[key]['quantity']
             elif self.item_defs[key]['type'] == 'seashell':
                 seashell_items += [key] * self.item_defs[key]['quantity']
+            elif self.item_defs[key]['type'] == 'triforce':
+                triforce_items += [key] * self.item_defs[key]['quantity']
             elif self.item_defs[key]['type'] == 'good':
                 good_items += [key] * self.item_defs[key]['quantity']
             elif self.item_defs[key]['type'] == 'important-health':
@@ -550,7 +589,7 @@ class ItemShuffler(QtCore.QThread):
         random.shuffle(seashell_items)
         random.shuffle(good_items)
 
-        items = important_items + seashell_items + good_items + junk_items + dungeon_items
+        items = important_items + seashell_items + triforce_items + good_items + junk_items + dungeon_items
         # print(len(items))
 
         # Assign vanilla contents to forceVanilla locations
@@ -664,6 +703,42 @@ class ItemShuffler(QtCore.QThread):
                     locations.remove(location_pool[0])
                     placement_tracker.append(location_pool.pop(0))
         
+        # LAS Recomp Triforce hunt (tools/rando/triforce.py): the pieces take the place of filler the vanilla
+        # locations left, in this order (within a tier the most plentiful first): rupees (20 and up), traps, low-value
+        # refills (bombs / arrows / powder, hearts, 5- and 1-rupees), then Chamber Stones (no logic needs them)
+        tri_placed = int(self.settings.get('triforce-placed', 0) or 0)
+        if tri_placed:
+            def _tier(k):
+                if self.item_defs[k]['type'] != 'junk':
+                    return None
+                base = k[4:] if k.startswith(('pot-', 'dig-')) else k
+                if base.startswith('rupee-') and base not in ('rupee-5', 'rupee-1'):
+                    return 0
+                if k.endswith('-trap') and k != 'zol-trap':  # (zol traps: chest-only, placed apart)
+                    return 1
+                if base in ('rupee-5', 'rupee-1') or k in ('pot-heart', 'pot-arrows', 'pot-bombs', 'pot-powder', 'bomb',
+                                                          'powder', 'arrow'):
+                    return 2
+                if k == 'chamber-stone':
+                    return 3
+                return None
+            fill = [k for k in items if _tier(k) is not None]
+            print(f'triforce: {len(fill)} filler items in the pool for {tri_placed} pieces', flush=True)
+            if len(fill) < tri_placed:
+                raise RuntimeError(f'Triforce hunt: {tri_placed} pieces need {tri_placed} filler items to replace, but '
+                                   f'this seed has only {len(fill)}. Turn on Potsanity, Bushsanity or Digsanity, or '
+                                   'choose fewer pieces.')
+            for _ in range(tri_placed):
+                k = min(sorted(set(fill)), key=lambda k: (_tier(k), -fill.count(k)))
+                fill.remove(k)
+                del items[len(items) - 1 - items[::-1].index(k)]
+                access = self.removeAccess(access, k)
+            at = next((n for n, k in enumerate(items) if self.item_defs[k]['type'] not in ('important', 'trade', 'seashell')),
+                      len(items))
+            items[at:at] = ['triforce-piece'] * tri_placed
+            for _ in range(tri_placed):
+                access = self.addAccess(access, 'triforce-piece')
+
         # LAS Recomp keysanity: the freed dungeon items are progression - place them with the important items, not after
         # all the junk (last, only the leftover spots were left: long undo loops)
         ks_free = {'keys': ('key-',), 'keys+nk': ('key-', 'nightmare-key-'),
@@ -779,6 +854,10 @@ class ItemShuffler(QtCore.QThread):
                 elif self.item_defs[item]['type'] in ('important', 'trade', 'seashell'):
                     # Check if it's reachable. We only need to do this check for important items!
                     valid_placement = self.canReachLocation(locations[0], placements, access, self.logic)
+                elif self.item_defs[item]['type'] == 'triforce' and \
+                        sum(1 for l in placement_tracker if placements[l] == item) < tri_needed:
+                    # LAS Recomp Triforce hunt: the needed pieces must be reachable, the extras can be anywhere
+                    valid_placement = self.canReachLocation(locations[0], placements, access, self.logic)
                 else:
                     valid_placement = True
                 
@@ -805,6 +884,18 @@ class ItemShuffler(QtCore.QThread):
                 items.pop(0)
                 placement_tracker.append(locations.pop(0))
                 
+                # LAS Recomp Triforce hunt: before the first piece, make sure the needed count has room (free
+                # reachable locations), as for the seashells below
+                if tri_needed and len(items) > 0 and items[0] == 'triforce-piece' and item != 'triforce-piece':
+                    if not self.verifyFreeLocations(placements, settings_access, self.logic, tri_needed):
+                        if verbose: print('no room for triforce pieces')
+                        undo_location = placement_tracker.pop(0)
+                        locations.append(undo_location)
+                        random.shuffle(locations)
+                        items.insert(0, placements[undo_location])
+                        access = self.addAccess(access, placements[undo_location])
+                        placements[undo_location] = None
+
                 # If we placed the last important item (so that afterward we start placing seashells), we want to ensure there's enough available locations to place a number of seashells required.
                 # i.e., are there 40 locations reachable without getting the 40 and 50 rewards? If not, we haven't made a valid placement, so we have to go back and undo things until this is resolved.
                 if item != 'seashell' and len(items) > 0 and items[0] == 'seashell':

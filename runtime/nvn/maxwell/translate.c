@@ -140,6 +140,11 @@ static const char *cbuf_ref(Ctx *c, int idx, int64_t off, const char *dyn, char 
         strcpy(buf, "0u"); return buf;
     }
     c->info->cbuf_mask |= 1u << idx;
+    if (idx == 0) {  // a storage buffer binding: which slot (any, when indexed with a register)
+        if (dyn) c->info->ssbo_read = 0xFFFF;
+        else if (off >= 0x110 && off < 0x210) c->info->ssbo_read |= (uint16_t)(1u << ((off - 0x110) >> 4));
+        else if (off >= 0x510 && off < 0x610) c->info->ssbo_read |= (uint16_t)(1u << ((off - 0x510) >> 4));
+    }
     if (off + 16 > (int64_t)c->info->cbuf_size[idx]) c->info->cbuf_size[idx] = (uint32_t)((off + 16 + 255) & ~255);
     if (dyn) c->info->cbuf_dynamic |= 1u << idx;
     if (!dyn && idx < 18 && off >= 0 && (uint32_t)(off >> 4) + 1 > c->cbuf_need[idx]) c->cbuf_need[idx] = (uint32_t)(off >> 4) + 1;

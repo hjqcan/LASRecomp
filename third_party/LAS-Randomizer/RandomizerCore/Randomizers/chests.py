@@ -5,6 +5,7 @@ from RandomizerCore.Randomizers import item_get
 
 
 SOUL_KEYS = []  # boss soul item keys of this seed (set by tools/rando/las_headless.py)
+TRIFORCE = False  # the seed has Triforce pieces (set by tools/rando/las_headless.py)
 
 
 def writeChestEvent(flowchart):
@@ -221,6 +222,14 @@ def writeChestEvent(flowchart):
         soul_get = item_get.insertItemGetAnimation(flowchart, soul, -1, None, auto_save)
         head = event_tools.createSwitchEvent(flowchart, 'FlowControl', 'CompareString',
             {'value1': 'itemKey', 'value2': soul}, {0: soul_get, 1: head})
+
+    # LAS Recomp Triforce hunt (tools/rando/triforce.py): the piece is given first (with the chest's own item index:
+    # each piece has its own), then held up - the message counts it
+    if TRIFORCE:
+        import evfl
+        tri_get = item_get.insertTriforceGet(flowchart, evfl.common.Argument('itemIndex'), None, auto_save)
+        head = event_tools.createSwitchEvent(flowchart, 'FlowControl', 'CompareString',
+            {'value1': 'itemKey', 'value2': 'TriforcePiece'}, {0: tri_get, 1: head})
 
     # add this chain to TreasureBox_Open and TreasureBox_ShockOpen
     event_tools.insertEventAfter(flowchart, 'Event32', head)

@@ -24,8 +24,8 @@ const TitleProfile *title_profile_current(void) { return &profile; }
 bool title_content_validate(const TitleProfile *p,const char *root,bool image,int *count,char *why,size_t cap) { abort(); }
 bool title_is_las(void) { return false; }
 void save_editor_file_read(const char *p,uint64_t a,int64_t o,int64_t n) { abort(); }
-void flags_ext_save_read(const char *p,uint64_t a,int64_t o,int64_t n,bool pending) { abort(); }
-void flags_ext_save_written(const char *p,uint64_t a,int64_t o,int64_t n,bool pending) { abort(); }
+void flags_ext_save_read(const char *p,uint64_t a,int64_t o,int64_t n) { abort(); }
+bool flags_ext_save_written(const char *p,uint64_t a,int64_t o,int64_t n) { abort(); }
 int game_profile_active(void) { abort(); }
 const char *game_profile_save_dir(int p) { abort(); }
 const char *workshop_save_dir(void) { abort(); }
@@ -38,6 +38,7 @@ void romfs_file_read_hook(const char *p) { abort(); }
 bool research_io_begin(void) { abort(); }
 void research_io_end(int64_t n) { abort(); }
 void rt_fatal_msg(const char *fmt,...) { abort(); }
+void plat_notice(const char *text) { abort(); }
 void rt_fatal_trace(void) { abort(); }
 static int snapshots;
 bool save_backup_create(const char *root,const char *reason,const char *version,bool deduplicate,char *why,size_t cap) {
@@ -86,7 +87,7 @@ static int get(const char *path) {
 static void stage(Service *mount,const char *name,int byte,char path[1200]) {
     HostFs *fs=mount->state; char pending[1200];
     snprintf(path,1200,"%s/%s",fs->root,name); put(path,1);
-    assert(pending_of(fs,path,true,pending,sizeof pending)); put(pending,byte);
+    assert(pending_of(fs,path,true,pending,sizeof pending) >= 0); put(pending,byte);
     assert(get(path)==1);
 }
 int main(int argc,char **argv) {

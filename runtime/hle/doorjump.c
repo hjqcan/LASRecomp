@@ -240,7 +240,8 @@ int32_t g_stick_lx, g_stick_ly;  // left stick as the player holds it (runtime/h
 
 // LARECOMP_PLACE=<frame>:<x>:<z>[:<script>] (test): put Link at x, z (any level) once the level has been loaded 60
 // frames, then run <script> relative to that moment: steps "<delay>:<L|R|U|D|A|B|X|Y>:<frames>" separated by '/', e.g.
-// "10:L:8/40:A:6/90:A:6/130:L:30" = face west, lift, throw, walk west (pot tests)
+// "10:L:8/40:A:6/90:A:6/130:L:30" = face west, lift, throw, walk west (pot tests). Several placements: entries
+// separated by ';' in frame order, each placed at its frame (tools/stairs_test.sh: one per stairs of a level)
 static long trace_until = -1;  // LARECOMP_DOORJUMP_TRACE: Link's position for 90 frames after each jump / placement
 
 static void place_tick(uint64_t frame) {
@@ -249,10 +250,26 @@ static void place_tick(uint64_t frame) {
     static float px, pz;
     static uint64_t since;
     static char level[64];
+    static const char *next_entry;  // the next ';'-separated placement (read once the current one has been placed)
     if (at == -2) {
         at = -1;
-        const char *e = getenv("LARECOMP_PLACE");
-        if (e && sscanf(e, "%ld:%f:%f:%4095s", &at, &px, &pz, script) < 3) at = -1;
+        next_entry = getenv("LARECOMP_PLACE");
+    }
+    // the next entry: the first one at once, each later one at its frame once the one before has been placed (that
+    // one's script runs until then)
+    bool first = at == -1 && !done;
+    if (next_entry && (first || (done && (long)frame >= strtol(next_entry, NULL, 10)))) {
+        const char *semi = strchr(next_entry, ';');
+        char one[4096];
+        size_t n = semi ? (size_t)(semi - next_entry) : strlen(next_entry);
+        if (n >= sizeof one) n = sizeof one - 1;
+        memcpy(one, next_entry, n);
+        one[n] = 0;
+        next_entry = semi ? semi + 1 : NULL;
+        script[0] = 0;
+        if (sscanf(one, "%ld:%f:%f:%4095s", &at, &px, &pz, script) < 3) at = -1, next_entry = NULL;
+        done = 0;
+        placed_at = -1;
     }
     if (placed_at >= 0 && script[0]) {  // action script
         long t = (long)frame - placed_at;

@@ -25,6 +25,7 @@ int16_t g_bind_key[BIND_KEY_COUNT],g_bind_pad[BIND_PAD_COUNT];
 // Unrelated UI/test helpers referenced by exported input.c functions on PE linkers.
 void performance_frame(uint64_t f){} void workshop_frame(uint64_t f){} void watch_arm(void){}
 int bind_pad_from_name(const char *s){return -1;} int bind_slot_from_name(const char *s){return -1;}
+int bind_label_family(void){return input_pad_family();}
 bool bind_capture_event(const SDL_Event *e){return false;} void bind_capture_begin(int d,int s){} void bind_reset(int d){}
 bool menu_input_captured(void){return false;}
 bool menu_is_open(void){return false;}
@@ -40,6 +41,14 @@ static SDL_JoystickID virtual_pad(const char *name){
 }
 int main(void){
     assert(SDL_Init(SDL_INIT_GAMEPAD));
+    assert(input_family_of_type(SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO)==0);
+    assert(input_family_of_type(SDL_GAMEPAD_TYPE_XBOXONE)==1);
+    assert(input_family_of_type(SDL_GAMEPAD_TYPE_PS5)==2);
+    assert(input_family_of_type(SDL_GAMEPAD_TYPE_STANDARD)==1);
+    g_settings.prompts=PROMPTS_NINTENDO;assert(input_menu_family(0)==0);
+    g_settings.prompts=PROMPTS_XBOX;assert(input_menu_family(0)==1);
+    g_settings.prompts=PROMPTS_PLAYSTATION;assert(input_menu_family(0)==2);
+    g_settings.prompts=PROMPTS_AUTO;
     for(int i=0;i<BIND_PAD_COUNT;++i)g_bind_pad[i]=-1;
     g_bind_key[BIND_RS_RIGHT]=SDL_SCANCODE_KP_6;g_bind_key[BIND_LS_UP]=SDL_SCANCODE_W;
     g_bind_pad[BIND_B]=SDL_GAMEPAD_BUTTON_SOUTH;

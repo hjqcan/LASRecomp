@@ -59,6 +59,8 @@ jobs:
         run: |
           python3 tools/test_build_cache.py
           python3 tools/test_gamebuild_resume.py
+      - name: Save I/O regression tests
+        run: python3 tools/test_save.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 tools/test_movie_extractor.c $(pkg-config --cflags --libs libavformat libavcodec libavutil libswscale) -pthread -o build/test-movie-extractor
@@ -148,6 +150,8 @@ jobs:
         run: |
           python3 tools/test_build_cache.py
           python3 tools/test_gamebuild_resume.py
+      - name: Save I/O regression tests
+        run: python3 tools/test_save.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 -I"$(brew --prefix ffmpeg)/include" -L"$(brew --prefix ffmpeg)/lib" tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -pthread -o build/test-movie-extractor
@@ -224,6 +228,8 @@ jobs:
           python3 tools/test_gamebuild_resume.py
           python3 tools/test_windows_processes.py
           python3 tools/test_save_mount.py
+      - name: Save I/O regression tests
+        run: python3 tools/test_save.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -o build/test-movie-extractor.exe

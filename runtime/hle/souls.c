@@ -112,6 +112,8 @@ static const char *level_name(void) {
 uint64_t rt_actor_create_fn(uint64_t fn, uint32_t type, uint64_t info) {
     extern bool rt_digs_skip_plant(uint32_t type, uint64_t info);  // digsanity: no grass / bush on a dug tile
     if (rt_digs_skip_plant(type, info)) return 0;
+    extern bool rt_bush_item_skip(uint32_t type, uint64_t info);  // bushsanity: no item until its bush is cut
+    if (rt_bush_item_skip(type, info)) return 0;
     extern bool rt_no_buff_actor(uint32_t type);  // no-buff-drops (qol.c): no Piece of Power / Guardian Acorn at all
     if (rt_no_buff_actor(type)) return 0;
     if (g_nsouls < 0) load();

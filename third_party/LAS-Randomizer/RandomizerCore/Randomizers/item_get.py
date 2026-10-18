@@ -353,6 +353,10 @@ def insertItemGetAnimation(flowchart, item, index, before=None, after=None, play
             ('Link', 'GenericItemGetSequenceByKey', {'itemKey': item, 'keepCarry': False, 'messageEntry': item})
         ], after)
 
+    ### Triforce pieces (LAS Recomp, tools/rando/triforce.py)
+    if item == 'TriforcePiece':
+        return insertTriforceGet(flowchart, index, before, after)
+
     ### everything else - play the get event before giving the item, otherwise it messes with index related messages
     # this is how the game normally does it, and so for the "you've collected them all" messages,
     # the game actually checks for 3 heart pieces and 4 golden leaves respectively
@@ -361,6 +365,47 @@ def insertItemGetAnimation(flowchart, item, index, before=None, after=None, play
         ('Inventory', 'AddItemByKey', {'itemKey': item, 'count': 1, 'index': index, 'autoEquip': False})
     ], after)
 
+
+
+TRIFORCE_NEEDED = 0  # LAS Recomp Triforce hunt: pieces needed (set by tools/rando/las_headless.py)
+
+
+def insertTriforceGet(flowchart, index, before=None, after=None):
+    """LAS Recomp Triforce hunt (tools/rando/triforce.py): give the piece first (the runtime counts it and sets the
+    flags TriforceRemain0..5 = pieces still needed, TriforceDone), then hold it up with the message for that count -
+    picked here, in the giving flow (the get sequence only shows its message entry's first message) - and after the
+    last needed one the Wind Fish's white fade into the game's own ending. `index` may be a flow argument (chests)."""
+    def show(entry, nxt):
+        return event_tools.createActionEvent(flowchart, 'Link', 'GenericItemGetSequenceByKey',
+            {'itemKey': 'TriforcePiece', 'keepCarry': False, 'messageEntry': entry}, nxt)
+    ending = event_tools.createActionChain(flowchart, None, [
+        ('Fade', 'StartParam', {'mode': 1, 'colorR': 1.0, 'colorG': 1.0, 'colorB': 1.0, 'time': 3.0}),
+        ('Timer', 'Wait', {'time': 3.0}),
+        ('GameControl', 'SaveForGameClear', {}),
+        ('GameControl', 'GoToEnding', {})])
+    complete = show('TriforceComplete', ending)
+    generic = show('TriforcePiece', after)
+    leaves = {}
+    needed = TRIFORCE_NEEDED
+
+    def node(bit, val):  # remaining counts val .. val + 2^(bit+1) - 1 (the bits above `bit` decided)
+        if val + (1 << (bit + 1)) - 1 < 1 or val > needed - 1:
+            return generic
+        if bit < 0:
+            if val not in leaves:
+                leaves[val] = show(f'TriforcePiece{val}', after)
+            return leaves[val]
+        off, on = node(bit - 1, val), node(bit - 1, val | (1 << bit))
+        if off == on:
+            return off
+        return event_tools.createSwitchEvent(flowchart, 'EventFlags', 'CheckFlag', {'symbol': f'TriforceRemain{bit}'},
+                                             {0: off, 1: on})
+    head = event_tools.createSwitchEvent(flowchart, 'EventFlags', 'CheckFlag', {'symbol': 'TriforceDone'},
+                                         {0: node(5, 0), 1: complete})
+    add = event_tools.createActionEvent(flowchart, 'Inventory', 'AddItemByKey',
+        {'itemKey': 'TriforcePiece', 'count': 1, 'index': index, 'autoEquip': False}, head)
+    event_tools.insertEventAfter(flowchart, before, add)
+    return add
 
 
 def insertItemWithoutAnimation(item, index):

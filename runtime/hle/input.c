@@ -261,17 +261,22 @@ void input_load_user_mappings(void) {
     else LOG("[input] gamecontrollerdb.txt: %d controller mapping(s) added\n", n);
 }
 
-// Controller family for the button prompts (runtime/nvn/texpatch.c): 0 Nintendo / other / none, 1 Xbox, 2 PlayStation.
+// Controller family for the button prompts (runtime/nvn/texpatch.c) and our menus' layout: 0 Nintendo / none, 1 Xbox
+// (and every other pad SDL labels like one: generic / third-party pads with A on the bottom), 2 PlayStation.
 // LARECOMP_PAD_TYPE=xbox|playstation|nintendo pretends one is attached (tests).
+// By SDL's own face-button labels for the type: the bottom button reads B on Nintendo pads, A on Xbox-style ones,
+// Cross on PlayStation ones.
+int input_family_of_type(int type) {
+    switch (SDL_GetGamepadButtonLabelForType((SDL_GamepadType)type, SDL_GAMEPAD_BUTTON_SOUTH)) {
+    case SDL_GAMEPAD_BUTTON_LABEL_B: return 0;
+    case SDL_GAMEPAD_BUTTON_LABEL_CROSS: return 2;
+    default: return 1;
+    }
+}
 static _Atomic int pad_family;
 static void note_family(void) {
-    int f = 0;
-    if (pad) switch (SDL_GetGamepadType(pad)) {
-        case SDL_GAMEPAD_TYPE_XBOX360: case SDL_GAMEPAD_TYPE_XBOXONE: f = 1; break;
-        case SDL_GAMEPAD_TYPE_PS3: case SDL_GAMEPAD_TYPE_PS4: case SDL_GAMEPAD_TYPE_PS5: f = 2; break;
-        default: break;
-    }
-    if (f != pad_family) LOG("[input] button prompts: %s controller\n", f == 1 ? "Xbox" : f == 2 ? "PlayStation" : "Nintendo / other");
+    int f = pad ? input_family_of_type(SDL_GetGamepadType(pad)) : 0;
+    if (f != pad_family) LOG("[input] button prompts: %s controller\n", f == 1 ? "Xbox" : f == 2 ? "PlayStation" : "Nintendo");
     pad_family = f;
 }
 int input_pad_family(void) {
@@ -294,6 +299,22 @@ static void refresh_pads(void) {
         else if(two&&!pad2){pad2=SDL_OpenGamepad(ids[i]);if(pad2)LOG("[coop] player 2 gamepad: %s\n",SDL_GetGamepadName(pad2));}
     }
     SDL_free(ids);recompute_pad();
+}
+
+// Our menus' face buttons (#172): the family whose layout they use - Nintendo (0): the right button confirms, the
+// bottom one goes back; Xbox / PlayStation (1 / 2): the bottom one confirms, the right one goes back. "Button icons"
+// forced to a style wins (icons and menus agree); Auto: the controller `which` that pressed (0, or not a connected
+// gamepad - a test's pushed press: the game's controller / the first connected one, else Nintendo).
+int input_menu_family(SDL_JoystickID which) {
+    switch (g_settings.prompts) {
+    case PROMPTS_NINTENDO: return 0;
+    case PROMPTS_XBOX: return 1;
+    case PROMPTS_PLAYSTATION: return 2;
+    default: break;
+    }
+    if (getenv("LARECOMP_PAD_TYPE")) return input_pad_family();
+    if (which && SDL_IsGamepad(which)) return input_family_of_type(SDL_GetGamepadTypeForID(which));
+    return bind_label_family();
 }
 
 void input_handle_event(const SDL_Event *e) {
@@ -585,6 +606,8 @@ static void fill_state(Cpu *c) {
       chamber_game_tick(c, renderer_present_count());
       extern void digs_game_tick(Cpu *c, uint64_t frame);
       digs_game_tick(c, renderer_present_count());
+      extern void pot_bush_game_tick(Cpu *c, uint64_t frame);
+      pot_bush_game_tick(c, renderer_present_count());
       extern void qol_tick(void);
       qol_tick();
       extern void pets_game_tick(Cpu *c);

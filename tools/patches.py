@@ -446,6 +446,58 @@ def _snap_dir(gen, a):
 PATCHES[SNAP_DIR_SITE] = _snap_dir
 
 
+# Walk speed (runtime/hle/qol.c, setting walk_speed): Link's walk state (main+0xdcdae0) and shield walk (main+0xdb7d30)
+# put a speed multiplier in s0 right before these loads - 1.0, or 1.15 with a Piece of Power - and scale the ramped
+# walk speed by it (then by the slow-ground factors 0.25 / 0.75). rt_walk_speed multiplies s0 by the setting. The
+# Pegasus Boots dash, swimming and side-view ladders have their own speeds and are untouched, and so is the hop off a
+# ledge (the same multiplier loaded again at main+0xdce508 / 0xdd0254 / 0xdb86e8 / 0xdb8f3c: left alone, so jump
+# distances stay the game's own).
+WALK_SPEED_SITES = {A.WALK_SPEED_SITES_0: (19, 0), A.WALK_SPEED_SITES_1: (19, 1), A.WALK_SPEED_SITES_2: (20, 2),
+                    A.WALK_SPEED_SITES_3: (20, 3)}
+
+
+def _walk_speed(gen, a):
+    w = patch_word(gen, a)
+    rn, site = WALK_SPEED_SITES[a]
+    assert w == 0xf94ca408 | (rn << 5), hex(w)  # ldr x8, [x19|x20, #0x1948]
+    return ('{ extern float rt_walk_speed(uint64_t, float, int); float m_; memcpy(&m_, &c->v[0], 4); '
+            f'm_ = rt_walk_speed(c->x[{rn}], m_, {site}); c->v[0] = 0; memcpy(&c->v[0], &m_, 4); '
+            f'c->x[8] = LD64(c->x[{rn}] + 0x1948); }}'
+            f'  /* {a:#x}: ldr x8, [x{rn}, #0x1948] (walk speed multiplier in s0) */')
+
+
+for _a in WALK_SPEED_SITES:
+    PATCHES[_a] = _walk_speed
+
+
+# Walk animation rate: main+0xdce320 (walk state) has the walk animation's play rate in s8 (1, 0.75 on slow ground,
+# x1.15 with a Piece of Power), handed to the animation layers right after.
+def _walk_anim(gen, a):
+    w = patch_word(gen, a)
+    assert w == 0xf94ab668, hex(w)  # ldr x8, [x19, #0x1568]
+    return ('{ extern float rt_walk_speed(uint64_t, float, int); float m_; memcpy(&m_, &c->v[8], 4); '
+            'm_ = rt_walk_speed(c->x[19], m_, 100); c->v[8] = 0; memcpy(&c->v[8], &m_, 4); '
+            'c->x[8] = LD64(c->x[19] + 0x1568); }'
+            f'  /* {a:#x}: ldr x8, [x19, #0x1568] (walk animation rate in s8) */')
+
+
+PATCHES[A.WALK_ANIM_SITE_0] = _walk_anim
+
+
+# The same for the shield walk (main+0xdb8168): s0 = 1 or 0.75 on slow ground (times s1 = 1.15 with a Piece of Power
+# right after).
+def _shield_anim(gen, a):
+    w = patch_word(gen, a)
+    assert w == 0xf94006c8, hex(w)  # ldr x8, [x22, #8]
+    return ('{ extern float rt_walk_speed(uint64_t, float, int); float m_; memcpy(&m_, &c->v[0], 4); '
+            'm_ = rt_walk_speed(c->x[20], m_, 101); c->v[0] = 0; memcpy(&c->v[0], &m_, 4); '
+            'c->x[8] = LD64(c->x[22] + 8); }'
+            f'  /* {a:#x}: ldr x8, [x22, #8] (shield walk animation rate in s0) */')
+
+
+PATCHES[A.WALK_ANIM_SITE_1] = _shield_anim
+
+
 # No Guardian Acorns / Pieces of Power (randomizer no-buff-drops, runtime/hle/qol.c): the drop roll main+0x89b960 reads
 # its ItemDrop row's mAllowBuffReplace (+0x38); set, the kill counters may turn the drop into a Piece of Power / Guardian
 # Acorn. Read as false for such seeds.

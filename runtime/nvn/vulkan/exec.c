@@ -3549,7 +3549,9 @@ static void draw_(CmdRec *r, bool indexed) {
     if (pr->fi->uses_tint) {
         extern bool pot_tint(const float *m, float tint[8], uint64_t mesh);
         extern bool pot_glow_active(void);
-        if (st.ubuf[0][2].addr && st.ubuf[0][2].size >= 48 && pot_glow_active())
+        // (uniform buffer 2 = the model matrix, hardware cbuf 5 - only when the vertex shader reads it: a binding left
+        // from an earlier draw is another object's matrix)
+        if (((pr->vi->cbuf_mask >> 5) & 1) && st.ubuf[0][2].addr && st.ubuf[0][2].size >= 48 && pot_glow_active())
             pot_tint((const float *)(uintptr_t)st.ubuf[0][2].addr, tint, st.vbuf[0].addr);
         // the gold Escape Bottle (runtime/hle/escape.c): draws sampling the bottle's item icon / model map
         // and the HUD hearts (heart colour, Cosmetics tab)
@@ -3566,7 +3568,7 @@ static void draw_(CmdRec *r, bool indexed) {
         if (heart) texpatch_heart_tint(heart, tint);
         if (bottle) {
             extern void escape_bottle_tint(int kind, const float *ui, uint32_t ui_size, float tint[8]);
-            int u = bottle == 3 ? 3 : 0;  // (the fairy model: its bone matrices, for where it stands - souls.c)
+            int u = bottle == 3 || bottle == 6 ? 3 : 0;  // (fairy / Piece of Power models: their bone matrices - souls.c, triforce.c)
             escape_bottle_tint(bottle, (const float *)(uintptr_t)st.ubuf[0][u].addr, (uint32_t)st.ubuf[0][u].size, tint);
         }
     }
@@ -3756,11 +3758,12 @@ static void draw_(CmdRec *r, bool indexed) {
     // Instanced draws with item spots among their instances (bushsanity: bushes are drawn in batches, each instance's
     // model matrix in vertex storage buffer 0, indexed by instance id): drawn as runs of instances, gold runs tinted
     // (as renderer.m; gl_InstanceIndex includes the base instance, so a run [b + k, b + k + n) draws exactly those).
+    // Only for a vertex shader that reads storage buffer 0 (its binding stays from the last draw that set it).
     enum { MAX_RUNS = 64 };
     uint32_t run_at[MAX_RUNS], run_n[MAX_RUNS];
     bool run_gold[MAX_RUNS];
     int nruns = 0;
-    if (pr->fi->uses_tint && inst > 1 && st.sbuf[0][0].addr) {
+    if (pr->fi->uses_tint && (pr->vi->ssbo_read & 1) && st.sbuf[0][0].addr) {
         extern bool pot_glow_active(void);
         extern bool pot_instance_gold(const float *m);
         uint64_t recs = st.sbuf[0][0].size / 64;

@@ -413,6 +413,19 @@ void plat_fatal_notice(void) {
     MessageBoxA(NULL, text, "Multi", MB_ICONERROR | MB_OK);
 }
 
+static DWORD WINAPI notice_thread(LPVOID text) {
+    MessageBoxA(NULL, text, "Multi", MB_ICONWARNING | MB_OK);
+    free(text);
+    return 0;
+}
+void plat_notice(const char *text) {
+    if (!g_log_path[0]) return;
+    char *copy = _strdup(text);
+    HANDLE t = copy ? CreateThread(NULL, 0, notice_thread, copy, 0, NULL) : NULL;
+    if (t) CloseHandle(t);
+    else free(copy);
+}
+
 bool plat_module_name(uint64_t pc, char *out, size_t n) {
     HMODULE m;
     if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,

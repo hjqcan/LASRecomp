@@ -105,6 +105,7 @@ def default_settings(seed):
         'dungeon-room-shuffle': 'off',  # off / coherent / chaos / madness (tools/rando/dungeon_gen.py)
         'pet-rooster': False, 'pet-ghost': False, 'open-desert': True,  # pets (tools/rando/pets.py)
         'shopsanity': 'off', 'trendsanity': False,  # tools/rando/shopsanity.py (off / vanilla / random prices), trendsanity.py
+        'triforce-hunt': 0, 'triforce-extra': 0,  # pieces needed (0 = off), extra % (tools/rando/triforce.py)
         'starting-items': ['sword', 'shield', 'ocarina', 'song-mambo'], 'starting-rupees': 0,
         'excluded-locations': excluded,
     }
@@ -276,6 +277,15 @@ def main():
     pets = pets_mod.add_to_pool(logic_defs, item_defs, settings)
     if pets:
         print('pets:', ', '.join(pets), flush=True)
+
+    import triforce as triforce_mod  # Triforce hunt: N pieces end the game (tools/rando/triforce.py)
+    tri_needed, tri_placed = triforce_mod.counts(settings)
+    if tri_needed:  # (after every module that adds or takes filler)
+        from RandomizerCore.Randomizers import chests as las_chests
+        print('triforce:', triforce_mod.add_to_pool(item_defs, settings), flush=True)
+        las_chests.TRIFORCE = True
+        from RandomizerCore.Randomizers import item_get as _tri_get
+        _tri_get.TRIFORCE_NEEDED = tri_needed
 
     # ---- LAS Recomp entrance randomizer: dungeon entrances are LAS's own 'shuffle-dungeons' (its own lever in the
     # menu); tier 2 = single-entrance interiors and connector caves, with or without the dungeons (tier 1 = the old
@@ -449,9 +459,28 @@ def main():
     sh.error.connect(lambda e: errors.append(e))
     sh.start()
     if errors or 'placements' not in result:
+        for e in errors:  # (a reason the player can act on: shown by the Randomizer tab - 'error <text>' lines)
+            m = re.search(r'RuntimeError: (Triforce hunt: .*)', str(e))
+            if m:
+                print('error ' + m.group(1), flush=True)
         print('SHUFFLE ERROR', errors, file=sys.stderr)
         sys.exit(1)
     print('placements ready', flush=True)
+    if os.environ.get('LARECOMP_TEST_SWAP'):  # (test: <location>=<item>,...: that item swapped into that location)
+        pl = result['placements']
+        done = set()
+        for kv in os.environ['LARECOMP_TEST_SWAP'].split(','):
+            loc, item = kv.split('=', 1)
+            done.add(loc)
+            src = next(k for k, v in pl.items() if v == item and k not in done and k not in ('settings', 'indexes'))
+            pl[loc], pl[src] = pl[src], pl[loc]
+            ix = pl['indexes']
+            a, b = ix.pop(loc, None), ix.pop(src, None)
+            if b is not None:
+                ix[loc] = b
+            if a is not None:
+                ix[src] = a
+            print(f'test swap: {item} {src} -> {loc}', flush=True)
     with open(os.path.join(out_dir, 'logic.json'), 'w') as f:  # the seed's final logic (tracker: tools/rando/tracker.py)
         json.dump({k: {kk: vv for kk, vv in v.items() if kk in ('type', 'subtype', 'region', 'content') or kk.startswith('condition-')}
                    for k, v in sh.logic_defs.items() if not v.get('_check_only')}, f)
@@ -478,10 +507,15 @@ def main():
     for k in [k for k, v in sh.logic_defs.items() if v.get('_check_only')]:
         del sh.logic_defs[k]
     missing = [i for i in playthrough.INSTRUMENTS + ['kill-nightmare'] if not access.get(i)]
+    if tri_needed:  # Triforce hunt: the pieces are the goal (the Wind Fish isn't needed)
+        got = access.get(triforce_mod.LAS_NAME, 0)
+        missing = [] if got >= tri_needed else [f'triforce pieces: {got} of {tri_needed} reachable']
+        print(f'triforce: {got} of {tri_placed} pieces reachable, {tri_needed} needed', flush=True)
     absent = settings.get('absent-locations', set())  # (rooms the dungeon shuffle left out: not in the game)
     locs = [k for k, v in sh.logic_defs.items() if v.get('type') == 'item' and k not in absent]
     unreached = [k for k in locs if k not in seen]
-    print('playthrough:', 'all instruments reachable, the Nightmare beatable' if not missing else f'MISSING {missing}',
+    print('playthrough:', ('enough Triforce pieces reachable' if tri_needed else
+                           'all instruments reachable, the Nightmare beatable') if not missing else f'MISSING {missing}',
           f'- {len(locs) - len(unreached)}/{len(locs)} item locations reachable', flush=True)
     if os.environ.get('LAS_DEBUG_PLAYTHROUGH'):
         print('  have:', sorted(k for k in access if k in sh.item_defs), flush=True)
@@ -558,6 +592,10 @@ def main():
         from RandomizerCore.Tools import event_tools, oead_tools
         print('souls:', souls_mod.apply(out_dir, romfs, leb, oead_tools, event_tools, msbt, soul_kinds, soul_cat),
               flush=True)
+    if tri_needed:  # (before pots: they take the flags after ours)
+        import msbt
+        from RandomizerCore.Tools import event_tools, oead_tools
+        print('triforce:', triforce_mod.apply(out_dir, romfs, oead_tools, event_tools, msbt, settings), flush=True)
     if pot_locs:
         from RandomizerCore.Tools import event_tools, oead_tools
         from RandomizerCore.Randomizers import item_get, data as las_data
@@ -617,6 +655,8 @@ def main():
 
     if soul_kinds:  # where the souls' fairy models stand (after the rooms moved): drawn red there (souls.c)
         print('soul spots:', souls_mod.write_spots(out_dir, leb, result['placements']), flush=True)
+    if tri_needed:  # where the pieces' models stand (after the rooms moved): drawn gold there (triforce.c)
+        print('triforce spots:', triforce_mod.write_spots(out_dir, leb, result['placements']), flush=True)
     import seed_tables
     from RandomizerCore.Tools import oead_tools as _ot
     if dig_locs:

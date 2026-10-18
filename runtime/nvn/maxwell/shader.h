@@ -78,6 +78,8 @@ typedef struct {
     bool uses_gmem_store;   // writes global memory (STG)
     uint32_t gmem_chunk_words;
     bool uses_tint;        // fragment: reads the per-draw tint (buffer 19, float4[2]) applied to color target 0
+    uint16_t ssbo_read;     // storage buffer slots whose binding (address) the shader reads from the driver constants
+                            // (c0 0x110 + 16 * i vertex, 0x510 + 16 * i fragment): the slots it actually uses
     bool uses_rscale;       // reads the resolution-scale table (fragment/compute buffer 18): float4 [0] = render
                             // target scale, [1 + i] = allocation scale of texture i
     uint32_t local_mem;     // bytes of local memory

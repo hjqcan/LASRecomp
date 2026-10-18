@@ -40,7 +40,7 @@
 
 enum { K_BC5, K_BC3, K_ASTC4, K_RGBA8, K_BC1 };
 enum { R_A = 1, R_B, R_X, R_Y, R_L, R_R, R_ZL, R_ZR, R_PLUS, R_MINUS, R_HERO, R_SHEET, R_BOTTLE, R_BOTTLE_MODEL, R_FAIRY_MODEL,
-       R_ITEM_CURSOR, R_TUNIC, R_TUNIC_RED, R_TUNIC_BLUE, R_HEART, R_POWDER_MODEL, R_DGN_MAP, R_MAP_MODEL };
+       R_ITEM_CURSOR, R_TUNIC, R_TUNIC_RED, R_TUNIC_BLUE, R_HEART, R_POWDER_MODEL, R_DGN_MAP, R_MAP_MODEL, R_POWER_PIECE_MODEL };
 enum { STYLE_NINTENDO, STYLE_XBOX, STYLE_PS };
 // labels: R_A..R_MINUS = the button that role is on by default; or these
 enum { L_LS = 32, L_RS, L_DUP, L_DDOWN, L_DLEFT, L_DRIGHT, L_OTHER };
@@ -103,6 +103,8 @@ static int role_of(const char *name) {
         // the Hint Sheet (runtime/hle/hint_sheet.c): the dungeon map's UI icon (drawn in place of the first bottle's,
         // texpatch_hint_icon) and its 3D model's colour map (ItemDungeonMap.bfres: Tarin's hand-over, tinted)
         {"DgnMap_00^q", R_DGN_MAP}, {"MI_dungeonMap_alb", R_MAP_MODEL},
+        // the Piece of Power's colour map (ItemPowerPiece.bfres): Triforce pieces are one drawn gold (runtime/hle/triforce.c)
+        {"MI_powerPiece_alb", R_POWER_PIECE_MODEL},
         {"Hp_00^w", R_HEART}, {"Hp_01^w", R_HEART}, {"Hp_02^w", R_HEART}, {"HeartUp^w", R_HEART},
         // the Items page's cursor brackets: identified only (hidden while the companion card has the cursor, pets.c)
         {"ItemCursor_", R_ITEM_CURSOR},
@@ -178,8 +180,9 @@ static void load_refs(void) {
     uint8_t *f;
     static const char *const models[] = {"region_common/actor/ItemBottle.bfres", "region_common/actor/Playerlink.bfres",
                                          "region_common/actor/ItemFairy.bfres", "region_common/actor/ItemMagicPowder.bfres",
-                                         "region_common/actor/ItemDungeonMap.bfres"};
-    for (int m = 0; m < 5; m++)
+                                         "region_common/actor/ItemDungeonMap.bfres",
+                                         "region_common/actor/ItemPowerPiece.bfres"};
+    for (int m = 0; m < (int)(sizeof models / sizeof *models); m++)
         if ((f = read_all(models[m], &len))) {  // (their textures: one BNTX inside)
             for (size_t i = 0; i + 8 < len; i += 4)
                 if (!memcmp(f + i, "BNTX\0\0\0\0", 8)) { scan_bntx(f + i, len - i, false); break; }
@@ -198,7 +201,7 @@ static void load_refs(void) {
 int texpatch_bottle_kind(int id) {
     if (id < 0 || id >= g_nrefs) return 0;
     return g_refs[id].role == R_BOTTLE ? 1 : g_refs[id].role == R_BOTTLE_MODEL ? 2 : g_refs[id].role == R_FAIRY_MODEL ? 3
-         : g_refs[id].role == R_POWDER_MODEL ? 4 : g_refs[id].role == R_MAP_MODEL ? 5 : 0;
+         : g_refs[id].role == R_POWDER_MODEL ? 4 : g_refs[id].role == R_MAP_MODEL ? 5 : g_refs[id].role == R_POWER_PIECE_MODEL ? 6 : 0;
 }
 
 int texpatch_heart_kind(int id) {
@@ -256,6 +259,7 @@ int texpatch_identify(const NvnTexture *t) {
         // (only the bottle model's and the tunic's maps have mip levels: compared in full, all levels)
         bool tunic = r->role == R_TUNIC || r->role == R_TUNIC_RED || r->role == R_TUNIC_BLUE;
         if (r->w != t->width || r->h != t->height || (r->role != R_POWDER_MODEL && r->role != R_MAP_MODEL &&
+            r->role != R_POWER_PIECE_MODEL &&
             (t->levels > 1) != (r->role == R_BOTTLE_MODEL || r->role == R_FAIRY_MODEL || tunic))) continue;
         uint64_t n = r->size < total ? r->size : total;
         if (!memcmp((const void *)(uintptr_t)t->addr, r->data, n)) {
@@ -1020,7 +1024,7 @@ void texpatch_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h
     if (r->role == R_TUNIC || r->role == R_TUNIC_RED || r->role == R_TUNIC_BLUE) { tunic_apply(lv, blocks, w, h, row); return; }
     if (lv || r->w != w || r->h != h) return;
     if (r->role == R_BOTTLE || r->role == R_BOTTLE_MODEL || r->role == R_FAIRY_MODEL || r->role == R_POWDER_MODEL ||
-        r->role == R_ITEM_CURSOR || r->role == R_DGN_MAP || r->role == R_MAP_MODEL ||
+        r->role == R_ITEM_CURSOR || r->role == R_DGN_MAP || r->role == R_MAP_MODEL || r->role == R_POWER_PIECE_MODEL ||
         r->role == R_HEART) return;
     if (r->role == R_HERO) {  // fully transparent (BC5 blocks of zeros)
         if (hide_hero()) for (uint32_t y = 0; y < (h + 3) / 4; y++) memset(blocks + y * row, 0, (w + 3) / 4 * 16);
@@ -1092,4 +1096,56 @@ NvnTexture *texpatch_hint_icon(void) {
     }
     pthread_mutex_unlock(&lock);
     return state > 0 ? &t : NULL;
+}
+
+// One of the game's own UI textures, by name (e.g. "MapMark_05^w"), decoded to RGBA8 (w x h, the texture's own colour
+// encoding) from the user's UI archives; NULL if it isn't there or its format isn't one of ours. The caller frees it.
+// (Runtime-made icons for our overlays: runtime/ui/triforce_icons.mm - nothing of the game ships.)
+uint8_t *texpatch_ui_rgba(const char *want, int *w_out, int *h_out) {
+    static const char *const arcs[] = {"region_common/ui/Game.arc", "regionUS/common/ui/GameRegionCommon.arc",
+                                       "regionEU/common/ui/GameRegionCommon.arc", "region_common/ui/StartUp.arc"};
+    for (int a = 0; a < 4; a++) {
+        size_t len;
+        uint8_t *d = read_all(arcs[a], &len), *out = NULL;
+        if (!d) continue;
+        if (len > 0x20 && !memcmp(d, "SARC", 4)) {
+            uint32_t data_off = rd32(d + 0xC);
+            uint16_t n = rd16(d + 0x1A);
+            const uint8_t *ent = d + 0x20, *names = d + 0x20 + 16 * n + 8;
+            for (uint16_t i = 0; i < n && !out && ent + 16 * (i + 1) <= d + len; i++) {
+                uint32_t attr = rd32(ent + 16 * i + 4), s = rd32(ent + 16 * i + 8), e = rd32(ent + 16 * i + 12);
+                const char *nm = (attr >> 24) ? (const char *)names + (attr & 0xffffff) * 4 : "";
+                if ((const uint8_t *)nm >= d + len || strcmp(nm, "timg/__Combined.bntx") || data_off + e > len) continue;
+                const uint8_t *b = d + data_off + s;
+                size_t blen = e - s;
+                if (blen < 0x40 || memcmp(b, "BNTX", 4)) continue;
+                uint32_t count = rd32(b + 0x24);
+                uint64_t infos = rd64(b + 0x28);
+                for (uint32_t k = 0; k < count && !out && infos + 8 * k + 8 <= blen; k++) {
+                    uint64_t brti = rd64(b + infos + 8 * k);
+                    if (brti + 0x90 > blen || memcmp(b + brti, "BRTI", 4)) continue;
+                    const uint8_t *t = b + brti + 16;
+                    uint64_t name_at = rd64(t + 80), ptrs = rd64(t + 96);
+                    if (name_at + 2 >= blen) continue;
+                    uint16_t nl = rd16(b + name_at);
+                    if (nl != strlen(want) || memcmp(b + name_at + 2, want, nl) || ptrs + 8 > blen) continue;
+                    uint32_t fmt = rd32(t + 12), w = rd32(t + 20), h = rd32(t + 24), size = rd32(t + 64);
+                    uint64_t data = rd64(b + ptrs);
+                    int kind = (fmt >> 8) == 0x1c ? K_BC3 : (fmt >> 8) == 0x2d ? K_ASTC4 : -1;
+                    if (kind < 0 || data + size > blen) continue;
+                    Ref r = {0, (uint8_t)kind, (uint8_t)((fmt & 0xff) == 6), 0, (uint16_t)w, (uint16_t)h, 1, size, NULL, ""};
+                    uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
+                    uint8_t *lin = calloc((size_t)bw * bh, 16);
+                    tegra_deswizzle(b + data, lin, bw, bh, 1, 16, rd32(t + 36) & 7, 0);
+                    out = malloc((size_t)w * h * 4);
+                    decode_image(&r, lin, bw * 16, out);
+                    free(lin);
+                    *w_out = (int)w, *h_out = (int)h;
+                }
+            }
+        }
+        free(d);
+        if (out) return out;
+    }
+    return NULL;
 }

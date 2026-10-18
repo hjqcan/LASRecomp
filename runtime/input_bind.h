@@ -1,7 +1,7 @@
 // Control remapping (runtime/hle/bindings.c): which controller button / key drives each Switch input. Edited from
 // the in-game menu's Controls tab and the start screen (runtime/ui/controls_ui.mm), saved in larecomp.ini.
-// Menus (the overlay, the start screen) never use these: they keep the fixed default layout, so no binding can lock
-// the player out.
+// Menus (the overlay, the start screen) never use these, so no binding can lock the player out: they follow the
+// controller's own layout instead (input_menu_family; runtime/ui/pad_nav.h).
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -33,6 +33,8 @@ const char *bind_input_name(int slot);         // "A", "D-pad Up", "Left stick U
 const char *bind_pad_label(int host, int fam); // controller button in the pad family's own words (fam: input_pad_family)
 const char *bind_key_label(int scancode);
 int bind_label_family(void);                   // the connected controller's family (also on the start screen)
+int input_family_of_type(int sdl_gamepad_type); // runtime/hle/input.c: 0 Nintendo, 1 Xbox (or labelled like one), 2 PS
+int input_menu_family(uint32_t sdl_joystick_id); // runtime/hle/input.c: our menus' layout for that pad (0: any)
 void bind_reset(int dev);
 bool bind_is_default(int dev);
 bool bind_is_default_slot(int dev, int slot);

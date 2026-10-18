@@ -27,7 +27,9 @@ int pets_menu_options(int out[6]);
 int pets_current(void);
 int pets_menu_slot(void);      // highlighted choice while the cursor is on the companion slot, else -1
 const char *souls_at(int i, int *kind, bool *owned);
+bool triforce_counts(int *have, int *needed);  // runtime/hle/triforce.c: false = no Triforce hunt
 }
+bool triforce_icon_draw(ImDrawList *dl, ImVec2 c, float size, ImU32 tint);  // triforce_icons.mm
 #include "../input_bind.h"
 
 #define DUNGEON_RECORDS (GA_LIVE_SAVE + 0xE0)  // live save: 0x10-byte records (+0 keys, +1 item bits)
@@ -133,7 +135,8 @@ static bool trade_shown(void) {
 
 extern "C" int rt_tunic_upgrades(void);  // runtime/hle/qol.c
 extern "C" bool inventory_overlay_wanted(void) {
-    return (trade_shown() || pets_ghost_state() >= 0 || companion_card() || rt_tunic_upgrades()) &&
+    int have, need;
+    return (trade_shown() || pets_ghost_state() >= 0 || companion_card() || rt_tunic_upgrades() || triforce_counts(&have, &need)) &&
            rando_seed_dir() && items_page_shown();
 }
 
@@ -358,6 +361,30 @@ static void tunics_draw(ImDrawList *dl, ImFont *font, float ox, float oy, float 
     }
 }
 
+// Triforce hunt: pieces found / needed, under the souls' column (the right of the item grid)
+static void triforce_box(ImDrawList *dl, ImFont *font, float ox, float oy, float u) {
+    int have, need;
+    if (!triforce_counts(&have, &need)) return;
+    ImVec2 a(ox + 1138 * u, oy + 506 * u), b(ox + 1246 * u, oy + 600 * u);
+    float cx = (a.x + b.x) * 0.5f;
+    dl->AddRectFilled(a, b, IM_COL32(52, 38, 20, 215), 12 * u);
+    dl->AddRect(a, b, IM_COL32(214, 176, 92, 230), 12 * u, 0, 2 * u);
+    bool done = have >= need;
+    ImU32 tint = have ? IM_COL32(255, 255, 255, 255) : IM_COL32(150, 150, 150, 170);
+    if (!triforce_icon_draw(dl, ImVec2(cx, a.y + 34 * u), 54 * u, tint)) {  // (no game file: drawn triangles)
+        ImU32 g = IM_COL32(240, 200, 70, 255);
+        float s = 27 * u, x = cx, y = a.y + 9 * u;
+        dl->AddTriangleFilled(ImVec2(x, y), ImVec2(x + s * 0.5f, y + s * 0.87f), ImVec2(x - s * 0.5f, y + s * 0.87f), g);
+        dl->AddTriangleFilled(ImVec2(x - s * 0.5f, y + s * 0.87f), ImVec2(x, y + s * 1.73f), ImVec2(x - s, y + s * 1.73f), g);
+        dl->AddTriangleFilled(ImVec2(x + s * 0.5f, y + s * 0.87f), ImVec2(x + s, y + s * 1.73f), ImVec2(x, y + s * 1.73f), g);
+    }
+    char t[16];
+    snprintf(t, sizeof t, "%d / %d", have, need);
+    float fs = 22 * u;
+    ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
+    dl->AddText(font, fs, ImVec2(cx - ts.x * 0.5f, b.y - ts.y - 8 * u), done ? IM_COL32(250, 220, 90, 255) : IM_COL32(255, 245, 225, 255), t);
+}
+
 struct Dungeon { const char *label; int index; };
 // record = 2 x (dungeon number - 1); the Color Dungeon is record 18 (verified from the in-dungeon key HUD)
 static const Dungeon kDungeons[] = {{"D1", 0}, {"D2", 2}, {"D3", 4}, {"D4", 6}, {"D5", 8},
@@ -446,6 +473,7 @@ extern "C" void inventory_overlay_draw(ImVec2 display, ImFont *font) {
     ImDrawList *dl = ImGui::GetForegroundDrawList();
     pets_draw(dl, font, ox, oy, u);
     if (rt_tunic_upgrades()) tunics_draw(dl, font, ox, oy, u);
+    triforce_box(dl, font, ox, oy, u);
     bool keys = keys_shown();
     if (!keys && !trade_shown()) return;
     float trade_y = p0.y + 84 * u;  // (the trade row: under the keys, or alone in a short panel at the same place)
