@@ -356,7 +356,10 @@ class Module:
         a = br_pc - 4
         guard = cmp = None
         conditional_cmp = False
-        while a >= analysis_start and br_pc - a <= 4 * 16:
+        # Case-live register initializers can be scheduled after the target
+        # calculation. Use the same bounded 64-instruction window as taken
+        # guards and table emulation; calls and other transfers remain barriers.
+        while a >= analysis_start and br_pc - a < 4 * 64:
             w = self.word(a)
             if (w & 0xFF000010) == 0x54000000 and bits(w, 0, 4) in (8, 2):
                 guard = a

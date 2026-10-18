@@ -94,6 +94,28 @@ class CrossFragmentTableTest(unittest.TestCase):
             adr(11,b+16,b+0x80),adr(9,b+20,b+0x100),0x7860796a,0x8b0a0929,0xd61f0120])
         self.assertEqual(m.jump_table(b+32,b+16,b+0x40),[b+0x110,b+0x180])
 
+    def test_fallthrough_guard_with_scheduled_register_initializers(self):
+        b=0x7008000000
+        # The lookup result remains in X9 while other case-live registers are
+        # initialized. This includes LR used as an ordinary saved temporary.
+        for byte_table in (False, True):
+            code=[0x7100041f,0x54000de8,adr(11,b+8,b+0x80),adr(9,b+12,b+0x100),
+                  0x3860696a if byte_table else 0x7860796a,0x8b0a0929]
+            registers=[r for r in range(31) if r!=9][:19]+[30]
+            code += [0x52800000 | ((r+1)<<5) | r for r in registers]
+            at=b+len(code)*4;code.append(0xd61f0120)
+            m=self.table_module(code)
+            if byte_table:struct.pack_into('<2B',m.nso.image,0x80,4,32)
+            targets=[b+0x110,b+0x180]
+            self.assertEqual(m.jump_table(at,b,b+0x80),targets)
+            labels,external,tables=m.scan(b,b+0x80)
+            self.assertTrue(set(targets).issubset(external))
+            emitted='\n'.join(m.emit_function(b,b+0x80,labels,tables,{}))
+            for target in targets:self.assertIn(f'return f_{target:x}(c);',emitted)
+            # A call breaks the proof, even inside the wider search window.
+            code[8]=0x94000030;m=self.table_module(code)
+            self.assertIsNone(m.jump_table(at,b,b+0x80))
+
     def test_taken_guard_before_long_stack_frame_prologue(self):
         b=0x7008000000
         # cmp w0,#1; b.ls body; ret; sub sp,sp,#32; stp x29,x30,[sp]; mov x29,sp.

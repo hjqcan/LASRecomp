@@ -90,6 +90,13 @@ history, with page alignment and checked arithmetic. Independent C# evaluations
 provide the native regression's expected capacities across REV1/2/4/5/8/12/15.
 Truncated requests, unaligned input and overflowing capacities are also covered.
 This corrects the oversized reservation; it does not establish full-game acceptance.
+The actual REV15 request now reserves `0x234000` bytes and startup progresses
+past speech initialization. The next stop exposed a guarded jump table whose
+branch followed twenty register initializers. Fallthrough-table discovery now
+uses the same bounded 64-instruction search as taken-table discovery, retaining
+call/transfer barriers. Synthetic byte/halfword tables reproduce the former
+missing-target failure; both captured tables' complete target sets also match
+independently decoded table entries.
 
 | Module | Guest base | Build ID |
 | --- | --- | --- |
