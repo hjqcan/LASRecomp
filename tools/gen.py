@@ -12,6 +12,7 @@ import re
 import struct
 import sys
 import time
+from array import array
 from collections import Counter
 
 # The bundled helper also imports NSZs. That path does not need to initialize
@@ -45,6 +46,10 @@ def sanitize(sym):
 
 
 class Module:
+    # Scan and emission revisit instructions, but retaining every lifted C string
+    # costs several GB on large modules. Eviction only repeats pure decoding.
+    LIFT_CACHE_LIMIT = 65536
+
     def __init__(self, name, path, base, simd='asm'):
         self.name = name
         self.nso = Nso(path)
@@ -52,7 +57,9 @@ class Module:
         n = self.nso
         self.lo = base + n.text[0]
         self.hi = base + n.text[0] + n.text[1]
-        self.words = struct.unpack(f'<{n.text[1] // 4}I', bytes(n.image[n.text[0]:n.text[0] + n.text[1]]))
+        self.words = array('I', n.image[n.text[0]:n.text[0] + n.text[1]])
+        if sys.byteorder != 'little':
+            self.words.byteswap()
         self.lifter = Lifter(base, simd)
         self.cache = {}
         self.stats = Counter()
@@ -70,8 +77,18 @@ class Module:
             try:
                 ins = self.lifter.lift(self.word(a), a)
             except Unsupported as e:
-                self.stats['unsupported'] += 1
+                # Preserve the unique-address diagnostic when a cache miss
+                # decodes an unsupported instruction again after eviction.
+                if not hasattr(self, '_unsupported'):
+                    self._unsupported = bytearray((len(self.words) + 7) // 8)
+                index = (a - self.lo) // 4
+                byte, bit = index // 8, 1 << (index % 8)
+                if not self._unsupported[byte] & bit:
+                    self._unsupported[byte] |= bit
+                    self.stats['unsupported'] += 1
                 ins = Insn('trap', f'rt_udf(c, {hx(a)}); /* {e} */')
+            if len(self.cache) >= self.LIFT_CACHE_LIMIT:
+                self.cache.clear()
             self.cache[a] = ins
         return ins
 

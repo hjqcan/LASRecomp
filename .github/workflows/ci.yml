@@ -109,6 +109,7 @@ jobs:
           tools/venv/bin/python tools/test_exclusive_pairs.py
           tools/venv/bin/python tools/test_relr.py
           tools/venv/bin/python tools/test_gnu_hash.py
+          tools/venv/bin/python tools/test_generator_memory.py
 
   macos:
     runs-on: macos-15
@@ -144,6 +145,7 @@ jobs:
           build/exclusive-test-env/bin/python tools/test_exclusive_pairs.py
           build/exclusive-test-env/bin/python tools/test_relr.py
           build/exclusive-test-env/bin/python tools/test_gnu_hash.py
+          build/exclusive-test-env/bin/python tools/test_generator_memory.py
       - name: Save commit and enhanced backup integration
         run: python3 tools/test_save_commit.py
       - name: Game address table tests
@@ -226,6 +228,7 @@ jobs:
           build/jump-test-env/Scripts/python.exe tools/test_exclusive_pairs.py
           build/jump-test-env/Scripts/python.exe tools/test_relr.py
           build/jump-test-env/Scripts/python.exe tools/test_gnu_hash.py
+          build/jump-test-env/Scripts/python.exe tools/test_generator_memory.py
           GLSLC=glslc build/jump-test-env/Scripts/python.exe tools/test_shader_shared.py
           build/jump-test-env/Scripts/python.exe tools/test_prepared_shader_lifetime.py
           SDL_FLAGS="$(pkg-config --cflags --libs sdl3)" build/jump-test-env/Scripts/python.exe tools/test_rumble.py

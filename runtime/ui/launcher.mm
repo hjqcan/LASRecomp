@@ -426,6 +426,11 @@ static bool build_game_code(const std::string &target) {
     g_build_started = SDL_GetTicks();
     int cores = SDL_GetNumLogicalCPUCores(), ram_gb = SDL_GetSystemRAM() / 1024;
     GameBuildOpts o = {build_progress, cores < ram_gb - 2 ? cores : ram_gb - 2 > 1 ? ram_gb - 2 : 1, build_cancelled};
+    if (const char *s = getenv("LARECOMP_BUILD_JOBS")) {
+        char *end = nullptr;
+        long jobs = strtol(s, &end, 10);
+        if (*s && !*end && jobs >= 1 && jobs <= 64) o.jobs = (int)jobs;
+    }
     char why[256] = "";
     g_build_frac = 0;
     bool ok = gamebuild_run(target.c_str(), &o, why, sizeof why);

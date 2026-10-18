@@ -1,5 +1,6 @@
 """Guarded, reviewed instruction replacements for generic title adapters."""
 import struct
+from array import array
 
 
 def apply_instruction_patches(module, release):
@@ -14,9 +15,11 @@ def apply_instruction_patches(module, release):
             raise ValueError(f'Adapter patch instruction mismatch at {address:#x}')
         edits.append((address, patch['replacement']))
     # Validate every guard before altering even the temporary analysis image.
-    words = list(module.words)
+    if not edits:
+        return 0
+    words = array('I', module.words)
     for address, replacement in edits:
         words[(address - module.lo) // 4] = replacement
         struct.pack_into('<I', module.nso.image, address - module.base, replacement)
-    module.words = tuple(words)
+    module.words = words
     return len(edits)

@@ -41,6 +41,14 @@ On Windows, final import-directory publication retries transient sharing/access
 errors for up to five seconds, preserving atomic rename and rollback behavior.
 Tests hold a real directory handle without delete sharing, release it, and
 verify publication; simulated permanent failures still preserve prior data.
+The complete 3.0.1 import contains 103,396 files and 10,414,305,140 payload
+bytes. Its first native build exposed unbounded lifted-instruction caching.
+Generation now retains at most 65,536 decoded instructions and stores text words
+compactly. Eviction repeats decoding without changing emitted C; synthetic
+regressions cover control flow, nonlocal continuations and unique unsupported
+instruction counts. `LARECOMP_BUILD_JOBS=1..64` can limit build concurrency when
+other applications need memory. An interrupted build keeps completed objects
+for the normal Resume action.
 
 | Module | Guest base | Build ID |
 | --- | --- | --- |
