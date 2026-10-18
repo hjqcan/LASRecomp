@@ -141,7 +141,7 @@ jobs:
       - name: Exclusive pairs and native contention
         run: |
           python3 -m venv build/exclusive-test-env
-          build/exclusive-test-env/bin/pip install -q unicorn lz4
+          build/exclusive-test-env/bin/pip install -q unicorn lz4 capstone
           build/exclusive-test-env/bin/python tools/test_exclusive_pairs.py
           build/exclusive-test-env/bin/python tools/test_relr.py
           build/exclusive-test-env/bin/python tools/test_gnu_hash.py
