@@ -664,6 +664,13 @@ FRAME_JOB_KICKOFF_SITES = [A.FRAME_JOB_KICKOFF_SITES_0, A.FRAME_JOB_KICKOFF_SITE
 FRAME_JOB_FINISH_SITE = A.FRAME_JOB_FINISH_SITE
 
 
+# Shadow Link's Appear event (main+0xd157f0: requested once Link is within 3 units, ShadowLink.bfevfl) stops Link and
+# turns the camera to him; on the Field (seeds) the request is skipped and runtime/hle/miniboss.c plays his appearance
+# (Sign glow, then he pops up) without an event. The site is right after the function's already-requested check; the
+# skip goes to its return.
+SHADOW_LINK_APPEAR_SITE = A.SHADOW_LINK_APPEAR_SITE
+
+
 # ---- hook sites: the instruction stays as it is; just before it the runtime's rt_hook (runtime/hle/hooks.c) is asked
 # what to do - 0 run it, 1 the hook did it all, 2.. jump to the site's first.. target (each a label in its function).
 # The game code they generate never changes when a hook's behaviour does: only a new site needs the game code
@@ -677,6 +684,7 @@ HOOKS = {
     GOHMA_ARRIVED_SITE: (0x3dc58260, (A.GOHMA_ARRIVED_SKIP,), 'ldr q0, [x19, #0x1600]: Gohma, no track end on the Field'),
     MSTALFOS_BODY_SITE: (0x320003e8, (), 'mov w8, #1: Master Stalfos body collision flag, off on the Field'),
     MSTALFOS_JUMP_SITE: (0x1e213800, (), 'fsub s0, s0, s1: Master Stalfos jump arc from his takeoff height'),
+    SHADOW_LINK_APPEAR_SITE: (0xf9411809, (A.SHADOW_LINK_APPEAR_SKIP,), 'ldr x9, [x0, #0x230]: Shadow Link, no Appear event on the Field'),
     MCHIEF_STORY_SITE: (0x37380148, (A.MCHIEF_STORY_SKIP,), 'tbnz w8, #7: Moblin Chief, no story check on the Field'),
     DIG_HOLE_SITE: (0xf94007f6, (), 'ldr x22, [sp, #8]: a hole was dug (digs.c)'),
     HOLE_CAP_SITES[0]: (0xf101451f, (), 'cmp x8, #0x51: dug-hole limit (digs.c)'),

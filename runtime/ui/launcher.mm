@@ -102,6 +102,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 // offers that release (or a later one) as soon as it's out, so its players move to it.
 #define LARECOMP_VERSION "enhanced-beta5.3"
 #define LARECOMP_TEST_OF "enhanced-beta5.3"
+extern "C" const char *larecomp_version(void) { return LARECOMP_VERSION; }  // (the shader caches' tag)
 
 // ------------------------------------------------------------------ update check
 // The start screen asks GitHub for the project's releases once per launch (a background curl, which macOS and

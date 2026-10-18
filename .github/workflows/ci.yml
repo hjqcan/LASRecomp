@@ -1,8 +1,9 @@
 # LAS Recomp's checks: the app (build/lasrecomp: everything but the game code, which the start screen builds on the
 # player's machine) builds on Linux, macOS and Windows, and the tests that need no game files or GPU run: the FP/SIMD
-# lowering against a CPU emulator (tools/test_simd.py, x86-64 Linux) and the shader translator's GLSL against shaderc +
-# SPIRV-Tools (tools/test_translate.sh, Windows). Nothing is published. Feature tests that need no game files go in as
-# steps here, not as workflows of their own.
+# lowering against a CPU emulator (tools/test_simd.py, x86-64 Linux), the shader translator's GLSL against shaderc +
+# SPIRV-Tools (tools/test_translate.sh, Windows) and its instruction semantics on the CPU (tools/test_translate_ops.sh,
+# Linux / macOS). Nothing is published. Feature tests that need no game files go in as steps here, not as workflows of
+# their own.
 name: CI
 on:
   pull_request:
@@ -77,7 +78,9 @@ jobs:
           python3 tools/test_shader_jobs.py
           python3 tools/test_shader_snapshot.py
           python3 tools/test_prepared_shader_lifetime.py
-      - name: SIMD rounding and host-state isolation
+      - name: Vulkan validation failure regression
+        run: python3 tools/test_vulkan_validation.py
+      - name: SIMD rounding and host-state regression
         run: |
           clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -lm -o build/test-simd-rounding
           build/test-simd-rounding
@@ -94,6 +97,10 @@ jobs:
             LD_LIBRARY_PATH="$HOME/sdl3/lib:$HOME/sdl3/lib64" python3 tools/test_coop_input.py
           PKG_CONFIG_PATH="$HOME/sdl3/lib/pkgconfig:$HOME/sdl3/lib64/pkgconfig" \
             LD_LIBRARY_PATH="$HOME/sdl3/lib:$HOME/sdl3/lib64" python3 tools/test_rumble.py
+      - name: Vulkan synchronization failure regression
+        run: python3 tools/test_vulkan_sync_errors.py
+      - name: Shader translator instruction semantics
+        run: tools/test_translate_ops.sh
       - name: FP/SIMD lowering vs a CPU emulator (a sample)
         run: |
           python3 -m venv tools/venv && tools/venv/bin/pip install -q unicorn capstone lz4
@@ -141,6 +148,10 @@ jobs:
         run: |
           python3 tools/test_game_addresses.py
           python3 tools/test_version_hooks.py
+      - name: Vulkan synchronization failure regression
+        run: python3 tools/test_vulkan_sync_errors.py
+      - name: Shader translator instruction semantics
+        run: tools/test_translate_ops.sh
 
   windows:
     runs-on: windows-2022
@@ -178,6 +189,8 @@ jobs:
           build/test-condvar.exe
       - name: Vulkan fence sequence regression
         run: python tools/test_fence_sequence.py
+      - name: Vulkan validation failure regression
+        run: python tools/test_vulkan_validation.py
       - name: Native runtime regressions (UCRT64 and FFmpeg headers)
         run: |
           for name in touch prepo nvn_pool_mapping; do
@@ -220,3 +233,5 @@ jobs:
       # just satisfies it. The GLSL half - every fuzzed translation compiles and validates - is the check)
       - name: Shader translator fuzz (GLSL)
         run: REF=HEAD tools/test_translate.sh 4000 "$(nproc)" glsl
+      - name: Vulkan synchronization failure regression
+        run: python tools/test_vulkan_sync_errors.py

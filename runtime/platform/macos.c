@@ -17,6 +17,7 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/ucontext.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "../platform.h"
@@ -41,10 +42,23 @@ static void log_to_file_in_app(void) {
     mkdir(dir, 0755);
     snprintf(g_log_path, sizeof g_log_path, "%s/lasrecomp.log", dir);
     bool append = getenv("LASRECOMP_LOG_APPEND") != NULL;
-    if (!freopen(g_log_path, append ? "a" : "w", stderr)) { g_log_path[0] = 0; return; }
+    // A new session moves the last one's log aside (lasrecomp.prev.log) instead of truncating it in place: a copy
+    // started while another is still running or quitting can't empty that one's log (it keeps writing to the moved
+    // file), and the last session's log survives one more start. Opened for appending either way.
+    if (!append) {
+        char prev[1100];
+        snprintf(prev, sizeof prev, "%s/lasrecomp.prev.log", dir);
+        rename(g_log_path, prev);
+    }
+    if (!freopen(g_log_path, "a", stderr)) { g_log_path[0] = 0; return; }
     setvbuf(stderr, NULL, _IONBF, 0);
     dup2(STDERR_FILENO, STDOUT_FILENO);
     setenv("LASRECOMP_LOG_APPEND", "1", 1);
+    // (a first line: an empty log then means writing failed - e.g. a full disk - not another start)
+    time_t now = time(NULL);
+    char when[64];
+    strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime(&now));
+    fprintf(stderr, "[log] %s, pid %d%s\n", when, (int)getpid(), append ? " (restarted)" : "");
 }
 
 void plat_init(void) { log_to_file_in_app(); }
