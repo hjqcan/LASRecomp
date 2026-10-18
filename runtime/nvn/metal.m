@@ -1254,9 +1254,11 @@ void backend_present(NvnTexture *t) {
 // boots) or by ui_run; the game reuses the launcher's window.
 void ui_window_init(void) {
     if (window) return;
-    // (no SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS here: on macOS reading controllers in the background opens them
-    // as HID devices, for which the system asks for Input Monitoring - "receive keystrokes from any application")
     settings_load();
+    // controllers in the background: only when the player turned on "Allow background inputs" (Controls tab) - on
+    // macOS reading them in the background makes the system ask for Input Monitoring ("receive keystrokes from any
+    // application"), so it isn't the default
+    input_apply_background();
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
     input_load_user_mappings();
     int win_w = 1280, win_h = 720;

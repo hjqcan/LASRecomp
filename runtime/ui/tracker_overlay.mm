@@ -24,6 +24,8 @@ extern "C" {
 uint64_t renderer_present_count(void);
 int kernel_data_regions(uint64_t *addr, uint64_t *size, int max);
 const char *souls_at(int i, int *kind, bool *owned);  // runtime/hle/souls.c
+bool hint_sheet_on(void);     // runtime/hle/hint_sheet.c
+bool escape_bottle_on(void);  // runtime/hle/escape.c
 }
 
 
@@ -216,7 +218,8 @@ static void inventory(void) {
     static const struct { const char *n; int bit; } it[] = {{"bomb", 2}, {"bow", 3}, {"hookshot", 4}, {"boomerang", 5}, {"rod", 6},
                                                              {"shovel", 7}, {"powder", 8}, {"feather", 9}, {"boots", 11}, {"ocarina", 12}};
     for (auto &x : it) give(x.n, b(items, x.bit));
-    give("bottle", b(items, 13) + b(items, 14) + b(items, 15));
+    // (the Hint Sheet / Escape Bottle are the first / third bottle in seeds with them: never a bottle to the logic)
+    give("bottle", b(items, 13) * !hint_sheet_on() + b(items, 14) + b(items, 15) * !escape_bottle_on());
     static const struct { const char *n; int bit; } ki[] = {
         {"flippers", 0}, {"medicine", 1}, {"tail-key", 2}, {"slime-key", 3}, {"angler-key", 4}, {"face-key", 5}, {"bird-key", 6},
         {"full-moon-cello", 7}, {"conch-horn", 8}, {"sea-lilys-bell", 9}, {"surf-harp", 10}, {"wind-marimba", 11},

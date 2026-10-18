@@ -60,13 +60,7 @@ This is a beta release. That means bugs are likely, crashes could occur, randomi
 
 ### Known issues
 
-- The Mysterious Woods look wrong when viewed from outside the woods.
-- Some lighting effects show horizontal or vertical lines in dungeons, caves and houses.
-- Controller doesn’t work on the start screen.
-- Shadow bugs in big dungeon rooms at ultrawide
-- Black boxes sometimes appear in dungeon rooms.
-- Checking the dresser in BowWow's mom's room causes the game to crash.
-- Clicking Title Screen in LAS Recomp's custom settings crashes.
+Known issues and their status are on the [GitHub issues page](https://github.com/peiikai/LASRecomp/issues).
 
 ## Features
 

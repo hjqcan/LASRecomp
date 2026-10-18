@@ -12,8 +12,8 @@ extends the flag bitfield (runtime/hle/flags_ext.c, turned on by the seed's `fla
 
 Logic: LAS's break-bush (sword | powders | bracelet | bombs | rod | boomerang) AND the logic regions of the bush's
 screen. A screen's regions come from the LAS locations on it (location_rooms.json) and the house / cave doors on it
-(entrance_data.yml); a screen with neither takes the regions of the nearest screens that have some - all of them
-must be reachable (conservative: a bush never counts as reachable before the player can get there). A bush in a
+(entrance_data.yml); a screen with neither takes the regions of the nearest screens that have some (or SCREENS, by
+hand) - all of them must be reachable (conservative: a bush never counts as reachable before the player can get there). A bush in a
 pocket of its screen (POCKETS: behind pits / a rock / a crystal) also needs what that pocket's LAS check needs.
 """
 import glob
@@ -148,6 +148,13 @@ POCKETS = {
 }
 
 
+# Screens with no LAS location or door to name their region, where the nearest screens' would be wrong. Yarna
+# Desert's west column (Lanmola's pit, the sand down to the beach): east of the sleeping Walrus (Field_16N), so LAS
+# desert (Marin-gated with open-desert off) - the nearest screens are Animal Village's, which would leave a bush /
+# dig there open without Marin.
+SCREENS = {f'Field_{row}O': ('desert',) for row in (13, 14, 15, 16)}
+
+
 def pocket_condition(room, tile):
     """What it takes to stand on a tile beyond a screen's own regions (None: nothing more)."""
     cond, tiles = POCKETS.get(room, (None, ()))
@@ -180,6 +187,7 @@ def screen_regions():
                 elif dist == best:
                     regs |= s
             out[room] = regs
+    out.update((room, set(regs)) for room, regs in SCREENS.items())  # (after: the other screens keep their nearest)
     return out
 
 

@@ -46,6 +46,7 @@
 #define GA_HOLE_CAP_SITES_0                 UINT64_C(0x7000d22d30)
 #define GA_HOLE_CAP_SITES_1                 UINT64_C(0x7000d22dc0)
 #define GA_BOTTLE3_USE_SITE                 UINT64_C(0x7000d50f0c)
+#define GA_BOTTLE1_USE_SITE                 UINT64_C(0x7000d5116c)
 #define GA_BOSS_SPAWN_SITE                  UINT64_C(0x70008f5ed4)
 #define GA_HOOKSHOT_ATTR_SITE               UINT64_C(0x7000d7ee9c)
 #define GA_SNAP_DIR_SITE                    UINT64_C(0x7000ded9f0)

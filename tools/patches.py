@@ -374,6 +374,22 @@ def _bottle3_use(gen, a):
 PATCHES[BOTTLE3_USE_SITE] = _bottle3_use
 
 
+# Hint Book (runtime/hle/hintbook.c): the same predicate of the FIRST bottle (slot 0xd, main+0xd510c0: owned =
+# PlayerStatus+0xa9 bit 5, empty = +0xc0 bit 0). In randomizer seeds that bottle is the Hint Book: used, the runtime
+# shows the next hint in the game's message box and the answer is no (no swing).
+BOTTLE1_USE_SITE = A.BOTTLE1_USE_SITE
+
+
+def _bottle1_use(gen, a):
+    w = patch_word(gen, a)
+    assert w == 0x1a9f17e0, hex(w)  # cset w0, eq
+    return ('{ extern int rt_bottle1_use(void); c->x[0] = COND_NE(c) ? 0 : 1; if (c->x[0] && rt_bottle1_use()) c->x[0] = 0; }'
+            f'  /* {a:#x}: cset w0, eq (first bottle used: Hint Book) */')
+
+
+PATCHES[BOTTLE1_USE_SITE] = _bottle1_use
+
+
 # Boss souls (runtime/hle/souls.c): the actor factory f_70008f5ea0 (x2 = spawn info, type u16 at +8) takes the type's
 # create function from the actor table (main+0x1bcc898, 0x58 bytes per type, +0 create fn, +0x50 name); a null fn is
 # its "no such actor" path (the caller gets an empty handle). A dungeon boss whose soul isn't found yet gets that path.

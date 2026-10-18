@@ -112,6 +112,7 @@ The header of the YAML defines `outer_region`, `outer_extra`, `pocket`, `door_re
     - richard-villa cave → house is free.
 11. **Heart pieces in connectors are placed on the node that matches the LAS condition**, even when the actor's room suggests otherwise. `river-crossing-cave` is placed at the west node: the actor is in room 01B, but LAS needs no boots.
 12. **`d0-color-dungeon` and `windfish-egg` list `other_return_zones`.** Each has two interior zones that return to the same screen: Lv10 04C/08C and Lv09 02A/08C.
+13. **The Animal Village cave is an `animal-village` door, not a desert one.** Its bombable wall (Field_13N) is on the village side of the cliff, and the cave is one room with one exit. LADXR files `animal_cave` under its desert region (village + bush; LADXR removes the Walrus), but here `desert` means "past the Walrus" (Field_16N beach) once Marin is in the pool, so only the Lanmola cave stairs are a desert door. LAS's `animal-village-cave` condition (region animal-village, `break-bush & bombs`) is kept as `door_req`.
 
 ## Low-confidence entries (`confidence: low`)
 - `d4-connector-west` and `d4-connector-east`, plus connector `angler-tunnel-connector`. LADXR leaves this pair as a TODO. Direction and whether the D4-opened event is needed are not verified.

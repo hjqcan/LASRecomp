@@ -42,7 +42,8 @@ void rando_tab_draw(float scale);
 bool warp_tab_draw(float scale);  // warp_tab.mm: true when a warp started
 extern "C" void cheats_draw(float scale);  // cheats.mm
 extern "C" void difficulty_draw(float scale);  // difficulty.mm
-void controls_bindings_draw(float scale);  // controls_ui.mm
+void controls_tab_draw(float scale);  // controls_ui.mm
+bool controls_ui_took_back(void);
 #include "../input_bind.h"
 #include "../paths.h"
 }
@@ -400,57 +401,6 @@ static void drain_events(ImGuiIO &io) {
     }
 }
 
-// Section header in the big font.
-static void header(const char *t) {
-    ImGui::PushFont(g_font_big);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", ui_tr(t));
-    ImGui::PopFont();
-    ImGui::Separator();
-    ImGui::Spacing();
-}
-
-static void hint(const char *t) {
-    ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", ui_tr(t));
-    ImGui::PopTextWrapPos();
-}
-
-// A row with a label on the left and a choice of options on the right (dpad left/right cycles).
-// reserve: room kept free right of the combo (a button on the same line)
-static bool choice(const char *label, int *value, const char *const *names, int n, float reserve = 0) {
-    ImGui::PushID(label);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(ui_tr(label));
-    ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.45f);
-    bool changed = false;
-    ImGui::SetNextItemWidth(reserve > 0 ? -reserve : -1);
-    if (ImGui::BeginCombo("##c", ui_tr(names[*value]))) {
-        for (int i = 0; i < n; i++) {
-            if (ImGui::Selectable(ui_label(names[i]).c_str(), i == *value)) { *value = i; changed = true; }
-            if (i == *value) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-    if (ImGui::IsItemFocused() && !ImGui::IsPopupOpen("##c")) {
-        if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight) || ImGui::IsKeyPressed(ImGuiKey_RightArrow)) {
-            *value = (*value + 1) % n; changed = true;
-        }
-        if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) {
-            *value = (*value + n - 1) % n; changed = true;
-        }
-    }
-    ImGui::PopID();
-    return changed;
-}
-
-static bool toggle(const char *label, bool *v) {
-    const char *names[] = {"Off", "On"};
-    int i = *v;
-    bool ch = choice(label, &i, names, 2);
-    *v = i;
-    return ch;
-}
-
 extern "C" void renderer_get_scale(float *sx, float *sy);
 extern "C" int input_pad_family(void);  // runtime/hle/input.c
 extern "C" double output_scale_dynamic_factor(void);
@@ -586,51 +536,6 @@ static void tab_quit(float scale, bool in_game) {
         if (opt_action("Cancel", "", "Stays where you are.")) ask = 0;
     }
     opt_end();
-}
-
-static void tab_about(void) {
-    header("Movement");
-    toggle("D-pad moves Link", &g_settings.dpad_move);
-    toggle("360-degree movement", &g_settings.move_360);
-    hint("Link walks in the exact direction of the stick instead of snapping to 8 directions.");
-    ImGui::Spacing();
-    header("Controller");
-    toggle("Rumble", &g_settings.rumble);
-    if (g_settings.rumble) {
-        static const char *const pct[] = {"25%", "50%", "75%", "100%"};
-        int i = g_settings.rumble_strength / 25 - 1;
-        if (i < 0 || i > 3) i = 3;
-        if (choice("Intensity", &i, pct, 4)) g_settings.rumble_strength = (i + 1) * 25;
-    }
-    ImGui::Spacing();
-    header("Button prompts");
-    {
-        static const char *const fam[] = {"Nintendo", "Xbox", "PlayStation"};
-        char autol[64];
-        snprintf(autol, sizeof autol, ui_tr("Auto (%s)"), fam[input_pad_family() % 3]);
-        const char *names[] = {autol, "Nintendo", "Xbox", "PlayStation"};
-        choice("Button icons", &g_settings.prompts, names, 4);
-    }
-    ImGui::Spacing();
-    header("System language");
-    {
-        // what the game is told the console's language is: its text follows this (runtime/settings.c)
-        char autol[64];
-        snprintf(autol, sizeof autol, ui_tr("Auto (%s)"), ui_tr(settings_language_name()));
-        const char *names[N_LANGUAGES];
-        names[0] = autol;
-        for (int i = 1; i < N_LANGUAGES; i++) names[i] = g_language_names[i];
-        if (choice("Language", &g_settings.language, names, N_LANGUAGES)) settings_save();
-    }
-    hint("Menus change immediately. Game text changes after returning to the start screen and choosing Play again.");
-    ImGui::Spacing();
-    header("Controls");
-    controls_bindings_draw(ImGui::GetFontSize() / 34);
-    ImGui::Spacing();
-    header("Menu");
-    ImGui::TextUnformatted(ui_tr("Open / close this menu:  F1, Esc, the controller's Home / Xbox / PlayStation button, or Back + Start"));
-    ImGui::TextUnformatted(ui_tr("Switch tabs:  L / R  (Q / E)        Back:  B  (Esc)"));
-    ImGui::TextUnformatted(ui_tr("Fullscreen:  F11 / Alt+Enter"));
 }
 
 extern "C" bool inventory_overlay_wanted(void);
@@ -784,16 +689,9 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 ImGui::Spacing();
                 ImGui::BeginChild("##page", ImVec2(0, 0), ImGuiChildFlags_None,  // (the rest of the window: no hint line)
                                   ImGuiWindowFlags_NavFlattened);
-                // Down from the tab bar, pages that aren't option rows (Prelaunch, Controls, Warp): their first control
+                // Down from the tab bar, pages that aren't option rows (Prelaunch, Warp): their first control
                 // (option-row pages: opt_focus_first)
-                if (down_from_tab && (t.id == -1 || t.id == 8 || t.id == 4)) {
-                    opt_focus_first(false);
-                    ImGui::SetKeyboardFocusHere();
-                    ImGui::SetNavCursorVisible(true);
-                }
-                // Down from the tab bar, pages that aren't option rows (Prelaunch, Controls, Warp): their first control
-                // (option-row pages: opt_focus_first)
-                if (down_from_tab && (t.id == -1 || t.id == 8 || t.id == 4)) {
+                if (down_from_tab && (t.id == -1 || t.id == 4)) {
                     opt_focus_first(false);
                     ImGui::SetKeyboardFocusHere();
                     ImGui::SetNavCursorVisible(true);
@@ -808,7 +706,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 5: cheats_draw(scale); break;
                 case 6: difficulty_draw(scale); break;
                 case 7: tab_cosmetics(); break;
-                case 8: tab_about(); break;
+                case 8: controls_tab_draw(scale); break;
                 case 9: tab_quit(scale, in_game); break;
                 case 10: photo_mode_tab(scale, in_game); break;
                 case 11: mods_draw(scale, in_game); break;
@@ -952,7 +850,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         tabs_body(scale, true, NULL);                                                                          //  pages run)
         // B with nothing focused-deeper closes the menu (not the Esc / B that ends typing: typing is from the frame
         // before, so it's still true the frame a field lets go)
-        if (!any_popup && !typing && !ui_text_busy() && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+        if (!any_popup && !typing && !ui_text_busy() && !controls_ui_took_back() &&
+            ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
             (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
             set_open(false);
         ImGui::PopFont();

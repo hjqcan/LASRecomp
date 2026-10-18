@@ -653,6 +653,44 @@ def _roof_variants(romfs):
     return _roof_cache
 
 
+_box_cache = {}
+
+
+def _model_boxes(romfs, f):
+    """{model name: (x0, x1, z0, z1)} of a roof file's models, cell-centred (from each shape's bounding box): a
+    room-specific lid / fade reaches 4.5 past its cell on the sides the original dungeon left empty."""
+    if f not in _box_cache:
+        out = {}
+        try:
+            d = open(os.path.join(romfs, 'region_common', f), 'rb').read()
+        except OSError:
+            d = b''
+        for m in re.finditer(b'FSHP', d):
+            o = m.start()
+            try:
+                no = struct.unpack_from('<Q', d, o + 8)[0]
+                n = struct.unpack_from('<H', d, no)[0]
+                name = d[no + 2:no + 2 + n].decode().split('__')[0]
+                cx, _, cz, ex, _, ez = struct.unpack_from('<6f', d, struct.unpack_from('<Q', d, o + 0x38)[0])
+            except (struct.error, UnicodeDecodeError):
+                continue
+            b = (cx - ex, cx + ex, cz - ez, cz + ez)
+            a = out.get(name, b)
+            out[name] = (min(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), max(a[3], b[3]))
+        _box_cache[f] = out
+    return _box_cache[f]
+
+
+def _covers(romfs, f, model, others):
+    """Does the model reach over any of the neighbour cells `others` ((dc, dr) offsets)? Unknown model: assume so."""
+    b = _model_boxes(romfs, f).get(model)
+    if b is None:
+        return bool(others)
+    x0, x1, z0, z1 = b
+    return any((x0 < -7.6 if dc < 0 else x1 > 7.6 if dc > 0 else True) and
+               (z0 < -6.1 if dr < 0 else z1 > 6.1 if dr > 0 else True) for dc, dr in others)
+
+
 def _roof_for(romfs, level, missing, own_fade=None, corners=()):
     """Darkness cover (roof actor 0x1B6 params: model file, roof model, fade model) for a cell whose sides
     `missing` (subset of 'UDLR', in that order) have no room. The roof is the black lid over the cell while Link is
@@ -688,11 +726,12 @@ def _roof_for(romfs, level, missing, own_fade=None, corners=()):
     return None
 
 
-def _fix_room(romfs, out, cell, src, zone_id, flags=None, missing=None, unit_whole=False, corners=()):
+def _fix_room(romfs, out, cell, src, zone_id, flags=None, missing=None, unit_whole=False, corners=(), others=()):
     """Every actor records the camera zone it belongs to (actor +0x10 'roomID' = zone id): stamp the cell's new
     zone (stale ids -> the room isn't drawn: black screen). Warp pads are removed (their partner start in the
     old dungeon is gone -> std::out_of_range on load). unit_whole: the cell is part of a multi-cell room whose
-    cells all sit at their usual offsets (its own fade model fits)."""
+    cells all sit at their usual offsets (its own fade model fits) - unless its own models reach over `others`
+    (neighbour cells (dc, dr) holding a room that isn't part of it)."""
     from RandomizerCore.Tools import leb
     p = os.path.join(out, 'region_common', 'level', rooms.level_of(cell), cell + '.leb')
     data = open(p, 'rb').read() if os.path.exists(p) else open(rooms._leb_path(romfs, src), 'rb').read()
@@ -709,10 +748,16 @@ def _fix_room(romfs, out, cell, src, zone_id, flags=None, missing=None, unit_who
             own = [p.decode() if isinstance(p, bytes) else p for p in a.parameters[:3]]
             generic_roof = own[1] == 'DungeonRoof' or own[1].startswith('DungeonRoof_ex')
             generic_fade = own[2] == 'DungeonFade' or own[2].startswith('DungeonFade_ex')
-            if unit_whole and not generic_roof:
+            # ... but its own lid / fade were shaped for the original dungeon: where they reach 4.5 over a side (or
+            # corner) that was empty there and now holds another room, they black out a strip of that room (user
+            # 2026-10-18, Madness seed: Tail Cave 07A's lid over the top of 08A, Face Shrine 03B / 04C's over 03C)
+            keep_roof = unit_whole and not generic_roof and not _covers(romfs, own[0], own[1], others)
+            keep_fade = unit_whole and not generic_fade and not _covers(romfs, own[0], own[2], others)
+            if keep_roof and keep_fade:
                 continue
-            cover = _roof_for(romfs, rooms.level_of(cell), missing, (own[0], own[2]) if unit_whole and not generic_fade else None,
-                              corners)
+            cover = _roof_for(romfs, rooms.level_of(cell), missing, (own[0], own[2]) if keep_fade else None, corners)
+            if cover is None and keep_fade:  # (no matching roof in the fade's file)
+                cover = _roof_for(romfs, rooms.level_of(cell), missing, None, corners)
             if cover:
                 a.parameters = [cover[0].encode(), cover[1].encode(), cover[2].encode()] + list(a.parameters[3:])
     for a in r.actors:
@@ -1199,8 +1244,11 @@ def write(romfs, out, level, layout, entrance, own_zones=False, all_starts=False
         corners = [k for k, (dc, dr) in (('UL', (-1, -1)), ('UR', (1, -1)), ('DL', (-1, 1)), ('DR', (1, 1)))
                    if (c0 + dc, r0 + dr) in here]
         flags.keep = kept_global if src.rsplit('_', 1)[0] == level else set()  # (only this level's own rooms)
+        sibs = {(cell_pos(u)[0] - sc, cell_pos(u)[1] - sr) for u in unit} if whole else set()
+        others = [(dc, dr) for dc in (-1, 0, 1) for dr in (-1, 0, 1)
+                  if (dc, dr) != (0, 0) and (c0 + dc, r0 + dr) in here and (dc, dr) not in sibs]
         _fix_room(romfs, out, cell, src, None if keep else zone_ids[cell], None if keep else flags, missing, whole,
-                  corners)
+                  corners, others)
         area, own = _source_records(romfs, src)
         r = {'name': cell, 'unit': zone_ids[cell], 'area_data': area, 'zone_data': own if own_zones else home_zone}
         if keep and own:  # own camera zone (boss arenas...) under its own id; cells sharing it stay one zone
