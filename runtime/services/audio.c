@@ -467,7 +467,7 @@ static void effect_update(Effect *fx, const uint8_t *e, uint32_t revision) {
         return;
     }
     if (fx->type == 6) {
-        audio_biquad_update(&fx->bq, e + 0x20, new_type || e[1]);
+        audio_biquad_update_format(&fx->bq, e + 0x20, new_type || e[1], (revision >> 24) - '0' >= 15);
         return;
     }
     if (fx->type != 4) return;
@@ -763,6 +763,8 @@ static void *renderer_tick(void *arg) {
 }
 
 static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out) {
+    bool floating=(r->revision >> 24)-'0'>=15;
+    unsigned extra=floating?24:0;  // two float filter parameters replace two Q14 parameters
     uint8_t is_new = p[8];
     if (is_new) {
         memset(v, 0, sizeof *v);
@@ -784,34 +786,32 @@ static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out) 
     v->chans = ch > 6 ? 6 : (uint8_t)ch;
     memcpy(&v->pitch, p + 28, 4);
     memcpy(&v->volume, p + 32, 4);
-    memcpy(&v->wb_count, p + 60, 4);
-    memcpy(&v->ds_addr, p + 72, 8);
-    memcpy(&v->mix_id, p + 88, 4);
-    memcpy(&v->splitter_id, p + 92, 4);
-    memcpy(v->chan_ids, p + 320, 24);
-    v->flush += p[345];
-    memcpy(&v->behaviour, p + 348, 2);
-    if (p[344]) v->drop = 0;
-    for (int f = 0; f < 2; f++) {  // BiquadFilterParameter: enable, reserved, s16 numerator[3], denominator[2] (Q14)
-        const uint8_t *b = p + 36 + f * 12;
+    memcpy(&v->wb_count, p + 60 + extra, 4);
+    memcpy(&v->ds_addr, p + 72 + extra, 8);
+    memcpy(&v->mix_id, p + 88 + extra, 4);
+    memcpy(&v->splitter_id, p + 92 + extra, 4);
+    memcpy(v->chan_ids, p + 320 + extra, 24);
+    v->flush += p[345 + extra];
+    memcpy(&v->behaviour, p + 348 + extra, 2);
+    if (p[344 + extra]) v->drop = 0;
+    for (int f = 0; f < 2; f++) {
+        const uint8_t *b = p + 36 + f * (floating?24:12);
         if (b[0] && !v->bq_on[f]) {
             v->bq_reset[f] = 1;
-            if (getenv("LARECOMP_AUDIO_LOG")) {
+            if (!floating && getenv("LARECOMP_AUDIO_LOG")) {
                 int16_t k[5];
                 memcpy(k, b + 2, 10);
                 LOG("[audren] v%ld biquad%d on: %d %d %d / %d %d\n", (long)(v - r->voice), f, k[0], k[1], k[2], k[3], k[4]);
             }
         }
         v->bq_on[f] = b[0];
-        int16_t c[5];
-        memcpy(c, b + 2, 10);
-        for (int k = 0; k < 5; k++) v->bq[f][k] = c[k] / 16384.0f;
+        audio_biquad_coefficients(v->bq[f], b + (floating?4:2), floating);
     }
     ChanState *cs0 = &r->chst[v->chan_ids[0] % r->voices];
     if (is_new)
         for (int c = 0; c < v->chans; c++) memset(r->chst[v->chan_ids[c] % r->voices].valid, 0, WB_COUNT);
     for (int i = 0; i < WB_COUNT; i++) {
-        const uint8_t *w = p + 96 + i * 0x38;
+        const uint8_t *w = p + 96 + extra + i * 0x38;
         WaveBuf *wb = &v->wb[i];
         if (!cs0->valid[i] && wb->sent) wb->addr = 0;
         if (!w[26]) {  // !SentToServer: a new buffer for the DSP
@@ -925,11 +925,28 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
             LOG("[audren] dumped %s (%llu bytes, rev %08x)\n", path, (unsigned long long)in->size, r->revision);
         }
     }
-    uint32_t npools = pools_sz / 0x20, nvoices = voices_sz / 0x170, neffects = effects_sz / 0xC0;
+    unsigned revision=(r->revision >> 24)-'0';
+    uint32_t voice_size=revision>=15?0x188:0x170, effect_status_size=revision>=9?0x90:0x10;
+    if (voices_sz%voice_size || effects_sz%0xc0 || pools_sz%0x20 || chans_sz%0x70 || sinks_sz%0x140) {
+        resp->result=MAKE_RESULT(153,41);return;
+    }
+    uint32_t npools = pools_sz / 0x20, nvoices = voices_sz / voice_size, neffects = effects_sz / 0xC0;
     uint32_t nchans = chans_sz / 0x70, nsinks = sinks_sz / 0x140;
-    uint64_t output_size = 0x40ull + npools * 0x10ull + r->voices * 0x10ull + neffects * 0x10ull +
+    uint64_t output_size = 0x40ull + npools * 0x10ull + r->voices * 0x10ull + neffects * (uint64_t)effect_status_size +
                            nsinks * 0x20ull + (perf_sz ? 0x10 : 0) + 0xB0 + 0x10;
     if (output_size > out->size) { resp->result = MAKE_RESULT(153, 41); return; }
+    if (revision>=15) {  // reject invalid float filter parameters before updating renderer state
+        const uint8_t *voices=ip+0x40+behavior_sz+pools_sz+chans_sz, *effects=voices+voices_sz;
+        float coefficients[5];
+        for (uint32_t i=0;i<nvoices;i++) for (unsigned f=0;f<2;f++)
+            if (!audio_biquad_coefficients(coefficients,voices+i*voice_size+40+f*24,true)) {
+                resp->result=MAKE_RESULT(153,41);return;
+            }
+        for (uint32_t i=0;i<neffects;i++) if (effects[i*0xc0]==6 &&
+                !audio_biquad_coefficients(coefficients,effects+i*0xc0+0x30,true)) {
+            resp->result=MAKE_RESULT(153,41);return;
+        }
+    }
     if (nvoices > r->voices) nvoices = r->voices;
     if (nchans > r->voices) nchans = r->voices;
     memset(op, 0, out->size);
@@ -968,13 +985,13 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
     oh[3] = r->voices * 0x10;
     for (uint32_t i = 0; i < r->voices; i++) r->voice[i].in_use = 0;
     for (uint32_t i = 0; i < nvoices && o + 0x10 <= out->size; i++, o += 0x10) {
-        const uint8_t *v = vin + i * 0x170;
+        const uint8_t *v = vin + i * voice_size;
         if (v[9]) update_voice(r, &r->voice[i], v, op + o);
     }
     // Effect state and parameters, consumed by the mixer under the same lock.
     const uint8_t *ein = vin + voices_sz;
-    oh[5] = neffects * 0x10;
-    for (uint32_t i = 0; i < neffects && o + 0x10 <= out->size; i++, o += 0x10) {
+    oh[5] = neffects * effect_status_size;
+    for (uint32_t i = 0; i < neffects && o + effect_status_size <= out->size; i++, o += effect_status_size) {
         const uint8_t *e = ein + i * 0xC0;
         op[o] = e[2] ? 3 : 4;  // EffectState Enabled / Disabled
         if (i < r->effects) effect_update(&r->fx[i], e, r->revision);
@@ -997,7 +1014,7 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
     const uint8_t *min = ein + effects_sz;
     uint64_t split_at = (uint64_t)(min - ip);
     if (h[9] && (split_at > in->size || h[9] > in->size - split_at ||
-                 !audio_split_update(&r->routing, min, h[9]))) {
+                 !audio_split_update_revision(&r->routing, min, h[9], revision))) {
         LOG("[audren] invalid splitter update\n");
         resp->result = MAKE_RESULT(153, 41); // audio renderer InvalidUpdateInfo
         pthread_mutex_unlock(&r->lock);

@@ -70,6 +70,17 @@ regression exercises the real IPC codec, service handlers and kernel polling
 with ordinary and domain sessions; the former empty reply fails it. This
 addresses the identified service contract, not yet complete 3.0.1 acceptance.
 
+The next startup reached audio renderer REV15 and rejected its wider splitter
+records. Runtime audio now reads the 0x188-byte voice and 0xA8-byte splitter
+destination layouts, float biquad coefficients, REV12 Q14 splitter filters,
+REV13 explicit volume resets and REV9 enlarged effect status replies. The
+layouts follow the MIT-licensed [Ryujinx-derived parameter definitions](https://github.com/NextendoNetwork/Ryujinx-Nextendo/tree/2e6ff9ee8bc0072debd6584c3521586d1d4ab5ca/src/Ryujinx.Audio/Renderer/Parameter).
+Synthetic production-renderer tests cover legacy and newer request layouts,
+float precision, packet continuity, coefficient changes, filter fan-out,
+re-enable/reset, truncation rejection and output canaries. The two captured
+REV15 startup splitter packets also parse successfully. This is protocol and
+DSP regression evidence; full-game audio and gameplay qualification remain open.
+
 | Module | Guest base | Build ID |
 | --- | --- | --- |
 | main | 0x7000000000 | 7fc1baff976aeca414520cb89f4616cb |

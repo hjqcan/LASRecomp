@@ -6,9 +6,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "audio_biquad.h"
 
-// Audio renderer splitter protocol through REV11: SNDH, variable SNDI records,
-// then 0x70-byte SNDD records. Updates contain only changed routing objects.
+// SNDH, variable SNDI records, then SNDD destinations: 0x70 through REV11,
+// 0x90 with Q14 filters from REV12, 0xA8 with float filters from REV15.
+// Updates contain only changed routing objects.
 // Each destination supplies one input channel to up to 24 mix buffers.
 typedef struct {
     uint32_t rate, count;
@@ -18,6 +20,8 @@ typedef struct {
     int32_t mix_id;
     float volume[24], previous[24];
     bool used, rendered;
+    bool filter_enabled[2];
+    float coefficients[2][5], filter_state[2][4];
 } AudioSplitDestination;
 typedef struct {
     uint32_t count, destination_count;
@@ -45,7 +49,7 @@ static bool audio_split_init(AudioSplitters *s, uint32_t count, uint32_t destina
     return true;
 }
 
-static bool audio_split_update(AudioSplitters *s, const uint8_t *p, size_t size) {
+static bool audio_split_update_revision(AudioSplitters *s, const uint8_t *p, size_t size, unsigned revision) {
     if (!size) return true;
     if (size < 32 || audio_split_u32(p) != 0x48444e53) return false;
     uint32_t ns = audio_split_u32(p + 4), nd = audio_split_u32(p + 8);
@@ -76,14 +80,21 @@ static bool audio_split_update(AudioSplitters *s, const uint8_t *p, size_t size)
         at += 28 + count * 4; // includes twelve reserved bytes after the ids
     }
     size_t dest_at = at;
-    if (nd > (size - at) / 0x70) ok = false;
-    for (uint32_t i = 0; ok && i < nd; i++, at += 0x70) {
+    size_t stride=revision>=15?0xa8:revision>=12?0x90:0x70;
+    unsigned used_at=revision>=15?156:revision>=12?132:108;
+    if (at > size || nd > (size - at) / stride) ok = false;
+    for (uint32_t i = 0; ok && i < nd; i++, at += stride) {
         if (audio_split_u32(p + at) != 0x44444e53 || audio_split_u32(p + at + 4) >= s->destination_count) {
             ok = false; break;
         }
         for (unsigned j = 0; j < 24; j++) {
             float v; memcpy(&v, p + at + 8 + j * 4, 4);
             if (!isfinite(v)) ok = false;
+        }
+        if (revision>=12) for (unsigned f=0;f<2;f++) {
+            const uint8_t *filter=p+at+108+f*(revision>=15?24:12);
+            float coefficients[5];
+            if (!audio_biquad_coefficients(coefficients, filter+(revision>=15?4:2), revision>=15)) ok=false;
         }
     }
     if (ok && ((at + 15) & ~(size_t)15) != size) ok = false;
@@ -92,17 +103,30 @@ static bool audio_split_update(AudioSplitters *s, const uint8_t *p, size_t size)
             free(s->splitter[i].ids); s->splitter[i] = pending[i]; pending[i].ids = NULL;
         }
         for (uint32_t i = 0; i < nd; i++) {
-            const uint8_t *q = p + dest_at + i * 0x70;
+            const uint8_t *q = p + dest_at + i * stride;
             AudioSplitDestination *d = &s->destination[audio_split_u32(q + 4)];
             memcpy(&d->mix_id, q + 104, 4);
             memcpy(d->volume, q + 8, sizeof d->volume);
-            if (!d->used && q[108]) { memcpy(d->previous, d->volume, sizeof d->previous); d->rendered = false; }
-            d->used = q[108] != 0;
+            bool newly_used=!d->used && q[used_at];
+            bool reset_volume=revision>=13 ? q[used_at+1]!=0 : newly_used;
+            if (reset_volume) { memcpy(d->previous, d->volume, sizeof d->previous); d->rendered = false; }
+            for (unsigned f=0;f<2;f++) {
+                const uint8_t *filter=revision>=12?q+108+f*(revision>=15?24:12):NULL;
+                bool enabled=filter && filter[0];
+                if (newly_used || (enabled && !d->filter_enabled[f])) memset(d->filter_state[f],0,sizeof d->filter_state[f]);
+                d->filter_enabled[f]=enabled;
+                if (revision>=12) audio_biquad_coefficients(d->coefficients[f],filter+(revision>=15?4:2),revision>=15);
+            }
+            d->used = q[used_at] != 0;
         }
     }
     if (pending) for (uint32_t i = 0; i < s->count; i++) free(pending[i].ids);
     free(pending); free(changed);
     return ok;
+}
+
+static bool audio_split_update(AudioSplitters *s, const uint8_t *p, size_t size) {
+    return audio_split_update_revision(s,p,size,11);
 }
 
 static AudioSplitDestination *audio_split_get(AudioSplitters *s, uint32_t id, uint32_t index) {
@@ -116,6 +140,27 @@ static void audio_split_mix(AudioSplitDestination *d, float *out, uint32_t buffe
                             const float *in, float before, float gain, bool ramp) {
     if (!d || !d->used || !out || !n) return;
     if (buffers > 24) buffers = 24;
+    if (d->filter_enabled[0] || d->filter_enabled[1]) {
+        // Filter once before fan-out. Advancing the same filter again for each
+        // output channel would give those channels different samples and history.
+        float start[24], step[24];
+        for (uint32_t b=0;b<buffers;b++) {
+            start[b]=ramp?before*d->previous[b]:gain*d->volume[b];
+            step[b]=(gain*d->volume[b]-start[b])/n;
+        }
+        for (uint32_t i=0;i<n;i++) {
+            float value=in[i];
+            for (unsigned f=0;f<2;f++) if (d->filter_enabled[f]) {
+                const float *k=d->coefficients[f];float *state=d->filter_state[f];
+                float result=value*k[0]+state[0]*k[1]+state[1]*k[2]+state[2]*k[3]+state[3]*k[4];
+                state[1]=state[0];state[0]=value;state[3]=state[2];state[2]=result;
+                value=result;
+            }
+            for (uint32_t b=0;b<buffers;b++) out[b*n+i]+=value*(start[b]+step[b]*i);
+        }
+        if (ramp) d->rendered=true;
+        return;
+    }
     for (uint32_t b = 0; b < buffers; b++) {
         float g0 = ramp ? before * d->previous[b] : gain * d->volume[b];
         float g1 = gain * d->volume[b], step = (g1 - g0) / n;

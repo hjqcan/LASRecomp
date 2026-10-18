@@ -1,22 +1,37 @@
-// Legacy audio-renderer effect 6: six channel indices and signed Q14 coefficients.
+// Audio-renderer effect 6: six channel indices, Q14 or REV15 float coefficients.
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <math.h>
 
 typedef struct {
     uint8_t input[6], output[6], channels;
     float coefficients[5], state[6][2];
 } AudioBiquad;
 
-static inline void audio_biquad_update(AudioBiquad *filter, const uint8_t *data, bool reset) {
-    if (reset || data[23] == 0) memset(filter->state, 0, sizeof filter->state);
-    memcpy(filter->input, data, 6); memcpy(filter->output, data + 6, 6);
-    filter->channels = data[22] <= 6 ? data[22] : 0;
-    for (int i=0;i<5;i++) {
-        int16_t value; memcpy(&value, data + 12 + i*2, 2);
-        filter->coefficients[i] = value / 16384.f;
+static inline bool audio_biquad_coefficients(float out[5], const uint8_t *data, bool floating) {
+    for (unsigned i=0;i<5;i++) {
+        if (floating) memcpy(out+i, data+i*4, 4);
+        else { int16_t value; memcpy(&value, data+i*2, 2); out[i]=value/16384.f; }
+        if (!isfinite(out[i])) return false;
     }
+    return true;
+}
+
+static inline bool audio_biquad_update_format(AudioBiquad *filter, const uint8_t *data, bool reset, bool floating) {
+    float coefficients[5];
+    if (!audio_biquad_coefficients(coefficients, data+(floating?16:12), floating)) return false;
+    unsigned channels=floating?36:22, status=channels+1;
+    if (reset || data[status] == 0) memset(filter->state, 0, sizeof filter->state);
+    memcpy(filter->input, data, 6); memcpy(filter->output, data + 6, 6);
+    filter->channels = data[channels] <= 6 ? data[channels] : 0;
+    memcpy(filter->coefficients, coefficients, sizeof coefficients);
+    return true;
+}
+
+static inline void audio_biquad_update(AudioBiquad *filter, const uint8_t *data, bool reset) {
+    (void)audio_biquad_update_format(filter, data, reset, false);
 }
 
 static inline void audio_biquad_process(AudioBiquad *filter, float *buffers,

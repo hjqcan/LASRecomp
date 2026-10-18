@@ -39,7 +39,101 @@ static size_t routing_packet(uint8_t *p) {
     return (at + 15) & ~(size_t)15;
 }
 
+static void splitter_filter_test(unsigned revision) {
+    AudioSplitters s={0};assert(audio_split_init(&s,1,1));
+    uint8_t packet[256]={0};u32(packet,0x48444e53);u32(packet+8,1);
+    uint8_t *q=packet+32;destination(q,0,0,1,2);
+    unsigned stride=revision>=15?0xa8:0x90, used=revision>=15?156:132;
+    q[used]=1;q[used+1]=1;
+    for(unsigned f=0;f<2;f++) {
+        uint8_t *filter=q+108+f*(revision>=15?24:12);filter[0]=1;
+        float k[5]={.5f,0,0,f?0:.5f,0};
+        if(revision>=15)memcpy(filter+4,k,sizeof k);
+        else for(unsigned j=0;j<5;j++){int16_t value=(int16_t)(k[j]*16384);memcpy(filter+2+j*2,&value,2);}
+    }
+    size_t size=(32+stride+15)&~(size_t)15;
+    assert(audio_split_update_revision(&s,packet,size,revision));
+    assert(s.destination[0].used && s.destination[0].previous[0]==1);
+    float input[4]={1,0,0,0},output[9]={0};output[8]=12345;
+    audio_split_mix(&s.destination[0],output,2,4,input,1,1,true);
+    float expected=.25f;
+    for(unsigned i=0;i<4;i++,expected*=.5f){assert(output[i]==expected);assert(output[4+i]==2*expected);}
+    AudioSplitDestination before=s.destination[0];
+    for(size_t n=1;n<size;n++)assert(!audio_split_update_revision(&s,packet,n,revision));
+    assert(!memcmp(&before,&s.destination[0],sizeof before));
+    memset(input,0,sizeof input);memset(output,0,8*sizeof(float));
+    audio_split_mix(&s.destination[0],output,2,4,input,1,1,true);
+    for(unsigned i=0;i<4;i++,expected*=.5f)assert(output[i]==expected && output[4+i]==2*expected);
+    assert(output[8]==12345);
+    // Direct-form history survives coefficient changes, without retaining
+    // delayed terms that were already multiplied by the old coefficient.
+    if(revision>=15)f32(q+108+4+3*4,.25f);
+    else {int16_t quarter=4096;memcpy(q+108+2+3*2,&quarter,2);}
+    assert(audio_split_update_revision(&s,packet,size,revision));
+    float changed[2]={0};audio_split_mix(&s.destination[0],changed,2,1,input,1,1,false);
+    assert(changed[0]==expected*.5f && changed[1]==expected);
+    // Explicit previous-volume reset starts at REV13; an ordinary coefficient
+    // update otherwise retains the prior ramp endpoint and filter history.
+    audio_split_finish(&s);q[used+1]=0;f32(q+8,.5f);
+    assert(audio_split_update_revision(&s,packet,size,revision));assert(s.destination[0].previous[0]==1);
+    q[used+1]=1;assert(audio_split_update_revision(&s,packet,size,revision));
+    assert(s.destination[0].previous[0]==(revision>=13?.5f:1));
+    q[108]=q[108+(revision>=15?24:12)]=0;
+    assert(audio_split_update_revision(&s,packet,size,revision));
+    q[108]=q[108+(revision>=15?24:12)]=1;
+    assert(audio_split_update_revision(&s,packet,size,revision));
+    memset(output,0,8*sizeof(float));input[0]=1;
+    audio_split_mix(&s.destination[0],output,2,4,input,1,1,false);assert(output[0]==.125f);
+    if(revision>=15){before=s.destination[0];f32(q+112,NAN);assert(!audio_split_update_revision(&s,packet,size,revision));assert(!memcmp(&before,&s.destination[0],sizeof before));}
+    audio_split_free(&s);
+}
+
 #ifdef TEST_AUDIO_RENDERER
+static void renderer_update_layout_test(unsigned revision) {
+    enum { VOICES=2 };
+    Voice voice[VOICES]={0};ChanState channel[VOICES]={0};Effect effect={0};
+    Renderer r={.sample_count=4,.voices=VOICES,.effects=1,.voice=voice,.chst=channel,.fx=&effect,
+                .revision=0x00564552u | ((revision+'0')<<24)};
+    pthread_mutex_init(&r.lock,NULL);assert(audio_split_init(&r.routing,0,0));
+    _Alignas(16) uint8_t packet[2048]={0},output[528];
+    unsigned extra=revision>=15?24:0, voice_size=0x170+extra, effect_size=revision>=9?0x90:0x10;
+    uint32_t *header=(uint32_t *)packet;
+    header[0]=r.revision;header[3]=VOICES*voice_size;header[5]=0xc0;header[6]=32;header[9]=32;
+    header[15]=64+header[3]+header[5]+header[6]+header[9];
+    for(unsigned i=0;i<VOICES;i++) {
+        uint8_t *v=packet+64+i*voice_size;u32(v,i);v[8]=v[9]=1;v[11]=2;
+        u32(v+12,48000);u32(v+24,1);f32(v+28,1);f32(v+32,.25f*(i+1));
+        v[36]=1;
+        if(revision>=15)f32(v+40,.123456f);else {int16_t half=8192;memcpy(v+38,&half,2);}
+        u64(v+72+extra,0x1234567800ull+i);u32(v+88+extra,7+i);u32(v+92+extra,9+i);
+        u32(v+320+extra,i);v[345+extra]=2;uint16_t flags=5;memcpy(v+348+extra,&flags,2);
+        for(unsigned j=0;j<WB_COUNT;j++)v[96+extra+j*0x38+26]=1;
+    }
+    uint8_t *e=packet+64+header[3];e[0]=6;e[1]=e[2]=1;
+    unsigned ec=revision>=15?36:22;e[0x20+ec]=e[0x20+ec+1]=1;
+    if(revision>=15)f32(e+0x30,.234567f);else {int16_t half=8192;memcpy(e+0x2c,&half,2);}
+    u32(e+0xc0,0x48444e53);u32(e+0xc0+32,0xcafebabe);
+    unsigned expected=64+VOICES*16+effect_size+0xb0+0x10;
+    memset(output,0xa5,sizeof output);
+    IpcReq request={.na=1,.nb=1,.a={{(uintptr_t)packet,header[15]}},.b={{(uintptr_t)output,expected}}};
+    IpcResp response={0};request_update(&r,&request,&response);assert(!response.result);
+    assert(((uint32_t *)output)[5]==effect_size && ((uint32_t *)output)[15]==expected);
+    for(unsigned i=expected;i<sizeof output;i++)assert(output[i]==0xa5);
+    for(unsigned i=0;i<VOICES;i++) {
+        assert(voice[i].in_use && voice[i].volume==.25f*(i+1) && voice[i].rate==48000);
+        assert(voice[i].ds_addr==0x1234567800ull+i && voice[i].mix_id==(int)(7+i) && voice[i].splitter_id==9+i);
+        assert(voice[i].chan_ids[0]==i && voice[i].flush==2 && voice[i].behaviour==5);
+        assert(voice[i].bq_on[0] && voice[i].bq[0][0]==(revision>=15?.123456f:.5f));
+    }
+    assert(effect.bq.channels==1 && effect.bq.coefficients[0]==(revision>=15?.234567f:.5f));
+    header[3]--;response=(IpcResp){0};request_update(&r,&request,&response);assert(response.result);header[3]++;
+    if(revision>=15) {
+        Voice before=voice[0];f32(packet+64+40,NAN);response=(IpcResp){0};
+        request_update(&r,&request,&response);assert(response.result && !memcmp(&before,&voice[0],sizeof before));
+    }
+    audio_split_free(&r.routing);pthread_mutex_destroy(&r.lock);
+}
+
 static void mixer_test(const uint8_t *packet, size_t size) {
     Renderer r = {.sample_rate=48000, .sample_count=4, .voices=1, .nmix=3,
                   .sink_used=1, .sink_inputs=2, .sink_input={0,1}};
@@ -174,6 +268,7 @@ static void auxiliary_sink_level_test(void) {
 #endif
 
 int main(int argc, char **argv) {
+    splitter_filter_test(12);splitter_filter_test(13);splitter_filter_test(15);
     AudioSplitters s={0}; assert(audio_split_init(&s,2,3));
     uint8_t packet[512]; size_t size=routing_packet(packet);
     assert(audio_split_update(&s,packet,size));
@@ -197,6 +292,7 @@ int main(int argc, char **argv) {
     assert(audio_split_update(&s,clear,sizeof clear)); assert(!audio_split_get(&s,0,0));
     audio_split_free(&s);
 #ifdef TEST_AUDIO_RENDERER
+    renderer_update_layout_test(8);renderer_update_layout_test(12);renderer_update_layout_test(15);
     mixer_test(packet,size);
     auxiliary_sink_level_test();
     delay_mixer_test();
@@ -211,7 +307,7 @@ int main(int argc, char **argv) {
             assert(n>=64); size_t at=64;
             for(int j=1;j<=5;j++) at+=audio_split_u32(data+j*4);
             size_t length=audio_split_u32(data+9*4); assert(at+length<=(size_t)n);
-            assert(audio_split_update(&s,data+at,length)); free(data);
+            assert(audio_split_update_revision(&s,data+at,length,(audio_split_u32(data)>>24)-'0')); free(data);
         }
         audio_split_free(&s);
         printf("PASS: %d captured renderer update packets\n",argc-1);

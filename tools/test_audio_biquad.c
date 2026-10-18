@@ -28,5 +28,16 @@ int main(void) {
     p[6]=2; audio_biquad_update(&f,p,true); samples[0]=10;
     audio_biquad_process(&f,samples,2,4,true); assert(samples[0]==10 && samples[8]==12345);
     p[22]=7; audio_biquad_update(&f,p,true); assert(f.channels==0);
+    // REV15 effect parameters carry unquantized float coefficients and move the
+    // channel/status bytes past the wider coefficient block.
+    uint8_t wide[40]={0}; wide[6]=1;wide[36]=wide[37]=1;
+    float fk[5]={.123456f,0,0,.5f,0};memcpy(wide+16,fk,sizeof fk);
+    assert(audio_biquad_update_format(&f,wide,true,true));
+    memset(samples,0,8*sizeof(float));samples[0]=1;
+    audio_biquad_process(&f,samples,2,4,true);expected=fk[0];
+    for(int i=0;i<4;i++,expected*=.5f)assert(fabsf(samples[4+i]-expected)<1e-7f);
+    AudioBiquad before=f;fk[0]=NAN;memcpy(wide+16,fk,sizeof fk);
+    assert(!audio_biquad_update_format(&f,wide,false,true) && !memcmp(&f,&before,sizeof f));
+    assert(samples[8]==12345);
     puts("PASS: effect biquad impulse response, packet continuity, bypass, reset, signed coefficients and bounds");
 }

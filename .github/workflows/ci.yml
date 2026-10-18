@@ -233,7 +233,7 @@ jobs:
           done
           clang -std=gnu11 -O1 -D_POSIX_THREAD_SAFE_FUNCTIONS tools/test_time_service.c -o build/test-time.exe
           build/test-time.exe
-          clang -std=gnu11 -O1 -DTEST_AUDIO_RENDERER tools/test_audio_splitter.c -o build/test-audio-renderer.exe
+          clang -std=gnu11 -O1 -pthread -DTEST_AUDIO_RENDERER tools/test_audio_splitter.c -o build/test-audio-renderer.exe
           build/test-audio-renderer.exe
           clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_delay.c -o build/test-audio-delay.exe
           build/test-audio-delay.exe
