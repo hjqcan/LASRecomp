@@ -117,6 +117,14 @@ The subsequent load creates a BCAT directory reader even when no delivery cache
 exists. The offline storage now creates typed file/directory readers whose Open
 returns BCAT NotFound and subsequent reads return NotOpen. Tests cover both
 interfaces, short names and untouched output buffers; enumeration remains empty.
+The fresh profile subsequently reached the airport introduction and accepted
+dialogue input under strict Vulkan validation. Its shutdown still crashed during
+Vulkan teardown, and the scene was slow under validation; neither is a completed
+playability or performance acceptance result. The game's time command 400 also
+revealed an empty clock-snapshot reply. The service now supplies the typed 0xD0
+snapshot and context-based variant, and distinguishes elapsed time from user
+clock changes in snapshot comparisons. Tests check calendar rollover, source
+UUIDs, network fallback, overflow rejection and output-buffer bounds.
 
 | Module | Guest base | Build ID |
 | --- | --- | --- |

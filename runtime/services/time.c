@@ -209,6 +209,64 @@ static void timezone_service(Service *s, IpcReq *req, IpcResp *resp) {
 static uint32_t g_shmem_handle;
 RT_ON_RESET(time_reset) { g_shmem_handle = 0; }
 
+static int64_t time_read64(const uint8_t *p) { int64_t v; memcpy(&v, p, 8); return v; }
+
+static void clock_snapshot(IpcReq *req, IpcResp *resp) {
+    IpcBuf *out = out_buf(req, 0);
+    if (req->data_size < (req->cmd == 401 ? 0x48u : 1u) ||
+        !out || !out->addr || out->size < 0xD0) { resp->result = TIME_INVALID; return; }
+    _Alignas(8) uint8_t snapshot[0xD0] = {0};
+    int64_t now = unix_now(), steady = steady_seconds();
+    if (req->cmd == 401) memcpy(snapshot, req->data + 8, 0x40);
+    else {
+        *(int64_t *)snapshot = now - steady;
+        *(int64_t *)(snapshot + 8) = steady;
+        memcpy(snapshot + 0x10, clock_uuid, 16);
+        memcpy(snapshot + 0x20, snapshot, 0x20);
+    }
+    if (memcmp(snapshot + 0x10, clock_uuid, 16)) { resp->result = MAKE_RESULT(116, 102); return; }
+    for (unsigned i = 0; i < 2; i++) {
+        int64_t value = 0;
+        if (!memcmp(snapshot + i * 0x20 + 0x10, clock_uuid, 16) &&
+            __builtin_add_overflow(time_read64(snapshot + i * 0x20), steady, &value)) {
+            resp->result = MAKE_RESULT(116, 201); return;
+        }
+        *(int64_t *)(snapshot + 0x40 + i * 8) = value;
+        IpcResp calendar = {0}; to_calendar(value, &calendar, 0);
+        if (calendar.result) { resp->result = calendar.result; return; }
+        memcpy(snapshot + 0x50 + i * 8, calendar.data, 8);
+        memcpy(snapshot + 0x60 + i * 24, calendar.data + 8, 24);
+    }
+    *(int64_t *)(snapshot + 0x90) = steady;
+    memcpy(snapshot + 0x98, clock_uuid, 16);
+    memcpy(snapshot + 0xA8, local_location, sizeof local_location);
+    snapshot[0xCD] = req->data[0]; // type; automatic correction and version are zero
+    memcpy((void *)(uintptr_t)out->addr, snapshot, sizeof snapshot);
+}
+
+static void snapshot_difference(IpcReq *req, IpcResp *resp) {
+    IpcBuf *first = in_buf(req, 0), *second = in_buf(req, 1);
+    if (!first || !second || !first->addr || !second->addr || first->size < 0xD0 || second->size < 0xD0) {
+        resp->result = TIME_INVALID; return;
+    }
+    const uint8_t *a = (const uint8_t *)(uintptr_t)first->addr, *b = (const uint8_t *)(uintptr_t)second->addr;
+    unsigned offset;
+    if (req->cmd == 500) {
+        if (memcmp(a + 0x10, b + 0x10, 16) || (a[0xCC] && b[0xCC])) {
+            OUT(int64_t, 0) = 0; resp_size(resp, 8); return;
+        }
+        offset = 0; // clock adjustments made by the user, excluding elapsed time
+    } else if (!memcmp(a + 0x98, b + 0x98, 16)) offset = 0x90;
+    else if (time_read64(a + 0x48) && time_read64(b + 0x48)) offset = 0x48;
+    else { resp->result = MAKE_RESULT(116, 200); return; }
+    int64_t delta, ns;
+    if (__builtin_sub_overflow(time_read64(b + offset), time_read64(a + offset), &delta) ||
+        __builtin_mul_overflow(delta, INT64_C(1000000000), &ns)) {
+        resp->result = MAKE_RESULT(116, 201); return;
+    }
+    OUT(int64_t, 0) = ns; resp_size(resp, 8);
+}
+
 static void static_service(Service *s, IpcReq *req, IpcResp *resp) {
     (void)s;
     switch (req->cmd) {
@@ -223,6 +281,8 @@ static void static_service(Service *s, IpcReq *req, IpcResp *resp) {
         break;
     }
     case 100: case 101: OUT(uint8_t, 0) = 0; resp_size(resp, 1); break;
+    case 400: case 401: clock_snapshot(req, resp); break;
+    case 500: case 501: snapshot_difference(req, resp); break;
     default: LOG("[time] IStaticService cmd %u (ok)\n", req->cmd); resp_size(resp, 0x10);
     }
 }
