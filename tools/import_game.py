@@ -426,7 +426,7 @@ def extract_romfs(view, offset, header, destination):
     image_size = max(header[i] + header[i + 1] for i in (1, 3, 5, 7))
     def directory(entry_offset, parent, expected_parent=0, depth=0):
         nonlocal total, last, image_size
-        require(depth <= 32 and len(seen_dirs) < 10000 and entry_offset not in seen_dirs and
+        require(depth <= 32 and len(seen_dirs) < len(dirs) // 24 and entry_offset not in seen_dirs and
                 entry_offset + 24 <= len(dirs), 'Invalid RomFS directory graph')
         seen_dirs.add(entry_offset)
         par, sibling, child, first_file, _, length = struct.unpack_from('<6I', dirs, entry_offset)
@@ -437,7 +437,7 @@ def extract_romfs(view, offset, header, destination):
         names = set()
         current = first_file
         while current != EMPTY:
-            require(len(seen_files) < 100000 and current not in seen_files and current + 32 <= len(files),
+            require(len(seen_files) < len(files) // 32 and current not in seen_files and current + 32 <= len(files),
                     'Invalid RomFS file graph')
             seen_files.add(current)
             par, next_file, data, size, _, length = struct.unpack_from('<IIQQII', files, current)

@@ -191,6 +191,32 @@ class ImportTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     extract_romfs(view, 0, romfs_header(view, 0), Path(directory) / 'romfs')
 
+    def test_large_romfs_uses_validated_table_capacity(self):
+        # Newer titles exceed the former arbitrary 100,000-file ceiling.
+        # Traverse a real synthetic table without creating 100,001 host files.
+        count = 100001
+        entries = bytearray()
+        for i in range(count):
+            name = f'f{i:06d}.bin'.encode()
+            following = len(entries) + 32 + ((len(name)+3) & ~3) if i+1 < count else 0xffffffff
+            entries += struct.pack('<IIQQII', 24, following, 0, 0, 0xffffffff, len(name))
+            entries += name + bytes(-len(name) % 4)
+        image = synthetic_romfs()
+        header = list(struct.unpack_from('<10Q', image))
+        header[7], header[8] = 0x200, len(entries)
+        image = image[:0x200] + entries
+        struct.pack_into('<10Q', image, 0, *header)
+        copied = 0
+        def record_copy(view, offset, size, destination):
+            nonlocal copied
+            self.assertLessEqual(offset + size, view.size)
+            copied += 1
+        with tempfile.TemporaryDirectory() as directory, patch('import_game.copy_range', record_copy), redirect_stdout(io.StringIO()):
+            view = View(io.BytesIO(image))
+            result = extract_romfs(view, 0, romfs_header(view, 0), Path(directory)/'romfs')
+        self.assertEqual(result, (count, 0))
+        self.assertEqual(copied, count+1)  # all files plus the assembled image
+
     def test_patch_read_crosses_multiple_source_boundaries(self):
         base = View(io.BytesIO(b'abcdefghij'))
         update = View(io.BytesIO(b'XYZ'))

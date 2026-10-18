@@ -33,6 +33,10 @@ RomFS validator still selected LAS's content roots. Update assembly now passes
 the identified release's content rules through to that validator. A synthetic
 ACNH base/update reproduces the former failure and checks the corrected payload;
 the existing LAS, NSP and XCI import regressions remain in place.
+The next attempt reached resource extraction and exposed the old 100,000-file
+limit. Traversal is now bounded by the validated directory/file table capacities
+while retaining cycle, parent, name and extent checks. A synthetic 100,001-file
+table reproduces that former rejection without writing those files to disk.
 
 | Module | Guest base | Build ID |
 | --- | --- | --- |
