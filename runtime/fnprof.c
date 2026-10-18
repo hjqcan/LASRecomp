@@ -24,6 +24,7 @@ static uint64_t trace_addrs[64];
 static int trace_n;
 static _Atomic unsigned trace_counts[64];
 static uint64_t trace_x0;
+static unsigned trace_limit = 256;
 
 uint64_t g_bt_first_x0;
 
@@ -50,7 +51,7 @@ static void bt_check(uint64_t a, uint64_t lr, uint64_t x0) {
 }
 
 void fnprof_hit(uint64_t a, uint64_t lr, uint64_t x0) {
-    for (int i = 0; i < trace_n; i++) if (trace_addrs[i] == a && (!trace_x0 || trace_x0 == x0) && atomic_fetch_add(&trace_counts[i], 1) < 256) {
+    for (int i = 0; i < trace_n; i++) if (trace_addrs[i] == a && (!trace_x0 || trace_x0 == x0) && atomic_fetch_add(&trace_counts[i], 1) < trace_limit) {
         Cpu *c = kernel_current_cpu();
         if (c) LOG("[fntrace] %llx lr=%llx x=%llx,%llx,%llx,%llx,%llx,%llx,%llx,%llx saved=%llx,%llx,%llx,%llx,%llx,%llx,%llx,%llx sp=%llx\n",
             a, lr, c->x[0],c->x[1],c->x[2],c->x[3],c->x[4],c->x[5],c->x[6],c->x[7],
@@ -121,6 +122,11 @@ __attribute__((constructor)) static void fnprof_early(void) {
     const char *t = getenv("LARECOMP_TRACE_GUEST");
     const char *x = getenv("LARECOMP_TRACE_X0");
     if (x) trace_x0 = strtoull(x, NULL, 16);
+    const char *limit = getenv("LARECOMP_TRACE_LIMIT");
+    if (limit) {
+        unsigned long value = strtoul(limit, NULL, 10);
+        if (value > 0 && value <= 1000000) trace_limit = (unsigned)value;
+    }
     for (const char *p = t; p && *p && trace_n < 64;) {
         trace_addrs[trace_n++] = strtoull(p, (char **)&p, 16);
         while (*p == ',' || *p == ' ') p++;
