@@ -103,7 +103,7 @@ def main():
                     ffmpeg_configuration_without_build_prefix=re.sub(r'--prefix=\S+\s*', '', configuration),
                     files=records)
     (stage/'package-manifest.json').write_text(json.dumps(manifest, indent=2)+'\n', encoding='utf-8')
-    archive = args.output/f'Multi-{version}-windows-x64.zip'
+    archive = args.output/f'Multi-{version.removeprefix("multi-")}-windows-x64.zip'
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for path in sorted(p for p in stage.rglob('*') if p.is_file()):
             z.write(path, path.relative_to(args.output).as_posix())
