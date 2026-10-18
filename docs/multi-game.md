@@ -79,6 +79,17 @@ cache, exercises simultaneous requests, checks a first-use compute dispatch's
 output, resets the cache, and verifies that compile failures wake every waiter.
 The intentional invalid-shader diagnostic in that test is expected.
 
+Depth/stencil formats are also checked for blit source and destination support.
+If nearest scaling is needed on a driver without those features, Vulkan copies
+the selected aspect to a GPU buffer, resamples its raw 1/2/4-byte texels, and
+copies the result back. This preserves stencil and depth values without a CPU
+readback or an unsupported blit. Both attachment promotion and depth-pyramid
+copies use this path. `python tools/test_depth_copy_gpu.py` uses synthetic
+images on a Vulkan 1.3 device to check both capability selection and the forced
+fallback, including odd sizes, source preservation, mips, layers and untouched
+destination pixels. It enables the validation layer when available. The native
+Windows test passed with validation on an Intel Arc Pro 140T.
+
 Official `beta_5` through `35f7d30` also adds translator instruction fixes,
 translator/GPU cache tags, periodic Vulkan pipeline-cache saves and a Metal
 binary archive. Enhanced retains its no-discard shader policy, prepared-object

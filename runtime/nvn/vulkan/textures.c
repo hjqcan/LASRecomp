@@ -464,8 +464,10 @@ static TexBackend *tex_backend_for_usage(NvnTexture *t, bool render_target) {
                             .srcOffsets = {{0, 0, 0}, {(int32_t)level_w(&old, lv), (int32_t)level_h(&old, lv), 1}},
                             .dstSubresource = {aspect, lv, 0, 1},
                             .dstOffsets = {{0, 0, 0}, {(int32_t)level_w(b, lv), (int32_t)level_h(b, lv), 1}}};
-                        vkCmdBlitImage(cb, old.image, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL,
-                                       1, &bl, VK_FILTER_NEAREST);
+                        if (aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
+                            vk_blit_depth_nearest(cb, &old, b, &bl);
+                        else vkCmdBlitImage(cb, old.image, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL,
+                                            1, &bl, VK_FILTER_NEAREST);
                     }
                 vk_full_barrier(cb);
             }
