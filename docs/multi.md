@@ -2,10 +2,9 @@
 
 This is the independently maintained edition in [hjqcan/LASRecomp](https://github.com/hjqcan/LASRecomp/tree/multi). Download Windows builds from [the fork releases](https://github.com/hjqcan/LASRecomp/releases). Multi builds use their own update channel.
 
-**Multi Beta 5.3 now supports Animal Crossing: New Horizons 1.0.0 on Windows.**
-**Multi Beta 5.3 现已支持《集合啦！动物森友会》1.0.0（Windows 测试版）。**
-Current source also enables ACNH 3.0.1 installation and optional experimental
-60 FPS + SpeedFix. Standard 30 FPS remains the default. Other updates and DLC
+**Multi Beta 5.4 adds Animal Crossing: New Horizons 3.0.1 and optional 60 FPS + SpeedFix on Windows.**
+**Multi Beta 5.4 新增《集合啦！动物森友会》3.0.1 与可选的 60 FPS＋速度修正（Windows 测试版）。**
+The 60 FPS mode remains experimental. Standard 30 FPS remains the default. Other updates and DLC
 remain unsupported; see [ACNH setup and limits](ACNH-port.md).
 
 ## Names and compatibility / 名称与兼容性
@@ -14,12 +13,14 @@ remain unsupported; see [ACNH setup and limits](ACNH-port.md).
 repository and its default `main` branch have not been renamed. The public name
 is **Multi**; upstream authorship and license notices remain intact.
 
-Existing release tags use `enhanced-beta<N>.<revision>` because already installed
-clients recognize that update channel. These tags and release URLs stay valid;
-release titles and the application display **Multi Beta**. Keep this tag format
-for compatible updates until a separately tested update-channel migration is
-available. Renaming a display label must not silently move users to a channel
-that their installed updater cannot see.
+New releases use `multi-beta<N>.<revision>`, starting with `multi-beta5.4`.
+The updater understands the new tags and the numeric ordering of historical
+`enhanced-beta*` tags. Existing release tags and URLs stay valid. Older installed
+clients only recognize the historical channel, so download this first Multi
+package manually from the releases page. Its updater recognizes future Multi
+releases. Extract the new program files into the existing application folder
+after closing the old application, or copy the existing data folders into the
+new folder; do not replace saves or settings with empty folders.
 
 `lasrecomp.exe`, its import library, game libraries, environment variables,
 configuration filenames, log names and data directories retain their existing
@@ -27,8 +28,9 @@ names for compatibility. In particular, Windows game libraries import symbols
 from `lasrecomp.exe`. Renaming that binary requires a separate library migration.
 Preserve existing installations, saves, seeds, settings and desktop shortcuts.
 
-分支名改为 `multi`，对外显示 Multi；仓库和默认分支保持原样。历史版本标签、更新通道、
-程序内部文件名及数据路径继续兼容，不需要因此移动存档或重新导入游戏。
+分支名为 `multi`，新版本使用 `multi-beta*` 标签。旧版更新器无法发现新标签，首次需从
+Release 页面手动下载 Multi Beta 5.4；之后可正常检查 Multi 更新。历史发布链接保持有效。
+关闭旧程序后更新程序文件，保留游戏目录、存档、设置和快捷方式，无需重新导入游戏。
 
 ## Branch policy / 分支维护规则
 

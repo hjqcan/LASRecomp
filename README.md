@@ -4,12 +4,15 @@
 
 Multi is hjqcan's independently maintained multi-game branch of the [LAS Recomp fork](https://github.com/hjqcan/LASRecomp/tree/multi), based on [peiikai/LASRecomp](https://github.com/peiikai/LASRecomp). It is not an official LAS Recomp release. Development happens on `multi`; `main` and `beta_5` mirror upstream. Report branch-specific issues to [this fork](https://github.com/hjqcan/LASRecomp/issues).
 
-Multi Beta 5.3 adds Animal Crossing: New Horizons 1.0.0 support (Windows beta).
-Multi Beta 5.3 现已支持《集合啦！动物森友会》1.0.0（Windows 测试版）。
+Multi Beta 5.4 adds ACNH 3.0.1 and an optional experimental 60 FPS + SpeedFix
+mode (Windows beta). Standard 30 FPS remains the default. The correction needs
+sustained 60 FPS; lower performance slows the game. See the support limits below.
+Multi Beta 5.4 新增动森 3.0.1 及可选的实验性 60 FPS＋速度修正（Windows 测试版），
+默认仍为标准 30 FPS。修正模式低于 60 FPS 时会变慢。
 
-Current source also supports ACNH 3.0.1 and an optional experimental 60 FPS +
-SpeedFix mode. Standard 30 FPS remains the default; see the support limits below.
-当前源码另支持动森 3.0.1 及可选的实验性 60 FPS＋速度修正，默认仍为标准 30 FPS。
+New releases use `multi-beta*` tags. Older clients need one manual download to
+move to this update channel; [upgrade instructions](docs/multi.md#names-and-compatibility--名称与兼容性).
+新版本使用 `multi-beta*` 标签，旧客户端首次需要手动下载升级。
 
 The multi branch supports separate installations and desktop shortcuts
 for Link's Awakening 1.0.0/1.1.0 and Animal Crossing: New Horizons 1.0.0/3.0.1

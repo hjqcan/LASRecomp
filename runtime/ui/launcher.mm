@@ -27,6 +27,7 @@
 #include "option_rows.h"
 #include "osk.h"
 #include "pad_nav.h"
+#include "release_channel.h"
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
 #else
@@ -99,12 +100,12 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 #endif
 
 // The release tag this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read
-// it): keep enhanced-beta<n>.<revision> so installed clients still find updates; the display name is Multi.
+// it): new releases use multi-beta<n>.<revision>; historical tags stay readable.
 // A test build (a pre-release for a few players to try a fix)
 // is test-<name>: the start screen says "Test build <name>", and it previews LARECOMP_TEST_OF - the update check
 // offers that release (or a later one) as soon as it's out, so its players move to it.
-#define LARECOMP_VERSION "enhanced-beta5.3"
-#define LARECOMP_TEST_OF "enhanced-beta5.3"
+#define LARECOMP_VERSION "multi-beta5.4"
+#define LARECOMP_TEST_OF "multi-beta5.4"
 extern "C" const char *larecomp_version(void) { return LARECOMP_VERSION; }  // (the shader caches' tag)
 
 // ------------------------------------------------------------------ update check
@@ -114,18 +115,12 @@ extern "C" const char *larecomp_version(void) { return LARECOMP_VERSION; }  // (
 #define RELEASES_URL "https://api.github.com/repos/hjqcan/LASRecomp/releases?per_page=100"
 #define RELEASE_PAGE "https://github.com/hjqcan/LASRecomp/releases/tag/"
 
-// Multi keeps the legacy release-tag channel for installed clients; upstream tags never replace fork features.
+// Upstream tags never replace Multi releases; old fork tags keep their numeric ordering.
 static long long tag_rank(const std::string &t) {
-    int beta, revision; char end;
-    if (sscanf(t.c_str(), "enhanced-beta%d.%d%c", &beta, &revision, &end) == 2 &&
-        beta > 0 && revision > 0 && revision < 65536)
-        return ((long long)beta << 16) + revision;
-    return -1;
+    return multi_tag_rank(t);
 }
 static std::string tag_label(const std::string &t, bool) {
-    if (t.rfind("enhanced-beta", 0) == 0) return "Multi Beta " + t.substr(13);
-    if (!t.compare(0, 5, "test-")) return "Test build " + t.substr(5);
-    return t;
+    return multi_tag_label(t);
 }
 
 static std::string g_update_tag;  // a newer release's tag (g_update_lock)

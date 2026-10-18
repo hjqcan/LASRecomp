@@ -38,6 +38,7 @@ jobs:
       - run: python tools/test_adapter_probe.py -v
       - run: python tools/test_game_install.py
       - run: python tools/test_exit_status.py
+      - run: python tools/test_release_channel.py
       - if: runner.os != 'macOS'
         run: python tools/test_gpu_wait_timeout.py
       - if: runner.os != 'macOS'

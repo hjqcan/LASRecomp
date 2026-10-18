@@ -1,6 +1,6 @@
 # Fork maintenance
 
-- The maintained branch is `multi` and its public name is Multi. The repository remains `hjqcan/LASRecomp`, with `main` as the default. Keep legacy `enhanced-beta*` release tags and internal filenames/data paths compatible as documented in `docs/multi.md`.
+- The maintained branch is `multi` and its public name is Multi. The repository remains `hjqcan/LASRecomp`, with `main` as the default. New release tags use `multi-beta*`; retain existing historical tags and internal filenames/data paths as documented in `docs/multi.md`.
 
 - `main` and `beta_5` mirror the corresponding `peiikai/LASRecomp` branches. Update them only by fast-forwarding to upstream. Do not put fork features on either branch.
 - `multi` is the maintained fork edition. Merge upstream `beta_5` updates into it; resolve conflicts by preserving the enhancements listed in `docs/multi.md` alongside upstream fixes.

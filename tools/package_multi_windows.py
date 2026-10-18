@@ -27,8 +27,8 @@ def main():
     version_line = next(line for line in (root/'runtime/ui/launcher.mm').read_text(encoding='utf-8').splitlines()
                         if line.startswith('#define LARECOMP_VERSION '))
     version = version_line.split('"')[1]
-    if not version.startswith('enhanced-'):
-        raise RuntimeError('Expected the legacy-compatible fork release tag (enhanced- prefix)')
+    if not re.fullmatch(r'multi-beta[1-9][0-9]*\.[1-9][0-9]*', version):
+        raise RuntimeError('Expected a Multi release tag (multi-beta<N>.<revision>)')
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     source_dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True).strip())
     if source_dirty:
