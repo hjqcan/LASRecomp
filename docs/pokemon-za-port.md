@@ -1,6 +1,6 @@
 # Pokemon Legends: Z-A integration probe
 
-Status on 2026-10-18: **base 1.0.0 passes the fragmented guards and presents only black startup frames; unsupported shaders and missing main target `0x166df70` block further progress; not playable**.
+Status on 2026-10-18: **base 1.0.0 passes the earlier nested-table failure at `0x166df70`; early captures remain black and startup now stops at missing main target `0x1cfcc34`. Surface-write shaders are also unsupported; not playable**.
 This is third-title framework evidence, not a completed port. No Z-A release has
 been added to the installable catalog. Update 2.0.2 remains an inventory-only
 input. Tests used local files on Windows, starting
@@ -566,6 +566,101 @@ unchanged. This last batch verifies reads and movement on the research
 candidate; manual-save writes and launcher reboot were exercised separately on
 the official-only executable above. Successful bounded runs do not explain or
 clear the earlier LAS 1.1.0 startup crash, so research publication stays blocked.
+
+## Official 35f7d30 baseline and nested relative tables
+
+Published enhanced commit `0dc5db3` merges official `beta_5` through `35f7d30`.
+All seven workflows pass, including Windows, Linux and macOS builds. This merge
+includes upstream shader instruction corrections, cache versioning and periodic
+Vulkan pipeline-cache persistence, Vulkan error handling, Metal binary archives
+and deferred clears, and randomizer miniboss changes. Metal execution remains
+untested on this Windows host. Existing enhanced watchdog and shader ownership
+protections remain covered by their injected regressions.
+
+The official-only executable (`dddd96afb6ccd1bb...`) passed the complete
+copied-save batch before publication:
+
+| Input | Observed result |
+| --- | --- |
+| LAS 1.0.0 | Indoor/outdoor movement, inventory, manual save, launcher reboot in the same process and a second full 24,288-byte save read; normal exit after 307 seconds. Both boots prepared 908 shader variants with no failures. The reboot stopped 44 guest threads and released renderer/audio resources. |
+| LAS 1.1.0 | Movement, inventory and manual save, then a separate restart and full save read; normal exits after 138 and 52 seconds. |
+| ACNH 1.0.0 | Island movement, Save and End, and a separate restart back to the island; normal exits after 209 and 97 seconds. Five version headers and 24 internal hashes passed after both runs. |
+
+Actual captures were inspected and all five runs produced finite, nonzero
+48 kHz stereo mixer output. Source-save manifests and the accepted player
+application were unchanged. Runtime, frozen helper, headers and game libraries
+are retained privately. These are bounded functional checks, with no new
+full-playthrough, performance or updated-version randomizer qualification.
+
+Research commit `1a7170e` addresses a bounded relative table whose case span
+contains an unresolved relative-table branch. Treating the outer table's ADR
+origin as a callable entry fragmented subsequent code and excluded reachable
+cases. The repair recognizes the exact local ADR/load/add/branch use and
+excludes that arithmetic origin only for this nested case. Disjoint bounded
+tables retain their previous partitions. Independently materialized callbacks,
+ADRP/add references, calls, relocations and symbol entries remain intact; no
+unresolved table length is guessed.
+
+Thirty jump-table regressions pass. Byte and halfword mixed-table fixtures run
+through Unicorn and generated native code with matching case/default results,
+stack pointer and return address. Full discovery comparisons against `67d7405`
+show identical LAS 1.0.0/1.1.0 main and SDK records. ACNH loses one arithmetic
+entry in main and four in SDK; its subsdk is unchanged. Z-A removes 67 such
+entries in main and 21 in SDK, and the former `0x166df70` target is now present
+in generated dispatch. The repair deliberately leaves unrelated large
+functions partitioned as before.
+
+Commit `18a2b7b` also makes the frozen-helper regression execute a bounded
+ARM64 jump table through Unicorn's native JIT. This catches a manual Windows
+packaging omission that straight-line generation did not exercise. The normal
+`gen-helper` target already applies `pe_no_cfg.py`; the manually prepared helper
+was corrected with that same build step, without changing host security policy.
+
+The research executable (`988e385617139d9b...`) rebuilt Z-A in 181 seconds,
+reusing 1,041 objects and compiling 13. Strict startup then advanced beyond the
+old failure and stopped after 31.71 seconds at `main+0x1cfcc34`, with LR
+`main+0x1d10240`. Early captures at frames 1, 2, 3, 5 and 10 remain black.
+No title screen, gameplay or Z-A save/reopen is qualified by this run.
+
+The same executable passed the bounded legacy batch: LAS 1.0.0 and 1.1.0
+loaded their copied saves, moved indoors/outdoors and opened inventory, then
+exited normally after 85 and 96 seconds. Their copied saves did not change.
+ACNH reopened the island and exited normally after 100 seconds; all five
+headers and 24 hashes remained valid after its ordinary autosave. Captures
+were inspected and all three runs produced finite, nonzero 48 kHz stereo
+audio. Original saves and the accepted player application remained unchanged.
+
+During validation, published enhanced advanced to `c7542f0`, adding
+adapter-aware extracted-folder mounting and the correct launcher version label.
+All seven workflows pass for that commit too. The research branch merged it
+as `0a0e2fb`; eight mounting regressions and the Windows build pass. The resulting
+executable (`bda778bf258d04c9...`) mounted all 22 Z-A RomFS files from the folder
+and reproduced the same `0x1cfcc34` failure after 10.25 seconds. Additional
+captures at frames 20, 30 and 50 are black. The legacy runtime batch above used
+the preceding executable, so it is not a claim of a repeated gameplay batch
+on this later build.
+
+Inspection of the new failure shows a local byte-table target calculated at
+`main+0x1cfcbd8`, followed by floating-point work before `BR x11` at
+`main+0x1cfcc24`. That scheduled sequence exceeds the existing computed-target
+lookback and does not match the adjacent relative-table recognizer. A follow-up
+needs register-aware validation across those intervening instructions, with
+tests for overwritten branch registers and independent callback entries.
+
+The three reported shader words remain unsupported. The
+[envytools GM107 decoder](https://github.com/envytools/envytools/blob/f102b82381f3f11cee113d16374c87091db039d9/envydis/gm107.c#L1908)
+identifies `eb20018800f70804` and `eb20018800f70408` as SUST, and
+`eb5006080207000f` as SURED. The current Vulkan path lacks the corresponding
+storage-image binding/write support. Correct support must cover translation,
+descriptor reflection and binding, resource aliases and synchronization; simply
+accepting the words would not establish correct rendering.
+
+Further work should merge official `beta_5` first and extend its implementation
+with focused, independently verified fixes. Prefer upstream implementations
+where they cover the same behavior; propose isolated improvements upstream when
+the local implementation has stronger evidence. The research runtime remains
+local while the earlier unexplained LAS 1.1.0 startup crash and the current Z-A
+failures are unresolved.
 
 ## Reproduction
 
