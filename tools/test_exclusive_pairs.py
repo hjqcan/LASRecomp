@@ -1,6 +1,7 @@
 """Synthetic ARM exclusive pairs: Unicorn differential checks and native contention."""
 from pathlib import Path
 import os
+import platform
 import random
 import shlex
 import struct
@@ -178,7 +179,9 @@ class ExclusivePairs(unittest.TestCase):
             file, exe = root/'pairs.c', root/('pairs.exe' if os.name == 'nt' else 'pairs')
             file.write_text(source, encoding='utf-8')
             cc = shlex.split(os.environ.get('CC', 'clang'))
-            subprocess.run(cc + ['-std=gnu11', '-O2', '-pthread', '-I'+str(ROOT/'runtime'),
+            # Match generated game code's x86 target, including native 128-bit compare/exchange.
+            arch = ['-march=x86-64-v3'] if platform.machine().lower() in ('amd64', 'x86_64') else []
+            subprocess.run(cc + arch + ['-std=gnu11', '-O2', '-pthread', '-I'+str(ROOT/'runtime'),
                                  str(file), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True, timeout=60)
 

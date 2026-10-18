@@ -11,6 +11,7 @@ constants=kernel[kernel.index('#undef R_OK'):kernel.index('#define WAITERS_BIT')
 handler=kernel[kernel.index('    case 0x29:'):kernel.index('    case 0x2C:')]
 source=r'''
 #include <assert.h>
+#include <stdlib.h>
 #include "kernel.h"
 #include "kernel_memory.h"
 #include "research.h"
