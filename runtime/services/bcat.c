@@ -15,9 +15,24 @@ static void bcat_service(Service *s, IpcReq *req, IpcResp *resp) {
     }
 }
 
+static void bcat_empty_entry(Service *s, IpcReq *req, IpcResp *resp) {
+    // Creating a reader does not imply that a cached directory/file exists.
+    // Open receives one 0x20-byte directory name, plus a file name for files.
+    if (req->cmd == 0) {
+        unsigned names_size = s->state ? 0x40 : 0x20;
+        resp->result = MAKE_RESULT(122, req->data_size < names_size ? 1 : 2);
+    } else if (req->cmd <= (s->state ? 3u : 2u)) {
+        resp->result = MAKE_RESULT(122, 7); // NotOpen: no bytes or entries returned
+    } else resp->result = MAKE_RESULT(10, 221);
+}
+
 static void bcat_storage(Service *s, IpcReq *req, IpcResp *resp) {
     (void)s;
-    if (req->cmd == 10) {
+    if (req->cmd == 0 || req->cmd == 1) {
+        int file = req->cmd == 0;
+        ipc_return_object(resp, service_new(file ? "IDeliveryCacheFileService" : "IDeliveryCacheDirectoryService",
+                                           bcat_empty_entry, (void *)(uintptr_t)file));
+    } else if (req->cmd == 10) {
         IpcBuf *b = out_buf(req, 0);
         if (b) memset((void *)(uintptr_t)b->addr, 0, b->size);
         OUT(int32_t, 0) = 0;

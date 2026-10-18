@@ -113,6 +113,10 @@ status using the [public application-service ABI](https://github.com/NextendoNet
 Enabling cloud backup and remote operations return unsupported. Its regression
 checks session initialization, UID/length validation, the one-byte status and
 empty handle/object outputs. Local saves and runtime backups are independent.
+The subsequent load creates a BCAT directory reader even when no delivery cache
+exists. The offline storage now creates typed file/directory readers whose Open
+returns BCAT NotFound and subsequent reads return NotOpen. Tests cover both
+interfaces, short names and untouched output buffers; enumeration remains empty.
 
 | Module | Guest base | Build ID |
 | --- | --- | --- |
