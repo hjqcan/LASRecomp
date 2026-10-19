@@ -1,4 +1,4 @@
-# LAS Recomp on Linux (x86-64, aarch64)
+# Multi on Linux (x86-64, aarch64)
 
 Status: branch `linux-beta2`. Builds and runs the game on Vulkan (with your own game files) on x86-64, checked before
 each release by `make smoketest`. aarch64 is **experimental**: cross-compiled, its start screen checked under emulation,
@@ -6,8 +6,8 @@ the game itself untested on real hardware - community reports decide (see the en
 package the release AppImages.
 
 ## Running the AppImage
-    chmod +x LAS.Recomp-beta_4-linux-x86_64.AppImage
-    ./LAS.Recomp-beta_4-linux-x86_64.AppImage
+    chmod +x Multi-beta_4-linux-x86_64.AppImage
+    ./Multi-beta_4-linux-x86_64.AppImage
 
 Needs: a distribution with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, Arch, ...), a Vulkan 1.3 driver
 (Mesa RADV / ANV / NVK / Turnip / Asahi Honeykrisp, or NVIDIA's), and on x86-64 a CPU with AVX2 (2013 or newer).
@@ -30,16 +30,16 @@ Switch pads) the user needs access to `/dev/hidraw*`, which most distributions g
 Steam with Steam Input on, the game sees Steam's virtual Xbox controller (Xbox prompts).
 
 If the AppImage won't start with a FUSE error, install your distribution's `fuse3` package (the AppImage runtime
-needs `fusermount3`), or run it as `./LAS.Recomp-...-linux-x86_64.AppImage --appimage-extract-and-run`.
+needs `fusermount3`), or run it as `./Multi-...-linux-x86_64.AppImage --appimage-extract-and-run`.
 
 ## Building from source
 Ubuntu / Debian packages (other distributions: the same libraries under their names). SDL3 must be 3.4 or newer
-(LAS Recomp loads and saves PNGs through it); where the distribution ships an older one (Debian 13 has 3.2), build SDL3
+(Multi loads and saves PNGs through it); where the distribution ships an older one (Debian 13 has 3.2), build SDL3
 3.4 from source first - `tools/linux/build_deps.sh` builds the pinned version the AppImage uses (into
 `build/linux/<arch>/deps`).
 
     sudo apt install clang lld make pkg-config python3-venv libsdl3-dev libavformat-dev libavcodec-dev \
-        libavutil-dev libswscale-dev libvulkan-dev libshaderc-dev libvulkan-memory-allocator-dev glslc vulkan-tools
+        libavutil-dev libswscale-dev libopus-dev libvulkan-dev libshaderc-dev libvulkan-memory-allocator-dev glslc vulkan-tools
 
 shaderc is linked the way its pkg-config file says (`libshaderc_shared` on Arch, Fedora, AOSC...); to choose
 yourself: `make SHADERC=-lshaderc_shared` (or `-lshaderc`).
@@ -68,7 +68,7 @@ The randomizer from a source checkout uses LAS-Randomizer's own venv (Python 3.1
 ## AppImages
 Needs podman, and for aarch64 QEMU user emulation with binfmt (`sudo apt install podman qemu-user qemu-user-binfmt`).
 
-    make appimage                # this machine's arch -> build/dist/LAS Recomp-<version>-linux-<arch>.AppImage
+    make appimage                # this machine's arch -> build/dist/Multi-<version>-linux-<arch>.AppImage
     make appimage ARCH=aarch64   # cross-compiled from x86-64
     make appimages               # both
 
@@ -116,7 +116,7 @@ The aarch64 AppImage is experimental: built on x86-64, only its start screen has
    an earlier run, that run's `lasrecomp-backup-*.log`, by date modified).
 5. **A crash backtrace with gdb** when the log's isn't enough:
 
-       ./LAS.Recomp-beta_4-linux-aarch64.AppImage --appimage-extract    # -> squashfs-root/
+       ./Multi-beta_4-linux-aarch64.AppImage --appimage-extract    # -> squashfs-root/
        cd ~/.local/share/lasrecomp
        gdb -batch -ex 'handle SIGSEGV nostop noprint pass' -ex run -ex 'thread apply all bt 20' \
            --args ~/squashfs-root/usr/bin/lasrecomp > gdb.txt 2>&1

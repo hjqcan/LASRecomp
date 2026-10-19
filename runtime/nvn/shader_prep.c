@@ -248,6 +248,16 @@ typedef struct { char *path; uint8_t *mem; } IdxSrc;  // a game file, or (the ma
 static IdxSrc *idx_files;
 static int idx_nfiles;
 
+static void idx_clear(void) {
+    for (int i = 0; i < idx_nfiles; i++) {
+        free(idx_files[i].path);
+        free(idx_files[i].mem);
+    }
+    free(idx_files); free(idx_tab);
+    idx_files = NULL; idx_tab = NULL;
+    idx_nfiles = 0; idx_cap = idx_n = 0;
+}
+
 static void idx_add(uint64_t h, uint32_t file, uint32_t off, uint32_t size, uint32_t coff, uint32_t csize) {
     if (!h) return;
     if (idx_n * 2 >= idx_cap) {
@@ -504,7 +514,8 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
     int total = 0;
     for (char *p = list; *p; p++) total += *p == '\n';
     if (progress) progress(0, total + 1);
-    if (!idx_n) {
+    {   // A managed installation or selected version can change between runs.
+        idx_clear();
         idx_dir(romfs, 0);
         char main_nso[1100];  // (<game files>/exefs/main, next to romfs/)
         snprintf(main_nso, sizeof main_nso, "%s/../exefs/main", romfs);
@@ -541,6 +552,7 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
     free(list);
     LOG("[shader] prepared %d, not found %d%s%s (%d failed; index %zu shaders in %.0f ms, total %.0f ms)\n", prepared,
         missing, cancel && *cancel ? ", " : "", cancel && *cancel ? "skipped" : "", failed, idx_n, t_idx, ms_now() - t0);
+    idx_clear();
     return true;
 }
 

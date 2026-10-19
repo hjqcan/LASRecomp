@@ -1,3 +1,4 @@
+#include "../photo.h"
 // Executes recorded NVN command lists with Metal.
 #include <pthread.h>
 #include <dirent.h>
@@ -13,9 +14,11 @@
 
 #include "maxwell/shader.h"
 #include "nvn.h"
+#include "render_control.h"
 #include "renderer.h"
 #include "pace.h"
 #include "shader_prep.h"
+#include "../title_profile.h"
 
 static id<MTLDevice> dev;
 static id<MTLCommandBuffer> cmdbuf;
@@ -67,7 +70,7 @@ static bool rt_same(const RtState *a, const RtState *b) {
 
 static struct {
     RtState rt;
-    bool rt_dirty;
+    bool rt_dirty, render_enabled;
     NvnProgram *program;
     uint8_t blend[8][8];
     uint32_t channel_mask;
@@ -129,6 +132,7 @@ const char *renderer_stats(void) {
 
 static void st_defaults(void) {
     memset(&st, 0, sizeof st);
+    st.render_enabled = true;
     for (int i = 0; i < 16; i++) {
         st.viewport[i][2] = 1280; st.viewport[i][3] = 720;
         st.scissor[i][2] = 16384; st.scissor[i][3] = 16384;
@@ -491,6 +495,22 @@ void renderer_wait_seq(uint64_t seq) {
 }
 
 // ------------------------------------------------------------------ textures with views
+int renderer_wait_seq_timeout(uint64_t seq, uint64_t timeout) {
+    uint64_t begin = plat_now_ns();
+    bool waited = false;
+    for (;;) {
+        pthread_mutex_lock(&cb_lock);
+        bool submitted = seq <= submit_seq;
+        id<MTLCommandBuffer> c = submitted && submit_seq - seq < CB_HIST ? cb_hist[seq % CB_HIST] : nil;
+        bool done = !seq || (submitted && (!c || c.status >= MTLCommandBufferStatusCompleted));
+        pthread_mutex_unlock(&cb_lock);
+        if (done) return waited ? 1 : 0;
+        if (plat_now_ns() - begin >= timeout) return 2;
+        waited = true;
+        plat_sleep_until_ns(plat_now_ns() + 1000000);
+    }
+}
+
 // Texture view cache: views are made per bind otherwise (an allocation per draw). Keyed by the base texture and
 // the view parameters; a cached view retains its base, so a key's base pointer can't be reused while cached.
 #define VIEW_TAB 16384
@@ -1301,9 +1321,9 @@ static id<MTLComputePipelineState> archive_compute_pipeline(id<MTLFunction> f, N
     return [dev newComputePipelineStateWithDescriptor:cd options:MTLPipelineOptionNone reflection:nil error:err];
 }
 
-static bool sync_shaders(void) {  // LARECOMP_SYNC_SHADERS: compile on first use, blocking (deterministic tests)
+static bool sync_shaders(void) {  // First-use draws may initialize persistent resources; never discard them by default.
     static int v = -1;
-    if (v < 0) v = getenv("LARECOMP_SYNC_SHADERS") != NULL;
+    if (v < 0) { const char *e=getenv("LARECOMP_SYNC_SHADERS"); v=!e || atoi(e)!=0; }
     return v;
 }
 
@@ -1382,7 +1402,7 @@ static uint64_t prog_content_key(uint64_t vh, uint64_t fh, const ShaderKey *vkey
 }
 
 static Prog *prep_find_prog(uint64_t k) {
-    if (!g_prep_progs) return nil;
+    if (!title_is_las() || !g_prep_progs) return nil;
     pthread_mutex_lock(&g_prep_lock);
     Prog *pr = g_prep_progs[@(k)];
     pthread_mutex_unlock(&g_prep_lock);
@@ -1845,6 +1865,7 @@ typedef struct {
     ShaderInfo *si;
     uint32_t local[3];
     uint64_t code_addr;
+    uint32_t shared_memory;
     bool failed;
     _Atomic bool ready;  // pipeline built (async compile: dispatches are skipped until then, as draws are)
 } CsProg;
@@ -1870,8 +1891,8 @@ static void compile_compute(CsProg *cp) {
     cp->ready = true;
 }
 
-static uint64_t cs_content_key(uint64_t code_hash, const uint32_t local[3]) {
-    uint64_t h = code_hash;
+static uint64_t cs_content_key(uint64_t code_hash, const uint32_t local[3], uint32_t shared_memory) {
+    uint64_t h = code_hash ^ shared_memory;
     for (int i = 0; i < 3; i++) { h ^= local[i]; h *= 0x100000001B3ull; }
     return h;
 }
@@ -1879,7 +1900,7 @@ static uint64_t cs_content_key(uint64_t code_hash, const uint32_t local[3]) {
 static bool translate_compute(CsProg *cp, const uint8_t *code, size_t max) {
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
-    ShaderKey k = {0};
+    ShaderKey k = {.shared_memory = cp->shared_memory};
     cp->si = maxwell_translate(code, max, STAGE_COMPUTE, &k);
     if (!cp->si->msl) { LOG("[compute] translate failed: %s (code %llx)\n", cp->si->error, cp->code_addr); cp->failed = true; return false; }
     return true;
@@ -1888,7 +1909,10 @@ static bool translate_compute(CsProg *cp, const uint8_t *code, size_t max) {
 static CsProg *compute_program(NvnProgram *p) {
     NvnShaderStage *ss = &p->stages[5];
     if (!ss->code_addr) return NULL;
-    NSValue *key = [NSValue valueWithPointer:(void *)(uintptr_t)ss->code_addr];
+    struct { uint64_t addr; uint32_t config[4]; } cache_key = {ss->code_addr, {1, 1, 1, 0}};
+    if (ss->control) memcpy(cache_key.config, ss->control + 0x748, sizeof cache_key.config);
+    for (int i = 0; i < 3; i++) if (!cache_key.config[i]) cache_key.config[i] = 1;
+    NSData *key = [NSData dataWithBytes:&cache_key length:sizeof cache_key];
     NSMutableDictionary *progs = g_cs_progs;
     if (!progs) progs = g_cs_progs = [NSMutableDictionary new];
     NSValue *v = progs[key];
@@ -1905,17 +1929,18 @@ static CsProg *compute_program(NvnProgram *p) {
     {   // prepared before the game (the same code and local size)
         uint64_t ch = shader_stage_hash(ss);
         CsProg *pc = NULL;
-        if (ch && g_prep_cs) {
+        if (title_is_las() && ch && g_prep_cs) {
             pthread_mutex_lock(&g_prep_lock);
-            pc = [g_prep_cs[@(cs_content_key(ch, local))] pointerValue];
+            pc = [g_prep_cs[@(cs_content_key(ch, local, cache_key.config[3]))] pointerValue];
             pthread_mutex_unlock(&g_prep_lock);
         }
         if (pc) { progs[key] = [NSValue valueWithPointer:pc]; return pc->failed ? NULL : pc; }
-        shader_first_visit("compute", ch, 0, cs_content_key(ch, local));
+        shader_first_visit("compute", ch, 0, cs_content_key(ch, local, cache_key.config[3]));
     }
     CsProg *cp = calloc(1, sizeof *cp);
     progs[key] = [NSValue valueWithPointer:cp];
     cp->code_addr = ss->code_addr;
+    cp->shared_memory = cache_key.config[3];
     memcpy(cp->local, local, sizeof local);
     if (!translate_compute(cp, (const uint8_t *)(uintptr_t)ss->code_addr, ss->const_offset ? ss->const_offset : 0x10000)) return NULL;
     if (sync_shaders()) {
@@ -2289,7 +2314,7 @@ static NSString *pipeline_key(MTLRenderPipelineDescriptor *pd, Prog *pr) {
 }
 
 static id prep_find_pipe(NSString *body) {
-    if (!g_prep_pipes) return nil;
+    if (!title_is_las() || !g_prep_pipes) return nil;
     pthread_mutex_lock(&g_prep_lock);
     id p = g_prep_pipes[body];
     pthread_mutex_unlock(&g_prep_lock);
@@ -2325,6 +2350,18 @@ static void draw(CmdRec *r, bool indexed) {
             composite = t0 && mirror_scene_size(t0->width, t0->height, st.rt.color[0]->width, st.rt.color[0]->height);
             extern void scene_size_log(bool composite, uint32_t sw, uint32_t sh, uint32_t w, uint32_t h);
             if (t0) scene_size_log(composite, t0->width, t0->height, st.rt.color[0]->width, st.rt.color[0]->height);
+        }
+        if (photo_mode_active()) {
+            bool photo_composite = composite;
+            if (st.rt.ncolor && st.rt.color[0] && pr->fi->ntex) {
+                NvnTexture *source = shader_texture_object(1, &pr->fi->tex[0]);
+                bool full = r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
+                            st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height;
+                photo_composite |= source && photo_scene_composite(st.rt.color[0]->width, st.rt.color[0]->height,
+                    source->width, source->height, full, st.color_state[0] & 1, pr->fi->ntex);
+            }
+            if (photo_mode_skip_draw(renderer_present_count(), st.rt.ncolor && st.rt.color[0] &&
+                                     renderer_texture_presented(st.rt.color[0]), photo_composite)) { stat_skipped++; return; }
         }
         if (mirror_draw(composite)) {  // (the vertex flip mirrors a composite drawn with uvs, the fragment one a
             vkey.flip_x = fkey.flip_x = true;  // composite reading pixel positions; get_program keys on vkey)
@@ -2482,7 +2519,7 @@ static void draw(CmdRec *r, bool indexed) {
         hw_scale = getenv("LARECOMP_BIAS_HW_SCALE") ? fmaxf(1, (float)atof(getenv("LARECOMP_BIAS_HW_SCALE"))) : 2;
         hw_eps = getenv("LARECOMP_BIAS_HW_EPS") ? fmaxf(0, (float)atof(getenv("LARECOMP_BIAS_HW_EPS"))) : 4;
     }
-    bool decal_le = (hw_scale > 1 || hw_eps > 0) && (st.poly[3] & 4) && !nobias &&
+    bool decal_le = title_is_las() && (hw_scale > 1 || hw_eps > 0) && (st.poly[3] & 4) && !nobias &&
                     (st.poly_offset[0] < 0 || st.poly_offset[1] < 0) && st.ds[0] && !st.ds[1] && st.ds[2] == 3;
     // depth / stencil
     static uint64_t last_dsk;
@@ -3105,8 +3142,10 @@ static void exec_list(uint64_t handle, int depth) {
     uint64_t p = handle;
     for (int guard = 0; guard < 10000000; guard++) {
         CmdRec *r = (CmdRec *)(uintptr_t)p;
+        uint32_t stride = r->size;
         void *x = r->extra;
         if (r->op < CMD_COUNT) op_counts[r->op]++;
+        if (!st.render_enabled && nvn_command_needs_render(r->op)) { p += stride; continue; }
         switch (r->op) {
         case CMD_END: return;
         case CMD_JUMP: p = r->x[0]; continue;
@@ -3329,7 +3368,7 @@ static void exec_list(uint64_t handle, int depth) {
             if (fence_flush < 0) fence_flush = getenv("LARECOMP_FENCE_FLUSH") ? 1 : 0;
             if (fence_flush) renderer_flush();
             extern void nvn_sync_set_seq(uint64_t guest, uint64_t seq);
-            if (r->x[1]) nvn_sync_set_seq(r->x[1], renderer_fence_seq());
+            if (r->x[0]) nvn_sync_set_seq(r->x[0], renderer_fence_seq());
             break;
         }
         case CMD_REPORT_COUNTER: {
@@ -3372,13 +3411,25 @@ static void exec_list(uint64_t handle, int depth) {
         }
         case CMD_COPY_BUFFER_TO_TEXTURE: copy_buffer_to_texture(r->x[0], x); break;
         case CMD_COPY_TEXTURE_TO_BUFFER: copy_texture_to_buffer(x, r->x[3]); break;
+        case CMD_SET_RENDER_ENABLE:
+            if (r->x[6]) {
+                if (r->x[0] > 1 || !r->x[1]) FATAL("nvn: invalid conditional rendering arguments\n");
+                renderer_flush();
+                st.render_enabled = nvn_render_condition((uint32_t)r->x[0], (void *)(uintptr_t)r->x[1]);
+            } else st.render_enabled = r->x[0] != 0;
+            break;
+        case CMD_REPORT_VALUE:
+            if (!r->x[1]) FATAL("nvn: null report-value buffer\n");
+            nvn_report_value((void *)(uintptr_t)r->x[1], (uint32_t)r->x[0],
+                (uint64_t)((unsigned __int128)plat_now_ns() * 384 / 625));
+            break;
         case CMD_COPY_BUFFER_TO_BUFFER:
             renderer_flush();
             memmove((void *)(uintptr_t)r->x[1], (void *)(uintptr_t)r->x[0], r->x[2]);
             break;
         default: break;
         }
-        p += r->size;
+        p += stride;
     }
 }
 
@@ -3391,6 +3442,7 @@ static void exec_list(uint64_t handle, int depth) {
 static dispatch_semaphore_t g_prep_slots;
 
 bool renderer_prepare_begin(void) {
+    if (!title_is_las()) return false;
     if (!dev) {
         extern void *ui_metal_device(void);
         dev = (__bridge id<MTLDevice>)ui_metal_device();
@@ -3432,12 +3484,15 @@ static void prep_run(void (^job)(void)) {
 
 bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlob *fsb) {
     if (r->kind == 'C') {
-        uint64_t ck = cs_content_key(r->vs, r->local);
+        uint32_t shared_memory = 0;
+        if (vsb->control) memcpy(&shared_memory, vsb->control + 0x754, sizeof shared_memory);
+        uint64_t ck = cs_content_key(r->vs, r->local, shared_memory);
         pthread_mutex_lock(&g_prep_lock);
         bool have = g_prep_cs[@(ck)] != nil;
         pthread_mutex_unlock(&g_prep_lock);
         if (have) return true;
         CsProg *cp = calloc(1, sizeof *cp);
+        cp->shared_memory = shared_memory;
         memcpy(cp->local, r->local, sizeof cp->local);
         if (!translate_compute(cp, vsb->code, vsb->const_offset ? vsb->const_offset : 0x10000)) return false;
         pthread_mutex_lock(&g_prep_lock);

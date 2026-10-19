@@ -1,3 +1,5 @@
+#include "../mods.h"
+#include "../rando.h"
 // Button prompts in the controller's own style, and the Hero Mode HUD icon hidden: edits made to the game's own UI
 // textures as they are uploaded (ideas from the GameBanana mods "XBOX UI", "PS4 UI Buttons" and "No Hero Mode
 // Indicator", credited in README.md; none of their files are used and no game art ships with the recomp).
@@ -28,6 +30,7 @@
 #include "../input_bind.h"
 #include "../rando.h"
 #include "../settings.h"
+#include "../mods.h"
 #include "astc.h"
 #include "tegra.h"
 
@@ -67,9 +70,10 @@ static uint8_t *read_file(const char *p, size_t *len) {
     return d;
 }
 
-static uint8_t *read_all(const char *rel, size_t *len) {  // (the game's own files, never a seed's)
+static uint8_t *read_all(const char *rel, size_t *len) {  // seed-independent references; mods stay fixed until restart
     char p[1200];
-    snprintf(p, sizeof p, "%s/%s", g_romfs_dir ? g_romfs_dir : "extracted/romfs", rel);
+    if (!mods_romfs_override(rel, p, sizeof p))
+        snprintf(p, sizeof p, "%s/%s", g_romfs_dir ? g_romfs_dir : "extracted/romfs", rel);
     return read_file(p, len);
 }
 
@@ -246,6 +250,7 @@ static bool g_tunic_layout_ok;
 bool texpatch_is_item_cursor(int id) { return id >= 0 && id < g_nrefs && g_refs[id].role == R_ITEM_CURSOR; }
 
 int texpatch_identify(const NvnTexture *t) {
+    if (!title_is_las()) return -1;
     pthread_once(&g_once, load_refs);
     if (!t->addr || t->depth > 1) return -1;
     uint64_t total = tegra_total_size(&t->layout);

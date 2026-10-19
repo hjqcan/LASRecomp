@@ -1,4 +1,4 @@
-# LAS Recomp build
+# Multi build
 # macOS: Homebrew clang/SDL3/FFmpeg, Metal renderer.
 # Windows: MSYS2 UCRT64 shell (see docs/BUILD-windows.md), clang + Vulkan renderer.
 # Linux: clang + Vulkan renderer, x86-64 or aarch64 (see docs/linux.md).
@@ -40,13 +40,15 @@ GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibi
 
 # The game code (made by `make gen` from your own game files) is its own library next to the app (runtime/gamelib.h);
 # the app itself holds none of it
-# (strip: with no generated code the space between the two would be all that's left, and $(if) takes a lone space as
-# true. No comment after the value: make keeps the spaces before it)
-GEN_SRC  := $(strip $(wildcard $(GEN)/main/*.c) $(wildcard $(GEN)/sdk/*.c))
+GAME_DIR ?= extracted
+GAME_MODULES ?= main sdk
+-include $(GEN)/modules.mk
+# strip keeps an empty module list false in the app-only build below.
+GEN_SRC  := $(strip $(foreach mod,$(GAME_MODULES),$(wildcard $(GEN)/$(mod)/*.c)))
 GEN_OBJ  := $(patsubst %.c,$(B)/obj/%.o,$(patsubst $(GEN)/%,%,$(GEN_SRC))) $(B)/obj/tools/gamelib_entry.o
 RT_SRC   := $(wildcard runtime/*.c runtime/*.cpp) $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
             $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c
-RT_HDRS  := $(wildcard runtime/*.h runtime/game_addresses/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
+RT_HDRS  := $(wildcard runtime/*.h runtime/game_addresses/*.h runtime/services/*.h) runtime/game_installations.inc $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
             $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h)
 UI_SRC   := $(wildcard runtime/ui/*.mm)
 UI_OBJ   := $(patsubst runtime/%.mm,$(B)/rt/%.o,$(UI_SRC))
@@ -56,9 +58,11 @@ IMGUI_OBJ := $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.
 ifeq ($(PLATFORM),macos)
 SDL      := $(or $(DEPS),/opt/homebrew/opt/sdl3)
 FFMPEG   := $(or $(DEPS),/opt/homebrew/opt/ffmpeg)
+OPUS     := $(or $(DEPS),/opt/homebrew/opt/opus)
 EXE      := $(B)/lasrecomp
-DEPINC   := -I$(SDL)/include -I$(FFMPEG)/include
+DEPINC   := -I$(SDL)/include -I$(FFMPEG)/include -I$(OPUS)/include
 LDFLAGS  := -L$(SDL)/lib -lSDL3 -Wl,-rpath,$(SDL)/lib -L$(FFMPEG)/lib -lavformat -lavcodec -lavutil -lswscale -Wl,-rpath,$(FFMPEG)/lib \
+            -L$(OPUS)/lib -Wl,-rpath,$(OPUS)/lib \
             -framework CoreFoundation -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore -framework AppKit -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers
 BACKEND_SRC := $(wildcard runtime/nvn/*.m)
 BACKEND_OBJ := $(patsubst runtime/%.m,$(B)/rt/%.o,$(BACKEND_SRC))
@@ -109,17 +113,21 @@ LDFLAGS  += -Wl,--export-all-symbols -Wl,--out-implib,$(B)/lasrecomp.dll.a
 GAMELIB_LDFLAGS := -shared -fuse-ld=lld $(B)/lasrecomp.dll.a
 GAMELIB_SHARED := -shared  # (+ the import library: runtime/gamebuild.c)
 endif
+LDFLAGS += -lopus
 
 # GAMELIB_ID: what the game code library is built from (the generator, the headers it is compiled against, the
 # flags). A library with another id is rebuilt by the start screen, never loaded.
-GAMELIB_SRCS := tools/game_addresses.py runtime/game_addresses/patches_v1_0_0.h tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py \
-                tools/simd_c.py tools/rando/patch_variants.json tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
-                runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h
-GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
+# Only shared generation/ABI inputs belong here. Release-specific inputs are hashed in each adapter's code_identity.
+GAMELIB_SRCS := tools/gen.py tools/gen_game.py tools/adapter_patches.py runtime/title_profile.c tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py \
+                tools/simd_c.py tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
+                runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h runtime/guest_jump.h
+ADAPTER_SRCS := $(wildcard adapters/*/adapter.json) adapters/core-capabilities.json tools/game_catalog.py tools/game_addresses.py runtime/game_addresses/patches_v1_0_0.h \
+                tools/game_versions.py tools/rando_profiles.py tools/patches.py tools/rando/patch_variants.json tools/pokemon_za.py
+GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(PLATFORM) $(ARCH) $(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 # GAMELIB_BASE_ID: what every compiled piece of it depends on (the headers, the flags, the pinned compiler). The same
 # base keeps the start screen's earlier build pieces: only the pieces whose generated C changed are compiled again
 # (runtime/gamebuild.c). Another base: everything is compiled again.
-GAMELIB_BASE_SRCS := runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/fetch_zig.sh
+GAMELIB_BASE_SRCS := runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h runtime/guest_jump.h tools/fetch_zig.sh
 GAMELIB_BASE_ID := $(shell (cat $(GAMELIB_BASE_SRCS); echo '$(GENFLAGS) $(GAMELIB_SHARED)') | \
                      (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 
@@ -127,16 +135,16 @@ RT_OBJ   := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn $(DEPINC) $(OSFLAGS)
 CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn $(DEPINC)
 
-all: $(EXE) $(if $(GEN_SRC),$(GAMELIB))
+all: $(EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))
 
-$(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h runtime/simd.h runtime/simd_fp.h
+$(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/guest_jump.h $(if $(wildcard $(GEN)/research-stores.json),runtime/research_store_probe.h runtime/research_stores.h)
 	@mkdir -p $(dir $@)
 	@$(CC) $(GENFLAGS) -c $< -o $@
 
-$(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS)
+$(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS) Makefile $(GEN)/gamelib_modules.inc
 	@mkdir -p $(dir $@)
-	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_ID)"' -c $< -o $@
-$(B)/rt/gamelib.o: $(GAMELIB_SRCS)
+	$(CC) $(GENFLAGS) -I$(GEN) -DGAMELIB_ID='"$(GAMELIB_ID)"' -c $< -o $@
+$(B)/rt/gamelib.o: $(GAMELIB_SRCS) Makefile
 $(B)/rt/gamelib.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"'
 # the start screen's build of it (runtime/gamebuild.c) uses the same flags
 $(B)/rt/gamebuild.o: $(GAMELIB_SRCS) $(GAMELIB_BASE_SRCS) Makefile
@@ -191,6 +199,8 @@ $(GAMELIB): $(GEN_OBJ) | $(EXE)
 	$(CC) $(GAMELIB_LDFLAGS) -o $@.tmp $^
 	mv -f $@.tmp $@
 	echo $(GAMELIB_ID) > $@.id
+	sed -n 's/^const char main_build_id_full\[\] = "\([0-9a-f]*\)";.*/\1/p' $(GEN)/main/main_table.c >> $@.id
+	sed -n 's/^\#define GAMELIB_ADAPTER_ID "\([0-9a-f]*\)"/\1/p' $(GEN)/gamelib_modules.inc >> $@.id
 
 $(B)/rt/ui/%.o: runtime/ui/%.mm $(RT_HDRS)
 	@mkdir -p $(dir $@)
@@ -209,11 +219,22 @@ $(B)/imgui/imgui_impl_metal.o: $(IMGUI)/backends/imgui_impl_metal.mm
 	$(CXX) $(CXXFLAGS) -fobjc-arc -c $< -o $@
 
 # Python: tools/venv (macOS, Linux: bin/python, Windows: Scripts/python.exe)
-PY := $(firstword $(wildcard tools/venv/bin/python) $(wildcard tools/venv/Scripts/python.exe))
+PY := $(or $(firstword $(wildcard tools/venv/bin/python) $(wildcard tools/venv/Scripts/python.exe)),python)
 
 gen:
-	cd tools && ../$(PY) gen.py sdk ../extracted/exefs/sdk 0x7004000000 ../$(GEN)/sdk --hle ../runtime/hle/hle_symbols.txt $(GENSIMD)
-	cd tools && ../$(PY) gen.py main ../extracted/exefs/main 0x7000000000 ../$(GEN)/main $(GENSIMD)
+	$(PY) tools/gen_game.py --game-dir $(GAME_DIR) --outdir $(GEN) $(GENSIMD)
+
+$(GEN)/gamelib_modules.inc: $(ADAPTER_SRCS) tools/gen_game.py
+	$(PY) tools/gen_game.py --game-dir $(GAME_DIR) --outdir $(GEN) --metadata-only
+
+$(B)/rt/title_profile.o: runtime/title_catalog.inc
+$(B)/rt/ui/acnh_speedfix.o: runtime/acnh_speedfix_data.inc
+
+runtime/title_catalog.inc: $(ADAPTER_SRCS) $(GAMELIB_SRCS)
+	$(PY) tools/game_catalog.py --write-c $@
+
+runtime/game_installations.inc: $(ADAPTER_SRCS)
+	$(PY) tools/game_catalog.py --write-installations $@
 
 gen-objs: $(GEN_OBJ)
 
@@ -226,7 +247,7 @@ $(B)/rt/platform/windows_rc.o: runtime/platform/windows.rc docs/icon/icon.ico ru
 
 VERSION  := $(shell sed -n 's/^\#define LARECOMP_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
 
-# macOS: build/LAS Recomp.app, runs on macOS $(APP_MIN)+: the game rebuilt for that in build/mac15 against build/deps
+# macOS: build/Multi.app, runs on macOS $(APP_MIN)+: the game rebuilt for that in build/mac15 against build/deps
 # (`make deps`: SDL3, LGPL FFmpeg, keystone, Python, from pinned sources), the generator helper when built
 # (`make rando-helper` after `make deps`), packaged by tools/bundle_macos.sh. No game files or fonts.
 APP_MIN  := 15.0
@@ -238,11 +259,11 @@ app:
 	$(MAKE) B=$(APP_B) MACOS_MIN=$(APP_MIN) DEPS=$(CURDIR)/build/deps $(APP_B)/lasrecomp
 	MACOS_MIN=$(APP_MIN) tools/bundle_macos.sh $(APP_B)/lasrecomp
 
-# macOS release disk image (the .app + an Applications shortcut to drag it onto): build/dist/LAS Recomp-<v>-macOS.dmg
+# macOS release disk image (the .app + an Applications shortcut to drag it onto): build/dist/Multi-<v>-macOS.dmg
 dmg: app
 	tools/make_dmg.sh
 
-# Windows: build/dist/LAS Recomp-<version>-windows.zip, top folder "LAS Recomp/": the exe, the seed generator
+# Windows: build/dist/Multi-<version>-windows.zip, top folder "Multi/": the exe, the seed generator
 # helper (make rando-helper), what the start screen builds the game code with on the player's machine (make gen-helper,
 # tools/fetch_zig.sh slimmed by tools/zig_slim.sh: its runtime built ahead of time, gamelib-src/, the exe's import library)
 # and the DLLs they load (runs without MSYS2). No game code. The exe is a release build in $(WIN_B):
@@ -252,7 +273,7 @@ dmg: app
 # with build/deps-win/bin first (the FFmpeg DLL names are the same as MSYS2's GPL ones). vulkan-1.dll is left
 # out: every Vulkan driver installs the loader in System32. Saves, seeds and game files go next to the exe at run time.
 # Needs: Windows 10+ x64, a Vulkan 1.3 driver, an AVX2 CPU (GENARCH x86-64-v3; checked at startup).
-DIST     := build/dist/LAS Recomp
+DIST     := build/dist/Multi
 WIN_B    := build/win-release
 deps-windows:
 	tools/build_deps_windows.sh
@@ -268,25 +289,27 @@ dist:
 	tools/zig_slim.sh $(strip $(filter-out -Iruntime,$(GENFLAGS)))  # (zig with its runtime built ahead of time)
 	cp -R build/helper/lasgen "$(DIST)/"
 	cp -R build/zig-slim "$(DIST)/zig"
-	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
+	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h runtime/guest_jump.h tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
 	    "$(DIST)/gamelib-src/"
 	cp docs/icon/icon_1024.png "$(DIST)/icon.png"
 	cp third_party/fonts/Baloo2/Baloo2-SemiBold.ttf "$(DIST)/"  # (start screen font, OFL)
 	cp third_party/fonts/Baloo2/OFL.txt "$(DIST)/Baloo2-OFL.txt"
 	cp third_party/fonts/DejaVu/DejaVuSans.ttf "$(DIST)/"  # (the game text's last-resort font, free license)
 	cp third_party/fonts/DejaVu/LICENSE "$(DIST)/DejaVu-LICENSE.txt"
+	cp third_party/release-licenses/opus-COPYING "$(DIST)/"
+	cp third_party/ryujinx/LICENSE.txt "$(DIST)/Ryujinx-LICENSE.txt"
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
 	cp -R build/helper/rando-gen "$(DIST)/"
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/lasrecomp.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
 	    xargs -I{} cp -u {} "$(DIST)/"
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
-	cd build/dist && if command -v zip >/dev/null; then zip -qr "LAS Recomp-$(VERSION)-windows.zip" "LAS Recomp"; \
-	    else /c/Windows/System32/tar.exe -a -cf "LAS Recomp-$(VERSION)-windows.zip" "LAS Recomp"; fi
-	@echo "build/dist/LAS Recomp-$(VERSION)-windows.zip"
+	cd build/dist && if command -v zip >/dev/null; then zip -qr "Multi-$(VERSION)-windows.zip" "Multi"; \
+	    else /c/Windows/System32/tar.exe -a -cf "Multi-$(VERSION)-windows.zip" "Multi"; fi
+	@echo "build/dist/Multi-$(VERSION)-windows.zip"
 
 # Seed generator as a standalone helper, so players need no Python: build/helper/rando-gen/ (rando-gen[.exe] +
 # _internal/), frozen by PyInstaller from tools/rando/rando_gen.spec in its own venv (build/rando-venv). Ship the
-# rando-gen folder next to the exe (Windows) or as "LAS Recomp.app"/Contents/Resources/rando-gen (runtime/ui/rando_tab.mm
+# rando-gen folder next to the exe (Windows) or as "Multi.app"/Contents/Resources/rando-gen (runtime/ui/rando_tab.mm
 # generator_cmd). PyInstaller only builds for the OS it runs on.
 # macOS arm64: the relocatable Python 3.12 and keystone from `make deps` (macOS 11+ / 15+: the helper runs where the
 #   app does); without them Homebrew's python@3.12 and keystone (then only on the macOS they were built for). The
@@ -317,7 +340,7 @@ gen-helper: build/rando-venv/.ok build/rando-venv/.gen-ok
 	$(if $(filter windows,$(PLATFORM)),$(RANDO_VPY) tools/pe_no_cfg.py build/helper/lasgen/lasgen.exe)
 	@du -sh build/helper/lasgen
 
-build/rando-venv/.gen-ok: build/rando-venv/.ok
+build/rando-venv/.gen-ok: build/rando-venv/.ok Makefile
 	$(RANDO_VPY) -m pip install -q capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5
 	touch $@
 
@@ -326,7 +349,7 @@ build/rando-venv/.ok: third_party/LAS-Randomizer/requirements.txt
 	$(RANDO_VPY) -m pip install -q -r third_party/LAS-Randomizer/requirements.txt pyinstaller==6.22.3
 	touch $@
 
-# Linux: build/dist/LAS Recomp-<version>-linux-<arch>.AppImage, built in Ubuntu 22.04 containers (podman) with SDL3, LGPL
+# Linux: build/dist/Multi-<version>-linux-<arch>.AppImage, built in Ubuntu 22.04 containers (podman) with SDL3, LGPL
 # FFmpeg, shaderc and the seed generator helper inside; the Vulkan loader and GPU drivers are the system's.
 # `make appimage` (ARCH: this machine's, or aarch64 cross-compiled), `make appimages` both. See docs/linux.md.
 appimage:

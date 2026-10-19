@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "../hle.h"
+#include "../gameversion.h"
 #include "../rando.h"
 
 
@@ -171,7 +172,7 @@ void pets_game_tick(Cpu *c) {
         guest_call(c, GA_COMPANION_LEAVE);
         *(volatile uint8_t *)(uintptr_t)COMPANION = (uint8_t)want;  // (it cleared the byte)
         c->x[0] = actor;
-        guest_call(c, GA_ACTOR_KILL);
+        guest_call(c, game_main_address(GA_ACTOR_KILL));
         if (ctrl) ST64(ctrl + 8, LD64(ctrl + 8) - 1);
     }
     bool spawn = want != C_NONE && companion_allowed(lv, want);
@@ -193,7 +194,7 @@ void pets_game_tick(Cpu *c) {
             uint64_t a = LD64(node + 0x18);
             if (!a || a == me || LD64(a) != LD64(me)) continue;
             c->x[0] = a;
-            guest_call(c, GA_ACTOR_KILL);
+            guest_call(c, game_main_address(GA_ACTOR_KILL));
             killed++;
         }
         if (killed) LOG("[pets] %d idle copies of the new companion removed (%d level actors)\n", killed, n);

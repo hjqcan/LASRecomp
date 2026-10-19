@@ -1,6 +1,6 @@
 // Start screen, shown before the game boots (user 2026-10-08, styled after Dusklight's launcher): PLAY (with
 // ‹ Vanilla / seed › picker), SETTINGS, QUIT, game-files status at the lower left. Nothing of the game ships with
-// LAS Recomp: on first launch the user picks the folder with their own game files (v1.0.0), we check the main
+// Multi: on first launch the user picks the folder with their own game files (v1.0.0), we check the main
 // module's build id, copy the files and build the game's data image; PLAY stays disabled until that worked. The background is a frame of the game's own title movie (from the user's files) once extracted.
 //
 // Skipped with --play, LARECOMP_NO_LAUNCHER=1, or any scripted test run (LARECOMP_INPUT): tests boot straight in.
@@ -19,12 +19,15 @@
 #include <vector>
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 
 #include "imgui.h"
+#include "localization.h"
 #include "imgui_internal.h"  // (SetKeyOwner)
 #include "option_rows.h"
 #include "osk.h"
 #include "pad_nav.h"
+#include "release_channel.h"
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
 #else
@@ -39,12 +42,23 @@ extern "C" {
 #include "platform.h"
 #include "paths.h"
 #include "gamebuild.h"
+#include "gameversion.h"
+#include "game_profiles.h"
+#include "game_shortcut.h"
+#include "game_install.h"
+#include "title_profile.h"
+#include "rando_profile.h"
+#include "mods.h"
+#include "acnh_speedfix.h"
+#include "workshop.h"
 #include "build_cache.h"
 #include "gamelib.h"
 #include "romfs_build.h"
 #include "settings.h"
 #include "input_bind.h"
 #include "nvn/shader_prep.h"
+void save_backups_set_game_root(const char *root);
+void rando_set_game_root(const char *root);
 bool controls_ui_took_back(void);  // ui/controls_ui.mm: B went back a step on Configure inputs
 void ui_window_init(void);
 SDL_Window *ui_window(void);
@@ -85,39 +99,28 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 }
 #endif
 
-static const uint8_t BUILD_ID[8] = {0xae, 0x16, 0xf7, 0x1e, 0x00, 0x2a, 0xf8, 0xcb};  // Link's Awakening v1.0.0 main
 // The release tag this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read
-// it): beta_<n> until 1.0, then v<major>.<minor>.<patch>. A test build (a pre-release for a few players to try a fix)
+// it): new releases use multi-beta<n>.<revision>; historical tags stay readable.
+// A test build (a pre-release for a few players to try a fix)
 // is test-<name>: the start screen says "Test build <name>", and it previews LARECOMP_TEST_OF - the update check
 // offers that release (or a later one) as soon as it's out, so its players move to it.
-#define LARECOMP_VERSION "beta_4"
-#define LARECOMP_TEST_OF "beta_5"
+#define LARECOMP_VERSION "multi-beta5.4"
+#define LARECOMP_TEST_OF "multi-beta5.4"
 extern "C" const char *larecomp_version(void) { return LARECOMP_VERSION; }  // (the shader caches' tag)
 
 // ------------------------------------------------------------------ update check
 // The start screen asks GitHub for the project's releases once per launch (a background curl, which macOS and
-// Windows 10+ ship) and offers the best one if it outranks this build: any v1.0.0+ above every beta, betas by
-// number; other tags (the alpha_* ones) are ignored. Offline / no curl / anything unexpected: nothing is shown.
-#define RELEASES_URL "https://api.github.com/repos/peiikai/LASRecomp/releases?per_page=100"
-#define RELEASE_PAGE "https://github.com/peiikai/LASRecomp/releases/tag/"
+// Windows 10+ ship) and offers a newer Multi release by beta and revision number. Other release channels are
+// ignored. Offline / no curl / anything unexpected: nothing is shown.
+#define RELEASES_URL "https://api.github.com/repos/hjqcan/LASRecomp/releases?per_page=100"
+#define RELEASE_PAGE "https://github.com/hjqcan/LASRecomp/releases/tag/"
 
+// Upstream tags never replace Multi releases; old fork tags keep their numeric ordering.
 static long long tag_rank(const std::string &t) {
-    int n, a, b, c;
-    char end;
-    if (sscanf(t.c_str(), "beta_%d%c", &n, &end) == 1 && n > 0) return n;
-    if (sscanf(t.c_str(), "v%d.%d.%d%c", &a, &b, &c, &end) == 3 && a >= 1 && b >= 0 && c >= 0 && b < 4096 && c < 4096)
-        return (1LL << 48) + ((long long)a << 24) + ((long long)b << 12) + c;
-    return -1;
+    return multi_tag_rank(t);
 }
-
-// "Beta 2" / "1.0.0" (with_word: "Version 1.0.0")
-static std::string tag_label(const std::string &t, bool with_word) {
-    int n;
-    char end;
-    if (sscanf(t.c_str(), "beta_%d%c", &n, &end) == 1) return "Beta " + std::to_string(n);
-    if (!t.compare(0, 5, "test-")) return "Test build " + t.substr(5);
-    std::string v = t.size() > 1 && t[0] == 'v' ? t.substr(1) : t;
-    return with_word ? "Version " + v : v;
+static std::string tag_label(const std::string &t, bool) {
+    return multi_tag_label(t);
 }
 
 static std::string g_update_tag;  // a newer release's tag (g_update_lock)
@@ -141,7 +144,7 @@ static void *update_thread(void *) {
         std::string out = std::string(rt_data_root()) + "/cache/releases.json";
         mkdir((std::string(rt_data_root()) + "/cache").c_str(), 0755);
         const char *av[] = {curl.c_str(), "-fsSL", "--max-time", "15", "-H", "Accept: application/vnd.github+json",
-                            "-A", "LASRecomp/" LARECOMP_VERSION, RELEASES_URL, NULL};
+                            "-A", "Multi/" LARECOMP_VERSION, RELEASES_URL, NULL};
         PlatProc p = plat_spawn(av, out.c_str(), false);
         if (!p || plat_proc_wait(p, true) != 0) { remove(out.c_str()); return NULL; }
         if (FILE *f = fopen(out.c_str(), "rb")) {
@@ -170,7 +173,14 @@ static void *update_thread(void *) {
 }
 
 // ------------------------------------------------------------------ game files
-static std::string g_root;  // extracted game: <root>/exefs, <root>/romfs
+static std::string g_root;  // selected installation: <root>/exefs, <root>/romfs
+static int g_profile = -1, g_profile_request = -1;
+static int g_speedfix_ready_profile = -1;
+static std::string build_cache_root() {
+    char pending[2048];
+    if (acnh60_base_path(g_root.c_str(), pending, sizeof pending)) return g_root;
+    return g_profile >= 0 && game_install_pending_path(game_profile_install_dir(g_profile), pending, sizeof pending) ? pending : g_root;
+}
 
 static bool file_exists(const std::string &p) {
     struct stat st;
@@ -203,8 +213,9 @@ static void game_files_changed(void) { g_romfs_count = -1; g_build_cache_changed
 static bool g_resumable, g_has_build_cache;
 static void read_build_cache(void) {
     if (!g_build_cache_changed.exchange(false)) return;
-    g_resumable = build_cache_resumable(g_root.c_str());
-    g_has_build_cache = build_cache_present(g_root.c_str());
+    const std::string root = build_cache_root();
+    g_resumable = build_cache_resumable(root.c_str());
+    g_has_build_cache = build_cache_present(root.c_str());
 }
 static bool resumable_build(void) { read_build_cache(); return g_resumable; }
 static bool has_build_cache(void) { read_build_cache(); return g_has_build_cache; }
@@ -217,16 +228,18 @@ static std::string incomplete(int have) {
 
 // The copied game files alone ("" = there), without the game code built from them
 static std::string check_copied_files(const std::string &root) {
-    FILE *f = fopen((root + "/exefs/main").c_str(), "rb");
-    if (!f) return "No game files yet";
-    uint8_t id[8] = {0};
-    fseek(f, 0x40, SEEK_SET);
-    size_t n = fread(id, 1, 8, f);
-    fclose(f);
-    if (n != 8 || memcmp(id, BUILD_ID, 8)) return "Wrong version of the game";
-    if (!file_exists(root + "/romfs/region_common")) return incomplete(0);
-    if (g_romfs_count < 0) g_romfs_count = count_files(root + "/romfs");
-    if (g_romfs_count < ROMFS_FILES) return incomplete(g_romfs_count);
+    char published[2048], resolve_error[512];
+    if (!game_install_resolve(root.c_str(), published, sizeof published, resolve_error, sizeof resolve_error)) return resolve_error;
+    if (!file_exists(root + "/exefs/main")) return "No game files yet";
+    char why[512];
+    const TitleProfile *actual = title_profile_validate(root.c_str(), why, sizeof why);
+    if (!actual) return why;
+    int slot = game_profile_index(root.c_str(), rt_data_root());
+    const char *expected = game_profile_version(slot), *title = game_profile_title(slot);
+    if ((expected && strcmp(expected, actual->version)) || (title && strcmp(title, actual->key)))
+        return "The game version does not match this installation slot.";
+    if (!title_content_validate(actual, (root + "/romfs").c_str(), file_exists(root + "/romfs.bin"),
+                                &g_romfs_count, why, sizeof why)) return why;
     return "";
 }
 
@@ -242,7 +255,7 @@ static const char *status_hint(const std::string &why) {
     if (why.rfind("Game files incomplete", 0) == 0)
         return "Some of the game's files are missing, usually from a copy or unzip that stopped partway. Copy your game "
                "files again, then choose that folder and set them up again.";
-    if (why == "Wrong version of the game") return "LAS Recomp needs version 1.0.0 of the game, without updates.";
+    if (why == "Wrong version of the game") return "Multi supports the verified v1.0.0 and v1.1.0 executable builds.";
     if (why == "Game code not built yet") return "Set up the game files to build it (a few minutes, only once).";
     return "Set up the game files to play.";
 }
@@ -252,9 +265,13 @@ static const char *status_hint(const std::string &why) {
 // clones / hard links where the file system allows); the game reads romfs/ in place (runtime/services/fs.c).
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::string g_src;           // the picked folder
+static int g_detected_profile = -1;
 static std::string g_job;           // current setup step / result for the status line
 static std::string g_job_hint;      // a failure: what to do about it (shown under it)
 static bool g_busy, g_job_failed;
+static bool g_install_published;
+static std::atomic<bool> g_cancel_build{false};
+static Uint64 g_build_started;
 static bool g_confirm_delete;       // game-files page: "Delete the game files?" shown
 
 static void set_job(const std::string &s, bool failed = false, const std::string &hint = "") {
@@ -274,9 +291,9 @@ static void set_failure(int k, int have = -1) {
     static const char *const hint[] = {
         "",
         "Choose the folder that has the game's exefs and romfs folders in it.",
-        "LAS Recomp needs the game's own files (the exefs and romfs folders), not .xci / .nsp / .nca files.",
+        "Choose an already-extracted folder containing exefs and romfs. Game archives are not supported.",
         "Make sure there's about 12 GB free and try again.",
-        "LAS Recomp needs version 1.0.0 of the game, without updates.",
+        "Multi supports the verified v1.0.0 and v1.1.0 executable builds.",
         "Some of the game's files are missing - usually a copy or unzip that stopped partway. Copy the game files "
         "again so none are missing, then choose the folder again.",
         "Make sure there's about 2 GB free and try again. If it keeps happening, report it on GitHub."};
@@ -297,12 +314,15 @@ static bool is_dir(const std::string &p) {
     return stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-// exefs: the folder with main and main.npdm; romfs: the folder with region_common (the game's data root). Found
+// exefs: main and main.npdm; romfs: content roots declared by a reviewed adapter. Found
 // in the picked folder or a few levels below it (some folder layouts nest them).
 static void find_game(const std::string &dir, int depth, std::string &exefs, std::string &romfs, bool &unusable) {
     if (depth > 4 || (!exefs.empty() && !romfs.empty())) return;
     if (exefs.empty() && file_exists(dir + "/main") && file_exists(dir + "/main.npdm")) exefs = dir;
-    if (romfs.empty() && is_dir(dir + "/region_common")) romfs = dir;
+    bool content_root = false;
+    for (unsigned i = 0; i < title_profile_count(); ++i)
+        content_root |= title_content_root(title_profile_at(i), dir.c_str());
+    if (romfs.empty() && content_root) romfs = dir;
     DIR *d = opendir(dir.c_str());
     if (!d) return;
     std::vector<std::string> sub;
@@ -312,7 +332,7 @@ static void find_game(const std::string &dir, int depth, std::string &exefs, std
         std::string ext = n.size() > 4 ? n.substr(n.size() - 4) : "";
         for (auto &ch : ext) ch = (char)tolower((unsigned char)ch);
         if (ext == ".xci" || ext == ".nsp" || ext == ".nca" || ext == ".nsz" || ext == ".xcz") unusable = true;
-        if (n != "region_common" && is_dir(dir + "/" + n)) sub.push_back(dir + "/" + n);
+        if (!content_root && is_dir(dir + "/" + n)) sub.push_back(dir + "/" + n);
     }
     closedir(d);
     std::sort(sub.begin(), sub.end());
@@ -320,13 +340,7 @@ static void find_game(const std::string &dir, int depth, std::string &exefs, std
 }
 
 static bool build_id_ok(const std::string &main_path) {
-    FILE *f = fopen(main_path.c_str(), "rb");
-    if (!f) return false;
-    uint8_t id[8] = {0};
-    fseek(f, 0x40, SEEK_SET);
-    size_t n = fread(id, 1, 8, f);
-    fclose(f);
-    return n == 8 && !memcmp(id, BUILD_ID, 8);
+    return title_profile_find(main_path.c_str()) != NULL;
 }
 
 // progress (the overlay's bar): the romfs copy (bytes)
@@ -334,8 +348,6 @@ static std::atomic<unsigned long long> g_done, g_total;
 // The bar: copying is the first tenth, building the game code (runtime/gamebuild.c) the rest
 static unsigned long long g_phase_base;
 static std::atomic<float> g_build_frac{-1};  // -1: not building
-static std::atomic<bool> g_cancel_build{false};
-static bool build_cancelled(void) { return g_cancel_build.load(); }
 static bool g_copy_skipped;                  // (only the game code to build: the bar is all of that)
 static bool g_auto_update;                   // started by itself: game files there, game code from an older version
 static void setup_progress(uint64_t done, uint64_t) { g_done = g_phase_base + done; }
@@ -349,7 +361,12 @@ static std::atomic<float> g_prep_frac{-1};  // -1: not preparing
 static volatile int g_prep_skip;
 static bool g_prep_skip_ask;  // Skip pressed: "are you sure?" in front of the bar (LARECOMP_LAUNCHER_SHOT=<f>:skipask)
 static void prep_progress(int done, int total) { g_prep_frac = total ? (float)done / (float)total : 0.0f; }
+static bool can_prepare_shaders(void) {
+    const TitleProfile *title = title_profile_find((g_root + "/exefs/main").c_str());
+    return title && !strcmp(title->key, "las");
+}
 static void prepare_shaders(bool background = false) {
+    if (!can_prepare_shaders()) return;
     g_prep_skip = 0, g_prep_frac = 0;
     if (!background) set_job("Preparing shaders");
     shader_prep_run((g_root + "/romfs").c_str(), prep_progress, &g_prep_skip);
@@ -361,13 +378,12 @@ static void prepare_shaders(bool background = false) {
 static std::atomic<bool> g_bg_prep{false};
 static bool g_prep_wait;
 static void start_background_prep(void) {
-    static bool started;  // (once per process: the prepared objects stay for later boots)
-    if (started) return;
-    started = true;
+    if (g_bg_prep || !can_prepare_shaders() || getenv("LARECOMP_LAUNCHER_BUILD_ONLY")) return;
     g_bg_prep = true;
     pthread_t th;
-    pthread_create(&th, NULL, [](void *) -> void * { prepare_shaders(true); g_bg_prep = false; return NULL; }, NULL);
-    pthread_detach(th);
+    if (!pthread_create(&th, NULL, [](void *) -> void * { prepare_shaders(true); g_bg_prep = false; return NULL; }, NULL))
+        pthread_detach(th);
+    else g_bg_prep = false;
 }
 // Before the game files change (setup, delete): the background preparation stops reading them
 static void stop_background_prep(void) {
@@ -384,20 +400,57 @@ static float extract_progress(void) {
 }
 
 // Builds the game code from the copied files (a few minutes); false = failed (the job line says so)
-static bool build_game_code(void) {
+static bool build_cancelled(void) {
+    if (const char *s = getenv("LARECOMP_BUILD_CANCEL_AFTER"))
+        if ((SDL_GetTicks() - g_build_started) / 1000.0 >= atof(s)) g_cancel_build = true;
+    return g_cancel_build.load();
+}
+
+static void imported_for_build() {
+    pthread_mutex_lock(&g_lock);
+    g_src.clear();
+    pthread_mutex_unlock(&g_lock);
+}
+
+static bool build_game_code(const std::string &target) {
+    g_cancel_build = false;
+    g_build_started = SDL_GetTicks();
     int cores = SDL_GetNumLogicalCPUCores(), ram_gb = SDL_GetSystemRAM() / 1024;
     GameBuildOpts o = {build_progress, cores < ram_gb - 2 ? cores : ram_gb - 2 > 1 ? ram_gb - 2 : 1, build_cancelled};
+    if (const char *s = getenv("LARECOMP_BUILD_JOBS")) {
+        char *end = nullptr;
+        long jobs = strtol(s, &end, 10);
+        if (*s && !*end && jobs >= 1 && jobs <= 64) o.jobs = (int)jobs;
+    }
     char why[256] = "";
     g_build_frac = 0;
-    bool ok = gamebuild_run(g_root.c_str(), &o, why, sizeof why);
+    bool ok = gamebuild_run(target.c_str(), &o, why, sizeof why);
     if (!ok) {
         fprintf(stderr, "[launcher] game code: %s\n", why);
         if (g_cancel_build) set_job("Compilation cancelled. Completed files are kept.");
-        else set_failure(FAIL_BUILD);
+        else set_job("The game code didn't build", true, why);
     }
     return ok;
 }
 
+
+static bool validate_candidate_content(const char *root, char *why, size_t size) {
+    const TitleProfile *p = title_profile_validate(root, why, size);
+    if (!p) return false;
+    const char *title = game_profile_title(g_profile), *version = game_profile_version(g_profile);
+    if ((title && strcmp(title, p->key)) || (version && strcmp(version, p->version))) {
+        snprintf(why, size, "The game version does not match this installation slot"); return false;
+    }
+    if (!p->installable && !getenv("LARECOMP_ALLOW_DEVELOPMENT_GAMES")) {
+        snprintf(why, size, "This game adapter is still in development."); return false;
+    }
+    int count = -1;
+    std::string folder = root;
+    return title_content_validate(p, (folder + "/romfs").c_str(), file_exists(folder + "/romfs.bin"), &count, why, size);
+}
+static bool validate_candidate(const char *root, char *why, size_t size) {
+    return validate_candidate_content(root, why, size) && gamelib_verify(root, why, size);
+}
 static void *extract_thread(void *) {
     stop_background_prep();
     std::string src;
@@ -405,72 +458,144 @@ static void *extract_thread(void *) {
     src = g_src;
     pthread_mutex_unlock(&g_lock);
     g_cancel_build = false;
-    g_done = 0, g_total = 0, g_phase_base = 0, g_build_frac = -1, g_copy_skipped = false;
-    game_files_changed();
-    std::string exefs, romfs;
-    bool unusable = false;  // (game packages rather than its files)
-    if (src.empty() && check_copied_files(g_root).empty()) {  // copied already (an update needs new game code)
-        g_copy_skipped = true;
-        if (!build_game_code()) goto done;
-        goto check;
+    g_done = 0; g_total = 0; g_phase_base = 0; g_build_frac = -1; g_copy_skipped = src.empty();
+    GameInstall *install = nullptr;
+    bool published = false;
+    char why[512] = "";
+    std::string exefs, romfs, target;
+    bool unusable = false;
+    char speedfix_base[2048];
+    bool speedfix = acnh60_base_path(g_root.c_str(), speedfix_base, sizeof speedfix_base);
+    if (gamelib_tables()) {
+        set_job("Restart Multi before changing the game files.", true,
+                "The current game code is still loaded. Your files have not been changed.");
+        goto done;
     }
-    set_job("Looking for the game files...");
-    find_game(src, 0, exefs, romfs, unusable);
-    if (exefs.empty() || romfs.empty()) { set_failure(unusable ? FAIL_UNUSABLE : FAIL_NOT_FOUND); goto done; }
-    if (!build_id_ok(exefs + "/main")) { set_failure(FAIL_VERSION); goto done; }
-    if (int have = count_files(romfs); have < ROMFS_FILES) {  // (an incomplete copy: refused before copying it)
-        fprintf(stderr, "[launcher] %s: %d of %d romfs files\n", romfs.c_str(), have, (int)ROMFS_FILES);
-        set_failure(FAIL_MISSING, have);
+    if (speedfix && !src.empty()) {
+        set_job("Switch to normal 30 FPS before replacing game files.", true); goto done;
+    }
+    if (g_profile < 0 || speedfix) {
+        // External extracted folders retain the existing build-only workflow. No imported data is replaced.
+        if (!src.empty()) { set_job("Choose a game installation before setting up files.", true); goto done; }
+        std::string problem = check_copied_files(g_root);
+        if (!problem.empty()) { set_job("Game files incomplete.", true, problem.c_str()); goto done; }
+        if (!build_game_code(g_root)) goto done;
+        if (!gamelib_verify(g_root.c_str(), why, sizeof why)) { set_job("Game code build failed.", true, why); goto done; }
+        set_job("Game files ready.");
         goto done;
     }
     {
-        // (the picked folder can't be LAS Recomp's own copy: setting up again deletes that first)
-        char a[4096], b[4096];
-        mkdir(g_root.c_str(), 0755);
-        if (realpath(exefs.c_str(), a) && realpath(g_root.c_str(), b) && !strncmp(a, b, strlen(b)) &&
-            (a[strlen(b)] == '/' || a[strlen(b)] == '\\' || !a[strlen(b)])) {
-            set_failure(FAIL_NOT_FOUND);
-            goto done;
+        const char *slot = game_profile_install_dir(g_profile);
+        bool pending = game_install_pending(slot);
+        install = game_install_begin(slot, !src.empty(), why, sizeof why);
+        if (!install) { set_job("Cannot prepare the game installation folder.", true, why); goto done; }
+        target = game_install_candidate(install);
+        if (src.empty()) {
+            if (!pending) {
+                set_job("Preparing the game installation...");
+                if (!game_install_clone(install, g_root.c_str(), why, sizeof why)) {
+                    set_job("Could not prepare the game installation.", true, why); goto done;
+                }
+            } else if (!game_install_resume_clone(install, why, sizeof why)) {
+                set_job("Could not resume the game installation copy.", true, why); goto done;
+            }
+        } else {
+            set_job("Looking for the game files...");
+            find_game(src, 0, exefs, romfs, unusable);
+            if (exefs.empty() || romfs.empty()) { set_failure(unusable ? FAIL_UNUSABLE : FAIL_NOT_FOUND); goto done; }
+            std::string source_root = exefs.substr(0, exefs.find_last_of("/\\"));
+            const TitleProfile *picked = title_profile_find((exefs + "/main").c_str());
+            int count = -1;
+            if (!picked || !title_content_validate(picked, romfs.c_str(), file_exists(source_root + "/romfs.bin"), &count, why, sizeof why)) {
+                set_job("Game files incomplete.", true, why); goto done;
+            }
+            g_total = romfs_dir_bytes(romfs.c_str());
+            set_job("Copying the game files...");
+            if (!romfs_copy_tree(exefs.c_str(), (target + "/exefs").c_str(), nullptr) ||
+                !romfs_copy_tree(romfs.c_str(), (target + "/romfs").c_str(), setup_progress)) {
+                set_failure(FAIL_COPY); goto done;
+            }
+            if (file_exists(source_root + "/romfs.bin")) {
+                std::error_code error;
+                std::filesystem::copy_file(std::filesystem::u8path(source_root + "/romfs.bin"),
+                                          std::filesystem::u8path(target + "/romfs.bin"), error);
+                if (error) { set_failure(FAIL_COPY); goto done; }
+            }
+            g_phase_base = g_total.load();
         }
-        rt_remove_game_files(g_root.c_str());  // (an earlier or interrupted setup's; removes the folder too)
-        game_files_changed();
-        mkdir(g_root.c_str(), 0755);
-        unsigned long long rbytes = romfs_dir_bytes(romfs.c_str());
-        g_total = rbytes;
-        set_job("Copying the game files...");
-        if (!romfs_copy_tree(exefs.c_str(), (g_root + "/exefs").c_str(), NULL) ||
-            !romfs_copy_tree(romfs.c_str(), (g_root + "/romfs").c_str(), setup_progress)) {
-            set_failure(FAIL_COPY);
-            goto done;
-        }
-        g_phase_base = rbytes, g_done = rbytes;
-        // Retrying a cancelled compilation must use the copied files and their cache.
-        pthread_mutex_lock(&g_lock);
-        g_src.clear();
-        pthread_mutex_unlock(&g_lock);
-        if (!build_game_code()) goto done;
     }
-check:
+    if (!validate_candidate_content(target.c_str(), why, sizeof why)) {
+        set_job("Game files incomplete.", true, why); goto done;
+    }
+    imported_for_build();
+    if (!build_game_code(target)) goto done;
+    set_job("Verifying the completed installation...");
+    if (!game_install_publish(install, game_profile_id(g_profile), validate_candidate, why, sizeof why)) {
+        set_job("Could not finish the game installation.", true, why); goto done;
+    }
+    published = true;
+    set_job("Game files ready.");
+#ifdef _WIN32
     {
-        game_files_changed();
-        std::string why = check_game_files(g_root);
-        if (why.empty()) prepare_shaders();  // (the GPU device is up: the start screen draws with it)
-        if (why.empty()) set_job("Game files ready.");
-        else if (why.find("version") != std::string::npos) set_failure(FAIL_VERSION);
-        else set_failure(FAIL_MISSING, g_romfs_count);
+        char shortcut[2048];
+        if (game_shortcut_create(target.c_str(), shortcut, sizeof shortcut, why, sizeof why))
+            set_job("Game ready. Its desktop shortcut has been created.");
+        else set_job("Game ready. Desktop shortcut could not be created.", false, why);
     }
+#endif
 done:
+    game_install_close(install);
     pthread_mutex_lock(&g_lock);
+    g_install_published = published;
     g_busy = false;
     pthread_mutex_unlock(&g_lock);
-    return NULL;
+    return nullptr;
+}
+
+static void *speedfix_thread(void *) {
+    stop_background_prep();
+    g_cancel_build=false;g_build_started=SDL_GetTicks();g_build_frac=-1;g_copy_skipped=true;
+    char why[512]="";
+    bool ready=false;
+    const int profile=g_profile;
+    const std::string base=game_profile_base_dir(profile), target=base+"/.acnh60";
+    const TitleProfile *title=title_profile_validate(base.c_str(),why,sizeof why);
+    if (gamelib_tables()) set_job("Restart Multi before changing frame-rate mode.",true);
+    else if (!title || strcmp(title->key,"acnh") || strcmp(title->version,"3.0.1"))
+        set_job("Install the normal 3.0.1 game files first.",true,why);
+    else {
+        GameBuildOpts options={build_progress,1,build_cancelled};
+        bool prepared=file_exists(target);
+        if (!prepared) {
+            set_job("Preparing 60 FPS + SpeedFix...");
+            prepared=gameprepare_acnh60(base.c_str(),&options,why,sizeof why);
+        }
+        if (!prepared || !acnh60_profile(title,target.c_str(),why,sizeof why) ||
+            !acnh60_validate(target.c_str(),why,sizeof why))
+            set_job("Could not prepare 60 FPS + SpeedFix.",true,why);
+        else if (gamelib_verify(target.c_str(),why,sizeof why) || build_game_code(target)) {
+            if (gamelib_verify(target.c_str(),why,sizeof why)) {
+                set_job("60 FPS + SpeedFix is ready.");ready=true;
+            } else set_job("Game code build failed.",true,why);
+        }
+    }
+    pthread_mutex_lock(&g_lock);
+    if (ready) g_speedfix_ready_profile=profile;
+    g_busy=false;
+    pthread_mutex_unlock(&g_lock);
+    return nullptr;
 }
 
 // ------------------------------------------------------------------ folder dialog (SDL calls back on any thread)
 static void SDLCALL picked(void *, const char *const *files, int) {
     if (!files || !files[0]) return;
+    std::string exefs, romfs;
+    bool unusable = false;
+    find_game(files[0], 0, exefs, romfs, unusable);
+    const TitleProfile *profile = exefs.empty() ? nullptr : title_profile_find((exefs + "/main").c_str());
     pthread_mutex_lock(&g_lock);
     g_src = files[0];
+    g_detected_profile = profile ? game_profile_match(profile->key, profile->version) : -1;
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -527,8 +652,9 @@ static void import_fonts() {
         if (in) fclose(in);
         if (out) fclose(out);
     }
-    g_font_msg = std::to_string(ok) + " font file(s) imported" + (skipped ? ", " + std::to_string(skipped) + " not recognized" : "") +
-                 ". Used from the next game start.";
+    char result[256];
+    snprintf(result, sizeof result, ui_tr("Imported %d font files; %d not recognized. Used from the next game start."), ok, skipped);
+    g_font_msg = result;
 }
 
 static void remove_fonts() {
@@ -602,11 +728,15 @@ static void load_background(GpuDevice dev) {
 // ------------------------------------------------------------------ seeds
 static std::vector<std::string> list_seeds() {
     std::vector<std::string> out;
+    if (!title_is_las()) return out;
+    const TitleProfile *selected = title_profile_find((g_root + "/exefs/main").c_str());
+    if (selected && strcmp(selected->key, "las")) return out;
     if (DIR *d = opendir("rando")) {
         while (struct dirent *e = readdir(d)) {
             if (e->d_name[0] == '.') continue;
             std::string dir = std::string("rando/") + e->d_name;
-            if (file_exists(dir + "/settings.json") && file_exists(dir + "/romfs")) out.push_back(e->d_name);
+            if (rando_seed_name_valid(e->d_name) && rando_seed_compatible(dir.c_str(), game_version_current()) &&
+                file_exists(dir + "/settings.json") && file_exists(dir + "/romfs")) out.push_back(e->d_name);
         }
         closedir(d);
     }
@@ -635,7 +765,7 @@ extern "C" void launcher_play_seed(const char *seed) {
 }
 static float g_menu_gap = 0.35f;  // space under each item, in line heights
 
-// The first PLAY ever (settings.menu_tip_seen): a note on opening the LAS Recomp menu in game (it isn't obvious),
+// The first PLAY ever (settings.menu_tip_seen): a note on opening the Multi menu in game (it isn't obvious),
 // OK starts the game. Returns true once OK is pressed.
 static bool g_tip_test;  // (LARECOMP_LAUNCHER_SHOT=<frame>:tip)
 // First PLAY ever, before the menu note: authentic 16:9 or the unlocked (fill the window) aspect ratio.
@@ -654,18 +784,18 @@ static bool aspect_prompt(float s) {
     if (open) {
         ImGui::SetWindowFontScale(1.25f);
         ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted("How would you like to play?");
+        ImGui::TextUnformatted(ui_tr("How would you like to play?"));
         ImGui::Spacing();
-        ImGui::TextDisabled("You can change this any time in Settings.");
+        ImGui::TextDisabled("%s", ui_tr("You can change this any time in Settings."));
         ImGui::PopTextWrapPos();
         ImGui::Dummy(ImVec2(0, 14 * s));
         float bw = 300 * s, gap = 20 * s;
         ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 2 * bw - gap) * 0.5f);
         int pick = -1;
         ImGui::SetItemDefaultFocus();
-        if (ImGui::Button("Authentic 16:9", ImVec2(bw, 44 * s))) pick = ASPECT_ORIGINAL;
+        if (ImGui::Button(ui_label("Authentic 16:9").c_str(), ImVec2(bw, 44 * s))) pick = ASPECT_ORIGINAL;
         ImGui::SameLine(0, gap);
-        if (ImGui::Button("Unlocked (fill the screen)", ImVec2(bw, 44 * s))) pick = ASPECT_UNLOCKED;
+        if (ImGui::Button(ui_label("Unlocked (fill the screen)").c_str(), ImVec2(bw, 44 * s))) pick = ASPECT_UNLOCKED;
         if (pick >= 0) {
             g_settings.aspect = pick;
             g_settings.aspect_asked = true;
@@ -696,15 +826,15 @@ static bool menu_tip(float s) {
         static const char *const home[] = {"Home button", "Xbox button", "PlayStation button"};  // (bind_label_family)
         static const char *const pad[] = {"Minus + Plus", "View + Menu", "Create + Options"};
         ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted("LAS Recomp has its own menu for settings, the randomizer, cosmetics and more.");
+        ImGui::TextUnformatted(ui_tr("Multi has its own menu for settings, the randomizer, cosmetics and more."));
         ImGui::Spacing();
         int fam = bind_label_family() % 3;
-        ImGui::Text("Open it in game with F1 or Esc, or on a controller with the %s (or %s together).", home[fam], pad[fam]);
+        ImGui::Text(ui_tr("Open it in game with F1 or Esc, or on a controller with the %s (or %s together)."), ui_tr(home[fam]), pad[fam]);
         ImGui::PopTextWrapPos();
         ImGui::Dummy(ImVec2(0, 14 * s));
         ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 180 * s) * 0.5f);
         ImGui::SetItemDefaultFocus();
-        if (ImGui::Button("OK", ImVec2(180 * s, 44 * s)) || ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+        if (ImGui::Button(ui_label("OK").c_str(), ImVec2(180 * s, 44 * s)) || ImGui::IsKeyPressed(ImGuiKey_Enter) ||
             ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown)) {
             g_settings.menu_tip_seen = true;
             settings_save();
@@ -753,7 +883,8 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
     ImGui::BeginDisabled(!enabled);
     ImVec2 at = ImGui::GetCursorScreenPos();
     // (the ID from the label's fixed part: PLAY's changes with the seed shown, and a new ID loses the selection)
-    ImGui::PushID(label, split ? split : label + strlen(label));
+    ImGui::PushID(split ? "play" : label);
+    if (!split) label = ui_tr(label);
     ImVec2 sz = ImGui::CalcTextSize(label);
     // (EnableNav: otherwise an InvisibleButton can't be reached with the d-pad / arrow keys - ImGui 1.91)
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));  // (the hover band shows the selection, no box)
@@ -881,9 +1012,9 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
     float f = test_busy && g_prep_frac < 0 ? 0.42f : prep_wait && g_prep_frac < 0 ? 0.99f : extract_progress();
     // (while the game code is built: what's happening, on whose files - runtime/gamebuild.c)
     bool preparing = g_prep_frac >= 0 || prep_wait, recompiling = g_build_frac >= 0 && !preparing;
-    const char *title = preparing ? "Preparing shaders" : g_auto_update ? "Updating the game"
-                      : recompiling ? "Recompiling the game" : "Setting up the game files";
-    static const char *const notes[] = {"This only needs to be done once and may take a while."};
+    const char *title = ui_tr(preparing ? "Preparing shaders" : g_auto_update ? "Updating the game"
+                      : recompiling ? "Recompiling the game" : "Setting up the game files");
+    const char *const notes[] = {ui_tr("This only needs to be done once and may take a while.")};
     int nnotes = recompiling && !g_auto_update ? 1 : 0;
     float tfs = g_font_menu->FontSize * 0.75f, sfs = g_font_small->FontSize * 0.85f;
     ImVec2 ts = g_font_menu->CalcTextSizeA(tfs, FLT_MAX, 0, title);
@@ -893,7 +1024,7 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
         pw = fmaxf(pw, g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, notes[i]).x + 96 * sc);
     pw = fminf(fmaxf(pw, ts.x + 96 * sc), ds.x - 32 * sc);
     float ph = bar_y + 24 * sc + 26 * sc + line_h + (nnotes ? 14 * sc + nnotes * line_h : 0) + 40 * sc +
-               (preparing ? line_h + 28 * sc : recompiling ? 54 * sc : 0);  // (Skip / Cancel)
+               (preparing ? line_h + 28 * sc : recompiling ? 54 * sc : 0);  // Skip / cancel compilation
     ImVec2 a(o.x + (ds.x - pw) * 0.5f, o.y + (ds.y - ph) * 0.5f), b(a.x + pw, a.y + ph);
     fg->AddRectFilled(a, b, IM_COL32(15, 23, 20, 250), 14 * sc);
     fg->AddRect(a, b, IM_COL32(236, 194, 84, 140), 14 * sc, 0, 1.5f * sc);
@@ -903,29 +1034,39 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
     if (f > 0) fg->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * f, bb.y), IM_COL32(236, 194, 84, 255), 12 * sc);
     char line[200];
     if (preparing) snprintf(line, sizeof line, "%d%%", (int)(f * 100));  // (the title says it)
-    else snprintf(line, sizeof line, "%s   %d%%", test_busy ? "Setting up the game files..." : job.c_str(),
+    else snprintf(line, sizeof line, "%s   %d%%", ui_tr(test_busy ? "Setting up the game files..." : job.c_str()),
                   (int)(f * 100));
     ImVec2 ls = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, line);
     fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ls.x) * 0.5f, bb.y + 26 * sc), IM_COL32(220, 216, 205, 255), line);
+    if (recompiling) {
+        char cancel[192];
+        snprintf(cancel, sizeof cancel, "%s  (Esc / %s)", ui_tr(g_cancel_build ? "Stopping..." : "Cancel compilation"),
+                 ui_pad_back_label());
+        ImVec2 cs = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, cancel);
+        float cw = fmaxf(300 * sc, cs.x + 44 * sc);
+        ImVec2 ca((a.x + b.x - cw) * 0.5f, b.y - 66 * sc), cb(ca.x + cw, ca.y + 44 * sc);
+        ImGui::SetNextWindowPos(ca);
+        ImGui::SetNextWindowSize(ImVec2(cw, 44 * sc));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::Begin("##build_cancel", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground);
+        if (ImGui::InvisibleButton("##cancel_build", ImVec2(cw, 44 * sc), ImGuiButtonFlags_EnableNav) ||
+            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+            g_cancel_build = true;
+        bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+        ImGui::End();
+        ImGui::PopStyleVar();
+        fg->AddRectFilled(ca, cb, hot ? IM_COL32(80, 80, 55, 255) : IM_COL32(45, 55, 45, 255), 8 * sc);
+        fg->AddText(g_font_small, sfs, ImVec2((ca.x + cb.x - cs.x) * 0.5f, (ca.y + cb.y - cs.y) * 0.5f),
+                    IM_COL32(236, 194, 84, 255), cancel);
+    }
     for (int i = 0; i < nnotes; i++) {
         ImVec2 ns = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, notes[i]);
         fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ns.x) * 0.5f, bb.y + 26 * sc + (i + 1) * line_h + 14 * sc),
                     IM_COL32(150, 148, 140, 255), notes[i]);
     }
-    if (recompiling) {  // Shader preparation has its own Skip action; cancellation only stops the game-code build.
-        ImVec2 ca((a.x + b.x) * 0.5f - 150 * sc, b.y - 66 * sc), cb(ca.x + 300 * sc, ca.y + 44 * sc);
-        bool hover = !g_cancel_build && ImGui::IsMouseHoveringRect(ca, cb, false);
-        fg->AddRectFilled(ca, cb, hover ? IM_COL32(80, 80, 55, 255) : IM_COL32(45, 55, 45, 255), 8 * sc);
-        const char *cancel = g_cancel_build ? "Cancelling..." : "Cancel";  // (B / Circle and Esc too)
-        ImVec2 cs = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, cancel);
-        fg->AddText(g_font_small, sfs, ImVec2((ca.x + cb.x - cs.x) * 0.5f, (ca.y + cb.y - cs.y) * 0.5f),
-                    IM_COL32(236, 194, 84, 255), cancel);
-        if ((hover && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) ||
-            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
-            g_cancel_build = true;
-    }
     if (preparing) {  // Skip: the game then compiles what it needs as it goes (back / Esc too)
-        const char *sk = g_prep_skip ? "Skipping..." : "Skip";
+        const char *sk = ui_tr(g_prep_skip ? "Skipping..." : "Skip");
         ImVec2 ks = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, sk);
         ImVec2 ka((a.x + b.x - ks.x) * 0.5f - 22 * sc, b.y - 40 * sc - line_h - 10 * sc);
         ImVec2 kb(ka.x + ks.x + 44 * sc, ka.y + line_h + 16 * sc);
@@ -939,8 +1080,8 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
             g_prep_skip_ask = true;
     }
     if (preparing && g_prep_skip_ask && !g_prep_skip) {  // what Skip means, before it happens
-        const char *q = "Shaders will compile as you play, but you may experience some pop-in.";
-        const char *yes = "Yes, skip", *no = "No, wait";
+        const char *q = ui_tr("Shaders will compile as you play. New effects may briefly pause the game.");
+        const char *yes = ui_tr("Yes, skip"), *no = ui_tr("No, wait");
         ImVec2 qs = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, q);
         ImVec2 ys = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, yes), ns = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, no);
         float bw = fmaxf(ys.x, ns.x) + 64 * sc, bh = line_h + 20 * sc, gap = 24 * sc;
@@ -970,51 +1111,93 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
 }
 
 static bool g_files_deleted;  // set here: the start screen goes back to setting the game files up
+static void profile_picker(float sc) {
+    pthread_mutex_lock(&g_lock); bool locked = g_busy; pthread_mutex_unlock(&g_lock);
+    locked = locked || gamelib_tables();
+    ImGui::BeginDisabled(locked);
+    ImGui::SetNextItemWidth(620 * sc);
+    const char *label = g_profile < 0 ? "Custom installation" : game_profile_name(g_profile);
+    if (ImGui::BeginCombo(ui_label("Game and version").c_str(), ui_tr(label))) {
+        for (int i = 0; i < GAME_PROFILE_COUNT; ++i)
+            if (ImGui::Selectable(ui_tr(game_profile_name(i)), g_profile == i)) g_profile_request = i;
+        ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+    ImGui::TextWrapped("%s", ui_tr(locked ? "Restart Multi to switch games." :
+        "Each installation keeps its own game files, build cache and Vanilla saves. Existing saves stay with Existing installation."));
+    ImGui::Spacing();
+}
+
 static void prelaunch_tab(float sc) {
     const ImVec4 gold(0.93f, 0.76f, 0.33f, 1);
     auto heading = [&](const char *t) {
         ImGui::PushFont(g_font_menu);
-        ImGui::TextColored(gold, "%s", t);
+        ImGui::TextColored(gold, "%s", ui_tr(t));
         ImGui::PopFont();
         ImGui::Separator();
         ImGui::Spacing();
     };
+    heading("Game version");
+    profile_picker(sc);
     heading("Game files");
+    static std::string measured_root;
     static double gb = -1;
+    if (measured_root != g_root) { measured_root = g_root; gb = -1; }
     if (gb < 0) gb = rt_game_files_size(g_root.c_str()) / 1e9;
 #ifdef _WIN32
-    if (ImGui::Button("Show in Explorer")) reveal_folder(g_root);
+    if (ImGui::Button(ui_label("Show in Explorer").c_str())) reveal_folder(g_root);
+    if (check_game_files(g_root).empty()) {
+        ImGui::SameLine();
+        if (ImGui::Button(ui_label("Create desktop shortcut").c_str())) {
+            char shortcut[2048], reason[512];
+            bool ok = game_shortcut_create(g_root.c_str(), shortcut, sizeof shortcut, reason, sizeof reason);
+            set_job(ok ? "Desktop shortcut created." : "Could not create the desktop shortcut.", !ok, ok ? "" : reason);
+        }
+    }
 #elif defined(__linux__)
-    if (ImGui::Button("Open folder")) reveal_folder(g_root);
+    if (ImGui::Button(ui_label("Open folder").c_str())) reveal_folder(g_root);
 #else
-    if (ImGui::Button("Show in Finder")) reveal_folder(g_root);
+    if (ImGui::Button(ui_label("Show in Finder").c_str())) reveal_folder(g_root);
 #endif
     ImGui::SameLine();
     static bool shot_del = getenv("LARECOMP_LAUNCHER_SHOT") && strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":askdelete");
-    if (ImGui::Button("Delete game files") || shot_del) ImGui::OpenPopup("##delfiles"), shot_del = false;  // (test: :askdelete)
+    if (ImGui::Button(ui_label("Delete game files").c_str()) || shot_del) ImGui::OpenPopup("##delfiles"), shot_del = false;  // (test: :askdelete)
+    static std::string cache_message;
+    if (file_exists(build_cache_root() + "/.gamebuild")) {
+        ImGui::SameLine();
+        ImGui::BeginDisabled(game_profile_index(g_root.c_str(), rt_data_root()) < 0);
+        if (ImGui::Button(ui_label("Clear compilation cache").c_str())) {
+            char why[512] = "";
+            bool ok = build_cache_clear(build_cache_root().c_str(), why, sizeof why);
+            cache_message = ok ? "Compilation cache cleared. Installed game files and saves are kept." : why;
+            gb = -1;
+        }
+        ImGui::EndDisabled();
+    }
+    if (!cache_message.empty()) ImGui::TextWrapped("%s", ui_tr(cache_message.c_str()));
     if (ImGui::BeginPopupModal("##delfiles", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
         ImGui::PushFont(g_font_menu);
-        ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "Are you sure?");
+        ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "%s", ui_tr("Are you sure?"));
         ImGui::PopFont();
-        ImGui::Text("This deletes LAS Recomp's copy of the game files (%.1f GB).", gb);
-        ImGui::TextDisabled("Saves, seeds and settings are kept. Your own game files aren't touched.");
+        ImGui::Text(ui_tr("This deletes Multi's copy of the game files (%.1f GB)."), gb);
+        ImGui::TextDisabled("%s", ui_tr("Saves, seeds and settings are kept. Your own game files aren't touched."));
         if (rt_dev_mode()) {  // (a source checkout: the files are the project's own extracted/)
             bool abs = !g_root.empty() && (g_root[0] == '/' || (g_root.size() > 1 && g_root[1] == ':'));
             std::string where = abs ? g_root : std::string(rt_data_root()) + "/" + g_root;
-            ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "Dev checkout: this is %s", where.c_str());
+            ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), ui_tr("Dev checkout: this is %s"), where.c_str());
         }
         ImGui::Spacing();
-        if (ImGui::Button("Delete", ImVec2(220 * sc, 0))) {
+        if (ImGui::Button(ui_label("Delete").c_str(), ImVec2(220 * sc, 0))) {
             stop_background_prep();
             bool ok = rt_remove_game_files(g_root.c_str());  // (runtime/paths.c: only what the extraction made)
             game_files_changed();
-            set_job(ok ? "Game files deleted." : "Could not delete the game files (not in LAS Recomp's data folder?).", !ok);
+            set_job(ok ? "Game files deleted." : "Could not delete the game files (not in Multi's data folder?).", !ok);
             g_files_deleted = true, gb = -1;
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
         ImGui::SetItemDefaultFocus();
-        if (ImGui::Button("Cancel", ImVec2(220 * sc, 0)) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+        if (ImGui::Button(ui_label("Cancel").c_str(), ImVec2(220 * sc, 0)) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
             ImGui::IsKeyPressed(ImGuiKey_Escape, false))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
@@ -1024,27 +1207,37 @@ static void prelaunch_tab(float sc) {
     heading("Game font");
     import_fonts();
     bool fs = have_font(FONT_STD, 4), fl = have_font(FONT_LANG, 8), fe = have_font(FONT_EXT, 2);
-    ImGui::Text("Text: %s    Chinese / Korean: %s    Button icons: %s",
-                fs ? "Nintendo font (imported)" : "substitute (this OS's, per language)",
-                fl ? "Nintendo font (imported)" : "substitute", fe ? "imported" : "substitute");
+    ImGui::Text(ui_tr("Text: %s    Chinese / Korean: %s    Button icons: %s"),
+                ui_tr(fs ? "Nintendo font (imported)" : "substitute (this OS's, per language)"),
+                ui_tr(fl ? "Nintendo font (imported)" : "substitute"), ui_tr(fe ? "imported" : "substitute"));
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("Fonts aren't included. For the original look, import your own copies of "
+    ImGui::TextDisabled("%s", ui_tr("Fonts aren't included. For the original look, import your own copies of "
                         "nintendo_udsg-r_std_003.bfttf (text), the same-named files for Chinese and Korean "
                         "(nintendo_udsg-r_org_zh-cn_003, nintendo_udsg-r_ext_zh-cn_003, nintendo_udjxh-db_zh-tw_003, "
                         "nintendo_udsg-r_ko_003) and nintendo_ext_003.bfttf (button icons). "
-                        ".ttf versions with the same names work too.");
+                        ".ttf versions with the same names work too."));
     ImGui::PopTextWrapPos();
-    if (!g_font_msg.empty()) ImGui::Text("%s", g_font_msg.c_str());
+    if (!g_font_msg.empty()) ImGui::Text("%s", ui_tr(g_font_msg.c_str()));
     static const SDL_DialogFileFilter font_f[] = {{"Switch fonts", "bfttf;ttf"}};
-    if (ImGui::Button("Import fonts")) SDL_ShowOpenFileDialog(picked_fonts, NULL, g_launcher_win, font_f, 1, NULL, true);
+    if (ImGui::Button(ui_label("Import fonts").c_str())) SDL_ShowOpenFileDialog(picked_fonts, NULL, g_launcher_win, font_f, 1, NULL, true);
     if (fs || fl || fe) {
         ImGui::SameLine();
-        if (ImGui::Button("Use substitute font")) remove_fonts();
+        if (ImGui::Button(ui_label("Use substitute font").c_str())) remove_fonts();
     }
 }
 
-extern "C" void launcher_run(const char *root) {
-    g_root = root;
+extern "C" const char *launcher_run(const char *root) {
+    char resolved[2048], resolve_error[512];
+    g_root = game_install_resolve(root, resolved, sizeof resolved, resolve_error, sizeof resolve_error) ? resolved : root;
+    root = g_root.c_str();
+    g_profile = game_profile_index(root, rt_data_root());
+    game_profile_activate(root, rt_data_root());
+    char profile_error[512];
+    if (!title_profile_select(root, profile_error, sizeof profile_error))
+        title_profile_preview(game_profile_title(g_profile), game_profile_version(g_profile));
+    save_backups_set_game_root(root);
+    rando_set_game_root(root);
+    mods_set_game_root(root);
     g_start_screen = 1;
     static bool update_checked;  // (once per launch, not again after a "Title screen" reboot)
     if (!update_checked && !getenv("LARECOMP_NO_UPDATE_CHECK")) {
@@ -1088,6 +1281,9 @@ extern "C" void launcher_run(const char *root) {
         g_font_title = io.Fonts->AddFontFromFileTTF(p, 92 * (b2 ? 2.3f : 1), NULL, ranges);
     }
     if (!g_font_menu) g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
+    // The large title font only draws the Latin logo; keep CJK in the actual UI fonts.
+    for (ImFont *font : {g_font_small, g_font_menu}) ui_merge_language_font(font);
+    ui_add_user_font();
     ImGuiStyle &st = ImGui::GetStyle();
     st.Colors[ImGuiCol_Header] = ImVec4(0, 0, 0, 0);
     st.Colors[ImGuiCol_HeaderHovered] = ImVec4(1, 1, 1, 0.08f);
@@ -1106,10 +1302,12 @@ extern "C" void launcher_run(const char *root) {
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
 
     // an older version's game data image: the game reads the romfs/ folder itself now - 5.8 GB back
-    if (check_copied_files(g_root).empty() && file_exists(g_root + "/romfs.bin") &&
+    const TitleProfile *startup_title = title_profile_find((g_root + "/exefs/main").c_str());
+    if (startup_title && !strcmp(startup_title->key, "las") && check_copied_files(g_root).empty() && file_exists(g_root + "/romfs.bin") &&
         rt_remove_game_file(g_root.c_str(), "romfs.bin"))
         fprintf(stderr, "[launcher] removed the old game data image (romfs.bin)\n");
     std::string status = check_game_files(g_root);
+    game_version_select((g_root + "/exefs/main").c_str());
     if (check_copied_files(g_root).empty()) load_background(dev);  // (also behind an update of the game code)
     std::vector<std::string> seeds = list_seeds();
     std::vector<std::string> choices = {"Vanilla"};
@@ -1155,25 +1353,30 @@ extern "C" void launcher_run(const char *root) {
         pthread_detach(th);
     }
     runs++;
-    if (const char *t = getenv("LARECOMP_LAUNCHER_EXTRACT")) {  // (test) <folder>: set the game files up, log, exit
-        g_src = t;
-        g_busy = true;
-        extract_thread(NULL);
-        fprintf(stderr, "[launcher] setup: %s -> %s\n", g_job.c_str(), check_game_files(g_root).empty() ? "READY" : "NOT READY");
-        exit(0);
-    }
-    if (const char *t = getenv("LARECOMP_LAUNCHER_SETUP")) {  // (test) <folder>: Set up started on the start screen
-        g_src = t;
+    if (const char *t = SDL_getenv("LARECOMP_LAUNCHER_SOURCE")) g_src = t; // screenshot/test folder selection
+    const char *setup_source = SDL_getenv("LARECOMP_LAUNCHER_EXTRACT");
+    if (getenv("LARECOMP_LAUNCHER_BUILD_ONLY")) setup_source = ""; // run the normal resume action, without reimporting
+    bool exit_after_setup = setup_source != NULL;  // (test) set up, log the result, exit
+    if (!setup_source) setup_source = SDL_getenv("LARECOMP_LAUNCHER_SETUP");
+    if (getenv("LARECOMP_LAUNCHER_MINIMIZED")) SDL_MinimizeWindow(win); // background setup regression
+    if (setup_source) {
+        // Automated imports use the same progress screen as interactive setup.
+        // Pumping events alone leaves a black window throughout recompilation.
+        g_src = setup_source;
         g_busy = true;
         page = SETUP;
+        play = false;
         pthread_t th;
-        pthread_create(&th, NULL, extract_thread, NULL);
+        if (pthread_create(&th, NULL, extract_thread, NULL)) {
+            fprintf(stderr, "[launcher] could not start setup thread\n");
+            plat_exit(1);
+        }
         pthread_detach(th);
     }
     // An update: the game files are there and only the game code is out of date - rebuilt at once, by itself (only
     // the pieces that changed: runtime/gamebuild.c), with the progress bar; then the start screen as usual. A failure
     // stays on the setup page with what went wrong.
-    if (!status.empty() && check_copied_files(g_root).empty() && gamebuild_available() &&
+    if (!g_busy && !status.empty() && check_copied_files(g_root).empty() && gamebuild_available() &&
         !getenv("LARECOMP_LAUNCHER_DELETE")) {
         fprintf(stderr, "[launcher] game code out of date: updating it\n");
         g_src.clear();
@@ -1187,6 +1390,7 @@ extern "C" void launcher_run(const char *root) {
         double gb = rt_game_files_size(g_root.c_str()) / 1e9;
         stop_background_prep();
         bool ok = rt_remove_game_files(g_root.c_str());
+        if (ok && g_profile >= 0) g_root = game_profile_dir(g_profile);
         game_files_changed();
         status = check_game_files(g_root);
         fprintf(stderr, "[launcher] delete %.1f GB: %s -> %s\n", gb, ok ? "ok" : "refused", status.c_str());
@@ -1222,8 +1426,10 @@ extern "C" void launcher_run(const char *root) {
         menu_apply_window_requests(win);  // (the Video tab's Fullscreen)
         // the seed PLAY would start, kept current (Settings > Gameplay greys out what that seed forces)
         snprintf(g_settings.rando_seed, sizeof g_settings.rando_seed, "%s", choice ? choices[choice].c_str() : "");
+        workshop_selection(g_root.c_str(),g_settings.rando_seed);
         if (g_files_deleted) {  // (Settings > Prelaunch deleted them)
             g_files_deleted = false;
+            if (g_profile >= 0) g_root = game_profile_dir(g_profile);
             status = check_game_files(g_root);
             if (!status.empty()) { g_bg = 0; bind_capture_cancel(); settings_save(); page = SETUP; }
         }
@@ -1244,22 +1450,86 @@ extern "C" void launcher_run(const char *root) {
         while (SDL_PollEvent(&e)) {
             if (page == SETTINGS && bind_capture_event(&e)) continue;  // (waiting for a new binding: controls_ui.mm)
             if (!launcher_pad_event(e)) ImGui_ImplSDL3_ProcessEvent(&e);
-            if (e.type == SDL_EVENT_QUIT) exit(0);
+            if (e.type == SDL_EVENT_QUIT) plat_exit(exit_after_setup ? 1 : 0);
         }
         // extraction finished: re-check, load the background
         pthread_mutex_lock(&g_lock);
         bool busy = g_busy;
+        bool published = !busy && g_install_published;
+        if (published) g_install_published = false;
+        bool setup_failed = g_job_failed;
+        bool auto_selected = !busy && g_detected_profile >= 0;
+        if (auto_selected) { g_profile_request = g_detected_profile; g_detected_profile = -1; }
+        if (!busy && g_speedfix_ready_profile>=0) {
+            g_settings.acnh_speedfix60=true;
+            g_profile_request=g_speedfix_ready_profile;g_speedfix_ready_profile=-1;
+        }
         pthread_mutex_unlock(&g_lock);
-        static bool was_busy;
-        if (was_busy && !busy) {
-            g_build_cache_changed = true;
+        if (published) {
+            g_root = game_profile_dir(g_profile);
+            game_files_changed();
+            game_profile_activate(g_root.c_str(), rt_data_root());
+            char profile_error[512];
+            if (!title_profile_select(g_root.c_str(), profile_error, sizeof profile_error))
+                title_profile_preview(game_profile_title(g_profile), game_profile_version(g_profile));
+            save_backups_set_game_root(g_root.c_str());
+            rando_set_game_root(g_root.c_str());
+            mods_set_game_root(g_root.c_str());
+            game_version_select((g_root + "/exefs/main").c_str());
             status = check_game_files(g_root);
-            if (status.empty()) { if (!g_bg) load_background(dev); page = MAIN; }
+        }
+        if (g_profile_request >= 0 && !busy && !gamelib_tables()) {
+            stop_background_prep();
+            g_profile = g_profile_request; g_profile_request = -1;
+            g_settings.game_profile = g_profile;
+            g_root = game_profile_dir(g_profile);
+            game_files_changed();
+            game_profile_activate(g_root.c_str(), rt_data_root());
+            char profile_error[512];
+            if (!title_profile_select(g_root.c_str(), profile_error, sizeof profile_error))
+                title_profile_preview(game_profile_title(g_profile), game_profile_version(g_profile));
+            save_backups_set_game_root(g_root.c_str());
+            rando_set_game_root(g_root.c_str());
+            mods_set_game_root(g_root.c_str());
+            game_version_select((g_root + "/exefs/main").c_str());
+            status = check_game_files(g_root);
+            seeds = list_seeds(); choices = {"Vanilla"}; choices.insert(choices.end(), seeds.begin(), seeds.end()); choice = 0;
+            g_settings.rando_seed[0] = 0;
+            pthread_mutex_lock(&g_lock);
+            if (!auto_selected) {
+                g_src.clear(); g_job.clear(); g_job_hint.clear();
+            }
+            pthread_mutex_unlock(&g_lock);
+            g_bg = 0;
+            if (status.empty()) { load_background(dev); start_background_prep(); }
+            settings_save();
+            g_confirm_delete = false;
+        }
+        if (exit_after_setup && !busy) {
+            fprintf(stderr, "[launcher] setup: %s -> %s\n", g_job.c_str(), check_game_files(g_root).empty() ? "READY" : "NOT READY");
+            if (!g_job_hint.empty()) fprintf(stderr, "[launcher] details: %s\n", g_job_hint.c_str());
+            plat_exit(setup_failed || !check_game_files(g_root).empty() ? 1 : 0);
+        }
+        static bool was_busy;
+        if (was_busy && !busy) g_build_cache_changed = true;
+        if (was_busy && !busy) {
+            status = check_game_files(g_root);
+            game_version_select((g_root + "/exefs/main").c_str());
+            seeds = list_seeds();
+            choices = {"Vanilla"};
+            choices.insert(choices.end(), seeds.begin(), seeds.end());
+            choice = 0;
+            if (status.empty() && !setup_failed) { if (!g_bg) load_background(dev); page = MAIN; start_background_prep(); }
             if (status.empty() && ap && getenv("LARECOMP_LAUNCHER_PREPARE")) play = true;
             g_auto_update = false;
         }
         was_busy = busy;
 
+        // SDL reports a zero ImGui display size while minimized even when the
+        // Vulkan swapchain retains its old extent. Keep polling the worker and
+        // events, but do not acquire a frame or create zero-sized UI controls.
+        ImGui_ImplSDL3_NewFrame();
+        if (io.DisplaySize.x <= 0 || io.DisplaySize.y <= 0) { SDL_Delay(16); continue; }
 #ifdef __APPLE__
         int w, h;
         SDL_GetWindowSizeInPixels(win, &w, &h);
@@ -1289,7 +1559,6 @@ extern "C" void launcher_run(const char *root) {
             if (!vk_frame_begin(clear_col)) { SDL_Delay(16); continue; }
             ImGui_ImplVulkan_NewFrame();
 #endif
-            ImGui_ImplSDL3_NewFrame();
             // the backend (manual mode, no gamepads of its own) clears HasGamepad every frame, and ImGui then drops the
             // controller presses launcher_pad_event fed in and turns gamepad navigation off: set it again while a
             // controller is connected
@@ -1341,7 +1610,7 @@ extern "C" void launcher_run(const char *root) {
             ImGui::SetCursorPos(ImVec2(x0, 120 * s));
             ImGui::PushFont(g_font_title);
             if (page == MAIN) {  // gold to orange, shadowed (not behind the Settings / Game Files windows)
-                const char *t = "LAS Recompiled";
+                const char *t = "Multi";
                 ImVec2 p = ImGui::GetCursorScreenPos();
                 text_fx(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 232, 120, 255),
                         IM_COL32(255, 138, 48, 255), t, 3 * s);
@@ -1366,8 +1635,8 @@ extern "C" void launcher_run(const char *root) {
                 }
                 bool hov = false;
                 char label[192];
-                snprintf(label, sizeof label, "PLAY    \xe2\x80\xb9 %s%s \xe2\x80\xba", choice ? "Rando: " : "",
-                         choices[choice].c_str());  // (choice 0 = Vanilla)
+                snprintf(label, sizeof label, "%s    \xe2\x80\xb9 %s%s \xe2\x80\xba", ui_tr("PLAY"), choice ? ui_tr("Rando: ") : "",
+                         choice ? choices[choice].c_str() : ui_tr("Vanilla"));
                 ImGui::SetCursorPosX(x0);
                 // a long seed name may run past the other items (to 80% of the window); beyond that the line shrinks
                 ImGui::PushFont(g_font_menu);
@@ -1438,6 +1707,8 @@ extern "C" void launcher_run(const char *root) {
                 }
                 ImGui::SetCursorPosX(x0);
                 if (g_refocus == SETTINGS) ImGui::SetKeyboardFocusHere(), g_refocus = MAIN;  // (back from Settings: it
+                if (menu_item("GAME VERSION", !busy)) { menu_tabs_focus(true); page = SETTINGS; }
+                ImGui::SetCursorPosX(x0);
                 if (menu_item("SETTINGS", true)) {                                             //  stays selected)
                     static bool opened;
                     menu_tabs_focus(!opened);  // (first time this session: Prelaunch; later: the selected tab)
@@ -1450,7 +1721,7 @@ extern "C" void launcher_run(const char *root) {
                     if (menu_item("SET UP GAME FILES", !busy)) page = SETUP;
                 }
                 ImGui::SetCursorPosX(x0);
-                if (menu_item("QUIT", true)) exit(0);
+                if (menu_item("QUIT", true)) plat_exit(0);
                 g_menu_gap = 0.35f;
             } else if (page == SETTINGS) {
                 // the in-game menu's tabs (runtime/ui/menu.mm), in a window like the in-game one; tabs that need a
@@ -1468,7 +1739,7 @@ extern "C" void launcher_run(const char *root) {
                 ImGui::PopStyleColor();
                 ImGui::PushFont(g_font_small);
                 ImGui::PushFont(g_font_menu);
-                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Settings");
+                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", ui_tr("Settings"));
                 ImGui::PopFont();
                 bool back;
                 {  // close: a drawn X in the corner (B / Esc too)
@@ -1528,7 +1799,7 @@ extern "C" void launcher_run(const char *root) {
                 ImGui::PopStyleColor();
                 ImGui::PushFont(g_font_small);
                 ImGui::PushFont(g_font_menu);
-                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Game Files");
+                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", ui_tr("Game Files"));
                 ImGui::PopFont();
                 bool back = false;
                 if (!busy) {  // close: the drawn X in the corner, as Settings (B / Esc too)
@@ -1560,21 +1831,23 @@ extern "C" void launcher_run(const char *root) {
                 auto check_left_of_value = [&](const std::string &v) {
                     if (v != "Selected") return;
                     ImVec2 rb = ImGui::GetItemRectMax(), ra = ImGui::GetItemRectMin();
-                    float fs = ImGui::GetFontSize(), vw = ImGui::CalcTextSize(v.c_str()).x;
+                    float fs = ImGui::GetFontSize(), vw = ImGui::CalcTextSize(ui_tr(v.c_str())).x;
                     float x = rb.x - 16 * sc - vw - fs * 0.95f, cy = (ra.y + rb.y) * 0.5f, u = fs * 0.62f;
                     ImU32 g = IM_COL32(120, 220, 120, 255);
                     ImDrawList *dl = ImGui::GetWindowDrawList();
                     dl->AddLine(ImVec2(x, cy), ImVec2(x + u * 0.35f, cy + u * 0.35f), g, fs * 0.11f);
                     dl->AddLine(ImVec2(x + u * 0.35f, cy + u * 0.35f), ImVec2(x + u, cy - u * 0.4f), g, fs * 0.11f);
                 };
-                std::string src_d = "The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Link's "
-                                    "Awakening for Nintendo Switch, version 1.0.0. The game isn't included with LAS Recomp.";
-                if (!src.empty()) src_d += "\n\nChosen: " + src;
+                std::string src_d = "Choose your extracted game folder containing exefs and romfs. The game is identified from its executable modules.";
+                src_d = ui_tr(src_d.c_str());
+                if (!src.empty()) src_d += "\n\n" + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
-                std::string ex_d = "Copies the game files LAS Recomp needs and recompiles the game from them. This only "
+                std::string ex_d = "Copies the game files Multi needs and recompiles the game from them. This only "
                                    "needs to be done once and may take a while. Your own files aren't changed.";
-                if (!job.empty()) ex_d += "\n\n" + job + (job_hint.empty() ? "" : ".\n" + job_hint);
+                if (gamelib_tables()) ex_d = "Restart Multi before changing the game files.";
+                ex_d = ui_tr(ex_d.c_str());
+                if (!job.empty()) ex_d += "\n\n" + std::string(ui_tr(job.c_str())) + (job_hint.empty() ? "" : ".\n" + job_hint);
 
                 // the controller's cursor starts on the first row (not the X), a few frames while the window lays out
                 static int seen_frame = -10, focus_first;  // (not drawn last frame: the window has just opened)
@@ -1583,35 +1856,68 @@ extern "C" void launcher_run(const char *root) {
                 auto first_row = [&] {
                     if (focus_first > 0 && focus_first--) ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
                 };
+                profile_picker(sc);
                 opt_begin("##files", sc);
-                if (!ready) {
+                {
+                    if (g_profile>0 && !strcmp(game_profile_title(g_profile),"acnh") &&
+                        !strcmp(game_profile_version(g_profile),"3.0.1")) {
+                        opt_section("Frame rate");
+                        const char *modes[]={"Normal 30 FPS","60 FPS + SpeedFix (experimental)"};
+                        int mode=g_settings.acnh_speedfix60?1:0;
+                        if (busy || gamelib_tables() || !check_copied_files(game_profile_base_dir(g_profile)).empty()) opt_disable_next();
+                        const char *hint=gamelib_tables()?"Restart Multi before changing frame-rate mode.":
+                            "60 FPS + SpeedFix keeps normal game speed when your PC sustains 60 FPS. Below 60 FPS the game slows down. First use prepares and compiles a separate copy; both modes use the same 3.0.1 save. ACNH 60 FPS + SpeedFix by tmouh (CC BY-NC 4.0).";
+                        if (opt_choice("Frame-rate mode",&mode,modes,2,0,hint)) {
+                            if (!mode) {g_settings.acnh_speedfix60=false;g_profile_request=g_profile;}
+                            else {
+                                pthread_mutex_lock(&g_lock);g_busy=busy=true;g_job_failed=false;pthread_mutex_unlock(&g_lock);
+                                pthread_t thread;
+                                if (!pthread_create(&thread,NULL,speedfix_thread,NULL)) pthread_detach(thread);
+                                else {pthread_mutex_lock(&g_lock);g_busy=busy=false;pthread_mutex_unlock(&g_lock);
+                                      set_job("Could not start the build worker.",true);}
+                            }
+                        }
+                    }
                     opt_section("Your copy of the game");
                     if (busy) opt_disable_next();
-                    if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
+                    if (opt_action("Game files folder", ui_tr(src_v.c_str()), src_d.c_str(), true))
                         SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
                     check_left_of_value(src_v);
                     first_row();
                     opt_section("Set up");
-                    if (busy || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
-                    bool resume = !busy && src.empty() && resumable_build();
-                    if (opt_action(resume ? "Resume game code" : "Set up game files", busy ? "Working..." : "", ex_d.c_str(), true)) {
+                    bool pending_build = g_profile >= 0 && game_install_pending(game_profile_install_dir(g_profile));
+                    if (busy || gamelib_tables() ||
+                        (src.empty() && !pending_build && !check_copied_files(g_root).empty())) opt_disable_next();
+                    bool resume_build = src.empty() && (pending_build || check_copied_files(g_root).empty());
+                    if (opt_action(resume_build && resumable_build() ? "Resume game code" : resume_build ? "Build or resume game code" : "Set up game files", ui_tr(busy ? "Working..." : ""), ex_d.c_str(), true)) {
+                        files_gb = -1;  // (re-measured after a setup)
                         pthread_mutex_lock(&g_lock);
                         g_busy = true;
                         pthread_mutex_unlock(&g_lock);
                         pthread_t t;
-                        pthread_create(&t, NULL, extract_thread, NULL);
-                        pthread_detach(t);
+                        if (!pthread_create(&t, NULL, extract_thread, NULL)) pthread_detach(t);
+                        else { pthread_mutex_lock(&g_lock); g_busy = false; pthread_mutex_unlock(&g_lock); set_job("Could not start the build worker.", true); }
                     }
-                    files_gb = -1;  // (re-measured after a setup)
-                } else {
-                    // DELETE: frees LAS Recomp's copy (runtime/paths.c removes only what the setup made, only inside
+                    if (file_exists(build_cache_root() + "/.gamebuild")) {
+                        if (busy || game_profile_index(g_root.c_str(), rt_data_root()) < 0) opt_disable_next();
+                        if (opt_action("Clear compilation cache", "", "Keeps installed game code and saves. The next rebuild starts from scratch.", true)) {
+                            char why[512] = "";
+                            bool ok = build_cache_clear(build_cache_root().c_str(), why, sizeof why);
+                            set_job(ok ? "Compilation cache cleared. Installed game files and saves are kept." : "Could not clear compilation cache.", !ok, why);
+                        }
+                    }
+                }
+                char speedfix_parent[2048];
+                bool speedfix_selected=acnh60_base_path(g_root.c_str(),speedfix_parent,sizeof speedfix_parent);
+                if (ready && !speedfix_selected) {
+                    // DELETE: frees Multi's copy (runtime/paths.c removes only what the setup made, only inside
                     // the data root). Saves, seeds, settings and the user's own files stay.
                     if (files_gb < 0) files_gb = rt_game_files_size(g_root.c_str()) / 1e9;
                     char gb[32];
                     snprintf(gb, sizeof gb, "%.1f GB", files_gb);
                     opt_section("Game files");
                     if (!g_confirm_delete) {
-                        if (opt_action("Delete game files", gb, "Frees the space LAS Recomp's copy of the game files takes. "
+                        if (opt_action("Delete game files", gb, "Frees the space Multi's copy of the game files takes. "
                                        "Saves, seeds and settings are kept, and your own game files aren't touched: you can "
                                        "set the game files up again from them.", true))
                             g_confirm_delete = true;
@@ -1623,7 +1929,7 @@ extern "C" void launcher_run(const char *root) {
                             game_files_changed();
                             status = check_game_files(g_root);
                             if (ok) set_job("Game files deleted.");
-                            else set_job("Couldn't delete the game files", true, "They aren't in LAS Recomp's data folder, "
+                            else set_job("Couldn't delete the game files", true, "They aren't in Multi's data folder, "
                                          "so they were left alone.");
                             if (!status.empty()) g_bg = 0;
                             g_confirm_delete = false, files_gb = -1;
@@ -1631,13 +1937,13 @@ extern "C" void launcher_run(const char *root) {
                         if (opt_action("Cancel", "", "Keeps the game files.", true)) g_confirm_delete = false;
                     }
                 }
-                if (!busy && has_build_cache()) {
+                if (!busy && !gamelib_tables() && has_build_cache()) {
                     opt_section("Build cache");
                     if (opt_action("Clear build cache", "", "Removes the saved game-code build files. The next setup compiles "
                                    "everything again.", true)) {
                         char why[512] = "";
                         g_build_cache_changed = true;
-                        if (build_cache_clear(g_root.c_str(), why, sizeof why)) set_job("Build cache cleared.");
+                        if (build_cache_clear(build_cache_root().c_str(), why, sizeof why)) set_job("Build cache cleared.");
                         else set_job("Could not clear the build cache.", true, why);
                     }
                 }
@@ -1645,9 +1951,9 @@ extern "C" void launcher_run(const char *root) {
                     ImGui::Dummy(ImVec2(0, 14 * sc));
                     ImGui::PushTextWrapPos(0);
                     ImGui::TextColored(failed ? ImVec4(1, 0.5f, 0.4f, 1) : busy ? ImVec4(0.93f, 0.76f, 0.33f, 1)
-                                              : ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", job_line.c_str());
+                                              : ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", ui_tr(job_line.c_str()));
                     if (failed && !job_hint.empty())  // (what to do next, in the rows' own text colour)
-                        ImGui::TextColored(ImVec4(0.86f, 0.85f, 0.80f, 1), "%s", job_hint.c_str());
+                        ImGui::TextColored(ImVec4(0.86f, 0.85f, 0.80f, 1), "%s", ui_tr(job_hint.c_str()));
                     ImGui::PopTextWrapPos();
                 } else if (!busy && !status.empty() && status != "No game files yet") {
                     // (no setup run yet this session: why the game files on disk can't be played - an incomplete copy
@@ -1675,8 +1981,7 @@ extern "C" void launcher_run(const char *root) {
                 static bool test_busy = getenv("LARECOMP_LAUNCHER_SHOT") && (strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":extracting") ||
                                                                          strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":preparing") ||
                                                                          strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":skipask"));
-                if (busy || test_busy) draw_busy_overlay(ds, job, test_busy);  // (everything dimmed, a bar in front)
-
+                if (busy || test_busy) draw_busy_overlay(ds, job, test_busy);
             }
 
             // status (lower left) and version (lower right) - not under the Settings / Game Files windows
@@ -1692,11 +1997,12 @@ extern "C" void launcher_run(const char *root) {
                     ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x + u * 0.35f, p.y + u * 0.8f), ImVec2(p.x + u * 0.85f, p.y + u * 0.2f), g, u * 0.12f);
                     ImGui::SetCursorPosX(x0 + u * 1.3f);
                 }
-                ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), "Game files ready.");
+                ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", ui_tr("Game files ready."));
                 ImGui::SetCursorPosX(x0);
-                ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), "Nintendo Switch  \xc2\xb7  v1.0.0");
+                ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), ui_tr("Nintendo Switch  \xc2\xb7  v%s"),
+                                   title_profile_current()->version);
             } else {
-                ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "!  %s", busy ? "Setting up the game files..." : status.c_str());
+                ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), ui_tr("!  %s"), busy ? "Setting up the game files..." : status.c_str());
                 ImGui::SetCursorPosX(x0);
                 ImGui::TextDisabled("%s", busy ? "Set up the game files to play." : status_hint(status));
             }
@@ -1772,18 +2078,19 @@ extern "C" void launcher_run(const char *root) {
             if (shot) {
                 [cb waitUntilCompleted];
                 save_png(shot, getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/launcher.png");
-                exit(0);
+                plat_exit(0);
             }
 #else
             ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)vk_frame_cmd());
             bool shot = shot_at && ++frame == shot_at;
             vk_frame_end(shot ? getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/launcher.png" : NULL);
-            if (shot) exit(0);
+            if (shot) plat_exit(0);
 #endif
         }
     }
     // play: remember the choice, hand the window to the game
     snprintf(g_settings.rando_seed, sizeof g_settings.rando_seed, "%s", choice ? choices[choice].c_str() : "");
+    workshop_selection(g_root.c_str(),g_settings.rando_seed);
     settings_save();
 #ifdef __APPLE__
     ImGui_ImplMetal_Shutdown();
@@ -1795,4 +2102,5 @@ extern "C" void launcher_run(const char *root) {
     ImGui::SetCurrentContext(prev_ctx);
     g_bg = 0;
     g_start_screen = 0;
+    return g_root.c_str();
 }

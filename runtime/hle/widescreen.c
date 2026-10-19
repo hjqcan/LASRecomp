@@ -8,6 +8,7 @@
 
 #include "../hle.h"
 #include "../settings.h"
+#include "../research.h"
 
 #define BACKDROP_HASHES 0x71fe31bbf03c3515ull
 
@@ -39,7 +40,7 @@ float widescreen_effect_stretch(uint64_t fs_hash) {
 // Off in rooms that should keep 16:9 framing (interiors, dungeons) -- see widescreen_update.
 static bool g_allowed = true;
 static bool g_indoor;
-bool widescreen_allowed(void) { return g_allowed && g_settings.aspect == ASPECT_UNLOCKED && !ENV("LARECOMP_NO_WIDESCREEN"); }
+bool widescreen_allowed(void) { return title_is_las() && g_allowed && g_settings.aspect == ASPECT_UNLOCKED && !ENV("LARECOMP_NO_WIDESCREEN"); }
 void widescreen_set_allowed(bool on) { g_allowed = on; }
 
 // Interiors and dungeons use cameras that never load the patched overworld aspect (site 0). Count
@@ -149,6 +150,7 @@ void widescreen_scene_ubo(const float *u, uint64_t size) {
     uint64_t f = renderer_present_count();
     if (size != 320 || g_vp_frame == f) return;  // (the frame's first scene draw)
     if (u[12] != 0 || u[13] != 0 || u[14] != 0 || u[15] != 1 || u[30] != -1 || u[31] != 0) return;  // perspective
+    research_camera(f,u);
     memcpy(g_vp, u + 32, sizeof g_vp);
     g_vp_frame = f;
 }
@@ -157,6 +159,7 @@ static bool heap_ptr(uint64_t p) { return p >= HEAP_BASE && p + 0x40 <= HEAP_BAS
 
 // Current camera zone's box; false when there is none (title, overworld, loading).
 static bool current_zone(float lo[3], float hi[3], uint32_t *id) {
+    if (!title_is_las()) return false;
     uint64_t o = LD64(GA_SDK_SYSTEM_OBJECT);
     if (!heap_ptr(o)) return false;
     uint64_t z = LD64(o + 0x680);
@@ -264,6 +267,7 @@ void widescreen_present_crop(uint64_t frame, double shape, float crop[4], double
 
 // Current level name for logs ("-" when not in play).
 const char *game_level_name(void) {
+    if (!title_is_las()) return "-";
     extern int game_in_play(void);
     uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     return game_in_play() && ps && *(const char *)(uintptr_t)ps ? (const char *)(uintptr_t)ps : "-";

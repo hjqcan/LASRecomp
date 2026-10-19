@@ -12,13 +12,21 @@ import re
 import struct
 import sys
 import time
+from array import array
 from collections import Counter
 
+# Catalog inspection and extracted-folder preparation do not need to initialize
+# the recompiler or Unicorn; the setup helper has its own argument parser.
+if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == '--game-setup':
+    from game_setup import main as setup_main
+    sys.exit(setup_main(sys.argv[2:]))
+
 import unicorn as uc
+import capstone
 from unicorn import arm64_const as A
 
 from analyze import eh_frame_functions
-from lifter import Insn, Lifter, Unsupported, bits, emit_asm_batch, hx, sext
+from lifter import Insn, Lifter, Unsupported, bits, decode_bit_masks, emit_asm_batch, hx, sext
 from nso import Nso, R_AARCH64_RELATIVE
 
 SCRATCH_MEM = 0x7300000000
@@ -38,6 +46,14 @@ def sanitize(sym):
 
 
 class Module:
+    # Scan and emission revisit instructions, but retaining every lifted C string
+    # costs several GB on large modules. Eviction only repeats pure decoding.
+    LIFT_CACHE_LIMIT = 65536
+    # Every-instruction dispatch produces a very dense CFG. LLVM's optimization
+    # of its thousands of incoming edges can exhaust memory on an otherwise
+    # small C file. Keep that rare fallback exact, with bounded compilation.
+    MAX_OPTIMIZED_DISPATCH_INSNS = 8192
+
     def __init__(self, name, path, base, simd='asm'):
         self.name = name
         self.nso = Nso(path)
@@ -45,7 +61,9 @@ class Module:
         n = self.nso
         self.lo = base + n.text[0]
         self.hi = base + n.text[0] + n.text[1]
-        self.words = struct.unpack(f'<{n.text[1] // 4}I', bytes(n.image[n.text[0]:n.text[0] + n.text[1]]))
+        self.words = array('I', n.image[n.text[0]:n.text[0] + n.text[1]])
+        if sys.byteorder != 'little':
+            self.words.byteswap()
         self.lifter = Lifter(base, simd)
         self.cache = {}
         self.stats = Counter()
@@ -63,24 +81,73 @@ class Module:
             try:
                 ins = self.lifter.lift(self.word(a), a)
             except Unsupported as e:
-                self.stats['unsupported'] += 1
+                # Preserve the unique-address diagnostic when a cache miss
+                # decodes an unsupported instruction again after eviction.
+                if not hasattr(self, '_unsupported'):
+                    self._unsupported = bytearray((len(self.words) + 7) // 8)
+                index = (a - self.lo) // 4
+                byte, bit = index // 8, 1 << (index % 8)
+                if not self._unsupported[byte] & bit:
+                    self._unsupported[byte] |= bit
+                    self.stats['unsupported'] += 1
                 ins = Insn('trap', f'rt_udf(c, {hx(a)}); /* {e} */')
+            if len(self.cache) >= self.LIFT_CACHE_LIMIT:
+                self.cache.clear()
             self.cache[a] = ins
         return ins
 
     def boundaries(self):
         n, b = self.nso, self.base
-        starts = set()
-        for a in eh_frame_functions(n):
-            starts.add(b + a)
-        for name, info, shndx, value, size in n.syms:
-            if shndx and (info & 0xF) == 2:
-                starts.add(b + value)
+        starts = set(self.function_entries())
         for off, typ, sym, add in n.relocs:
             if typ == R_AARCH64_RELATIVE:
                 starts.add(b + add)
         starts = sorted(a for a in starts if self.in_text(a))
         return starts
+
+    def function_entries(self):
+        if not hasattr(self, '_function_entries'):
+            starts = {self.base + a for a in eh_frame_functions(self.nso)}
+            starts.update(self.base + value for name, info, shndx, value, size in self.nso.syms
+                          if shndx and (info & 0xF) == 2)
+            self._function_entries = sorted(a for a in starts if self.in_text(a))
+        return self._function_entries
+
+    def nonlocal_jump_targets(self):
+        """Exported setjmp/longjmp functions and ordinary AArch64 PLT entries for them."""
+        if hasattr(self, '_nonlocal_targets'):
+            return self._nonlocal_targets
+        names = ({'setjmp', '_setjmp', '__setjmp', 'sigsetjmp', '__sigsetjmp'},
+                 {'longjmp', '_longjmp', '__longjmp', 'siglongjmp'})
+        syms = getattr(self.nso, 'syms', [])
+        targets = [{self.base + value for name, info, shndx, value, size in syms
+                    if shndx and name in group} for group in names]
+        got = [{self.base + off for off, typ, sym, add in getattr(self.nso, 'relocs', [])
+                if (sym < len(syms) and syms[sym][0] in names[k]) or
+                   (typ == R_AARCH64_RELATIVE and self.base + add in targets[k])} for k in range(2)]
+        if any(got):
+            for i in range(len(self.words) - 3):
+                adrp, ldr, add, br = self.words[i:i+4]
+                if ((adrp & 0x9f00001f) != 0x90000010 or (ldr & 0xffc003ff) != 0xf9400211 or
+                        (add & 0xffc003ff) != 0x91000210 or br != 0xd61f0220):
+                    continue
+                pc = self.lo + i * 4
+                imm = ((adrp >> 5) & 0x7ffff) << 2 | ((adrp >> 29) & 3)
+                addr = (pc & ~0xfff) + sext(imm, 21) * 4096 + ((ldr >> 10) & 0xfff) * 8
+                for k in range(2):
+                    if addr in got[k]:
+                        targets[k].add(pc)
+        self._nonlocal_targets = tuple(targets)
+        return self._nonlocal_targets
+
+    def materialization_start(self, fragment):
+        # A table base can be hoisted before a loop's fragment. Replaying only
+        # from that fragment leaves its base pointing into zeroed scratch space,
+        # incorrectly collapsing every case onto the first target.
+        entries = self.function_entries()
+        i = bisect.bisect_right(entries, fragment) - 1
+        entry = entries[i] if i >= 0 else self.lo
+        return max(entry, fragment - 0x1000)
 
     # ------------------------------------------------------------ jump tables
 
@@ -100,7 +167,121 @@ class Module:
         r = self._jump_table_fallthrough(br_pc, entry, end)
         if r is None:
             r = self._jump_table_taken(br_pc, entry, end)
+        if r is None:
+            r = self._jump_table_masked(br_pc, entry)
         return r
+
+    def _jump_table_masked(self, br_pc, entry):
+        plan = self._masked_table_plan(br_pc, entry)
+        if plan is None:
+            return None
+        owner, end, _, _, _, _ = plan
+        branches = []
+        for pc in range(owner, end, 4):
+            if (self.word(pc) & 0xFFFFFC1F) == 0xD61F0000:
+                branches.append(pc)
+                if len(branches) > 16:
+                    return None  # bound the all-branches proof and its emulation work
+        _, incoming = self.code_references()
+        plans, tables = {}, {}
+        for branch in branches:
+            local = plan if branch == br_pc else self._masked_table_plan(branch, owner)
+            if local is None or local[:2] != (owner, end):
+                return None  # an unknown peer branch could bypass any table's setup
+            _, _, start, mask, reg, count = local
+            resolved = self._slice_table(branch, owner, mask + 4, [reg], count,
+                                         slice_start=start, with_start=True)
+            if resolved is None:
+                return None
+            targets, first_dependency = resolved
+            start = min(mask, first_dependency)
+            if bisect.bisect_right(incoming, start) != bisect.bisect_right(incoming, branch):
+                return None
+            discovered = getattr(self, '_discovery_entries', ())
+            if bisect.bisect_right(discovered, start) != bisect.bisect_right(discovered, branch):
+                return None
+            plans[branch] = (owner, end, start, mask, reg, count)
+            tables[branch] = targets
+        # Check the complete group before accepting any member. This includes
+        # self-edges: a case cannot re-enter after the mask or address setup.
+        for targets in tables.values():
+            for branch, local in plans.items():
+                if any(local[2] < target <= branch for target in targets):
+                    return None
+        return tables.get(br_pc)
+
+    def _masked_table_plan(self, br_pc, entry):
+        """A low-bit AND bounds a relative table even without a CMP/branch guard.
+
+        Scheduling may put unrelated SIMD work between target calculation and
+        BR. Verify real GPR writes, not instruction destination bit fields,
+        which alias vector registers. Return a local proof to be checked against
+        every incoming edge before using its targets.
+        """
+        target_reg = bits(self.word(br_pc), 5, 5)
+        start = max(self.materialization_start(entry), br_pc - 64 * 4)
+        candidate = None
+        for pc in range(br_pc - 12, start - 1, -4):
+            arithmetic = self.relative_table_arithmetic(pc)
+            if arithmetic is not None and arithmetic[0] == target_reg:
+                candidate = (pc, arithmetic[1])
+                break
+        if candidate is None:
+            return None
+        origin_pc, index_reg = candidate
+        md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+        md.detail = True
+        instructions = list(md.disasm(bytes(self.nso.image[start-self.base:br_pc-self.base]), start))
+        if not instructions or len(instructions) * 4 != br_pc - start:
+            return None
+
+        def writes(ins, reg):
+            names = {f'x{reg}', f'w{reg}', *({29: ('fp',), 30: ('lr',)}.get(reg, ()))}
+            return any(ins.reg_name(r) in names for r in ins.regs_access()[1])
+
+        def barrier(ins):
+            return self.lift(ins.address).kind not in ('op', 'asm')
+
+        for ins in instructions:
+            if ins.address > origin_pc + 8 and (barrier(ins) or writes(ins, target_reg)):
+                return None
+        for ins in reversed(instructions):
+            if ins.address >= origin_pc:
+                continue
+            if barrier(ins):
+                return None
+            if not writes(ins, index_reg):
+                continue
+            word = self.word(ins.address)
+            if (word & 0x7F800000) != 0x12000000 or (word & 31) != index_reg:
+                return None  # the reaching definition must be AND (immediate)
+            size = 64 if word >> 31 else 32
+            if size == 32 and bits(word, 22, 1):
+                return None
+            try:
+                mask, _ = decode_bit_masks(bits(word, 22, 1), bits(word, 10, 6), bits(word, 16, 6), size, True)
+            except Unsupported:
+                return None
+            if mask > 4095 or mask & (mask + 1):
+                return None
+            if ins.address < entry:
+                return None  # an independently entered fragment can bypass AND
+            entries = self.function_entries()
+            owner = bisect.bisect_right(entries, br_pc) - 1
+            if owner < 0 or ins.address < entries[owner]:
+                return None
+            end = entries[owner + 1] if owner + 1 < len(entries) else self.hi
+            # Every dependency must be defined in this straight-line segment,
+            # including the table address. An entry at AND that skips an earlier
+            # ADR/ADRP is no safer than an entry that skips the mask itself.
+            straight = max(start, entry, entries[owner])
+            for previous in instructions:
+                if previous.address >= ins.address:
+                    break
+                if barrier(previous):
+                    straight = max(straight, previous.address + 4)
+            return entries[owner], end, straight, ins.address, index_reg, mask + 1
+        return None
 
     def _index_regs(self, start, at, idx):
         """The index register plus registers holding the same value in start..at: sources it was
@@ -153,7 +334,7 @@ class Module:
                 for r in range(29):
                     mu.reg_write(A.UC_ARM64_REG_X0 + r, SCRATCH_MEM + 0x80000)
                 mu.reg_write(A.UC_ARM64_REG_SP, SCRATCH_MEM + 0x80000)
-                a2 = entry
+                a2 = self.materialization_start(entry)
                 while a2 < start:
                     w2 = self.word(a2)
                     if (w2 & 0x1F000000) == 0x10000000 or (w2 & 0xFF800000) == 0x91000000:
@@ -166,7 +347,7 @@ class Module:
                     return None
                 t = mu.reg_read(A.UC_ARM64_REG_X0 + rn if rn < 29 else
                                 (A.UC_ARM64_REG_X29 if rn == 29 else A.UC_ARM64_REG_X30))
-                if not (entry <= t < end) or t % 4:
+                if not self.in_text(t):
                     return None
                 targets.append(t)
         except uc.UcError:
@@ -175,18 +356,22 @@ class Module:
 
     def _jump_table_taken(self, br_pc, entry, end):
         """Form: cmp idx, #N ; b.ls/b.lo table ... table: <address math> ; br"""
-        # start of the block holding the br
+        # Start of the straight-line block holding the br. A taken guard can
+        # precede a full stack-frame prologue; keep the search within the same
+        # 64-step budget as _emulate_table instead of truncating after 12 ops.
         s = br_pc
-        while s - 4 >= entry and br_pc - (s - 4) <= 4 * 12 and self.lift(s - 4).kind in ('op', 'asm'):
+        while s - 4 >= entry and br_pc - (s - 4) < 4 * 64 and self.lift(s - 4).kind in ('op', 'asm'):
             s -= 4
-        for g in range(entry, end, 4):
+        # Later discovery rounds split the table block from its earlier guard.
+        # Search back to the real function entry, not just this emitted fragment.
+        for g in range(self.materialization_start(entry), end, 4):
             w = self.word(g)
             if (w & 0xFF000010) != 0x54000000 or bits(w, 0, 4) not in (9, 3):
                 continue
             t = g + sext(bits(w, 5, 19), 19) * 4
             if t != s:
                 continue
-            cw = self.word(g - 4) if g - 4 >= entry else 0
+            cw = self.word(g - 4) if g - 4 >= self.lo else 0
             if (cw & 0x7F80001F) != 0x7100001F or bits(cw, 22, 1):
                 continue
             limit = bits(cw, 10, 12)
@@ -198,10 +383,17 @@ class Module:
 
     def _jump_table_fallthrough(self, br_pc, entry, end):
         rn = bits(self.word(br_pc), 5, 5)
-        # find the guarding b.hi / b.hs and its cmp, scanning backwards
+        # ADR can materialize its own table origin, splitting this fragment
+        # after its guard. Search inside the real function, as for taken guards;
+        # the bounded window and control-flow barriers still apply.
+        analysis_start = self.materialization_start(entry)
         a = br_pc - 4
         guard = cmp = None
-        while a >= entry and br_pc - a <= 4 * 16:
+        conditional_cmp = False
+        # Case-live setup can be scheduled between the guard and lookup.
+        # Keep discovery bounded, while retaining stricter adapter site limits.
+        distance = getattr(self, 'table_guard_distances', {}).get(br_pc, 63)
+        while a >= analysis_start and br_pc - a <= 4 * distance:
             w = self.word(a)
             if (w & 0xFF000010) == 0x54000000 and bits(w, 0, 4) in (8, 2):
                 guard = a
@@ -212,33 +404,70 @@ class Module:
         if guard is None:
             return None
         a = guard - 4
-        while a >= entry and guard - a <= 4 * 8:
+        while a >= analysis_start and guard - a <= 4 * 8:
             w = self.word(a)
             # SUBS (imm) with Rd = zr, i.e. CMP #imm
             if (w & 0x7F80001F) == 0x7100001F:
                 cmp = a
                 break
+            if (w & 0x7FE00C10) == 0x7A400800:  # CCMP (immediate)
+                # If its predicate is false, the selected NZCV must take the
+                # out-of-range branch; otherwise this is not a bound.
+                flags, cond = bits(w,0,4), bits(self.word(guard),0,4)
+                rejected = bool(flags & 2) and (cond == 2 or not (flags & 4))
+                if not rejected: return None
+                cmp = a
+                conditional_cmp = True
+                break
             if self.lift(a).kind != 'op':
-                return None
+                break
             a -= 4
+        if cmp is not None and cmp + 4 < guard:
+            # The linear fast path must use the last NZCV definition. Other
+            # arithmetic can overwrite flags without being a supported CMP.
+            md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+            md.detail = True
+            between = list(md.disasm(bytes(self.nso.image[cmp+4-self.base:guard-self.base]), cmp + 4))
+            if len(between) != (guard - cmp - 4) // 4 or any(
+                    any(ins.reg_name(r) == 'nzcv' for r in ins.regs_access()[1]) for ins in between):
+                return None
         if cmp is None:
-            return None
+            cmp = self._reaching_flags_definition(guard, entry)
+            if cmp is None: return None
+            w = self.word(cmp)
+            if (w & 0x7F80001F) == 0x7100001F:
+                pass
+            elif (w & 0x7FE00C10) == 0x7A400800:
+                flags, cond = bits(w,0,4), bits(self.word(guard),0,4)
+                if not (bool(flags & 2) and (cond == 2 or not (flags & 4))): return None
+                conditional_cmp = True
+            else:
+                return None
         w = self.word(cmp)
-        if bits(w, 22, 1):
+        if not conditional_cmp and bits(w, 22, 1):
             return None
-        limit = bits(w, 10, 12)
+        limit = bits(w,16,5) if conditional_cmp else bits(w, 10, 12)
         count = limit + 1 if bits(self.word(guard), 0, 4) == 8 else limit
         if count <= 0 or count > 4096:
             return None
         idx = bits(w, 5, 5)
+        if idx == 31:
+            return None  # SP/ZR is not a bounded table index register.
         # window start: back from cmp to the first control-flow instruction
         start = cmp
-        while start - 4 >= entry and cmp - (start - 4) <= 4 * 12 and self.lift(start - 4).kind in ('op', 'asm'):
+        while start - 4 >= analysis_start and cmp - (start - 4) <= 4 * 12 and self.lift(start - 4).kind in ('op', 'asm'):
             start -= 4
         idx_regs = self._index_regs(start, cmp, idx)
+        aliases, recomputed, projected = self._guard_index_values(entry, cmp, br_pc, idx)
+        if projected or recomputed:
+            # Seed only values proved equal to the bounded expression. Replaying
+            # an unknown object/source register can otherwise collapse every
+            # table entry onto the same target and silently omit valid cases.
+            return self._slice_table(br_pc, entry, cmp, aliases, count, recomputed)
+        if conditional_cmp:
+            aliases = self._surviving_index_aliases(entry, cmp, idx)
+            return self._slice_table(br_pc, entry, cmp, aliases, count)
         mu = self.emu()
-        targets = []
-
         def step_to(frm, to):
             # single-step: Unicorn's `until` is unreliable mid translation-block
             pc = frm
@@ -249,34 +478,422 @@ class Module:
                 pc = mu.reg_read(A.UC_ARM64_REG_PC)
             return False
 
+        def emulate(with_prefix):
+            targets = []
+            try:
+                for i in range(count):
+                    for r in range(29):
+                        mu.reg_write(A.UC_ARM64_REG_X0 + r, SCRATCH_MEM + 0x80000)
+                    mu.reg_write(A.UC_ARM64_REG_SP, SCRATCH_MEM + 0x80000)
+                    # Keep address materialization, but the retry excludes unrelated
+                    # object loads/stores before CMP: their pointers are not live in
+                    # this static-analysis emulator and can fault before the table.
+                    a2 = self.materialization_start(entry)
+                    replay_end = start if with_prefix else cmp
+                    while a2 < replay_end:
+                        w2 = self.word(a2)
+                        if (w2 & 0x1F000000) == 0x10000000 or (w2 & 0xFF800000) == 0x91000000:
+                            mu.emu_start(a2, 0, count=1)
+                        a2 += 4
+                    if with_prefix and not step_to(start, cmp):
+                        return None
+                    self._set_index(mu, idx_regs, i)
+                    if not step_to(cmp, br_pc):
+                        return None
+                    t = mu.reg_read(A.UC_ARM64_REG_X0 + rn if rn < 29 else
+                                    (A.UC_ARM64_REG_X29 if rn == 29 else A.UC_ARM64_REG_X30))
+                    if not self.in_text(t):
+                        return None
+                    targets.append(t)
+            except uc.UcError:
+                return None
+            return sorted(set(targets))
+
+        result = emulate(True) or emulate(False) or self._slice_table(br_pc, entry, cmp, idx_regs, count)
+        if result is not None: return result
+        aliases = self._surviving_index_aliases(entry, cmp, idx)
+        return self._slice_table(br_pc, entry, cmp, aliases, count)
+
+    def _reaching_flags_definition(self, guard, entry):
+        """Find the unique NZCV writer on every incoming control-flow path.
+
+        Two switch tables can share one CMP, with TBZ selecting the table.
+        A linear backwards scan then encounters the other table's case calls
+        even though they cannot reach this guard. Follow actual predecessors.
+        """
+        start = self.materialization_start(entry)
+        md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+        md.detail = True
+        insns = {i.address: i for i in md.disasm(bytes(self.nso.image[start-self.base:guard-self.base]),start)}
+        predecessors, successors = {}, {}
+        for pc in insns:
+            ins = self.lift(pc)
+            targets = []
+            if ins.kind in ('b', 'bcond'): targets.append(ins.target)
+            if ins.kind not in ('b', 'br', 'ret', 'trap'): targets.append(pc + 4)
+            successors[pc] = targets
+            for target in targets:
+                if start <= target <= guard: predecessors.setdefault(target, []).append(pc)
+        reachable, pending = set(), [start]
+        while pending:
+            pc = pending.pop()
+            if pc in reachable: continue
+            reachable.add(pc)
+            pending.extend(t for t in successors.get(pc, []) if start <= t <= guard)
+        todo, visited, definitions = [guard], set(), set()
+        while todo:
+            at = todo.pop()
+            if at in visited: continue
+            visited.add(at)
+            prev = [pc for pc in predecessors.get(at, []) if pc in reachable]
+            if not prev: return None  # NZCV may enter from outside this function/window
+            for pc in prev:
+                ins = insns[pc]
+                if ins.group(capstone.CS_GRP_CALL): return None
+                if any(ins.reg_name(r) == 'nzcv' for r in ins.regs_access()[1]):
+                    definitions.add(pc)
+                else:
+                    todo.append(pc)
+        return next(iter(definitions)) if len(definitions) == 1 else None
+
+    def _surviving_index_aliases(self, entry, at, idx):
+        """Copies in callee-saved registers can precede a call and the guard.
+
+        Track register versions so overwriting an argument or making a call
+        does not make its old copies disappear (or make its new value an alias).
+        """
+        md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+        md.detail = True
+        start = self.materialization_start(entry)
+        values = list(range(31))
+        for ins in md.disasm(bytes(self.nso.image[start-self.base:at-self.base]), start):
+            w = self.word(ins.address)
+            rd, source = w & 31, None
+            if (w & 0x7FE0FFE0) == 0x2A0003E0: source = bits(w,16,5)
+            elif (w & 0x7F800000) in (0x12000000,0x53000000,0x13000000): source = bits(w,5,5)
+            old = values[source] if source is not None and source < 31 else None
+            for reg in ins.regs_access()[1]:
+                name = ins.reg_name(reg)
+                name = {'fp':'x29','lr':'x30'}.get(name,name)
+                if name[:1] in ('w','x') and name[1:].isdigit():
+                    r = int(name[1:])
+                    if r < 31: values[r] = (ins.address,r)
+            if ins.group(capstone.CS_GRP_CALL):
+                for r in list(range(19)) + [30]: values[r] = (ins.address,r)
+            if old is not None and rd < 31: values[rd] = old
+        return [r for r in range(31) if values[r] == values[idx]]
+
+    def _guard_index_values(self, entry, cmp, br_pc, idx):
+        """Known copies and AND masks equal to the value tested by the guard.
+
+        Register versions distinguish values overwritten by calls or later
+        instructions. Identical masks can be recomputed from a callee-saved
+        source after the guard without treating that unmasked source as bounded.
+        """
+        md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+        md.detail = True
+        start = self.materialization_start(entry)
+        values = [('input', r) for r in range(31)]
+        aliases, recomputed, guarded, projected = [], {}, None, False
+        full = (1 << 64) - 1
+        instructions = list(md.disasm(bytes(self.nso.image[start-self.base:br_pc-self.base]), start))
+        block_starts = {start}
+        for ins in instructions:
+            flow = self.lift(ins.address)
+            if flow.kind in ('b', 'bcond'):
+                block_starts.add(flow.target)
+            if flow.kind in ('b', 'bcond', 'br', 'ret', 'trap'):
+                block_starts.add(ins.address + 4)
+
+        def masked(value, mask):
+            if value[0] == 'mask': value, mask = value[1], value[2] & mask
+            if mask == full: return value
+            return ('mask', value, mask)
+
+        for ins in instructions:
+            if ins.address <= cmp and ins.address in block_starts:
+                # Facts from one predecessor need not hold on another. Only
+                # keep value identities within a straight-line block; calls
+                # retain the ABI-preserved registers handled below.
+                values = [('block', ins.address, r) for r in range(31)]
+            w = self.word(ins.address)
+            if ins.address == cmp:
+                width = full if w >> 31 else 0xFFFFFFFF
+                guarded = masked(values[idx], width)
+                aliases = [r for r in range(31) if values[r] == guarded]
+                projected = guarded[0] == 'mask' and guarded[2] != width
+            rd, value = w & 31, None
+            source = bits(w, 5, 5)
+            if (w & 0x7FE0FFE0) == 0x2A0003E0:  # MOV register (unshifted ORR with zr)
+                source = bits(w, 16, 5)
+                if source < 31:
+                    value = masked(values[source], full if w >> 31 else 0xFFFFFFFF)
+            elif (w & 0x7F800000) == 0x12000000 and source < 31:  # AND immediate
+                size = 64 if w >> 31 else 32
+                try:
+                    if size == 32 and bits(w, 22, 1): raise Unsupported('reserved mask')
+                    mask, _ = decode_bit_masks(bits(w, 22, 1), bits(w, 10, 6), bits(w, 16, 6), size, True)
+                    value = masked(values[source], mask)
+                except Unsupported:
+                    pass
+            for reg in ins.regs_access()[1]:
+                name = {'fp': 'x29', 'lr': 'x30'}.get(ins.reg_name(reg), ins.reg_name(reg))
+                if name[:1] in ('w', 'x') and name[1:].isdigit() and int(name[1:]) < 31:
+                    values[int(name[1:])] = ('write', ins.address, int(name[1:]))
+            if ins.group(capstone.CS_GRP_CALL):
+                for r in list(range(19)) + [30]: values[r] = ('call', ins.address, r)
+            if value is not None and rd < 31:
+                values[rd] = value
+                if guarded is not None and ins.address > cmp and value == guarded:
+                    recomputed[ins.address] = rd
+        return aliases, recomputed, projected
+
+    def _slice_table(self, br_pc, entry, cmp, idx_regs, count, index_defs=None, slice_start=None,
+                     with_start=False):
+        """Evaluate only definitions used by the table target.
+
+        Object reads can be scheduled between the guard and the lookup. They
+        cannot execute against a static memory image, and skipping only the
+        pre-guard prefix does not help. A backward register slice excludes them
+        while retaining every dependency of the computed branch address.
+        """
+        md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+        md.detail = True
+        start = self.materialization_start(entry) if slice_start is None else slice_start
+        data = bytes(self.nso.image[start-self.base:br_pc-self.base])
+        instructions = list(md.disasm(data, start))
+        if not instructions or instructions[-1].address + 4 != br_pc:
+            return None
+
+        def register_name(ins, reg):
+            name = ins.reg_name(reg)
+            if name.startswith('w') and name[1:].isdigit(): return 'x' + name[1:]
+            return {'fp':'x29', 'lr':'x30', 'wsp':'sp'}.get(name, name)
+
+        rn = bits(self.word(br_pc), 5, 5)
+        needed = {f'x{rn}'}
+        seeds = {f'x{r}' for r in idx_regs}
+        index_defs = index_defs or {}
+        selected = []
+        for ins in reversed(instructions):
+            if ins.address < cmp:
+                needed.difference_update(seeds)
+            reads, writes = ins.regs_access()
+            written = {register_name(ins, r) for r in writes}
+            if not written.intersection(needed):
+                continue
+            if ins.address in index_defs:
+                needed.difference_update(written)
+                selected.append(ins.address)
+                continue
+            if any(ins.group(g) for g in (capstone.CS_GRP_JUMP, capstone.CS_GRP_CALL, capstone.CS_GRP_RET)):
+                return None
+            needed.difference_update(written)
+            needed.update(register_name(ins, r) for r in reads)
+            needed.difference_update({'xzr', 'wzr'})
+            selected.append(ins.address)
+        if needed - seeds:
+            return None  # still depends on an unknown live object or register
+        selected.reverse()
+        mu = self.emu()
+        targets = []
         try:
             for i in range(count):
                 for r in range(29):
                     mu.reg_write(A.UC_ARM64_REG_X0 + r, SCRATCH_MEM + 0x80000)
                 mu.reg_write(A.UC_ARM64_REG_SP, SCRATCH_MEM + 0x80000)
-                # replay address materialization (ADRP/ADR/ADD-imm) from the function entry, so table
-                # bases computed before loops or branches are known
-                a2 = entry
-                while a2 < start:
-                    w2 = self.word(a2)
-                    if (w2 & 0x1F000000) == 0x10000000 or (w2 & 0xFF800000) == 0x91000000:
-                        mu.emu_start(a2, 0, count=1)
-                    a2 += 4
-                if not step_to(start, cmp):
-                    return None
                 self._set_index(mu, idx_regs, i)
-                if not step_to(cmp, br_pc):
-                    return None
-                t = mu.reg_read(A.UC_ARM64_REG_X0 + rn if rn < 29 else
-                                (A.UC_ARM64_REG_X29 if rn == 29 else A.UC_ARM64_REG_X30))
-                if not (entry <= t < end) or t % 4:
-                    return None
-                targets.append(t)
+                seeded = False
+                for pc in selected:
+                    if pc >= cmp and not seeded:
+                        self._set_index(mu, idx_regs, i)
+                        seeded = True
+                    if pc in index_defs:
+                        self._set_index(mu, [index_defs[pc]], i)
+                    else:
+                        mu.emu_start(pc, 0, count=1)
+                reg = A.UC_ARM64_REG_X0 + rn if rn < 29 else (A.UC_ARM64_REG_X29 if rn == 29 else A.UC_ARM64_REG_X30)
+                target = mu.reg_read(reg)
+                if not self.in_text(target): return None
+                targets.append(target)
         except uc.UcError:
             return None
-        return sorted(set(targets))
+        result = sorted(set(targets))
+        # Callers proving incoming edges need the first actual dependency, not
+        # unrelated work at the beginning of the straight-line search window.
+        return (result, selected[0]) if with_start else result
 
     # ------------------------------------------------------------ functions
+
+    def relative_table_arithmetic(self, pc):
+        """Register pair for an adjacent ADR/load/ADD relative-table calculation."""
+        if pc + 12 > self.hi:
+            return None
+        word, load, add = (self.word(pc + i * 4) for i in range(3))
+        base = word & 31
+        if (word & 0x9F000000) != 0x10000000 or base == 31:
+            return None
+        if (load & 0xFFE0EC00) not in (0x38606800, 0x78606800):
+            return None
+        offset, index = load & 31, bits(load, 16, 5)
+        if offset == 31 or base in (offset, bits(load, 5, 5), index):
+            return None
+        if ((add & 0xFFE0FC00) != 0x8B000800 or bits(add, 5, 5) != base or
+                bits(add, 16, 5) != offset or (add & 31) != base):
+            return None
+        return base, index
+
+    def relative_table_origin(self, pc, target):
+        """An ADR consumed only by a local byte/halfword relative-table branch.
+
+        Its code address is an arithmetic origin, not an independently callable
+        entry. Keep other references to that address: symbols, relocations, BLs
+        and separate callback materializations still create their own boundaries.
+        No table length or range of valid indices is inferred here.
+        """
+        if pc + 16 > self.hi:
+            return None
+        arithmetic = self.relative_table_arithmetic(pc)
+        if arithmetic is None:
+            return None
+        base, _ = arithmetic
+        branch = self.word(pc + 12)
+        br_pc = pc + 12
+        # A return-value clear can be scheduled between the target calculation
+        # and its branch. It has no side effects and must not overwrite Xbase.
+        if (branch & 0x7FFFFFE0) == 0x2A1F03E0 and (branch & 31) != base:
+            br_pc += 4
+            if br_pc + 4 > self.hi:
+                return None
+            branch = self.word(br_pc)
+        if branch != (0xD61F0000 | (base << 5)):
+            return None
+        entries = self.function_entries()
+        i = bisect.bisect_right(entries, pc) - 1
+        if i < 0:
+            return None
+        end = entries[i + 1] if i + 1 < len(entries) else self.hi
+        if not (entries[i] <= target < end and br_pc + 4 <= end):
+            return None
+        return br_pc, entries[i], end
+
+    def relative_table_base(self, pc, target):
+        """Whether this local arithmetic origin belongs to an unresolved table."""
+        origin = self.relative_table_origin(pc, target)
+        return origin is not None and self.jump_table(*origin) is None
+
+    def code_references(self):
+        """Raw address references and incoming edges, without resolving tables.
+
+        Build this inventory first: a peer table's setup must also be protected
+        from callbacks, relocations and branches in other functions. Keeping
+        table emulation out of this pass avoids recursive proof dependencies.
+        Module instructions and relocations are immutable during discovery.
+        """
+        if (getattr(self, '_references_words', None) is self.words and
+                getattr(self, '_references_relocs', None) is self.nso.relocs):
+            return self._references
+        references, adrp_regs, incoming = {}, {}, set()
+        for i, w in enumerate(self.words):
+            pc = self.lo + i * 4
+            if (w & 0x9F000000) == 0x10000000:  # ADR
+                imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
+                target = pc + imm
+                if self.in_text(target):
+                    references[pc] = target
+            elif (w & 0x9F000000) == 0x90000000:  # ADRP
+                imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
+                adrp_regs[w & 31] = ((pc & ~0xFFF) + (imm << 12), i)
+            elif (w & 0xFFC00000) == 0x91000000:  # ADD (imm, 64-bit, no shift)
+                rn = (w >> 5) & 31
+                if rn in adrp_regs and i - adrp_regs[rn][1] <= 8:
+                    target = adrp_regs[rn][0] + ((w >> 10) & 0xFFF)
+                    if self.in_text(target):
+                        references[pc] = target
+            target = None
+            if (w & 0x7C000000) == 0x14000000:  # B / BL
+                target = pc + sext26(w) * 4
+            elif ((w & 0xFF000010) == 0x54000000 or
+                  (w & 0x7E000000) == 0x34000000):  # B.cond / CBZ / CBNZ
+                target = pc + sext(bits(w, 5, 19), 19) * 4
+            elif (w & 0x7E000000) == 0x36000000:  # TBZ / TBNZ
+                target = pc + sext(bits(w, 5, 14), 14) * 4
+            if target is not None and self.in_text(target):
+                incoming.add(target)
+        incoming.update(references.values())
+        incoming.update(self.base + add for off, typ, sym, add in self.nso.relocs
+                        if typ == R_AARCH64_RELATIVE and self.in_text(self.base + add))
+        self._references = references, sorted(incoming)
+        self._references_words, self._references_relocs = self.words, self.nso.relocs
+        return self._references
+
+    def code_address_targets(self):
+        """Materialized callbacks, excluding proven local table arithmetic origins."""
+        targets, origins, unresolved_branches = set(), [], {}
+        references, _ = self.code_references()
+        for pc, target in references.items():
+            origin = self.relative_table_origin(pc, target)
+            if origin is None:
+                targets.add(target)
+            else:
+                destinations = self.jump_table(*origin)
+                if destinations is None:
+                    unresolved_branches.setdefault(origin[1], []).append(origin[0])
+                else:
+                    origins.append((target, origin[1], destinations))
+        # A bounded table can split a nested unresolved table, even when the
+        # latter's own origin is excluded. Suppress that outer arithmetic origin
+        # when its known case span contains an unresolved branch in the same
+        # real function. Keep disjoint bounded tables partitioned as before;
+        # independent references above (or symbols, relocations and BLs) still
+        # create entries. This does not infer the unresolved table's length.
+        targets.update(target for target, entry, destinations in origins
+                       if not any(min(destinations) <= pc <= max(destinations)
+                                  for pc in unresolved_branches.get(entry, ())))
+        return targets
+
+    def discover_functions(self, starts):
+        """Partition text at independently referenced entries to a fixed point."""
+        start_set = set(starts)
+        self._discovery_entries = sorted(start_set)
+        start_set |= self.code_address_targets()
+        for i, w in enumerate(self.words):
+            if (w & 0xFC000000) == 0x94000000:
+                target = self.lo + i * 4 + sext26(w) * 4
+                if self.in_text(target):
+                    start_set.add(target)
+        scanned, rounds = {}, 0
+        while True:
+            rounds += 1
+            order, new = sorted(start_set), set()
+            self._discovery_entries = order
+            for i, entry in enumerate(order):
+                end = order[i + 1] if i + 1 < len(order) else self.hi
+                key = (entry, end)
+                if key not in scanned:
+                    scanned[key] = self.scan(entry, end)
+                new |= scanned[key][1] - start_set
+            if not new:
+                break
+            # A newly discovered case can independently enter a peer's setup.
+            # Recheck all fragments of that real function, including cached
+            # scans whose own entry/end did not change in this round.
+            owners = self.function_entries()
+            affected = {bisect.bisect_right(owners, target) - 1 for target in new}
+            ranges = sorted((owners[i], owners[i + 1] if i + 1 < len(owners) else self.hi)
+                            for i in affected if i >= 0)
+            range_starts = [start for start, end in ranges]
+            def unaffected(key):
+                i = bisect.bisect_left(range_starts, key[1]) - 1
+                return i < 0 or ranges[i][1] <= key[0]
+            scanned = {key: value for key, value in scanned.items() if unaffected(key)}
+            start_set |= new
+        entries = {}
+        for i, entry in enumerate(order):
+            end = order[i + 1] if i + 1 < len(order) else self.hi
+            labels, _, tables = scanned[(entry, end)]
+            entries[entry] = (end, labels, tables)
+        return entries, rounds
 
     def computed_target(self, br_pc, entry):
         """True if the br register comes from address arithmetic (a table) rather than a load."""
@@ -314,7 +931,8 @@ class Module:
                 jt = self.jump_table(a, entry, end)
                 if jt:
                     tables[a] = jt
-                    labels.update(jt)
+                    labels.update(t for t in jt if entry <= t < end)
+                    ext.update(t for t in jt if not entry <= t < end)
                     self.stats['jumptables'] += 1
                 elif self.computed_target(a, entry):
                     # unresolved table jump: allow jumping to any instruction of the function
@@ -327,7 +945,7 @@ class Module:
             ext.add(end)
         return labels, ext, tables
 
-    def render_single(self, ins, a, jump, refs):
+    def render_single(self, ins, a, jump, refs, return_code='return;', keep_frame=False):
         """C for one lifted instruction (no batching); used for patch variants."""
         k = ins.kind
         if k == 'asm':
@@ -347,9 +965,11 @@ class Module:
         if k == 'blr':
             return [f'c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; rt_dispatch(c);']
         if k == 'br':
+            if keep_frame:
+                return [f'c->pc = {ins.target}; rt_dispatch(c); {return_code}']
             return [f'c->pc = {ins.target}; __attribute__((musttail)) return rt_dispatch(c);']
         if k == 'ret':
-            return ['return;']
+            return [return_code]
         raise Unsupported(k)
 
     def emit_function(self, entry, end, labels, tables, hle):
@@ -358,7 +978,24 @@ class Module:
             out.append(f'    {sanitize(hle[entry])}(c);')
             out.append('}')
             return out
+        if tables and (end - entry) // 4 > self.MAX_OPTIMIZED_DISPATCH_INSNS:
+            out.insert(0, '__attribute__((optnone))')
         out.append(f'    FN_ENTER({hx(entry)});')
+        setjmps, longjmps = self.nonlocal_jump_targets()
+        checkpoints = {a for a in range(entry, end, 4) if setjmps and
+                       self.lift(a).kind == 'bl' and self.lift(a).target in setjmps}
+        return_code = 'return;'
+        if checkpoints:
+            return_code = 'rt_guest_jump_leave(jump_scope); return;'
+            out.append('    RtGuestJumpScope *const jump_scope = rt_guest_jump_enter(c);')
+            out.append('    if (setjmp(jump_scope->host)) {')
+            cases = ' '.join(f'case {hx(a+4)}: goto L_{a+4:x};' for a in sorted(checkpoints))
+            out.append(f'        switch (c->pc) {{ {cases} default: rt_udf(c, c->pc); }}')
+            out.append('    }')
+            labels = set(labels) | {a + 4 for a in checkpoints}
+        elif entry in longjmps:
+            # Most implementations end with BR LR; RET LR has the same nonlocal semantics here.
+            return_code = 'c->pc = c->x[30]; __attribute__((musttail)) return rt_dispatch(c);'
         batch = []
         refs = set()
 
@@ -371,8 +1008,12 @@ class Module:
             if entry <= t < end:
                 return f'goto L_{t:x};'
             if not self.in_text(t):
-                return f'c->pc = {hx(t)}; __attribute__((musttail)) return rt_dispatch(c);'
+                call = f'c->pc = {hx(t)}; '
+                return call + ('rt_dispatch(c); ' + return_code if checkpoints else
+                               '__attribute__((musttail)) return rt_dispatch(c);')
             refs.add(t)
+            if checkpoints:
+                return f'{fname(t)}(c); {return_code}'
             return f'__attribute__((musttail)) return {fname(t)}(c);'
 
         # Functions with jump tables also get the all-instruction fallback: a table whose emulation
@@ -408,9 +1049,9 @@ class Module:
                 first = True
                 for w in RANDO_CODE[a - self.base]:
                     v = self.lifter.lift(w, a)
-                    out.append(f'    {"if" if first else "else if"} (rw == {hx(w)}) {{ ' + ' '.join(self.render_single(v, a, jump, refs)) + ' }')
+                    out.append(f'    {"if" if first else "else if"} (rw == {hx(w)}) {{ ' + ' '.join(self.render_single(v, a, jump, refs, return_code, bool(checkpoints))) + ' }')
                     first = False
-                out.append('    else { ' + ' '.join(self.render_single(ins, a, jump, refs)) + ' } }')
+                out.append('    else { ' + ' '.join(self.render_single(ins, a, jump, refs, return_code, bool(checkpoints))) + ' } }')
                 last = 'op'
                 continue
             if a in HOOKS:  # hook site (tools/patches.py HOOKS): the runtime decides, the instruction stays as it is
@@ -419,7 +1060,7 @@ class Module:
                 w = struct.unpack_from('<I', self.nso.image, a - self.base)[0]
                 if w != word:
                     raise ValueError(f'hook {a:#x}: instruction {w:#010x}, expected {word:#010x}')
-                body = ' '.join(self.render_single(ins, a, jump, refs))
+                body = ' '.join(self.render_single(ins, a, jump, refs, return_code, bool(checkpoints)))
                 jumps = ' '.join(f'else if (h_ == {k + 2}) goto L_{t:x};' for k, t in enumerate(targets))
                 out.append(f'    {{ int h_ = rt_hook(c, {hx(a)}); if (h_ == 0) {{ {body} }} {jumps} }}'
                            f'  /* {a:#x}: hook (runtime/hle/hooks.c) */')
@@ -452,6 +1093,8 @@ class Module:
                 out.append(f'    if ({ins.cond}) {{ {jump(ins.target)} }}')
             elif k == 'bl':
                 t = ins.target
+                if a in checkpoints:
+                    out.append(f'    rt_guest_jump_mark(jump_scope, c->x[0], c->sp, {hx(a+4)});')
                 if self.in_text(t):
                     refs.add(t)
                     out.append(f'    c->x[30] = {hx(a + 4)}; {fname(t)}(c);')
@@ -465,28 +1108,33 @@ class Module:
                     out.append(f'    c->pc = {ins.target}; goto L_dispatch;')
                     continue
                 if jt:
-                    cases = ' '.join(f'case {hx(t)}: goto L_{t:x};' for t in jt)
+                    cases = ' '.join(f'case {hx(t)}: {jump(t)}' for t in jt)
                     out.append(f'    switch ({ins.target}) {{ {cases} default: break; }}')
                     out.append(f'    c->pc = {ins.target}; goto L_dispatch;')
                     continue
-                out.append(f'    c->pc = {ins.target}; __attribute__((musttail)) return rt_dispatch(c);')
+                tail = 'rt_dispatch(c); ' + return_code if checkpoints else '__attribute__((musttail)) return rt_dispatch(c);'
+                out.append(f'    c->pc = {ins.target}; {tail}')
             elif k == 'ret':
-                out.append('    return;')
+                out.append('    ' + return_code)
             last = k
         flush()
+        if end - 4 in checkpoints:
+            out.append(f'L_{end:x}:;')
         if last not in ('b', 'br', 'ret', 'trap'):
             out.append('    ' + jump(end) if end < self.hi else f'    rt_udf(c, {hx(end)});')
         if all_labels:
             out.append('L_dispatch:')
             cases = ' '.join(f'case {hx(t)}: goto L_{t:x};' for t in range(entry, end, 4))
             out.append(f'    switch (c->pc) {{ {cases} default: break; }}')
-            out.append('    __attribute__((musttail)) return rt_dispatch(c);')
+            out.append('    rt_dispatch(c); ' + return_code if checkpoints else '    __attribute__((musttail)) return rt_dispatch(c);')
         out.append('}')
         self._refs = refs
         return out
 
 
 from patches import HOOKS, PATCHES
+from game_versions import game_version, patch_table, hook_table
+from rando_profiles import validate_catalog
 
 import json as _json
 import os as _os
@@ -510,22 +1158,57 @@ def write_if_changed(path, text):
 
 
 def main():
+    global PATCHES, HOOKS, RANDO_CODE
     ap = argparse.ArgumentParser()
     ap.add_argument('name')
     ap.add_argument('nso')
     ap.add_argument('base', type=lambda s: int(s, 0))
     ap.add_argument('outdir')
     ap.add_argument('--hle')
+    ap.add_argument('--profile', choices=('las', 'generic'), default='las',
+                    help='generic never applies Link\'s Awakening address patches')
+    ap.add_argument('--adapter', help='Reviewed title adapter selected by the build planner')
+    ap.add_argument('--release', help='Reviewed adapter release')
+    ap.add_argument('--adapter-id', help='Expected code identity; rejects mismatched helper/runtime packages')
     ap.add_argument('--chunk', type=int, default=1500)  # functions per file at most
     ap.add_argument('--chunk-bytes', type=int, default=1500000)  # and about this much C (even compile times)
+    ap.add_argument('--chunk-map', help='JSON list of fixed chunk start addresses for incremental regeneration')
     ap.add_argument('--big-fn', type=int, default=100000)  # bytes of C from which a function gets its own file
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--simd', choices=('asm', 'c'),
                     default='asm' if platform.machine().lower() in ('arm64', 'aarch64') else 'c')
     args = ap.parse_args()
 
+    if args.profile == 'generic':
+        HOOKS.clear()
+        PATCHES.clear()
+        RANDO_CODE.clear()
+
     t0 = time.time()
     m = Module(args.name, args.nso, args.base, args.simd)
+    if args.adapter or args.release or args.adapter_id:
+        if not (args.adapter and args.release and args.adapter_id):
+            ap.error('--adapter, --release and --adapter-id must be supplied together')
+        from game_catalog import get_game, code_identity
+        from adapter_patches import apply_instruction_patches
+        game = get_game(args.adapter)
+        release = next((r for r in game.releases if r.version == args.release), None)
+        expected = next((item for item in release.modules if item.name == args.name), None) if release else None
+        if not expected or expected.build_id != m.nso.build_id_full or expected.base != args.base or args.profile != game.generator_profile:
+            ap.error('The module does not match the reviewed adapter plan')
+        if code_identity(game, release) != args.adapter_id:
+            ap.error('The generator and runtime have different adapter/code-generation inputs; update them together')
+        apply_instruction_patches(m, release)
+        if game.id == 'pokemon_za':
+            from pokemon_za import configure
+            configure(m)
+    if args.name == "main" and args.profile == 'las':
+        m.game_version = game_version(m.nso.build_id)
+        HOOKS = hook_table(HOOKS, m)
+        PATCHES = patch_table(PATCHES, m.game_version)
+        RANDO_CODE = validate_catalog(m.nso.image, m.nso.build_id, RANDO_CODE)
+        print(f"Randomizer: {len(RANDO_CODE)} validated patch sites", file=sys.stderr)
+        print(f"Game version: {m.game_version}", file=sys.stderr)
     starts = m.boundaries()
     hle = {}
     if args.hle and os.path.exists(args.hle):
@@ -534,56 +1217,7 @@ def main():
             if shndx and name in want:
                 hle[args.base + value] = name
 
-    # Partition text into functions; any branch/call target outside its function becomes a new
-    # boundary (splitting the containing function) until a fixpoint is reached.
-    start_set = set(starts)
-    for i, w in enumerate(m.words):
-        if (w & 0xFC000000) == 0x94000000:
-            t = m.lo + i * 4 + sext26(w) * 4
-            if m.in_text(t):
-                start_set.add(t)
-    # Code addresses materialized in registers (callbacks, vtables built at runtime): ADR, or
-    # ADRP followed shortly by ADD on the same register.
-    adrp_regs = {}
-    for i, w in enumerate(m.words):
-        pc = m.lo + i * 4
-        if (w & 0x9F000000) == 0x10000000:  # ADR
-            imm = ((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3)
-            if imm & (1 << 20):
-                imm -= 1 << 21
-            if m.in_text(pc + imm):
-                start_set.add(pc + imm)
-        elif (w & 0x9F000000) == 0x90000000:  # ADRP
-            imm = ((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3)
-            if imm & (1 << 20):
-                imm -= 1 << 21
-            adrp_regs[w & 31] = ((pc & ~0xFFF) + (imm << 12), i)
-        elif (w & 0xFFC00000) == 0x91000000:  # ADD (imm, 64-bit, no shift)
-            rn, rd = (w >> 5) & 31, w & 31
-            if rn in adrp_regs and i - adrp_regs[rn][1] <= 8:
-                t = adrp_regs[rn][0] + ((w >> 10) & 0xFFF)
-                if m.in_text(t):
-                    start_set.add(t)
-    scanned = {}
-    rounds = 0
-    while True:
-        rounds += 1
-        order = sorted(start_set)
-        new = set()
-        for i, a in enumerate(order):
-            end = order[i + 1] if i + 1 < len(order) else m.hi
-            key = (a, end)
-            if key not in scanned:
-                scanned[key] = m.scan(a, end)
-            new |= scanned[key][1] - start_set
-        if not new:
-            break
-        start_set |= new
-    entries = {}
-    for i, a in enumerate(order):
-        end = order[i + 1] if i + 1 < len(order) else m.hi
-        labels, ext, tables = scanned[(a, end)]
-        entries[a] = (end, labels, tables)
+    entries, rounds = m.discover_functions(starts)
     print(f'{args.name}: {len(starts)} boundaries, {len(entries)} functions, {rounds} rounds, {dict(m.stats)}, '
           f'{time.time() - t0:.0f}s', file=sys.stderr)
 
@@ -591,12 +1225,21 @@ def main():
     order = sorted(entries)
     if args.limit:
         order = order[:args.limit]
+    chunk_starts = []
+    if args.chunk_map:
+        chunk_starts = [int(a, 0) if isinstance(a, str) else a for a in _json.load(open(args.chunk_map))]
+        if not chunk_starts or chunk_starts != sorted(set(chunk_starts)) or chunk_starts[0] != order[0]:
+            raise ValueError('chunk map must be sorted and start at the first generated function')
+        if not all(m.in_text(a) for a in chunk_starts):
+            raise ValueError('chunk map address outside this module')
     nchunks = 0
     ci = 0
     pending = None  # (address, lines, refs) of a big function that starts the next file
     while ci < len(order) or pending:
         body, refs, size, fns = [], set(), 0, []
-        while (pending or ci < len(order)) and len(fns) < args.chunk and size < args.chunk_bytes:
+        while (pending or ci < len(order)) and (chunk_starts or (len(fns) < args.chunk and size < args.chunk_bytes)):
+            if chunk_starts and fns and nchunks + 1 < len(chunk_starts) and order[ci] >= chunk_starts[nchunks + 1]:
+                break
             if pending:
                 a, lines, r = pending
                 pending = None
@@ -608,17 +1251,19 @@ def main():
                 r = getattr(m, '_refs', set())
                 m._refs = set()
             n = sum(len(l) + 1 for l in lines)
-            if n > args.big_fn and fns:  # (a big function gets a file of its own: they compile in parallel)
+            if not chunk_starts and n > args.big_fn and fns:  # (a big function gets a file of its own: they compile in parallel)
                 pending = (a, lines, r)
                 break
             body += lines
             size += n
             fns.append(a)
             refs |= r
-            if n > args.big_fn:
+            if not chunk_starts and n > args.big_fn:
                 break
         path = os.path.join(args.outdir, f'{args.name}_{nchunks:03d}.c')
         text = ['#include "cpu.h"\n' + ('#include "simd.h"\n' if m.lifter.sc else '')]
+        if any('RtGuestJumpScope' in line for line in body):
+            text.append('#include "guest_jump.h"\n')
         text += [f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs)]
         text += [f'void {sanitize(hle[a])}(Cpu *c);\n' for a in sorted(set(hle) & set(fns))]
         text += ['\n'.join(body), '\n']
@@ -642,6 +1287,8 @@ def main():
         f.write(',\n'.join(fname(a) for a in order))
         f.write('};\n')
         f.write(f'const uint64_t {args.name}_fn_count = {len(order)};\n')
+        f.write(f'const char {args.name}_build_id[] = "{m.nso.build_id}";\n')
+        f.write(f'const char {args.name}_build_id_full[] = "{m.nso.build_id_full}";\n')
         write_if_changed(os.path.join(args.outdir, f'{args.name}_table.c'), f.getvalue())
     print(f'{args.name}: wrote {nchunks} chunks, {time.time() - t0:.0f}s total', file=sys.stderr)
 

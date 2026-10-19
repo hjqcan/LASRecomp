@@ -28,7 +28,7 @@ extern __thread uint64_t g_blocked_ns;  // kernel.c: this thread's time blocked 
 static bool pace_slow;
 static uint64_t stat_pace_over;
 
-bool pace_is_slow(void) { return pace_slow; }
+bool pace_is_slow(void) { return title_is_las() && pace_slow; }
 uint64_t pace_frames_over(void) {
     uint64_t n = stat_pace_over;
     stat_pace_over = 0;
@@ -57,6 +57,15 @@ void pace_frame(void) {
     static int idx, nover, calm, backoff = 1;
     static uint64_t back_at;  // when frame pacing last went back to 60 (0: not yet)
     static double avg;  // busy ms, moving average (~20 frames)
+    // LAS interprets these inflated counters as a fixed-step frame-mode request.
+    // Other adapters must retain their actual timestamps and presentation intervals.
+    if (!title_is_las()) {
+        pace_slow = false; stat_pace_over = 0;
+        last = last_wait = back_at = 0;
+        idx = nover = calm = 0; backoff = 1; avg = 0;
+        memset(over, 0, sizeof over);
+        return;
+    }
     uint64_t now = plat_now_ns(), w = g_blocked_ns;
     uint64_t p = now - last, wt = w - last_wait;
     bool first = !last;
@@ -111,7 +120,7 @@ void pace_frame(void) {
 }
 
 uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *entry, uint64_t value) {
-    if (!pace_slow || !start_entry || (const uint8_t *)entry - (const uint8_t *)start_entry != 16) return value;
+    if (!title_is_las() || !pace_slow || !start_entry || (const uint8_t *)entry - (const uint8_t *)start_entry != 16) return value;
     uint64_t min = start_entry[1] + (uint64_t)((unsigned __int128)PACE_SLOW_NS * 384 / 625);
     return value < min ? min : value;
 }

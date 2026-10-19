@@ -5,6 +5,7 @@
 // rt_hook returns 0: run the site's own instruction, 1: the hook did it all, 2..: jump to the site's targets
 // (HOOKS[site][1], in order).
 #include "../game_addresses.h"
+#include "../gameversion.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -23,7 +24,7 @@ void rt_frame_job_finish(uint64_t job);
 void rt_owner_call_notify(Cpu *c, uint64_t obj);
 
 int rt_hook(Cpu *c, uint64_t site) {
-    switch (site) {
+    switch (game_canonical_address(site)) {
     case GA_MB_SEEN_SITE:  // MB_SEEN_SITE - ldr x8, [x21]: an actor seen
         rt_mb_seen(c->x[21]);
         return 0;

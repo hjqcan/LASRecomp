@@ -4,9 +4,11 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "hle.h"
 #include "platform.h"
+#include "kernel.h"
 
 volatile int g_fnprof;
 
@@ -18,6 +20,11 @@ static struct { _Atomic uint64_t addr; _Atomic uint64_t count; } slots[NSLOT];
 static uint64_t bt_addrs[256];
 static int bt_n = -1;
 static _Atomic uint8_t bt_done[256];
+static uint64_t trace_addrs[64];
+static int trace_n;
+static _Atomic unsigned trace_counts[64];
+static uint64_t trace_x0;
+static unsigned trace_limit = 256;
 
 uint64_t g_bt_first_x0;
 
@@ -44,6 +51,12 @@ static void bt_check(uint64_t a, uint64_t lr, uint64_t x0) {
 }
 
 void fnprof_hit(uint64_t a, uint64_t lr, uint64_t x0) {
+    for (int i = 0; i < trace_n; i++) if (trace_addrs[i] == a && (!trace_x0 || trace_x0 == x0) && atomic_fetch_add(&trace_counts[i], 1) < trace_limit) {
+        Cpu *c = kernel_current_cpu();
+        if (c) LOG("[fntrace] %llx lr=%llx x=%llx,%llx,%llx,%llx,%llx,%llx,%llx,%llx saved=%llx,%llx,%llx,%llx,%llx,%llx,%llx,%llx sp=%llx\n",
+            a, lr, c->x[0],c->x[1],c->x[2],c->x[3],c->x[4],c->x[5],c->x[6],c->x[7],
+            c->x[19],c->x[20],c->x[21],c->x[22],c->x[23],c->x[24],c->x[25],c->x[26],c->sp);
+    }
     if (bt_n) bt_check(a, lr, x0);
     uint32_t h = (uint32_t)((a >> 2) * 0x9E3779B1u) & (NSLOT - 1);
     for (int n = 0; n < NSLOT; n++, h = (h + 1) & (NSLOT - 1)) {
@@ -81,12 +94,48 @@ void fnprof_frame(uint64_t frame) {
     for (int i = 0; f && i < n; i++) fprintf(f, "%llx %llu\n", (unsigned long long)rows[i][0], (unsigned long long)rows[i][1]);
     if (f) fclose(f);
     free(rows);
-    LOG("[fnprof] %d functions, written %s (frames %ld-%ld)\n", n, out, from, to);
+    LOG("[fnprof] %d functions, %s %s (frames %ld-%ld)\n", n, f ? "written" : "unable to write", out, from, to);
     from = -1;
 }
 
 // LARECOMP_FNPROF=0:<to>: profile from process start (threads the game starts before the first frame)
+static void *timed_profile(void *arg) {
+    unsigned seconds = (unsigned)(uintptr_t)arg;
+    const char *start_delay = getenv("LARECOMP_FNPROF_DELAY_SECONDS");
+    if (start_delay && atoi(start_delay) > 0) {
+        struct timespec pause = {.tv_sec=atoi(start_delay)};
+        nanosleep(&pause, NULL);
+        g_fnprof = 1;
+    }
+    struct timespec delay = {.tv_sec=seconds};
+    nanosleep(&delay, NULL);
+    extern void kernel_log_threads(void);
+    kernel_log_threads();
+    const char *e = getenv("LARECOMP_FNPROF");
+    long first, last;
+    if (e && sscanf(e, "%ld:%ld", &first, &last) == 2) fnprof_frame(last);
+    return NULL;
+}
 __attribute__((constructor)) static void fnprof_early(void) {
     const char *e = getenv("LARECOMP_FNPROF");
     if (e && e[0] == '0' && e[1] == ':') g_fnprof = 1;
+    const char *t = getenv("LARECOMP_TRACE_GUEST");
+    const char *x = getenv("LARECOMP_TRACE_X0");
+    if (x) trace_x0 = strtoull(x, NULL, 16);
+    const char *limit = getenv("LARECOMP_TRACE_LIMIT");
+    if (limit) {
+        unsigned long value = strtoul(limit, NULL, 10);
+        if (value > 0 && value <= 1000000) trace_limit = (unsigned)value;
+    }
+    for (const char *p = t; p && *p && trace_n < 64;) {
+        trace_addrs[trace_n++] = strtoull(p, (char **)&p, 16);
+        while (*p == ',' || *p == ' ') p++;
+    }
+    if (trace_n) g_fnprof = 1;
+    if (getenv("LARECOMP_FNPROF_DELAY_SECONDS")) g_fnprof = 0;
+    const char *seconds = getenv("LARECOMP_FNPROF_SECONDS");
+    if (seconds && atoi(seconds) > 0) {
+        pthread_t timer;
+        if (!pthread_create(&timer, NULL, timed_profile, (void *)(uintptr_t)atoi(seconds))) pthread_detach(timer);
+    }
 }

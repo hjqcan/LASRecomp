@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
     assert(build_cache_object(cache, "main_000", source.c_str(), hash) == 1);
     write(fs::u8path(game) / "lasgame.dll", "old library");
     write(fs::u8path(game) / "lasgame.dll.id", "old id");
-    assert(!build_cache_publish(cache, "lasgame.dll", "new-runtime", why, sizeof why));
+    assert(!build_cache_publish(cache, "lasgame.dll", "new-runtime", "new-main", "adapter", why, sizeof why));
     assert(read(fs::u8path(game) / "lasgame.dll") == "old library");
     write(work / "lasgame.dll.tmp", "new library");
     write(work / "gen_main.log", "generator log");
@@ -91,8 +91,8 @@ int main(int argc, char **argv) {
     write(work / "link.rsp", "object list");
     write(work / "zig-cache" / "temporary", "compiler cache");
     write(fs::u8path(game) / ".zigcache" / "temporary", "legacy compiler cache");
-    assert(build_cache_publish(cache, "lasgame.dll", "new-runtime", why, sizeof why));
-    assert(read(fs::u8path(game) / "lasgame.dll.id") == "new-runtime\n");
+    assert(build_cache_publish(cache, "lasgame.dll", "new-runtime", "new-main", "adapter", why, sizeof why));
+    assert(read(fs::u8path(game) / "lasgame.dll.id") == "new-runtime\nnew-main\nadapter\n");
     assert(fs::exists(work / "main_000.o") && fs::exists(work / "main_000.receipt"));
     for (const char *name : {"main", "gen_main.log", "main_000.log", "link.rsp", "zig-cache", "main.generation"})
         assert(!fs::exists(work / name));

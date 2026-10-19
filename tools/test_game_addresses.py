@@ -34,7 +34,9 @@ fixture = json.loads((ROOT/'tools/tests/patches_v1_0_0.json').read_text())
 assert set(PATCHES) == {int(a, 16) for a in fixture['patches']}
 for address, expected in fixture['patches'].items():
     address = int(address, 16)
-    gen = SimpleNamespace(base=address, nso=SimpleNamespace(image=struct.pack('<I', int(expected['word'], 16))))
+    prefix = b''.join(struct.pack('<I', int(word, 16)) for word in expected.get('preceding_words', []))
+    gen = SimpleNamespace(base=address-len(prefix),
+                          nso=SimpleNamespace(image=prefix+struct.pack('<I', int(expected['word'], 16))))
     code = PATCHES[address](gen, address)
     assert hashlib.sha256(code.encode()).hexdigest() == expected['sha256'], f'Patch output changed at {address:x}'
 assert hashlib.sha256(json.dumps(HOOKS, sort_keys=True).encode()).hexdigest() == fixture['hooks_sha256']
@@ -94,6 +96,10 @@ for path in (ROOT/'runtime').rglob('*'):
 tree = ast.parse((ROOT/'tools/patches.py').read_text(encoding='utf-8'))
 used = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == 'A'}
 used.update(re.findall(r'@([A-Z][A-Z0-9_]*)@', (ROOT/'tools/patches.py').read_text(encoding='utf-8')))
+for filename, alias in [('game_versions.py', 'A'), ('research_instrument.py', 'ADDRESS')]:
+    consumer = ast.parse((ROOT/'tools'/filename).read_text(encoding='utf-8'))
+    used.update(n.attr for n in ast.walk(consumer) if isinstance(n, ast.Attribute)
+                and isinstance(n.value, ast.Name) and n.value.id == alias)
 assert used == patch_values.keys(), 'Keep runtime-only entries out of the generated-code table'
 docstring = tree.body[0].value
 for node in ast.walk(tree):

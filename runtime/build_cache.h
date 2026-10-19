@@ -25,8 +25,9 @@ bool build_cache_save_generation(BuildCache *cache, const char *module, int chun
 int build_cache_object(BuildCache *cache, const char *stem, const char *source, char source_hash[65]);
 bool build_cache_save_object(BuildCache *cache, const char *stem, const char *source, const char *source_hash,
                              char *why, size_t cap);
-// Publishes <name>.tmp with its .id, preserving the old pair on failure. Success keeps only objects and receipts.
-bool build_cache_publish(BuildCache *cache, const char *name, const char *runtime_id, char *why,
+// Publishes the library with runtime/module/adapter identities, preserving the old pair on failure.
+// Success keeps only objects and receipts.
+bool build_cache_publish(BuildCache *cache, const char *name, const char *runtime_id, const char *main_id, const char *adapter_id, char *why,
                          size_t cap);
 #ifdef __cplusplus
 }

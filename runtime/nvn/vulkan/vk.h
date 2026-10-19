@@ -101,16 +101,21 @@ typedef struct TexBackend {
 } TexBackend;
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)
+void vk_mark_render_target(NvnTexture *t);  // attachment use also identifies uncompressed screen buffers for scaling
 VkFormat vk_format(uint32_t nvn_format);
 VkFormat vk_image_format(uint32_t nvn_format, VkImageAspectFlags *aspect);  // (shader preparation)
 void vk_pipeline_cache_save(void);
+VkResult vk_create_graphics_pipelines(uint32_t count, const VkGraphicsPipelineCreateInfo *info, VkPipeline *out);
+VkResult vk_create_compute_pipelines(uint32_t count, const VkComputePipelineCreateInfo *info, VkPipeline *out);
 bool vk_format_alpha_one(uint32_t nvn_format);
 // View of t (optionally through an NVN texture view) for rendering or sampling.
 VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool render, int want_textype);
+VkImageView vk_view_backend(NvnTexture *t, TexBackend *b, const NvnTextureView *v, bool has_view, bool render, int want_textype);
 VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uint32_t lv0, uint32_t nlv, uint32_t ly0,
                           uint32_t nly, VkComponentMapping sw, VkImageAspectFlags aspect);
 VkImageView vk_dummy_view(int textype);
 void vk_convert_nv12(TexBackend *b, const void *nv12, uint32_t w, uint32_t h, uint32_t stride, uint32_t uv_off);  // exec.c
+void vk_blit_depth_nearest(VkCommandBuffer cb, const TexBackend *src, const TexBackend *dst, const VkImageBlit *region);
 VkSampler vk_sampler(NvnSamplerDesc *d);
 VkSampler vk_default_sampler(bool linear);
 void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect);

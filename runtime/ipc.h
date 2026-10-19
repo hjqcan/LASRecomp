@@ -1,4 +1,4 @@
-// HIPC/CMIF message handling for HLE services.
+// HIPC with CMIF or TIPC payloads for HLE services.
 #pragma once
 #include "kernel.h"
 
@@ -6,22 +6,24 @@ typedef struct {
     uint64_t addr, size;
 } IpcBuf;
 
+typedef struct Service Service;
+
 typedef struct IpcReq {
-    uint32_t type;      // 4 = request, 5 = control, 2 = close, 6/7 = with context
+    uint32_t type;      // CMIF: 4/6 request, 5/7 control, 2 close; TIPC: 16+command, 15 close
     uint32_t cmd;
-    const uint8_t *data;  // payload after the SFCI header
+    const uint8_t *data;  // CMIF: after SFCI; TIPC: raw HIPC data
     uint32_t data_size;
     uint64_t pid;
     uint32_t copy_handles[8], move_handles[8];
     int ncopy, nmove;
-    IpcBuf x[8], a[8], b[8], c[8];
-    int nx, na, nb, nc;
+    IpcBuf x[8], a[8], b[8], c[8], w[8];
+    int nx, na, nb, nc, nw;
     uint32_t domain_obj;  // 0 if not a domain message
     uint32_t domain_in_objs[8];
     int ndomain_in;
+    Service *objects[8];  // borrowed input interfaces, resolved in the calling session/domain
+    int nobjects;
 } IpcReq;
-
-typedef struct Service Service;
 
 typedef struct IpcResp {
     uint32_t result;
@@ -62,16 +64,20 @@ static inline void resp_size(IpcResp *resp, uint32_t n) { if (n > resp->data_siz
 static inline IpcBuf *out_buf(IpcReq *req, int i) {
     if (i < req->nb && req->b[i].size) return &req->b[i];
     if (i < req->nc && req->c[i].size) return &req->c[i];
+    if (i >= req->nb && i - req->nb < req->nw) return &req->w[i - req->nb];
     return i < req->nb ? &req->b[i] : i < req->nc ? &req->c[i] : NULL;
 }
 static inline IpcBuf *in_buf(IpcReq *req, int i) {
     if (i < req->na && req->a[i].size) return &req->a[i];
     if (i < req->nx && req->x[i].size) return &req->x[i];
+    if (i >= req->na && i - req->na < req->nw) return &req->w[i - req->na];
     return i < req->na ? &req->a[i] : i < req->nx ? &req->x[i] : NULL;
 }
 
 Service *service_new(const char *name, ServiceHandler h, void *state);
 Service *service_lookup(const char *name);  // from the registry (services/*.c)
+void service_retain(Service *s);
+void service_release(Service *s);
 void ipc_return_object(IpcResp *resp, Service *s);
 
 typedef struct { const char *name; ServiceHandler handler; } ServiceDef;

@@ -41,7 +41,7 @@ extern "C" void shader_tour_tick(uint64_t frame) {
     if (i >= n && ENV("LARECOMP_TOUR_LOOP")) { i = 0; LOG("[tour] loop\n"); }
     if (i >= n) {
         LOG("[tour] done: %d spots in %.0f s\n", n, (frame - started) / 60.0);
-        exit(0);
+        plat_exit(0);
     }
     // LARECOMP_TOUR_LEVEL=<level>: only that level's spots; LARECOMP_TOUR_LOOP=1: start over at the end (soak
     // tests, e.g. the overworld frame-rate dips after a long session)

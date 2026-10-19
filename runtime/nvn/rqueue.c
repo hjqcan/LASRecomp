@@ -245,7 +245,10 @@ static void *run(void *arg) {
         uint64_t c0 = stats ? plat_thread_cpu_ns() : 0, w0 = stats ? plat_now_ns() : 0;
         void *pool = backend_pool_push();
         switch (it.kind) {
-        case IT_EXEC: backend_execute(it.handle); break;
+        case IT_EXEC:
+            backend_execute(it.handle);
+            nvn_command_list_release(it.data);
+            break;
         case IT_PRESENT: backend_present_now(it.tex, it.frame); break;
         case IT_DESTROY: { extern void nvn_texture_destroy(NvnTexture *t); nvn_texture_destroy(it.tex); break; }
         case IT_UPLOAD: backend_upload_now(it.tex, it.up_kind, it.data, it.w, it.h, it.stride, it.uv_off); break;
@@ -322,7 +325,7 @@ static void prescan(uint64_t handle, Fences *f, int depth) {
             break;
         }
         case CMD_FENCE_SYNC:
-            if (r->x[1]) fences_add(f, r->x[1]);
+            if (r->x[0]) fences_add(f, r->x[0]);
             break;
         default: break;
         }
@@ -333,8 +336,10 @@ static void prescan(uint64_t handle, Fences *f, int depth) {
 uint64_t rq_submit(uint64_t handle) {
     Fences f = {.n = 0, .cap = 32};
     f.p = f.v;
-    prescan(handle, &f, 0);
-    Item it = {.kind = IT_EXEC, .handle = handle};
+    void *list = nvn_command_list_acquire(handle);
+    uint64_t records = nvn_command_list_records(list);
+    prescan(records, &f, 0);
+    Item it = {.kind = IT_EXEC, .handle = records, .data = list};
     uint64_t q = enqueue(&it, f.p, f.n);
     if (f.p != f.v) free(f.p);
     return q;
@@ -356,6 +361,37 @@ void rq_upload(NvnTexture *t, int kind, void *data, uint32_t w, uint32_t h, uint
 }
 
 // ---- waiting
+
+int rq_wait_item_timeout(uint64_t q, uint64_t timeout, uint64_t *gpu_seq) {
+    uint64_t start = plat_now_ns();
+    bool waited = false;
+    int result = 0;
+    lock_timed();
+    rq_watch("fence (its list not translated yet)", q);
+    while (q_done < q) {
+        if (g_rt_unwind) { result = 3; break; }
+        uint64_t elapsed = plat_now_ns() - start;
+        if (elapsed >= timeout) { result = 2; break; }
+        uint64_t remaining = timeout - elapsed;
+        if (remaining > 50000000) remaining = 50000000;
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_nsec += (long)remaining;
+        if (until.tv_nsec >= 1000000000) { until.tv_sec++; until.tv_nsec -= 1000000000; }
+        pthread_cond_timedwait(&cv_done, &lock, &until);
+        waited = true;
+    }
+    if (result < 2) {
+        // A very old fence has aged out of the ring; waiting for the newest
+        // translated submission is conservative and never reuses a newer slot.
+        *gpu_seq = q_done - q < RQ_HIST ? gpu_seq_of[q % RQ_HIST] : gpu_seq_of[q_done % RQ_HIST];
+        result = waited ? 1 : 0;
+    }
+    rq_watch(NULL, 0);
+    pthread_mutex_unlock(&lock);
+    g_rq_wait_ns += plat_now_ns() - start;
+    return result;
+}
 
 uint64_t rq_wait_item(uint64_t q) {
     uint64_t t0 = plat_now_ns(), gs;

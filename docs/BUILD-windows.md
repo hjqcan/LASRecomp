@@ -1,4 +1,4 @@
-# Building LAS Recomp on Windows (x86-64)
+# Building Multi on Windows (x86-64)
 
 Status: part of main. Builds and runs the game on Vulkan (with your own game files); `make dist` packages the
 release zip.
@@ -8,7 +8,7 @@ Run in PowerShell from the repo root:
 
     powershell -ExecutionPolicy Bypass -File tools\setup_windows.ps1
 
-This installs MSYS2 (UCRT64: clang, lld, make, SDL3, FFmpeg, Vulkan loader + headers, shaderc, Vulkan Memory
+This installs MSYS2 (UCRT64: clang, lld, make, SDL3, FFmpeg, libopus, Vulkan loader + headers, shaderc, Vulkan Memory
 Allocator, validation layers), Python 3.12 for the tools (`tools\venv`: unicorn, capstone, lz4) and the randomizer
 (`third_party\LAS-Randomizer\venv`) and switches the clone to LF line endings.
 
@@ -23,15 +23,20 @@ Without `generated/` only the app is built: the start screen builds the game cod
 files (as for players), given the generator and the compiler (`make gen-helper`, `tools/fetch_zig.sh`).
 `make runtime-objs` compiles the runtime only (quick check).
 
+For local build diagnostics, `LARECOMP_BUILD_JOBS=1..64` overrides the automatic
+parallel-job count. `LARECOMP_ZIG` selects a pinned Zig executable and retains its
+`zig cc` driver mode; `LARECOMP_CC` selects an ordinary C compiler and takes
+precedence. Leaving both unset uses the bundled toolchain.
+
 Run from a shell that has `C:\msys64\ucrt64\bin` on PATH (SDL3, FFmpeg, Vulkan, shaderc DLLs).
 
 ## Package
     make rando-helper   # the seed generator without Python (build/helper/rando-gen)
     make gen-helper     # the game code generator without Python (build/helper/lasgen)
     tools/fetch_zig.sh  # the compiler the start screen builds the game code with (build/zig)
-    make dist           # -> build/dist/LAS Recomp-<version>-windows.zip (no game code inside)
+    make dist           # -> build/dist/Multi-<version>-windows.zip (no game code inside)
 
-The zip's `LAS Recomp/` folder holds `lasrecomp.exe` (icon from `docs/icon/icon.ico`, via windres),
+The zip's `Multi/` folder holds `lasrecomp.exe` (icon from `docs/icon/icon.ico`, via windres),
 `rando-gen/` and the MSYS2 DLLs. No installer: game files, saves, seeds and settings are kept next to the exe, so
 the folder must be writable (the app says so and quits if it isn't, e.g. under Program Files). A source checkout
 with `extracted/` in the starting folder keeps using that folder instead.

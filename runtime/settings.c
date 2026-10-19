@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "game_profiles.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,7 +77,7 @@ static const char *host_language(void) {
     }
     char l[8] = {0};
     size_t n = 0;
-    for (const char *p = e; *p && *p != '.' && *p != '@' && *p != '_' && n < sizeof l - 1; p++) l[n++] = *p;
+    for (const char *p = e; *p && *p != '.' && *p != '@' && *p != '_' && *p != '-' && n < sizeof l - 1; p++) l[n++] = *p;
     static const struct { const char *loc, *code; } map[] = {{"ja", "ja"}, {"ko", "ko"}, {"ru", "ru"}, {"nl", "nl"},
                                                              {"de", "de"}, {"it", "it"}, {"fr", "fr"}, {"es", "es"}};
     for (size_t i = 0; i < sizeof map / sizeof *map; i++)
@@ -140,6 +141,8 @@ void settings_load(void) {
         }
         if (fields != 2) continue;
         if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
+        else if (!strcmp(key, "game_profile")) g_settings.game_profile = game_profile_parse_setting(val);
+        else if (!strcmp(key, "acnh_speedfix60")) g_settings.acnh_speedfix60 = atoi(val) != 0;
         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
@@ -215,6 +218,7 @@ void settings_save(void) {
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "show_fps = %d\n", g_settings.show_fps);
+    fprintf(f, "acnh_speedfix60 = %d\n", g_settings.acnh_speedfix60);
     fprintf(f, "upscaler = %s\n", g_settings.upscaler_auto ? "auto" : g_settings.upscaler == UPSCALE_METALFX ? "metalfx" :
                                    g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
@@ -247,5 +251,6 @@ void settings_save(void) {
     fprintf(f, "tunic = %s\nhearts = %s\n", g_tunic_colours[g_settings.tunic], g_heart_colours[g_settings.hearts]);
     bind_settings_save(f);
     fprintf(f, "rando_seed = %s\n", g_settings.rando_seed);
+    fprintf(f, "game_profile = %s\n", game_profile_setting(g_settings.game_profile));
     fclose(f);
 }

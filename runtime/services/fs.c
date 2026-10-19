@@ -7,18 +7,27 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #ifdef _WIN32
+#pragma push_macro("IN")
+#pragma push_macro("OUT")
 #include <io.h>
 #include <windows.h>
-#undef IN   // (windows.h's empty parameter markers; ipc.h defines its own)
-#undef OUT
+#pragma pop_macro("OUT") // keep windows.h's parameter markers out of the IPC helpers
+#pragma pop_macro("IN")
 #endif
 
 #include <pthread.h>
 
 #include "../hle.h"
 #include "../rando.h"
+#include "../mods.h"
+#include "../acnh_speedfix.h"
+#include "../workshop.h"
 #include "../ipc.h"
+#include "../save_backup.h"
 #include "../romfs_build.h"
+#include "../gameversion.h"
+#include "../game_profiles.h"
+#include "../research.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -30,11 +39,11 @@ const char *g_save_dir = "save";
 // ------------------------------------------------------------------ the base RomFS image
 // The game reads its data as one raw RomFS image. It's served from the player's romfs/ folder: the header and tables
 // laid out in memory (runtime/romfs_build.c), each file's bytes read from its own file, the gaps between files zeros -
-// no image file on disk, so the game data isn't kept twice. A romfs.bin from an older version is used only when the
-// folder isn't there.
+// no image file on disk is required. Adapters whose imports retain an image prefer romfs.bin; a complete extracted
+// folder also works. LAS keeps its folder-first behavior, with legacy images as a fallback.
 static RomfsLayout g_base;
 static bool g_base_open;
-static int g_base_fd = -1;  // (an older version's romfs.bin)
+static int g_base_fd = -1;  // an imported or legacy romfs.bin
 static pthread_mutex_t g_base_lock = PTHREAD_MUTEX_INITIALIZER;
 #define BASE_FDS 32  // files kept open (macOS allows 256 open files by default)
 static struct { int file, fd; uint64_t used; } g_base_fds[BASE_FDS];
@@ -108,16 +117,36 @@ static void base_close(void) {
 static void base_open(void) {
     if (g_base_open) return;
     char path[1100], why[256] = "";
-    snprintf(path, sizeof path, "%s/region_common", g_romfs_dir);
-    struct stat sb;
-    if (stat(path, &sb) == 0 && romfs_layout(g_romfs_dir, &g_base, why, sizeof why)) {
-        LOG("[fs] romfs: %d files served from %s\n", g_base.nfiles, g_romfs_dir);
-    } else {
-        snprintf(path, sizeof path, "%s.bin", g_romfs_dir);  // (an older version's image)
+    const TitleProfile *profile = title_profile_current();
+    snprintf(path, sizeof path, "%s.bin", g_romfs_dir);
+    int image_error = 0;
+    if (profile->image_satisfies_count) {
         g_base_fd = open(path, O_RDONLY);
-        if (g_base_fd < 0) FATAL("cannot read the game data in %s %s(set up the game files on the start screen)\n",
-                                 g_romfs_dir, why);
+        if (g_base_fd < 0) image_error = errno;
     }
+    if (g_base_fd < 0) {
+        int count = -1;
+        bool folder = title_content_validate(profile, g_romfs_dir, false, &count, why, sizeof why) &&
+                      romfs_layout(g_romfs_dir, &g_base, why, sizeof why);
+        if (folder && (unsigned)g_base.nfiles < profile->minimum_files) {
+            snprintf(why, sizeof why, "Only %d of %u game files could be read", g_base.nfiles, profile->minimum_files);
+            romfs_layout_free(&g_base);
+            folder = false;
+        }
+        if (folder) {
+            LOG("[fs] romfs: %d files served from %s\n", g_base.nfiles, g_romfs_dir);
+            g_base_open = true;
+            return;
+        }
+        if (!profile->image_satisfies_count) {
+            g_base_fd = open(path, O_RDONLY);
+            if (g_base_fd < 0) image_error = errno;
+        }
+        if (g_base_fd < 0)
+            FATAL("cannot read the game data in %s: %s; cannot open %s: %s (set up the game files on the start screen)\n",
+                  g_romfs_dir, why, path, strerror(image_error));
+    }
+    LOG("[fs] romfs image: %s\n", path);
     g_base_open = true;
 }
 
@@ -346,11 +375,13 @@ static void rom_index(void) {
         rom_files[rom_nfiles++] = (RomFile){rom_data_off + data, size, path, (uint32_t)o};
         o += 0x20 + ((namelen + 3) & ~3u);
     }
-    // Randomizer seed: replacement files are served from the seed folder. The file-meta table is patched
+    // Replacement files come from the selected seed first, then enabled mods. The file-meta table is patched
     // (in a copy) to point them at data appended past the end of the image; reads there go to host files.
     for (int i = 0; i < rom_nfiles; i++) {
         char host[1200];
-        if (!rando_romfs_override(rom_files[i].path, host, sizeof host)) continue;
+        if (!acnh60_romfs_override(rom_files[i].path, host, sizeof host) &&
+            !rando_romfs_override(rom_files[i].path, host, sizeof host) &&
+            !mods_romfs_override(rom_files[i].path, host, sizeof host)) continue;
         struct stat sb;
         if (stat(host, &sb)) continue;
         if (!ov_meta) {
@@ -372,7 +403,7 @@ static void rom_index(void) {
         ov_n++;
         ov_end = (ov_end + size + 0xF) & ~0xFull;
     }
-    if (ov_n) LOG("[fs] randomizer: %d romfs files replaced\n", ov_n);
+    if (ov_n) LOG("[fs] overlays: %d romfs files replaced\n", ov_n);
     if (ov_meta) { patches[npatches++] = (Patch){ov_meta_off, ov_meta_size, ov_meta}; }
     rt_romfs_files = rom_nfiles;  // (the game's own: before a seed's added files; the crash dialog checks it)
     add_new_files(h, dmeta, dsz, fsz);
@@ -448,7 +479,9 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         IpcBuf *b = out_buf(req, 0);
         if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (size > b->size) size = b->size;
+        bool observed=research_io_begin();
         ssize_t n = romfs_read((uint8_t *)(uintptr_t)b->addr, size, off);
+        if(observed)research_io_end(n);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
         {
             const char *path = romfs_file_at(off);
@@ -483,16 +516,16 @@ static Service *open_romfs_storage(void) {
 // ------------------------------------------------------------------ host-directory filesystem
 // Save data is all-or-nothing, as on the Switch (its save storage commits a mount's changes at once): a file opened
 // for writing on a save mount works on a copy, <file>.pending, which the mount's Commit syncs and renames over the
-// file - so a crash or power loss mid-save leaves the last committed save, never a half-written one (the save
-// backups PR #55 was closed in favour of this). Reads see the pending copy, as the Switch's do before a commit. A
+// file - so a crash or power loss mid-save leaves the last committed save, never a half-written one.
+// Multi snapshots complete saves after Commit. Reads see the pending copy, as on the Switch. A
 // copy left by a crash is dropped at the next mount (uncommitted, as on the Switch). The SD card mount writes in place.
-// A save that can't be written (save folder not writable, disk full, ...) is dropped whole and the committed save
+// A LAS save that can't be written (save folder not writable, disk full, ...) is dropped whole and the committed save
 // stays as it was, but the game is never told: its SDK aborts on any failed OpenFile / Write / Flush / Commit (the
 // crash dialog), and it has no "could not save" path anyway. The player gets one warning (save_failed) instead.
 #define PENDING_MAX 16
 typedef struct {
     char root[1024];
-    bool journaled;
+    bool is_save, journaled, save_failed;
     int npending;
     char pending[PENDING_MAX][1100];
     bool failed[PENDING_MAX];  // a write to this working copy failed: dropped at the Commit, never published
@@ -502,11 +535,13 @@ typedef struct {
     char path[1100];
     HostFs *fs;    // a save file opened for writing (journaled mount), else NULL
     int slot;      // its working copy in fs->pending (-1: a scratch copy)
+    bool writable;
     bool scratch;  // staging failed: the writes go to a temporary file outside the save folder, never committed
 } HostFile;
 
 // Saving failed: say so loudly in the log, and once per run in a dialog (the game itself still says "Game saved").
 static void save_failed(HostFs *fs, const char *what, const char *path, int error) {
+    fs->save_failed = true;
     LOG("[save] SAVE FAILED: %s %s (%s) - not saved, the last committed save is kept\n", what, path,
         error ? strerror(error) : "earlier error");
     static bool told;
@@ -516,6 +551,23 @@ static void save_failed(HostFs *fs, const char *what, const char *path, int erro
     snprintf(text, sizeof text, "Your game could not be saved (the game may still say it was). Your previous save "
              "is unchanged.\n\nMake sure this folder can be written to and the disk has free space:\n%s", fs->root);
     plat_notice(text);
+}
+
+static void backup_save(HostFs *fs, const char *reason) {
+    if (!fs->is_save) return;  // SD card commits are not game saves
+    // A data rename can succeed before its flags sidecar. Do not snapshot that
+    // incomplete pair, even if a later empty Commit arrives before the next mount.
+    DIR *d = opendir(fs->root);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        size_t n = strlen(e->d_name);
+        if (n > 8 && !strcmp(e->d_name + n - 8, ".pending")) { closedir(d); return; }
+    }
+    closedir(d);
+    char why[512];
+    if (!save_backup_create(fs->root, reason, title_profile_current()->version, true, why, sizeof why))
+        LOG("[save-backup] %s\n", why); // backup failure never prevents the game from saving
 }
 
 static void sync_dir_of(const char *path) {
@@ -645,27 +697,40 @@ static void drop_slot(const char *path) {
     unlink(pending);
     unlink(flags_pending);
 }
-// Commit always succeeds for the game (see save_failed). A save that failed is dropped whole. If only the sidecar's
-// rename failed (the data is already replaced), its working copy stays for the next mount to finish the pair.
-static void commit(HostFs *fs) {
+// LAS's SDK aborts on save errors, so its guest-facing Commit still succeeds.
+// Return the actual publication result to the backup and multi-save managers.
+// Other titles keep their existing failed-publication retry/error contract.
+static bool commit(HostFs *fs) {
+    bool ok = !fs->save_failed;
+    int remaining = 0;
     for (int i = 0; i < fs->npending; i++) {
         const char *path = fs->pending[i];
         if (fs->failed[i]) {
             drop_slot(path);
             save_failed(fs, "dropped the failed save", path, 0);
+            ok = false;
         } else if (!commit_slot(path)) {
             int error = errno;
-            char pending[1200];
-            struct stat st;
-            snprintf(pending, sizeof pending, "%s.pending", path);
-            if (!stat(pending, &st)) {
-                drop_slot(path);
-                save_failed(fs, "could not commit", path, error);
-            } else LOG("[save] committed %s, but not its flags sidecar yet (%s): the next mount finishes it\n", path,
-                       strerror(error));
+            ok = false;
+            if (!title_is_las()) {
+                if (remaining != i) memcpy(fs->pending[remaining], path, sizeof fs->pending[i]);
+                fs->failed[remaining++] = false;
+            } else {
+                char pending[1200];
+                struct stat st;
+                snprintf(pending, sizeof pending, "%s.pending", path);
+                if (!stat(pending, &st)) {
+                    drop_slot(path);
+                    save_failed(fs, "could not commit", path, error);
+                } else LOG("[save] committed %s, but not its flags sidecar yet (%s): the next mount finishes it\n",
+                           path, strerror(error));
+            }
+            errno = error;
         } else LOG("[save] committed %s\n", path);
     }
-    fs->npending = 0;
+    fs->npending = remaining;
+    fs->save_failed = false;
+    return ok;
 }
 // Recover pairs before dropping abandoned working copies: deleting the data copy first would make an
 // uncommitted sidecar look committed. No format change: existing .flagsx files still contain just flag bytes.
@@ -695,11 +760,17 @@ typedef struct { DIR *d; char path[1024]; int mode; } HostDir;
 // The game closed the file / directory: close the host one too. They used to stay open for the whole run - a leak
 // everywhere, and on Windows the open working copy blocked the Commit's replace, so saves never landed (a file can't
 // be replaced while it's open there; the game closes its files before it commits, as nn::fs requires).
-static void file_close(Service *s) {
+static void file_failed(HostFile *f, const char *what, int error);
+static void host_file_close(Service *s) {
     HostFile *f = s->state;
-    if (f) { close(f->fd); free(f); s->state = NULL; }
+    if (!f) return;
+    if (f->writable && fsync(f->fd)) {
+        if (f->fs) file_failed(f, "flush on close", errno);
+        else LOG("[save] flush failed on close: %s (%s)\n", f->path, strerror(errno));
+    }
+    close(f->fd); free(f); s->state = NULL;
 }
-static void dir_close(Service *s) {
+static void host_directory_close(Service *s) {
     HostDir *d = s->state;
     if (d) { if (d->d) closedir(d->d); free(d); s->state = NULL; }
 }
@@ -710,8 +781,19 @@ static const char *in_path(IpcReq *req, int i) {
     return "";
 }
 
-static void host_path(HostFs *fs, const char *p, char *out, size_t n) {
-    snprintf(out, n, "%s%s%s", fs->root, p[0] == '/' ? "" : "/", p);
+static bool host_path(HostFs *fs, const char *p, char *out, size_t n) {
+    // Guest paths stay within the mounted save filesystem, including on Windows.
+    if (strnlen(p, 1024) == 1024 || strchr(p, ':') || strchr(p, '\\')) return false;
+    for (const char *q = p; *q;) {
+        while (*q == '/') q++;
+        const char *end = strchr(q, '/');
+        size_t len = end ? (size_t)(end - q) : strlen(q);
+        if (len == 2 && q[0] == '.' && q[1] == '.') return false;
+        if (!end) break;
+        q = end;
+    }
+    int len = snprintf(out, n, "%s%s%s", fs->root, p[0] == '/' ? "" : "/", p);
+    return len >= 0 && (size_t)len < n;
 }
 
 static uint32_t errno_result(void) {
@@ -723,6 +805,11 @@ static uint32_t errno_result(void) {
 
 // a save file's write / flush / resize failed: that save is dropped at the Commit (the game is told it worked)
 static void file_failed(HostFile *f, const char *what, int error) {
+    // Other titles receive the I/O error and may retry the same working copy.
+    if (!title_is_las()) {
+        LOG("[save] %s failed: %s (%s)\n", what, f->path, strerror(error));
+        return;
+    }
     if (f->slot >= 0) f->fs->failed[f->slot] = true;
     save_failed(f->fs, what, f->path, error);
 }
@@ -737,7 +824,7 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         if ((uint64_t)size > b->size) size = (int64_t)b->size;
         ssize_t n = pread(f->fd, (void *)(uintptr_t)b->addr, (size_t)size, off);
         if (n < 0) resp->result = errno_result();
-        if (n > 0 && !f->scratch && strstr(f->path, "savedata")) {
+        if (n > 0 && !f->scratch && title_is_las() && strstr(f->path, "savedata")) {
             LOG("[save] read %s off %lld size %lld -> guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)b->addr);
             extern void save_editor_file_read(const char *path, uint64_t addr, int64_t off, int64_t size);
             save_editor_file_read(f->path, b->addr, off, n);
@@ -751,7 +838,8 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
     case 1: {  // Write(option, offset, size) <- A
         int64_t off = IN(int64_t, 8), size = IN(int64_t, 16);
         IpcBuf *a = in_buf(req, 0);
-        if (strstr(f->path, "savedata"))
+        if (!a || off < 0 || size < 0 || (uint64_t)size > a->size) { resp->result = MAKE_RESULT(2, 6001); break; }
+        if (getenv("ACNH_LOG_SAVE"))
             LOG("[save] write %s off %lld size %lld <- guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)a->addr);
         int error = 0;
         for (int64_t done = 0; done < size;) {  // (a short write goes on from where it stopped)
@@ -760,22 +848,30 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
             if (n <= 0) { error = n ? errno : EIO; break; }
             done += n;
         }
-        if (!error && !f->scratch && strstr(f->path, "savedata")) {
+        if (!error && !f->scratch && title_is_las() && strstr(f->path, "savedata")) {
             extern bool flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size);
             errno = 0;
             if (!flags_ext_save_written(f->path, a->addr, off, size)) error = errno ? errno : EIO;
         }
+        if (!error && (IN(uint32_t, 0) & 1) && fsync(f->fd)) error = errno;
         if (error && f->fs) file_failed(f, "write", error);
-        else if (error) { errno = error; resp->result = errno_result(); }
+        if (error && (!f->fs || !title_is_las())) { errno = error; resp->result = errno_result(); }
         break;
     }
     case 2:  // Flush
-        if (fsync(f->fd) && f->fs) file_failed(f, "flush", errno);
+        if (fsync(f->fd)) {
+            int error = errno;
+            if (f->fs) file_failed(f, "flush", error);
+            if (!f->fs || !title_is_las()) { errno = error; resp->result = errno_result(); }
+        }
         break;
     case 3:  // SetSize
         if (!ftruncate(f->fd, IN(int64_t, 0))) break;
-        if (f->fs) file_failed(f, "resize", errno);
-        else resp->result = errno_result();
+        {
+            int error = errno;
+            if (f->fs) file_failed(f, "resize", error);
+            if (!f->fs || !title_is_las()) { errno = error; resp->result = errno_result(); }
+        }
         break;
     case 4: {
         struct stat sb;
@@ -855,7 +951,7 @@ static int rm_rf(const char *p, bool keep_root) {
 static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     HostFs *fs = s->state;
     char p[2048], p2[2048];
-    host_path(fs, in_path(req, 0), p, sizeof p);
+    if (!host_path(fs, in_path(req, 0), p, sizeof p)) { resp->result = MAKE_RESULT(2, 6001); return; }
     switch (req->cmd) {
     case 0: {  // CreateFile(option, size)
         int fd = open(p, O_CREAT | O_EXCL | O_RDWR, 0644);
@@ -869,7 +965,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     case 3: if (rmdir(p)) resp->result = errno_result(); break;
     case 4: if (rm_rf(p, false)) resp->result = errno_result(); break;
     case 5: case 6:
-        host_path(fs, in_path(req, 1), p2, sizeof p2);
+        if (!host_path(fs, in_path(req, 1), p2, sizeof p2)) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (rename(p, p2)) resp->result = errno_result();
         break;
     case 7: {  // GetEntryType
@@ -891,6 +987,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         if (slot >= 0) {
             snprintf(p, sizeof p, "%s", work);
         } else if (save && exists) {  // (its working copy can't be made)
+            if (!title_is_las()) { resp->result = errno_result(); break; }
             save_failed(fs, "could not stage", p, errno);
             fd = scratch_copy(p);
             scratch = true;
@@ -900,10 +997,11 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         if (fd < 0) { resp->result = errno_result(); break; }
         HostFile *f = calloc(1, sizeof *f);
         f->fd = fd;
+        f->writable = (mode & 2) != 0;
         snprintf(f->path, sizeof f->path, "%s%s", p, scratch ? " (scratch copy)" : "");
         if (save) { f->fs = fs; f->slot = scratch ? -1 : slot; f->scratch = scratch; }
         Service *fsvc = service_new("IFile", file, f);
-        fsvc->on_close = file_close;
+        fsvc->on_close = host_file_close;
         ipc_return_object(resp, fsvc);
         break;
     }
@@ -915,11 +1013,14 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         hd->mode = (int)IN(uint32_t, 0);
         snprintf(hd->path, sizeof hd->path, "%s", p);
         Service *dsvc = service_new("IDirectory", directory, hd);
-        dsvc->on_close = dir_close;
+        dsvc->on_close = host_directory_close;
         ipc_return_object(resp, dsvc);
         break;
     }
-    case 10: commit(fs); break;  // Commit (always succeeds for the game: see save_failed)
+    case 10:
+        if (commit(fs)) backup_save(fs, "Automatic save");
+        else if (!title_is_las()) resp->result = errno_result();
+        break;
     case 11: case 12: OUT(int64_t, 0) = 0x40000000; resp_size(resp, 8); break;
     case 13: rm_rf(p, true); break;
     case 14: memset(resp->data, 0, 0x20); resp_size(resp, 0x20); break;
@@ -927,15 +1028,29 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     }
 }
 
+static void host_fs_close(Service *s) {
+    free(s->state);
+    s->state = NULL;
+}
+
 static Service *open_host_fs(const char *sub) {
     HostFs *fs = calloc(1, sizeof *fs);
+    g_save_dir = game_profile_save_dir(game_profile_active());
+    if (!title_is_las() && game_profile_active() <= GAME_PROFILE_EXISTING) {
+        static char title_save[160];
+        const TitleProfile *p=title_profile_current();
+        snprintf(title_save,sizeof title_save,"save/%016llx/%s",(unsigned long long)p->program_id,p->modules[0].build_id);
+        g_save_dir=title_save;
+    }
     if (getenv("LARECOMP_SAVE_DIR")) g_save_dir = getenv("LARECOMP_SAVE_DIR");  // test runs use a scratch copy
     else if (rando_seed_dir()) {  // each randomizer seed has its own save slots
         static char seed_save[600];
         snprintf(seed_save, sizeof seed_save, "%s/save", rando_seed_dir());
         g_save_dir = seed_save;
     }
+    if (title_is_las() && workshop_save_dir()) g_save_dir = workshop_save_dir();
     snprintf(fs->root, sizeof fs->root, "%s/%s", g_save_dir, sub);
+    fs->is_save = !strncmp(sub, "save_", 5);
     char cmd[1200];
     snprintf(cmd, sizeof cmd, "%s", fs->root);
     for (char *q = cmd + 1; *q; q++)
@@ -957,8 +1072,73 @@ static Service *open_host_fs(const char *sub) {
         }
         if (d) closedir(d);
     }
+    backup_save(fs, "Before play");
     LOG("[fs] mounted host directory %s\n", fs->root);
-    return service_new("IFileSystem", filesystem, fs);
+    Service *result = service_new("IFileSystem", filesystem, fs);
+    result->on_close = host_fs_close;
+    return result;
+}
+
+// fsp-srv 1200 returns a real interface; returning success without it makes
+// nn::fs dereference a null manager during ACNH's first multi-save commit.
+// The manager retains input mounts even if their guest handles are closed.
+#define MULTI_COMMIT_MAX 10
+typedef struct {
+    pthread_mutex_t lock;
+    Service *mounts[MULTI_COMMIT_MAX];
+    unsigned count;
+} MultiCommit;
+
+static void multi_commit_close(Service *s) {
+    MultiCommit *manager = s->state;
+    if (!manager) return;
+    for (unsigned i = 0; i < manager->count; i++) service_release(manager->mounts[i]);
+    pthread_mutex_destroy(&manager->lock);
+    free(manager);
+    s->state = NULL;
+}
+
+static void multi_commit(Service *s, IpcReq *req, IpcResp *resp) {
+    MultiCommit *manager = s->state;
+    pthread_mutex_lock(&manager->lock);
+    switch (req->cmd) {
+    case 1: {  // Add(IFileSystem)
+        Service *mount = req->nobjects == 1 ? req->objects[0] : NULL;
+        if (!mount || mount->handler != filesystem || !mount->state) {
+            resp->result = MAKE_RESULT(2, 6001);
+            break;
+        }
+        for (unsigned i = 0; i < manager->count; i++) {
+            if (manager->mounts[i] == mount) { resp->result = MAKE_RESULT(2, 6001); goto done; }
+        }
+        if (manager->count == MULTI_COMMIT_MAX) { resp->result = MAKE_RESULT(2, 6001); break; }
+        service_retain(mount);
+        manager->mounts[manager->count++] = mount;
+        LOG("[save] multi-commit added %s\n", ((HostFs *)mount->state)->root);
+        break;
+    }
+    case 2:  // Commit: never report success or snapshot a partially published group
+        for (unsigned i = 0; i < manager->count; i++) {
+            if (!commit(manager->mounts[i]->state)) { resp->result = errno_result(); goto done; }
+        }
+        for (unsigned i = 0; i < manager->count; i++) backup_save(manager->mounts[i]->state, "Automatic save");
+        LOG("[save] multi-commit completed (%u filesystems)\n", manager->count);
+        break;
+    default:
+        resp->result = MAKE_RESULT(2, 6001);
+        break;
+    }
+done:
+    pthread_mutex_unlock(&manager->lock);
+}
+
+static Service *open_multi_commit(void) {
+    MultiCommit *manager = calloc(1, sizeof *manager);
+    if (!manager) FATAL("cannot allocate save commit manager\n");
+    pthread_mutex_init(&manager->lock, NULL);
+    Service *result = service_new("IMultiCommitManager", multi_commit, manager);
+    result->on_close = multi_commit_close;
+    return result;
 }
 
 // ------------------------------------------------------------------ fsp-srv
@@ -985,6 +1165,7 @@ SERVICE("fsp-srv", fsp_srv) {
     case 1005: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;  // GetGlobalAccessLogMode
     case 1003: case 1004: case 1006: break;
     case 1011: memset(resp->data, 0, 0x10); resp_size(resp, 0x10); break;
+    case 1200: ipc_return_object(resp, open_multi_commit()); break;
     default: LOG("[fs] fsp-srv cmd %u (ok)\n", req->cmd);
     }
 }

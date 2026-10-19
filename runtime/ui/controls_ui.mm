@@ -9,12 +9,14 @@
 #include <string.h>
 
 #include "imgui.h"
+#include "localization.h"
 #include "imgui_internal.h"  // (SetFocusID, NavCursorVisible)
 #include "option_rows.h"
 
 extern "C" {
 #include "../input_bind.h"
 #include "../settings.h"
+#include "../title_profile.h"
 int input_pad_family(void);              // runtime/hle/input.c
 SDL_JoystickID input_active_pad(void);   // runtime/hle/input.c: the controller the game reads (0: none yet)
 void input_apply_background(void);
@@ -122,7 +124,7 @@ static void watch_results(int fam, char *msg, size_t cap) {
     seen = serial;
     msg[0] = 0;
     if (kind == 2)
-        snprintf(msg, cap, "%s moved to %s (swapped).", bind_input_name(rother),
+        snprintf(msg, cap, ui_tr("%s moved to %s (swapped)."), ui_tr(bind_input_name(rother)),
                  rdev == BIND_DEV_PAD ? bind_pad_label(g_bind_pad[rother], fam) : bind_key_label(g_bind_key[rother]));
     if (kind == 1 || kind == 2 || kind == 5) settings_save();
 }
@@ -194,7 +196,7 @@ static void configure_inputs(float scale) {
             if (b.section) opt_section(b.section);
             bool waiting = cd == dev && cs == b.slot;
             char val[64];
-            if (waiting) snprintf(val, sizeof val, "%s...  %d", g_dev_pad ? "Press a button" : "Press a key", (ms + 999) / 1000);
+            if (waiting) snprintf(val, sizeof val, "%s...  %d", ui_tr(g_dev_pad ? "Press a button" : "Press a key"), (ms + 999) / 1000);
             else snprintf(val, sizeof val, "%s", g_dev_pad ? bind_pad_label(g_bind_pad[b.slot], fam) : bind_key_label(g_bind_key[b.slot]));
             // the same button / key on two inputs (a hand-edited larecomp.ini): red
             const int16_t *t = g_dev_pad ? g_bind_pad : g_bind_key;
@@ -214,7 +216,7 @@ static void configure_inputs(float scale) {
             }
         }
         g_in_right = in_right;
-        if (cd == dev) ImGui::TextDisabled("Esc cancels.");
+        if (cd == dev) ImGui::TextDisabled("%s", ui_tr("Esc cancels."));
         else if (msg[0]) ImGui::TextDisabled("%s", msg);
     }
     opt_split_end();
@@ -251,6 +253,17 @@ extern "C" void controls_tab_draw(float scale) {
     }
 
     opt_begin("##controls", scale);
+    if (!title_is_las()) {
+        // Non-LAS adapters do not expose the Gameplay tab where upstream moved language.
+        const char *names[N_LANGUAGES];
+        char automatic[64];
+        snprintf(automatic, sizeof automatic, ui_tr("Auto (%s)"), ui_tr(settings_language_name()));
+        names[0] = automatic;
+        for (int i = 1; i < N_LANGUAGES; i++) names[i] = g_language_names[i];
+        if (opt_choice("Language", &g_settings.language, names, N_LANGUAGES, LANG_AUTO,
+                       "Menus change immediately. Game text changes after returning to the start screen and choosing Play again."))
+            settings_save();
+    }
     opt_section("Inputs");
     if (opt_link("Configure inputs", "Choose the buttons and keys for the game. The menu always opens with F1, Esc, "
                                      "Home or Back + Start, so no binding can lock you out.")) {
@@ -282,7 +295,7 @@ extern "C" void controls_tab_draw(float scale) {
     {
         static const char *const fam[] = {"Nintendo", "Xbox", "PlayStation"};
         char autol[64];
-        snprintf(autol, sizeof autol, "Auto (%s)", fam[input_pad_family() % 3]);
+        snprintf(autol, sizeof autol, ui_tr("Auto (%s)"), fam[input_pad_family() % 3]);
         const char *names[] = {autol, "Nintendo", "Xbox", "PlayStation"};
         opt_choice("Button icons", &g_settings.prompts, names, 4, PROMPTS_AUTO,
                    "The button icons the game shows, and which button confirms in these menus. Auto: the "

@@ -15,6 +15,8 @@
 #include "gamelib.h"
 #include "paths.h"
 #include "platform.h"
+#include "game_profiles.h"
+#include "game_install.h"
 
 static char g_root[1024], g_start[1024], g_exe_dir[1024];
 
@@ -71,8 +73,8 @@ static bool writable(const char *dir) {
 
 static void fail(const char *msg) {
     fprintf(stderr, "%s\n", msg);
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "LAS Recomp", msg, NULL);
-    exit(1);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Multi", msg, NULL);
+    plat_exit(1);
 }
 
 static bool g_dev;  // the data root is the starting folder because it has extracted/ (a source checkout)
@@ -106,11 +108,11 @@ void rt_paths_init(void) {
     char msg[1400];
     if (!is_dir(root) || !writable(root) || chdir(root) != 0) {
 #ifdef _WIN32
-        snprintf(msg, sizeof msg, "LAS Recomp can't write to its folder:\n%s\n\nIt keeps game files, saves and seeds "
-                 "next to the program. Move the \"LAS Recomp\" folder somewhere you can write to (e.g. Documents or "
+        snprintf(msg, sizeof msg, "Multi can't write to its folder:\n%s\n\nIt keeps game files, saves and seeds "
+                 "next to the program. Move the \"Multi\" folder somewhere you can write to (e.g. Documents or "
                  "Desktop, not Program Files) and start it again.", root);
 #else
-        snprintf(msg, sizeof msg, "LAS Recomp can't write to its data folder:\n%s", root);
+        snprintf(msg, sizeof msg, "Multi can't write to its data folder:\n%s", root);
 #endif
         fail(msg);
     }
@@ -139,15 +141,12 @@ bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n) {
 // What the setup (runtime/ui/launcher.mm) creates in extracted/, plus what older versions' extraction and manual
 // extractions left there (never read at run time).
 static const char *const GAME_FILES[] = {"exefs", "romfs", "romfs.bin", GAMELIB_NAME, GAMELIB_NAME ".id", ".gamebuild",
-                                         ".zigcache", ".extract", "extract.log", "xci_secure", "nso_raw", "update_pfs",
-                                         ".DS_Store"};
+                                         ".zigcache", ".extract", "extract.log", "xci_secure", "nso_raw", "update_pfs", ".DS_Store",
+                                         "import-manifest.json"};
 
-// game_dir must be <data root>/extracted, a real folder (a dev worktree's symlinked extracted/ is refused)
+// Only fixed installation slots under the data root; symlinked/junction paths are refused.
 static bool game_dir_ok(const char *game_dir) {
-    char want[1100], got[1100];
-    snprintf(want, sizeof want, "%s" SEP "extracted", g_root);
-    if (!g_root[0] || is_link(game_dir) || !resolve(game_dir, got, sizeof got)) return false;
-    return path_eq(want, got);
+    return g_root[0] && game_profile_index(game_dir, g_root) >= 0;
 }
 
 bool rt_remove_game_file(const char *game_dir, const char *name) {
@@ -169,12 +168,16 @@ bool rt_remove_game_file(const char *game_dir, const char *name) {
 
 bool rt_remove_game_files(const char *game_dir) {
     if (!game_dir_ok(game_dir)) {
-        fprintf(stderr, "[paths] refusing to delete game files in %s (not <data root>/extracted)\n", game_dir);
+        fprintf(stderr, "[paths] refusing to delete game files in %s (not a managed installation)\n", game_dir);
         return false;
     }
+    int profile = game_profile_index(game_dir, g_root);
+    char slot[2048], why[512];
+    snprintf(slot, sizeof slot, "%s/%s", g_root, game_profile_install_dir(profile));
+    if (!game_install_clear(slot, why, sizeof why)) { fprintf(stderr, "[paths] %s\n", why); return false; }
     bool ok = true;
-    for (size_t i = 0; i < sizeof GAME_FILES / sizeof *GAME_FILES; i++) ok &= rt_remove_game_file(game_dir, GAME_FILES[i]);
-    rmdir(game_dir);  // only if empty: anything else in there stays
+    for (size_t i = 0; i < sizeof GAME_FILES / sizeof *GAME_FILES; i++) ok &= rt_remove_game_file(slot, GAME_FILES[i]);
+    rmdir(slot);  // only if empty: anything else in there stays
     return ok;
 }
 
@@ -200,6 +203,14 @@ static unsigned long long tree_size(const char *p) {
 unsigned long long rt_game_files_size(const char *game_dir) {
     unsigned long long n = 0;
     char p[1100];
+    int profile = game_profile_index(game_dir, g_root);
+    char slot[2048];
+    if (profile >= 0) {
+        snprintf(slot, sizeof slot, "%s/%s", g_root, game_profile_install_dir(profile));
+        game_dir = slot;
+        snprintf(p, sizeof p, "%s/.installations", game_dir);
+        n += tree_size(p);
+    }
     for (size_t i = 0; i < sizeof GAME_FILES / sizeof *GAME_FILES; i++) {
         snprintf(p, sizeof p, "%s" SEP "%s", game_dir, GAME_FILES[i]);
         n += tree_size(p);

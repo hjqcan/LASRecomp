@@ -9,6 +9,7 @@
 #include "imgui_internal.h"  // (SetKeyOwner, NavCursorVisible)
 
 #include "option_rows.h"
+#include "localization.h"
 #include "osk.h"
 
 static float g_scale = 1;
@@ -32,6 +33,13 @@ void opt_begin(const char *id, float scale) {
     g_take_first = g_focus_req;
     g_focus_req = false;
     if (g_take_first) ImGui::NavMoveRequestCancel();  // (this frame's Down goes to the first row instead)
+    static std::string page;
+    static UiLanguage language;
+    if (page != id || language != ui_language()) {
+        page = id;
+        language = ui_language();
+        g_desc_shown.clear();
+    }
     g_indent = 0;
     g_desc_hover.clear(), g_desc_focus.clear();
     ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -42,7 +50,7 @@ void opt_begin(const char *id, float scale) {
 }
 
 void opt_section(const char *title) {
-    std::string t = title;
+    std::string t = ui_tr(title);
     for (char &c : t) c = (char)toupper((unsigned char)c);
     if (ImGui::GetCursorPosY() > ImGui::GetStyle().WindowPadding.y + 1) ImGui::Dummy(ImVec2(0, 10 * g_scale));
     ImGui::TextColored(ImVec4(0.55f, 0.58f, 0.52f, 1), "%s", t.c_str());
@@ -96,7 +104,7 @@ static int row(const char *label, const std::string &value, bool changed, const 
     dl->AddRect(p, ImVec2(p.x + w, p.y + h), hov || foc ? (off ? IM_COL32(236, 194, 84, 120) : kGold)
                                              : mark ? IM_COL32(236, 194, 84, 130) : IM_COL32(255, 255, 255, off ? 18 : 38),
                 r, 0, hov || foc || mark ? 2.0f : 1.0f);
-    std::string t = label;
+    std::string t = upper ? ui_tr(label) : label;
     if (upper)
         for (char &c : t) c = (char)toupper((unsigned char)c);
     float ty = p.y + (h - fs) * 0.5f;
@@ -134,14 +142,14 @@ static int row(const char *label, const std::string &value, bool changed, const 
 }
 
 bool opt_toggle(const char *label, bool *v, bool def, const char *desc) {
-    if (!row(label, *v ? "On" : "Off", *v != def, desc)) return false;  // (any step flips it)
+    if (!row(label, ui_tr(*v ? "On" : "Off"), *v != def, desc)) return false;  // (any step flips it)
     *v = !*v;
     return true;
 }
 
 bool opt_choice(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap) {
     int cur = *v >= 0 && *v < n ? *v : 0;
-    int step = row(label, names[cur], cur != def, desc, true, true);
+    int step = row(label, ui_tr(names[cur]), cur != def, desc, true, true);
     if (!step) return false;
     int nv = cur + (step == 2 ? 1 : step);
     nv = wrap ? (nv + n) % n : nv < 0 ? 0 : nv >= n ? n - 1 : nv;
@@ -152,7 +160,7 @@ bool opt_choice(const char *label, int *v, const char *const *names, int n, int 
 
 bool opt_slider(const char *label, float *v, float lo, float hi, float step, float def, const char *fmt, const char *desc) {
     char buf[32];
-    snprintf(buf, sizeof buf, fmt, *v);
+    snprintf(buf, sizeof buf, ui_tr(fmt), *v);
     int s = row(label, buf, fabsf(*v - def) > step * 0.01f, desc, true, true);
     if (!s) return false;
     float eps = step * 0.01f, n = roundf(*v / step) * step + (s == 2 ? step : s * step);
@@ -164,8 +172,8 @@ bool opt_slider(const char *label, float *v, float lo, float hi, float step, flo
 bool opt_int(const char *label, int *v, int lo, int hi, int step, int def, const char *fmt, const char *desc,
              const char *lo_name) {
     char buf[48];
-    if (lo_name && *v == lo) snprintf(buf, sizeof buf, "%s", lo_name);
-    else snprintf(buf, sizeof buf, fmt, *v);
+    if (lo_name && *v == lo) snprintf(buf, sizeof buf, "%s", ui_tr(lo_name));
+    else snprintf(buf, sizeof buf, ui_tr(fmt), *v);
     int s = row(label, buf, *v != def, desc, true, true);
     if (!s) return false;
     int d = s == 2 ? step : s * step * (g_held && hi - lo > 40 * step ? 10 : 1);
@@ -205,13 +213,13 @@ bool opt_text(const char *label, char *buf, size_t cap, const char *hint, const 
     static int focus;        // frames left to give it the keyboard focus
     ImGuiID id = ImGui::GetID(label);
     if (editing != id) {
-        if (row(label, buf[0] ? buf : (hint ? hint : ""), false, desc) == 2) editing = id, focus = 2;
+        if (row(label, buf[0] ? buf : ui_tr(hint), false, desc) == 2) editing = id, focus = 2;
         return false;
     }
     ImGui::PushID(label);
     ImGui::SetNextItemWidth(-1);
     if (focus > 0) ImGui::SetKeyboardFocusHere(), focus--;
-    bool done = ui_input_text("##text", buf, cap, ImGuiInputTextFlags_EnterReturnsTrue, hint, label);
+    bool done = ui_input_text("##text", buf, cap, ImGuiInputTextFlags_EnterReturnsTrue, ui_tr(hint), ui_tr(label));
     if (ImGui::IsItemFocused()) g_desc_focus = desc ? desc : "";
     if (done || ui_input_text_cancelled() || (focus == 0 && !ImGui::IsItemActive() && !osk_is_open())) editing = 0;
     ImGui::PopID();
@@ -245,7 +253,7 @@ static void right_begin(const char *id, ImGuiWindowFlags flags) {
 void opt_desc_text(void) {
     ImGui::SetWindowFontScale(1.3f);  // (the description reads at a glance)
     ImGui::PushTextWrapPos(0);
-    ImGui::TextUnformatted(g_desc_shown.c_str());
+    ImGui::TextUnformatted(ui_tr(g_desc_shown.c_str()));
     ImGui::PopTextWrapPos();
     ImGui::SetWindowFontScale(1.0f);
 }

@@ -8,7 +8,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: ['main', 'beta_*']
+    branches: ['main', 'beta_*', 'multi']
   workflow_dispatch:
 permissions:
   contents: read
@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang lld make pkg-config cmake ninja-build \
-            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libvulkan-dev libshaderc-dev \
+            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libopus-dev libvulkan-dev libshaderc-dev \
             libvulkan-memory-allocator-dev \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev \
             libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgl-dev libdrm-dev libgbm-dev \
@@ -51,6 +51,10 @@ jobs:
           cmake --install sdl-build
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp DEPS="$HOME/sdl3"
+      - name: Opus service regression tests
+        run: python3 tools/test_hwopus.py
+      - name: Random-byte service regression tests
+        run: python3 tools/test_csrng.py
       - name: Build cache and resume tests
         run: |
           python3 tools/test_build_cache.py
@@ -68,18 +72,48 @@ jobs:
           build/test-condvar
       - name: Settings regression tests
         run: python3 tools/test_settings.py
+      - name: Shared libc and title-specific randomizer boundaries
+        run: |
+          python3 tools/test_hle_libc.py
+          python3 tools/test_enemy_random.py
       - name: Dynamic resolution controller (simulated GPU)
         run: python3 tools/test_dynres.py
       - name: Vulkan fence sequence regression
         run: python3 tools/test_fence_sequence.py
+      - name: Audio effect impulse and routing regressions
+        run: |
+          clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_delay.c -o build/test-audio-delay
+          build/test-audio-delay
+          clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_reverb3d.c -lm -o build/test-audio-reverb3d
+          build/test-audio-reverb3d
+          clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_aux.c -o build/test-audio-aux
+          build/test-audio-aux
+      - name: Shader scheduling policy regression
+        run: |
+          python3 tools/test_render_queue.py
+          python3 tools/test_shader_policy.py
+          python3 tools/test_shader_jobs.py
+          python3 tools/test_shader_snapshot.py
+          python3 tools/test_prepared_shader_lifetime.py
       - name: Vulkan validation failure regression
         run: python3 tools/test_vulkan_validation.py
       - name: SIMD rounding and host-state regression
         run: |
           clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -lm -o build/test-simd-rounding
           build/test-simd-rounding
+      - name: Save commit and fork backup integration
+        run: python3 tools/test_save_commit.py
       - name: Game address table tests
-        run: python3 tools/test_game_addresses.py
+        run: |
+          python3 tools/test_game_addresses.py
+          python3 tools/test_version_hooks.py
+      - name: Local co-op guards and SDL input isolation
+        run: |
+          python3 tools/test_coop_gate.py
+          PKG_CONFIG_PATH="$HOME/sdl3/lib/pkgconfig:$HOME/sdl3/lib64/pkgconfig" \
+            LD_LIBRARY_PATH="$HOME/sdl3/lib:$HOME/sdl3/lib64" python3 tools/test_coop_input.py
+          PKG_CONFIG_PATH="$HOME/sdl3/lib/pkgconfig:$HOME/sdl3/lib64/pkgconfig" \
+            LD_LIBRARY_PATH="$HOME/sdl3/lib:$HOME/sdl3/lib64" python3 tools/test_rumble.py
       - name: Vulkan synchronization failure regression
         run: python3 tools/test_vulkan_sync_errors.py
       - name: Shader translator instruction semantics
@@ -88,15 +122,29 @@ jobs:
         run: |
           python3 -m venv tools/venv && tools/venv/bin/pip install -q unicorn capstone lz4
           tools/venv/bin/python tools/test_simd.py --encodings 3000 --cases 4 --jobs "$(nproc)"
+          tools/venv/bin/python tools/test_guest_jump.py
+          tools/venv/bin/python tools/test_exclusive_pairs.py
+          tools/venv/bin/python tools/test_relr.py
+          tools/venv/bin/python tools/test_gnu_hash.py
+          tools/venv/bin/python tools/test_generator_memory.py
+          tools/venv/bin/python tools/test_large_dispatch.py
+          tools/venv/bin/python tools/test_cross_fragment_tables.py
+          tools/venv/bin/python tools/test_unbounded_tables.py
+          tools/venv/bin/python tools/test_fragment_guard.py
+          tools/venv/bin/python tools/test_masked_tables.py
 
   macos:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Packages
-        run: brew install sdl3 ffmpeg
+        run: brew install sdl3 ffmpeg opus
       - name: App builds
         run: make -j"$(sysctl -n hw.ncpu)" build/lasrecomp
+      - name: Opus service regression tests
+        run: python3 tools/test_hwopus.py
+      - name: Random-byte service regression tests
+        run: python3 tools/test_csrng.py
       - name: SIMD rounding and host-state regression
         run: |
           clang -std=gnu11 -O1 -pthread tools/test_simd_rounding.c -o build/test-simd-rounding
@@ -118,10 +166,36 @@ jobs:
           build/test-condvar
       - name: Settings regression tests
         run: python3 tools/test_settings.py
+      - name: Shared libc and title-specific randomizer boundaries
+        run: |
+          python3 tools/test_hle_libc.py
+          python3 tools/test_enemy_random.py
+      - name: Rumble and prepared shader ownership
+        run: |
+          python3 tools/test_render_queue.py
+          python3 tools/test_rumble.py
+          python3 tools/test_prepared_shader_lifetime.py
+      - name: Exclusive pairs and native contention
+        run: |
+          python3 -m venv build/exclusive-test-env
+          build/exclusive-test-env/bin/pip install -q unicorn lz4 capstone
+          build/exclusive-test-env/bin/python tools/test_exclusive_pairs.py
+          build/exclusive-test-env/bin/python tools/test_relr.py
+          build/exclusive-test-env/bin/python tools/test_gnu_hash.py
+          build/exclusive-test-env/bin/python tools/test_generator_memory.py
+          build/exclusive-test-env/bin/python tools/test_large_dispatch.py
+          build/exclusive-test-env/bin/python tools/test_cross_fragment_tables.py
+          build/exclusive-test-env/bin/python tools/test_unbounded_tables.py
+          build/exclusive-test-env/bin/python tools/test_fragment_guard.py
+          build/exclusive-test-env/bin/python tools/test_masked_tables.py
+      - name: Save commit and fork backup integration
+        run: python3 tools/test_save_commit.py
       - name: Dynamic resolution controller (simulated GPU)
         run: python3 tools/test_dynres.py
       - name: Game address table tests
-        run: python3 tools/test_game_addresses.py
+        run: |
+          python3 tools/test_game_addresses.py
+          python3 tools/test_version_hooks.py
       - name: Vulkan synchronization failure regression
         run: python3 tools/test_vulkan_sync_errors.py
       - name: Shader translator instruction semantics
@@ -139,20 +213,27 @@ jobs:
       - uses: actions/checkout@v4
       # MSYS2 UCRT64 with the packages tools/setup_windows.ps1 installs (minus the debugger / validation layers),
       # binutils for windres (the exe's icon), git for tools/test_translate.sh
+      - uses: actions/setup-python@v5
+        id: native_python
+        with:
+          python-version: '3.12'
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: true
           install: make git python
-          pacboy: clang:p lld:p binutils:p python:p sdl3:p ffmpeg:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
+          pacboy: clang:p lld:p binutils:p python:p sdl3:p ffmpeg:p opus:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
             vulkan-memory-allocator:p
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp.exe
+      - name: Opus service regression tests
+        run: clang -std=gnu11 -O1 -Wall -Wextra -Werror -pthread tools/test_hwopus.c -lopus -o build/test-hwopus.exe && build/test-hwopus.exe
       - name: Build cache and resume tests
         run: |
           python3 tools/test_build_cache.py
           python3 tools/test_gamebuild_resume.py
           python3 tools/test_windows_processes.py
+          python3 tools/test_save_mount.py
       - name: Save I/O regression tests
         run: python3 tools/test_save.py
       - name: Movie extractor lifecycle regression
@@ -168,16 +249,56 @@ jobs:
         run: python tools/test_fence_sequence.py
       - name: Vulkan validation failure regression
         run: python tools/test_vulkan_validation.py
-      - name: Windows guest thread stack regression
+      - name: Native runtime regressions (UCRT64 and FFmpeg headers)
         run: |
+          python tools/test_hle_libc.py
+          python tools/test_enemy_random.py
+          for name in touch prepo csrng olsc bcat nvn_pool_mapping; do
+            clang -std=gnu11 -O1 -Iruntime "tools/test_${name}.c" -o "build/test-${name}.exe"
+            "build/test-${name}.exe"
+          done
+          clang -std=gnu11 -O1 -D_POSIX_THREAD_SAFE_FUNCTIONS tools/test_time_service.c -o build/test-time.exe
+          build/test-time.exe
+          clang -std=gnu11 -O1 -pthread -DTEST_AUDIO_RENDERER tools/test_audio_splitter.c -o build/test-audio-renderer.exe
+          build/test-audio-renderer.exe
+          clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_delay.c -o build/test-audio-delay.exe
+          build/test-audio-delay.exe
+          clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_reverb3d.c -o build/test-audio-reverb3d.exe
+          build/test-audio-reverb3d.exe
+          clang -std=c11 -O2 -Wall -Wextra -Werror tools/test_audio_aux.c -o build/test-audio-aux.exe
+          build/test-audio-aux.exe
+          clang -std=gnu11 -O1 tools/test_movie_source.c -lavformat -lavcodec -lavutil -lswscale -o build/test-movie-source.exe
+          mkdir -p build/movie-source-test
+          build/test-movie-source.exe build/movie-source-test
           clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe
           build/test-thread-stack.exe
+          sh tools/test_vk_texture_scale.sh
       - name: Windows session log regression
         run: python tools/test_windows_logs.py
-      - name: SIMD rounding and host-state regression
+      - name: Recompiled guest nonlocal returns
+        env:
+          WINDOWS_TEST_PYTHON: ${{ steps.native_python.outputs.python-path }}
         run: |
+          test_python=$(cygpath -u "$WINDOWS_TEST_PYTHON")
+          "$test_python" -m venv build/jump-test-env
+          build/jump-test-env/Scripts/python.exe -m pip install -q lz4 unicorn capstone
+          build/jump-test-env/Scripts/python.exe tools/test_guest_jump.py
+          build/jump-test-env/Scripts/python.exe tools/test_exclusive_pairs.py
+          build/jump-test-env/Scripts/python.exe tools/test_relr.py
+          build/jump-test-env/Scripts/python.exe tools/test_gnu_hash.py
+          build/jump-test-env/Scripts/python.exe tools/test_generator_memory.py
+          build/jump-test-env/Scripts/python.exe tools/test_large_dispatch.py
+          build/jump-test-env/Scripts/python.exe tools/test_cross_fragment_tables.py
+          build/jump-test-env/Scripts/python.exe tools/test_unbounded_tables.py
+          build/jump-test-env/Scripts/python.exe tools/test_fragment_guard.py
+          build/jump-test-env/Scripts/python.exe tools/test_masked_tables.py
+          GLSLC=glslc build/jump-test-env/Scripts/python.exe tools/test_shader_shared.py
+          build/jump-test-env/Scripts/python.exe tools/test_prepared_shader_lifetime.py
+          build/jump-test-env/Scripts/python.exe tools/test_render_queue.py
+          SDL_FLAGS="$(pkg-config --cflags --libs sdl3)" build/jump-test-env/Scripts/python.exe tools/test_rumble.py
           clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -o build/test-simd-rounding.exe
           build/test-simd-rounding.exe
+          build/jump-test-env/Scripts/python.exe tools/test_simd.py --encodings 4000 --cases 8 --jobs 4 --no-validity
       # (GLSL only: the script's MSL comparison needs a reference commit that isn't in the history any more; REF=HEAD
       # just satisfies it. The GLSL half - every fuzzed translation compiles and validates - is the check)
       - name: Shader translator fuzz (GLSL)

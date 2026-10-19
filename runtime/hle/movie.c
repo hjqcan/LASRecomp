@@ -1,14 +1,18 @@
+#include "../mods.h"
+#include "../rando.h"
 // movie:: (nnMedia) implemented with FFmpeg: an Android MediaExtractor/MediaCodec-style API.
 // The game owns the objects (vtable at +0); we keep host state at +8.
 //
-// Extractor slots: 4 GetTrackCount(int*), 5 GetTrackConfiguration(int, MediaData*), 6 SelectTrack(int),
+// Extractor slots: 2 SetDataSource(const char*), 4 GetTrackCount(int*),
+//   5 GetTrackConfiguration(int, MediaData*), 6 SelectTrack(int),
 //   9 GetSampleTrackIndex(size_t*), 10 Read(Buffer*), 11 Advance(), 12 GetSampleTime(int64*),
 //   15 SetDataSource(DataSource*, const char* path).
 // Decoder slots: 2 Configure(MediaData*), 3 RegisterClientEvents(EventType*[4]), 4 GetOutputFormat(MediaData*),
-//   6 Start, 9 AcquireInputBufferIndex(int*, int*), 10 GetInputBuffer(int, Buffer*),
+//   5 Start, 6 Stop, 9 AcquireInputBufferIndex(int*, int*), 10 GetInputBuffer(int, Buffer*),
 //   11 SendInputBufferForDecode(int, int off, int size, int64 time, uint32 flags),
 //   12 AcquireOutputBufferIndex(int*, int64*, uint32*, int*), 13 GetOutputBuffer(int, Buffer*),
-//   15 ReleaseOutputBufferIndex(int), 18 GetOutputBufferFormat(int, MediaData*).
+//   14 GetOutputBufferSize(int*, int*), 15 ReleaseOutputBufferIndex(int),
+//   17 GetOutputBuffer(int, Buffer*, MediaData*), 18 GetOutputBufferFormat(int, MediaData*).
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/time.h>
@@ -19,6 +23,8 @@
 #include <string.h>
 
 #include "../hle.h"
+#include "../mods.h"
+#include "../rando.h"
 #include "../settings.h"
 
 #define MOVIE_EOS 4u
@@ -85,15 +91,41 @@ HLE_FUNC("_ZNK5movie9MediaData10FindStringEPKcPS2_", md_find_string) {
     c->x[0] = 0;
 }
 
-// ------------------------------------------------------------------ Buffer (opaque, <= 0x40 bytes)
+// The ACNH multimedia API also queries the decoder's visible rectangle. Host
+// frames are emitted uncropped, so their inclusive rectangle is the full frame.
+HLE_FUNC("_ZNK5movie9MediaData8FindRectEPKcPiS3_S3_S3_", md_find_rect) {
+    MediaData *m = md(c->x[0]);
+    const char *k = (const char *)(uintptr_t)c->x[1];
+    int32_t width = 0, height = 0;
+    if (k && !strcmp(k, "crop")) {
+        for (int i = 0; i < m->n; i++) {
+            if (!strcmp(m->e[i].key, "width")) width = (int32_t)m->e[i].ival;
+            if (!strcmp(m->e[i].key, "height")) height = (int32_t)m->e[i].ival;
+        }
+    }
+    if (width <= 0 || height <= 0) { c->x[0] = 0; return; }
+    *(int32_t *)(uintptr_t)c->x[2] = 0;
+    *(int32_t *)(uintptr_t)c->x[3] = 0;
+    *(int32_t *)(uintptr_t)c->x[4] = width - 1;
+    *(int32_t *)(uintptr_t)c->x[5] = height - 1;
+    c->x[0] = 1;
+}
+
+// ------------------------------------------------------------------ Buffer (0x40-byte public ABI)
+// Some callers inline Base/Data/Size instead of calling exported methods. Keep
+// these offsets identical for both supported multimedia SDKs.
 typedef struct {
-    uint64_t base, capacity;
     int32_t offset, size;
-    int64_t i64;
-    uint32_t u32;
     int32_t i32;
+    uint32_t u32;
+    uint8_t owned, reserved[7];
+    uint64_t capacity;
+    int64_t i64;
+    uint64_t base, nvn_device, nvn_sync;
 } MBuffer;
-_Static_assert(sizeof(MBuffer) <= 0x40, "movie::Buffer size");
+_Static_assert(sizeof(MBuffer) == 0x40, "movie::Buffer size");
+_Static_assert(offsetof(MBuffer, capacity) == 0x18 && offsetof(MBuffer, base) == 0x28,
+               "movie::Buffer inline accessors");
 #define BUF(x) ((MBuffer *)(uintptr_t)(x))
 
 HLE_FUNC("_ZN5movie6BufferC1Ev", buf_ctor) { memset(BUF(c->x[0]), 0, sizeof(MBuffer)); }
@@ -132,6 +164,7 @@ HLE_FUNC("_ZN5movie6Buffer12SetInt32DataEi", buf_set_i32) { BUF(c->x[0])->i32 = 
 
 HLE_FUNC("_ZN5movie12SetAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", movie_set_allocator) { (void)c; }
 HLE_FUNC("_ZN5movie17SetThreadPriorityEi", movie_set_thread_priority) { (void)c; }
+HLE_FUNC("_ZN5movie11SetCoreMaskEm", movie_set_core_mask) { (void)c; }
 HLE_FUNC("_ZN5movie17GetThreadPriorityEv", movie_get_thread_priority) { c->x[0] = 16; }
 
 // ------------------------------------------------------------------ helpers
@@ -224,7 +257,8 @@ static void ex_set_data_source(Cpu *c) {
     // "rom:/region_common/movie/title.webm" -> extracted/romfs/region_common/movie/title.webm
     const char *rel = path && strstr(path, ":/") ? strstr(path, ":/") + 2 : path;
     char host[1024];
-    snprintf(host, sizeof host, "%s/%s", g_romfs_dir, rel ? rel : "");
+    if (!rando_romfs_override(rel ? rel : "", host, sizeof host) && !mods_romfs_override(rel ? rel : "", host, sizeof host))
+        snprintf(host, sizeof host, "%s/%s", g_romfs_dir, rel ? rel : "");
     LOG("[movie] open %s -> %s\n", path ? path : "(null)", host);
     if (avformat_open_input(&e->fmt, host, NULL, NULL) < 0 || avformat_find_stream_info(e->fmt, NULL) < 0) {
         LOG("[movie] cannot open %s\n", host);
@@ -242,6 +276,13 @@ static void ex_set_data_source(Cpu *c) {
             (e->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && g_settings.movie_audio && !getenv("LARECOMP_NO_MOVIE_AUDIO")))
             e->map[e->ntracks++] = (int)i;
     c->x[0] = 0;
+}
+
+// The path-only overload occupies slot 2. LAS supplies a ClientStreamReader
+// and path at slot 15; other callers use this standard local-file overload.
+static void ex_set_path_source(Cpu *c) {
+    c->x[2] = c->x[1];
+    ex_set_data_source(c);
 }
 
 static void ex_get_track_count(Cpu *c) {
@@ -379,11 +420,12 @@ EX_LOCKED(ex_advance)
 EX_LOCKED(ex_get_sample_time)
 EX_LOCKED(ex_cached_duration)
 EX_LOCKED(ex_set_data_source)
+EX_LOCKED(ex_set_path_source)
 
 HLE_FUNC("_ZN5movie9ExtractorC1ENS_13ContainerTypeE", movie_extractor_ctor) {
     uint64_t vt = g_ex_vt;
     if (!vt) {
-        HostFn f[16] = {ex_dtor_l, ex_dtor_l, movie_log_slot, movie_log_slot, ex_get_track_count_l,
+        HostFn f[16] = {ex_dtor_l, ex_dtor_l, ex_set_path_source_l, movie_log_slot, ex_get_track_count_l,
                         ex_get_track_config_l, ex_select_track_l, movie_log_slot, ex_seek_l, ex_get_sample_track_l,
                         ex_read_l, ex_advance_l, ex_get_sample_time_l, movie_log_slot, ex_cached_duration_l,
                         ex_set_data_source_l};
@@ -394,6 +436,12 @@ HLE_FUNC("_ZN5movie9ExtractorC1ENS_13ContainerTypeE", movie_extractor_ctor) {
     Extractor *e = calloc(1, sizeof(Extractor));
     self[1] = (uint64_t)(uintptr_t)e;
     movie_track(0, e, true);
+}
+
+// Same 16-byte public object/vtable as the one-argument constructor; the extra
+// argument chooses the guest's streaming cache, which FFmpeg owns on the host.
+HLE_FUNC("_ZN5movie9ExtractorC1ENS_13ContainerTypeENS_9CacheSizeE", movie_extractor_cache_ctor) {
+    movie_extractor_ctor(c);
 }
 
 // ------------------------------------------------------------------ Decoder
@@ -412,6 +460,7 @@ typedef struct {
     AVFrame *frame;
     AVPacket *pkt;
     bool video;
+    int output_format;
     uint64_t events[4];  // input available, output available, format changed, error
     uint8_t *in_mem[NIN];
     uint32_t in_cap;
@@ -507,9 +556,11 @@ static void dec_output_format(Decoder *d, MediaData *m) {
         md_set_str(m, "mime", "video/raw");
         md_set_int(m, "width", d->width);
         md_set_int(m, "height", d->height);
-        md_set_int(m, "nv12-y-stride", d->stride);
+        int stride = d->output_format == 4 ? d->width : d->stride;
+        int rows = d->output_format == 4 ? d->height : ((d->height + 15) & ~15);
+        md_set_int(m, "nv12-y-stride", stride);
         md_set_int(m, "nv12-y-offset", 0);
-        md_set_int(m, "nv12-uv-offset", d->stride * ((d->height + 15) & ~15));
+        md_set_int(m, "nv12-uv-offset", stride * rows);
         md_set_int(m, "nv12-colorspace", 0);
     } else {
         md_set_str(m, "mime", "audio/raw");
@@ -713,7 +764,9 @@ static void dec_get_output_buffer(Cpu *c) {
     n_get_out++;
     int i = (int)c->x[1];
     MBuffer *b = BUF(c->x[2]);
-    if (i < 0 || i >= NOUT) { c->x[0] = 1; return; }
+    if (i < 0 || i >= NOUT || !b) { c->x[0] = 0x100b; return; }
+    b->offset = b->size = 0;
+    if (!d->out_size[i]) { c->x[0] = 0; return; }
     if (d->video && b->base && b->capacity == 8) {
         // texture output mode: the buffer points at the game's NVNtexture; write RGBA into it
         NvnTexture *t = *(NvnTexture **)(uintptr_t)b->base;
@@ -723,6 +776,7 @@ static void dec_get_output_buffer(Cpu *c) {
         if (gpu < 0) gpu = !getenv("LARECOMP_MOVIE_CPU_CONVERT");
         if (gpu && renderer_upload_nv12(t, d->out_mem[i], (uint32_t)w, (uint32_t)h, (uint32_t)d->stride,
                                         (uint32_t)(d->stride * ((h + 15) & ~15)))) {
+            b->size = 8;
             c->x[0] = 0;
             return;
         }
@@ -735,6 +789,32 @@ static void dec_get_output_buffer(Cpu *c) {
         int dst_stride[1] = {w * 4};
         sws_scale(d->sws, src, src_stride, 0, h, dst, dst_stride);
         renderer_upload_rgba(t, d->rgba, (uint32_t)w, (uint32_t)h, (uint32_t)w * 4);
+        b->size = 8;
+        c->x[0] = 0;
+        return;
+    }
+    // Copy-mode callers keep their original allocation and pass it to audio or
+    // NVN after this call. Replacing Base() leaves that allocation untouched.
+    // NV12 output format 4 is tightly packed, unlike our padded decoder slots.
+    if (b->base) {
+        uint64_t size = d->video && d->output_format == 4
+            ? (uint64_t)d->width * d->height + 2ull * (d->width / 2) * (d->height / 2)
+            : d->out_size[i];
+        if (size > b->capacity || size > INT32_MAX) { c->x[0] = 0x100b; return; }
+        uint8_t *dst = (uint8_t *)(uintptr_t)b->base;
+        if (d->video && d->output_format == 4) {
+            const uint8_t *src = d->out_mem[i];
+            for (int y = 0; y < d->height; y++)
+                memcpy(dst + (size_t)y * d->width, src + (size_t)y * d->stride, d->width);
+            dst += (size_t)d->width * d->height;
+            src += (size_t)d->stride * ((d->height + 15) & ~15);
+            for (int y = 0; y < d->height / 2; y++)
+                memcpy(dst + (size_t)y * (d->width / 2) * 2,
+                       src + (size_t)y * d->stride, (d->width / 2) * 2);
+        } else {
+            memcpy(dst, d->out_mem[i], (size_t)size);
+        }
+        b->size = (int32_t)size;
         c->x[0] = 0;
         return;
     }
@@ -743,6 +823,12 @@ static void dec_get_output_buffer(Cpu *c) {
     b->capacity = d->out_cap;
     b->size = (int32_t)d->out_size[i];
     c->x[0] = 0;
+}
+
+static void dec_get_output_buffer_with_format(Cpu *c) {
+    if (!c->x[2] || !c->x[3]) { c->x[0] = 0x100b; return; }
+    dec_output_format(self_state(c), md(c->x[3]));
+    dec_get_output_buffer(c);
 }
 
 static void dec_release_output(Cpu *c) {
@@ -798,9 +884,13 @@ RT_ON_RESET(movie_reset) {
     g_skip_held = false, g_skip_pressed_at = 0;
 }
 
-static void dec_get_counts(Cpu *c) {  // slot 14: (int*, int64*) queried after Configure
-    if (c->x[1]) *(int32_t *)(uintptr_t)c->x[1] = 0;
-    if (c->x[2]) *(int64_t *)(uintptr_t)c->x[2] = 0;
+static void dec_get_counts(Cpu *c) {  // slot 14: size and alignment, both int32_t
+    Decoder *d = self_state(c);
+    if (!c->x[1] || !c->x[2]) { c->x[0] = 0x100b; return; }
+    uint32_t size = d->video && d->output_format == 4
+        ? d->width * d->height + 2u * (d->width / 2) * (d->height / 2) : d->out_cap;
+    *(int32_t *)(uintptr_t)c->x[1] = (int32_t)size;
+    *(int32_t *)(uintptr_t)c->x[2] = 1;
     c->x[0] = 0;
 }
 
@@ -810,11 +900,12 @@ HLE_FUNC("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11Dec
         HostFn f[19] = {dec_dtor, dec_dtor, dec_configure, dec_register_events, dec_get_output_format,
                         dec_start, dec_stop, ok, ok, dec_acquire_input, dec_get_input_buffer, dec_send_input,
                         dec_acquire_output, dec_get_output_buffer, dec_get_counts, dec_release_output, ok,
-                        movie_log_slot, dec_get_output_buffer_format};
+                        dec_get_output_buffer_with_format, dec_get_output_buffer_format};
         vt = g_dec_vt = make_vtable(f, 19, "Decoder");
     }
     uint64_t *self = (uint64_t *)(uintptr_t)c->x[0];
     Decoder *d = calloc(1, sizeof *d);
+    d->output_format = (int)c->x[2];
     movie_track(1, d, true);
     pthread_mutex_init(&d->lock, NULL);
     self[0] = vt;

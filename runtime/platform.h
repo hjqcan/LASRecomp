@@ -18,6 +18,15 @@ extern "C" {
 // ---- guest address space
 // Claim [lo, hi) for the guest at exactly that address, readable/writable (pages may be backed lazily).
 bool plat_reserve_guest(uint64_t lo, uint64_t hi);
+// Extend the reservation after selecting an adapter. The original and extra
+// intervals must be reset separately (Windows retains two reservation objects).
+bool plat_reserve_guest_extra(uint64_t lo, uint64_t hi);
+// Back newly mapped 4-KiB guest pages with zeroes. Return false on allocation
+// failure; callers roll back the uncommitted transaction before returning an SVC error.
+bool plat_commit_physical(uint64_t addr, uint64_t size);
+// Release backing while retaining address ownership; preserve neighboring guest
+// pages even when the host uses 16/64-KiB pages. Access protection is unchanged.
+bool plat_discard_physical(uint64_t addr, uint64_t size);
 // Make sure [addr, addr+size) inside the guest window is backed (before the OS itself writes there, e.g.
 // file reads); a no-op where the whole window is backed from the start.
 void plat_commit(uint64_t addr, uint64_t size);
@@ -44,8 +53,10 @@ uint64_t plat_thread_cpu_ns(void);  // the calling thread's CPU time so far (use
 void plat_init(void);                                // first thing in main()
 bool plat_exe_path(char *buf, size_t size);
 void plat_exec(char *const argv[]);  // replace the process (NULL = same command line); returns only on failure
+void plat_exit(int status) __attribute__((noreturn)); // run cleanup and preserve status through renderer shutdown
+int plat_exit_status(void);
 #if defined(_WIN32) || defined(__linux__)
-void plat_terminate(void);  // end the process now, skipping DLL teardown (exit status 0)
+void plat_terminate(int status);  // end the process now, skipping DLL teardown
 #endif
 
 // Child processes (seed generator, game-file extraction). stdout + stderr go to log_path (NULL = /dev/null).

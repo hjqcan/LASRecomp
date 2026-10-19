@@ -2,12 +2,14 @@
 // (applied where the game computes Link's damage, see tools/patches.py DAMAGE_*_SITES); rt_hero_mode() reads the game's own Hero Mode flag (PlayerStatus+0x120 = save
 // 0x55E0). Settings persist in larecomp.ini (g_settings.diff_*).
 #include "../game_addresses.h"
+#include "../workshop.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "imgui.h"
+#include "localization.h"
 #include "option_rows.h"
 
 extern "C" {
@@ -36,6 +38,8 @@ extern "C" int32_t rt_damage(int32_t dmg, int32_t shift) {
     }
     int32_t base = dmg << (shift & 31);
     if (base <= 0) return base;  // healing / zero: untouched
+    int challenge = workshop_damage(base);
+    if (challenge >= 0) return challenge;
     if (g_settings.diff_ohko) return 999;
     float m = g_settings.diff_damage > 0 ? g_settings.diff_damage : 1.0f;
     int32_t r = (int32_t)lroundf((float)base * m);
@@ -55,12 +59,12 @@ extern "C" void difficulty_draw(float scale) {
     {
         // what the game is told the console's language is: its text follows this (runtime/settings.c)
         char autol[64];
-        snprintf(autol, sizeof autol, "Auto (%s)", settings_language_name());
+        snprintf(autol, sizeof autol, ui_tr("Auto (%s)"), ui_tr(settings_language_name()));
         const char *names[N_LANGUAGES];
         names[0] = autol;
         for (int i = 1; i < N_LANGUAGES; i++) names[i] = g_language_names[i];
         if (opt_choice("Language", &g_settings.language, names, N_LANGUAGES, LANG_AUTO,
-                       "The game's text language, as its own system setting. Applies when the game restarts."))
+                       "Menus change immediately. Game text changes after returning to the start screen and choosing Play again."))
             settings_save();
     }
     if (rt_hookshot_seed_forced()) {  // (the seed's logic counts on it: always on, the toggle greyed out)

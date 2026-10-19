@@ -28,6 +28,7 @@
 
 #include "../hle.h"
 #include "../rando.h"
+#include "../title_profile.h"
 
 extern uint64_t renderer_present_count(void);
 extern int game_in_play(void);
@@ -45,6 +46,7 @@ static const char *const kTarinHouse = "MarinTarinHouse";
 // LARECOMP_HINT_SHEET=1 / 0 forces it on / off (tests)
 static int on = -1;
 bool hint_sheet_on(void) {
+    if (!title_is_las()) return false;
     if (on >= 0) return on;
     const char *e = getenv("LARECOMP_HINT_SHEET");
     if (e) return on = atoi(e) != 0;

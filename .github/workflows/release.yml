@@ -1,4 +1,4 @@
-# LAS Recomp's release builds: the macOS arm64 .dmg (make dmg), the Windows x64 .zip (make dist) and the Linux
+# Multi's release builds: the macOS arm64 .dmg (make dmg), the Windows x64 .zip (make dist) and the Linux
 # x86_64 / aarch64 AppImages (make appimage), each from the same commit, put on a DRAFT GitHub release with their
 # sha256s. It never publishes: a person reads the draft, writes the notes and publishes it. None of the files holds
 # game code or game files (the start screen builds the game code from the player's own game files); every build
@@ -34,6 +34,7 @@ concurrency:  # (one run per tag at a time; a second waits instead of racing the
 
 jobs:
   check:
+    if: github.event_name != 'release' || github.repository == 'peiikai/LASRecomp'
     runs-on: ubuntu-24.04
     outputs:
       sha: ${{ steps.v.outputs.sha }}
@@ -118,7 +119,7 @@ jobs:
       # runtime sources)
       - name: No game code
         run: |
-          A="build/LAS Recomp.app"
+          A="build/Multi.app"
           bad=$(find "$A" -type d \( -name extracted -o -name 'generated*' -o -name exefs -o -name romfs \);
                 find "$A" -name '*.c' ! -path '*/zig/lib/*' ! -path '*/gamelib-src/gamelib_entry.c'; find "$A" -name 'lasgame*')
           [ -z "$bad" ] || { echo "::error::must not ship: $bad"; exit 1; }
@@ -190,7 +191,7 @@ jobs:
         run: make -j"$(nproc)" dist
       - name: No game files or generated C
         run: |
-          D="build/dist/LAS Recomp"
+          D="build/dist/Multi"
           bad=$(find "$D" -type d \( -name extracted -o -name 'generated*' -o -name exefs -o -name romfs \);
                 find "$D" -name '*.c' ! -path '*/zig/lib/*' ! -path '*/gamelib-src/gamelib_entry.c'; find "$D" -name 'lasgame*')
           [ -z "$bad" ] || { echo "::error::must not ship: $bad"; exit 1; }
@@ -317,7 +318,7 @@ jobs:
             gh release view "$TAG" --json url,assets -q '.url, (.assets[] | "\(.name) \(.size)")'
             exit 0
           fi
-          # (GitHub stores asset names with dots for spaces: LAS.Recomp-<version>-...)
+          # (GitHub stores asset names with dots for spaces: Multi-<version>-...)
           {
             echo "Release notes: (to be written)"
             echo

@@ -1,3 +1,4 @@
+#include "../../photo.h"
 // Vulkan device, window, swapchain and presentation (counterpart of the window/present half of metal.m).
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -13,6 +14,8 @@
 #include "../../ui/menu.h"
 #include "../rqueue.h"
 #include "vk.h"
+#include "gpu_watchdog.h"
+#include "shader_jobs.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 #include "../pace.h"
@@ -183,7 +186,24 @@ void vk_log_memory(const char *why) {
 #define PCACHE_FILE "cache/vk_pipelines.bin"
 #define PCACHE_TAG "cache/vk_pipelines.bin.tag"
 static size_t pcache_saved;  // bytes of the last save (or load)
+// Pipeline creation may run concurrently, but serialize a cache snapshot against
+// every creator. This also keeps its size query and copy in the same cache state.
+static pthread_rwlock_t pcache_access = PTHREAD_RWLOCK_INITIALIZER;
 void vk_pipeline_cache_save(void);
+
+VkResult vk_create_graphics_pipelines(uint32_t count, const VkGraphicsPipelineCreateInfo *info, VkPipeline *out) {
+    pthread_rwlock_rdlock(&pcache_access);
+    VkResult result = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, count, info, NULL, out);
+    pthread_rwlock_unlock(&pcache_access);
+    return result;
+}
+
+VkResult vk_create_compute_pipelines(uint32_t count, const VkComputePipelineCreateInfo *info, VkPipeline *out) {
+    pthread_rwlock_rdlock(&pcache_access);
+    VkResult result = vkCreateComputePipelines(g_vk.dev, g_vk.pcache, count, info, NULL, out);
+    pthread_rwlock_unlock(&pcache_access);
+    return result;
+}
 
 static void pipeline_cache_tag(char *out, size_t n) {
     char gpu[400], uuid[2 * VK_UUID_SIZE + 1];
@@ -329,18 +349,26 @@ static void create_device(void) {
 void vk_pipeline_cache_save(void) {
     static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&lock);
+    pthread_rwlock_wrlock(&pcache_access);
     size_t sz = 0;
+    void *data = NULL;
+    bool copied = false;
     if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) == VK_SUCCESS && sz && sz != pcache_saved) {
-        void *data = malloc(sz);
-        if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, data) == VK_SUCCESS && shader_cache_write(PCACHE_FILE, data, sz)) {
-            char tag[512];
-            pipeline_cache_tag(tag, sizeof tag);
-            if (!shader_cache_tag_ok(PCACHE_TAG, tag)) shader_cache_tag_write(PCACHE_TAG, tag);
-            pcache_saved = sz;
-            LOG("[vk] pipeline cache: saved %zu bytes\n", sz);
-        }
-        free(data);
+        LOG("[vk] pipeline cache: reading %zu bytes\n", sz);
+        data = malloc(sz);
+        if (data) copied = vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, data) == VK_SUCCESS;
+        else LOG("[vk] pipeline cache: insufficient host memory; keeping the previous cache\n");
     }
+    pthread_rwlock_unlock(&pcache_access);
+    // Disk I/O does not hold up new pipeline creation.
+    if (copied && shader_cache_write(PCACHE_FILE, data, sz)) {
+        char tag[512];
+        pipeline_cache_tag(tag, sizeof tag);
+        if (!shader_cache_tag_ok(PCACHE_TAG, tag)) shader_cache_tag_write(PCACHE_TAG, tag);
+        pcache_saved = sz;
+        LOG("[vk] pipeline cache: saved %zu bytes\n", sz);
+    }
+    free(data);
     pthread_mutex_unlock(&lock);
 }
 
@@ -407,8 +435,14 @@ static void create_swapchain(void) {
     }
 }
 
+static VkResult wait_device_idle(const char *operation) {
+    VkResult result;
+    VK_WATCHDOG(operation, 0, result = vkDeviceWaitIdle(g_vk.dev));
+    return result;
+}
+
 static void recreate_swapchain(void) {
-    vkDeviceWaitIdle(g_vk.dev);
+    VK_CHECK(wait_device_idle("vkDeviceWaitIdle (resize)"));
     create_swapchain();
 }
 
@@ -453,10 +487,20 @@ static void image_barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, V
 typedef struct { uint32_t image; VkSemaphore acquired; bool ok; } Frame;
 static Frame cur_frame;
 
+static VkResult acquire_frame_image(VkSemaphore semaphore, uint32_t *image) {
+    VkResult result;
+    // An occluded surface may not provide an image yet. Return to the event loop
+    // periodically instead of treating that legitimate wait as a stalled driver.
+    VK_WATCHDOG("vkAcquireNextImageKHR", 0,
+                result = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 1000000000ull, semaphore, VK_NULL_HANDLE, image));
+    return result;
+}
+
 // Acquire the next window image and begin rendering into it (cleared to `clear`). Returns false when there is
 // nothing to draw into (minimised window).
 bool vk_frame_begin(const float clear[4]) {
     cur_frame.ok = false;
+    if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) return false;
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
     if (!w || !h) return false;  // minimised
@@ -469,12 +513,12 @@ bool vk_frame_begin(const float clear[4]) {
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
     WAITING_AT(0, vk_wait_seq(slot_seq[slot]));
     VkResult r;
-    WAITING_AT(1, r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image));
+    WAITING_AT(1, r = acquire_frame_image(acquire_sem[slot], &cur_frame.image));
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
-        WAITING_AT(1, r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE,
-                                          &cur_frame.image));
+        WAITING_AT(1, r = acquire_frame_image(acquire_sem[slot], &cur_frame.image));
     }
+    if (r == VK_TIMEOUT || r == VK_NOT_READY) return false;
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { LOG("[vk] acquire failed: %d\n", r); return false; }
     cur_frame.acquired = acquire_sem[slot];
     slot_seq[slot] = vk_pending_seq();
@@ -544,7 +588,7 @@ void vk_frame_end(const char *shot_path) {
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done_sem[img],
                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
     VkResult r;
-    WAITING_AT(2, r = vkQueuePresentKHR(g_vk.queue, &pi));
+    WAITING_AT(2, VK_WATCHDOG("vkQueuePresentKHR", seq, r = vkQueuePresentKHR(g_vk.queue, &pi)));
     g_vk_frame_waits[3]++;
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreate_swapchain();
     cur_frame.ok = false;
@@ -560,15 +604,18 @@ void vk_frame_end(const char *shot_path) {
 }
 
 void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h) {
-    SDL_Surface *s = SDL_CreateSurfaceFrom((int)w, (int)h, SDL_PIXELFORMAT_ABGR8888, (void *)rgba, (int)w * 4);
+    int rect[4] = {0,0,(int)w,(int)h};
+    photo_mode_capture_rect(w, h, rect);
+    SDL_Surface *s = SDL_CreateSurfaceFrom(rect[2], rect[3], SDL_PIXELFORMAT_ABGR8888,
+        (void *)(rgba + ((size_t)rect[1]*w + rect[0])*4), (int)w * 4);
     if (!s || !SDL_SavePNG(s, path)) LOG("[vk] saving %s failed: %s\n", path, SDL_GetError());
-    else LOG("[vk] saved %s (%ux%u)\n", path, w, h);
+    else LOG("[vk] saved %s (%dx%d)\n", path, rect[2], rect[3]);
     SDL_DestroySurface(s);
 }
 
 // ================================================================== game presentation (metal.m backend_present)
 // Draws the game's image into the window with the widescreen crop, then the overlay menu.
-extern void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, float vw, float vh, const float pv[8]);
+extern void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, float vw, float vh, const float pv[12]);
 extern bool g_debug_frame;  // (exec.c; set in present_hooks, read in the render thread's present)
 void renderer_submit(void);
 void renderer_set_scale(float sx, float sy);
@@ -599,6 +646,7 @@ void backend_represent(void) {
 // The GPU side of a present (the render thread when it's on, rqueue.c): the present pass, the overlay, shots.
 // frame: the number of this present (the game thread's frame when it was queued).
 void backend_present_now(NvnTexture *t, uint64_t frame) {
+    photo_mode_frame(frame);
     TexBackend *b = vk_tex(t, true);
     b->presented = true;
     vk_end_pass();
@@ -652,23 +700,32 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         extern void widescreen_present_crop(uint64_t, double, float *, double *, double *, double *, double *);
         float crop[4];  // uv origin and size
         widescreen_present_crop(frame, shape, crop, &vx, &vy, &vw, &vh);
+        photo_mode_compose(crop, dw, dh, &vx, &vy, &vw, &vh);
         widescreen_set_factor((float)shape);
         extern void renderer_set_alloc_scale(float ax, float ay);
         renderer_set_alloc_scale((float)os.ax, (float)os.ay);
         renderer_set_scale((float)sx, (float)sy);
         VkCommandBuffer cb = vk_cmd();
-        float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
+        float pv[12] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3], 1, 1, 0, 0};
+        photo_mode_color(pv + 8);
         memcpy(g_shot_crop, crop, sizeof crop);
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
         static long menu_at = -1;
         if (menu_at < 0) menu_at = getenv("LARECOMP_MENU_AT") ? atol(getenv("LARECOMP_MENU_AT")) : 0;
         if (menu_at && (long)frame + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
+        const char *photo_path = photo_mode_capture_path();
         menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("LARECOMP_WINDOW_SHOT") ? atol(getenv("LARECOMP_WINDOW_SHOT")) : 0;
-        bool shot = win_shot && (long)frame + 1 == win_shot;
-        vk_frame_end(shot ? "build/window.png" : NULL);
-        if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) { fflush(stderr); _exit(0); }
+        extern char g_window_shot_request[256];  // same scripted capture hook as the Metal backend
+        extern bool research_exit_ready(void);
+        bool shot = (win_shot && (long)frame + 1 == win_shot) || research_exit_ready();
+        bool requested_shot = !photo_path && g_window_shot_request[0];
+        vk_frame_end(photo_path ? photo_path : requested_shot ? g_window_shot_request :
+                     shot ? (getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/window.png") : NULL);
+        if (photo_path) photo_mode_capture_done();
+        else if (requested_shot) g_window_shot_request[0] = 0;
+        else if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) { extern void research_finish(void); research_finish(); fflush(stderr); _exit(0); }
     } else {
         renderer_submit();
     }
@@ -713,7 +770,7 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
                  (unsigned long long)frame);
         renderer_save_texture_tex(b, path);
         // a series (SCREENSHOT_FROM) runs on until LARECOMP_WINDOW_SHOT exits
-        if (getenv("LARECOMP_EXIT_AFTER_SHOT") && !shot_from) { fflush(stderr); _exit(0); }
+        if (getenv("LARECOMP_EXIT_AFTER_SHOT") && !shot_from) { extern void research_finish(void); research_finish(); fflush(stderr); _exit(0); }
     }
     double now = SDL_GetTicks() / 1000.0;
     static double fps_iv = -1, prev_present, max_gap;
@@ -740,6 +797,10 @@ static void present_hooks(void) {
     pace_frame();  // (pace.c: the game's 30 fps mode when frames don't fit 60)
     extern void input_frame(uint64_t frame);
     input_frame(total_frames);
+#ifdef _WIN32
+    extern void plat_debug_write_watch(uint64_t frame);
+    plat_debug_write_watch(total_frames);
+#endif
     static long slow_ms = -1;
     if (slow_ms < 0) slow_ms = getenv("LARECOMP_SLOW_FRAME_MS") ? atol(getenv("LARECOMP_SLOW_FRAME_MS")) : 0;
     static long slow_until = -1;  // LARECOMP_SLOW_FRAME_UNTIL=<frame>: the stall ends there (frame pacing recovery tests)
@@ -786,16 +847,22 @@ static void quick_exit_handler(void) {
     static int trace = -1;
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
     if (trace) LOG("[vk] exit: waiting for the GPU\n");
+    int status = plat_exit_status();
     if (g_vk.dev) {
-        vkDeviceWaitIdle(g_vk.dev);
-        if (trace) LOG("[vk] exit: saving the pipeline cache\n");
-        vk_pipeline_cache_save();
+        VkResult result = wait_device_idle("vkDeviceWaitIdle (exit)");
+        if (result == VK_SUCCESS) {
+            if (trace) LOG("[vk] exit: saving the pipeline cache\n");
+            vk_pipeline_cache_save();
+        } else {
+            LOG("[vk] exit: GPU idle wait failed (%d); skipping pipeline cache\n", result);
+            if (!status) status = 1;
+        }
     }
     if (trace) LOG("[vk] exit: terminating\n");
     fflush(stdout);
     fflush(stderr);
 #if defined(_WIN32) || defined(__linux__)
-    plat_terminate();
+    plat_terminate(status);
 #endif
 }
 
@@ -813,11 +880,11 @@ void ui_window_init(void) {
     {   // scripted test runs (user input ignored: runtime/hle/input.c input_user_blocked) open without taking the
         // keyboard focus from whatever the player is doing
         const char *v = getenv("LARECOMP_NO_USER_INPUT");
-        bool scripted = v ? atoi(v) != 0 : (getenv("LARECOMP_INPUT") || getenv("LARECOMP_DOORJUMP_TEST") || getenv("LARECOMP_PLACE") ||
+        bool scripted = v ? atoi(v) != 0 : (getenv("LARECOMP_INPUT") || getenv("LARECOMP_INPUT_FILE") || getenv("LARECOMP_DOORJUMP_TEST") || getenv("LARECOMP_PLACE") ||
                                             getenv("LARECOMP_HOST_INPUT") || getenv("LARECOMP_BIND_TEST"));
         if (scripted) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     }
-    window = SDL_CreateWindow("LAS Recomp", win_w, win_h, wflags);
+    window = SDL_CreateWindow(title_profile_current()->key[0] ? title_profile_current()->name : "Multi", win_w, win_h, wflags);
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
@@ -841,8 +908,8 @@ void backend_init(void) {
 // ---- in-place reboot (runtime/main.c teardown; main thread, guest threads stopped)
 void backend_reset(void) {
     if (!g_vk.dev) return;
-    rq_drain();  // (the render thread: everything queued ran; it idles while the game is down)
-    vkDeviceWaitIdle(g_vk.dev);
+    rq_drain();
+    VK_CHECK(wait_device_idle("vkDeviceWaitIdle (reset)"));
     extern void vk_textures_reset(void);
     extern void vk_exec_reset(void);
     vk_textures_reset();
@@ -867,7 +934,12 @@ int ui_run(void) {
             if (e.type == SDL_EVENT_QUIT) {
                 input_rumble_stop();
                 LOG("window closed\n");
-                exit(0);
+                // The exit handler waits on the device and saves its cache.
+                // Finish guest submissions and host pipeline jobs first; device
+                // idle only waits for GPU work, not those producer threads.
+                kernel_stop_threads(NULL);
+                shader_jobs_drain();
+                plat_exit(0);
             }
             extern bool input_user_blocked(const SDL_Event *e);
             if (input_user_blocked(&e)) continue;  // scripted test runs: the real keyboard / mouse / pads do nothing (as metal.m)

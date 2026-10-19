@@ -178,6 +178,9 @@ def main():
     stage('Preparing', 0.01)
     with open(settings_file) as f:
         user = json.load(f)
+    version = user.get('game-version', '1.0.0')
+    if version not in ('1.0.0', '1.1.0'):
+        raise ValueError('Unsupported seed game version')
     settings = default_settings(str(user.get('seed', 'LARecomp')))
     for k, v in user.items():
         if k == 'exclude':
@@ -544,6 +547,16 @@ def main():
         print('pets placed:', pets_mod.mark_indexes(result['placements'], logic_defs), flush=True)
     from RandomizerCore.Randomizers import item_get as _item_get
     _item_get.GHOST_PET = 'ghost' in pets
+    from RandomizerCore.Randomizers import miscellaneous as _misc
+    from version_compat import normalize_sinking_sword
+    _change_sword = _misc.changeSunkenSword
+
+    def versioned_sword(flowchart, *args, **kwargs):
+        if normalize_sinking_sword(flowchart):
+            print('version compatibility: updated loose-item event adapted', flush=True)
+        return _change_sword(flowchart, *args, **kwargs)
+
+    _misc.changeSunkenSword = versioned_sword
     mods = ModsProcess(result['placements'], romfs, out_dir, item_defs, settings['seed'], result['randstate'])
     last = [0]
 
@@ -709,6 +722,8 @@ def main():
     if os.path.exists(sp):
         os.replace(sp, os.path.join(out_dir, 'spoiler.txt'))
     print('spoiler view:', spoiler_view.build(out_dir), 'lines', flush=True)
+    with open(os.path.join(out_dir, 'game-version.txt'), 'w', newline='\n') as f:
+        f.write('LASRANDO1\n' + version + '\n')
     stage('Done', 1.0)
     print('done', flush=True)
 

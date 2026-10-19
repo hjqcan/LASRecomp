@@ -1,21 +1,28 @@
+#include "../photo.h"
+#include "../acnh_speedfix.h"
 // NVN objects, builders, and state objects (everything except command recording).
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <stdatomic.h>
 
 #include "../kernel.h"
 #include "nvn.h"
 #include "rqueue.h"
 
 void renderer_sync(void);
+void renderer_submit(void);
 
 static uint64_t next_debug_id = 1;
 
 // ================================================================== device
 // NVNdeviceInfo -> value
 static uint32_t device_integer(uint32_t which) {
+    if (which == 0) return title_profile_current()->nvn_major ? title_profile_current()->nvn_major : 53;
+    if (which == 1) return title_profile_current()->nvn_minor;
     static const uint32_t v[] = {
-        [0] = 53, [1] = 207,           // API version
+        [0] = 53, [1] = 207,           // baseline; adapter API version overrides above
         [2] = 14, [3] = 65536, [4] = 256, [5] = 8, [6] = 16, [7] = 4, [8] = 16, [9] = 32,
         [10] = 16, [11] = 4, [12] = 4, [13] = 4, [14] = 16, [15] = 32, [16] = 32,
         [17] = 256, [18] = 256,        // reserved texture / sampler descriptors
@@ -78,7 +85,7 @@ NVN(nvnDeviceRegisterFastClearColori) { RET(1); }
 NVN(nvnDeviceRegisterFastClearColorui) { RET(1); }
 NVN(nvnDeviceRegisterFastClearDepth) { RET(1); }
 NVN(nvnDeviceApplyDeferredFinalizes) { (void)c; }
-NVN(nvnDeviceFinalizeCommandHandle) { (void)c; }
+NVN(nvnDeviceFinalizeCommandHandle) { renderer_sync(); nvn_command_handle_destroy(A(1)); }
 NVN(nvnDeviceIsExternalDebuggerAttached) { RET(0); }
 NVN(nvnDeviceWalkDebugDatabase) { (void)c; }
 
@@ -127,7 +134,11 @@ NVN(nvnQueueSubmitCommands) {
     uint64_t t0 = plat_now_ns();
     for (int i = 0; i < n; i++) {
         if (rq) rq_submit(handles[i]);  // the render thread translates it (rqueue.c)
-        else backend_execute(handles[i]);
+        else {
+            void *list = nvn_command_list_acquire(handles[i]);
+            backend_execute(nvn_command_list_records(list));
+            nvn_command_list_release(list);
+        }
     }
     g_submit_ns += plat_now_ns() - t0;
 }
@@ -143,87 +154,71 @@ NVN(nvnQueueFinish) {
     g_gpu_wait_ns += plat_now_ns() - t0;
 }
 
+static pthread_mutex_t sync_lock = PTHREAD_MUTEX_INITIALIZER;
+static NvnSync *new_sync(void) {
+    NvnSync *s = calloc(1, sizeof *s);
+    if (!s) FATAL("nvn: sync allocation failed\n");
+    pthread_cond_init(&s->submitted, NULL);
+    return s;
+}
 static NvnSync *sync_of(uint64_t guest) {
     NvnSync *s = HOST(NvnSync, guest);
-    if (!s) { s = calloc(1, sizeof *s); SET_HOST(guest, s); }
+    if (!s) { s = new_sync(); SET_HOST(guest, s); }
     return s;
 }
 uint64_t renderer_fence_seq(void);
 void renderer_wait_seq(uint64_t seq);
-// A fence's seq: the render thread's item number when it's on (rqueue.c), else the backend's submission number.
-NVN(nvnQueueFenceSync) { NvnSync *s = sync_of(A(1)); s->signaled = 1; s->seq = rq_on() ? rq_fence_seq() : renderer_fence_seq(); }
-void nvn_sync_set_seq(uint64_t guest, uint64_t seq) {
-    // (the render thread: the list's number was set when it was queued; the game may have placed this sync again in
-    // a later list since, and that number must stay)
-    if (rq_current_item()) return;
-    NvnSync *s = sync_of(guest);
-    s->signaled = 1;
-    s->seq = seq;
+void nvn_sync_arm(uint64_t guest) {
+    pthread_mutex_lock(&sync_lock);
+    NvnSync *s = sync_of(guest); s->armed = true; s->signaled = false; s->seq = 0;
+    pthread_mutex_unlock(&sync_lock);
 }
-NVN(nvnQueueWaitSync) { RET(1); }
+void nvn_sync_set_seq(uint64_t guest, uint64_t seq) {
+    if (rq_current_item()) return; // The queue already published this list's item number.
+    pthread_mutex_lock(&sync_lock);
+    NvnSync *s = sync_of(guest); s->seq = seq; s->armed = s->signaled = true;
+    pthread_cond_broadcast(&s->submitted);
+    pthread_mutex_unlock(&sync_lock);
+}
+NVN(nvnQueueFenceSync) { if (rq_on()) nvn_sync_set_seq(A(1), rq_fence_seq());
+    else { nvn_sync_set_seq(A(1), renderer_fence_seq()); renderer_submit(); } }
+NVN(nvnQueueWaitSync) { uint64_t seq = sync_of(A(1))->seq;
+    if (rq_on()) seq = rq_wait_item(seq);
+    renderer_wait_seq(seq); RET(1); }
 
 // ================================================================== sync / event
-NVN(nvnSyncInitialize) { SET_HOST(A(0), calloc(1, sizeof(NvnSync))); RET(1); }
-NVN(nvnSyncFinalize) { free(HOST(NvnSync, A(0))); SET_HOST(A(0), 0); }
+NVN(nvnSyncInitialize) { SET_HOST(A(0), new_sync()); RET(1); }
+NVN(nvnSyncFinalize) { NvnSync *s = HOST(NvnSync, A(0)); pthread_cond_destroy(&s->submitted); free(s); SET_HOST(A(0), 0); }
 NVN(nvnSyncSetDebugLabel) { (void)c; }
 void renderer_flush(void);
-NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
-    static int flush = -1;
-    static uint64_t n;
-    if (flush < 0) flush = getenv("LARECOMP_SYNC_FLUSH") ? 1 : 0;
-    if (getenv("LARECOMP_LOG_SYNC") && n++ % 60 == 0) LOG("[nvn] SyncWait #%llu (lr %llx)\n", (unsigned long long)n, c->x[30]);
-    static int whole = -1;  // LARECOMP_SYNC_ALL=1: old behaviour, wait for all submitted work
-    if (whole < 0) whole = getenv("LARECOMP_SYNC_ALL") ? 1 : 0;
-    uint64_t t0 = 0;
-    if (flush) { if (rq_on()) rq_flush(); else { t0 = plat_now_ns(); renderer_flush(); } }
-    else if (whole) { if (rq_on()) rq_drain(); t0 = plat_now_ns(); rq_watch("SyncWait (all): the GPU", 0); renderer_sync(); }
-    else {  // only the submission that holds this fence
-        uint64_t seq = sync_of(A(0))->seq, q = seq;
-        static int stats = -1;  // (LARECOMP_LOG_PACE: which fences the game waits on, and how long)
-        if (stats < 0) stats = getenv("LARECOMP_LOG_PACE") != NULL;
-        uint64_t behind = 0, w0 = 0;
-        bool cur = false, untranslated = false;
-        if (seq && rq_on()) {
-            if (stats) { cur = rq_fence_info(seq, &behind, &untranslated); w0 = plat_now_ns(); }
-            seq = rq_wait_item(seq);  // translated and submitted; then its GPU work
-        }
-        t0 = plat_now_ns();
-        rq_watch("SyncWait: the GPU, submission", seq);
-        renderer_wait_seq(seq);
-        static long tr_at = -1;  // (debug, rqueue.c LARECOMP_RQ_TRACE) the game thread's fence waits in those frames
-        if (tr_at < 0) tr_at = getenv("LARECOMP_RQ_TRACE") ? atol(getenv("LARECOMP_RQ_TRACE")) : 0;
-        extern uint64_t renderer_present_count(void);
-        if (tr_at && renderer_present_count() >= (uint64_t)tr_at && renderer_present_count() < (uint64_t)tr_at + 4)
-        {
-            extern uint64_t rq_trace_t0;
-            LOG("[rq-trace] game frame %llu: fence wait item %llu (gpu %llu) from %.3f, translation %.3f ms, GPU %.3f ms\n",
-                (unsigned long long)renderer_present_count(), (unsigned long long)q, (unsigned long long)seq,
-                ((w0 ? w0 : t0) - rq_trace_t0) / 1e6, w0 ? (t0 - w0) / 1e6 : 0.0, (plat_now_ns() - t0) / 1e6);
-        }
-        if (stats && q && rq_on()) {
-            static struct { uint64_t n, untranslated, behind, rq_ns, gpu_ns, tr_ns, head_ns; } st[2];
-            static uint64_t total;
-            uint64_t t1 = plat_now_ns(), tr, head;
-            extern void rq_fence_times(uint64_t wait_start, uint64_t *translate_ns, uint64_t *head_ns);
-            rq_fence_times(w0, &tr, &head);
-            st[cur].n++, st[cur].untranslated += untranslated, st[cur].behind += behind;
-            st[cur].rq_ns += t0 - w0, st[cur].gpu_ns += t1 - t0, st[cur].tr_ns += tr, st[cur].head_ns += head;
-            if (++total % 600 == 0) {
-                for (int k = 1; k >= 0; k--)
-                    if (st[k].n)
-                        LOG("[rq] fence waits (%s frame): %llu, not translated yet %llu, avg %.1f items queued after it, "
-                            "avg wait for translation %.3f ms, for the GPU %.3f ms; its list: queued to translated %.3f ms, "
-                            "translated %.3f ms before the wait\n", k ? "this" : "an earlier",
-                            (unsigned long long)st[k].n, (unsigned long long)st[k].untranslated, (double)st[k].behind / st[k].n,
-                            st[k].rq_ns / 1e6 / st[k].n, st[k].gpu_ns / 1e6 / st[k].n, st[k].tr_ns / 1e6 / st[k].n,
-                            st[k].head_ns / 1e6 / st[k].n);
-                memset(st, 0, sizeof st);
-            }
-        }
+NVN(nvnSyncWait) {
+    uint64_t timeout = A(1), begin = plat_now_ns();
+    pthread_mutex_lock(&sync_lock);
+    NvnSync *s = sync_of(A(0));
+    // A newly initialized sync has no pending fence. LAS polls these before
+    // their first use; only a recorded but unpublished fence must wait.
+    if (!s->armed) { pthread_mutex_unlock(&sync_lock); RET(0); return; }
+    while (!s->signaled) {
+        uint64_t elapsed = plat_now_ns() - begin;
+        if (elapsed >= timeout) { pthread_mutex_unlock(&sync_lock); RET(2); return; }
+        uint64_t wait = timeout - elapsed;
+        if (wait > 50000000) wait = 50000000;
+        struct timespec until; clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_nsec += (long)wait;
+        if (until.tv_nsec >= 1000000000) { until.tv_sec++; until.tv_nsec -= 1000000000; }
+        pthread_cond_timedwait(&s->submitted, &sync_lock, &until);
+        if (g_rt_unwind) { pthread_mutex_unlock(&sync_lock); RET(3); return; }
     }
-    rq_watch(NULL, 0);
-    if (t0) g_gpu_wait_ns += plat_now_ns() - t0;
-    RET(0);
+    uint64_t seq = s->seq;
+    pthread_mutex_unlock(&sync_lock);
+    if (seq && rq_on()) {
+        uint64_t elapsed = plat_now_ns() - begin, gpu_seq;
+        int result = rq_wait_item_timeout(seq, elapsed < timeout ? timeout - elapsed : 0, &gpu_seq);
+        if (result >= 2) { RET(result); return; }
+        seq = gpu_seq;
+    }
+    uint64_t elapsed = plat_now_ns() - begin;
+    RET(renderer_wait_seq_timeout(seq, elapsed < timeout ? timeout - elapsed : 0));
 }
 NVN(nvnSyncCreateGLSync) { RET(0); }
 NVN(nvnSyncInitializeFromFencedGLSync) { RET(0); }
@@ -264,10 +259,16 @@ NVN(nvnMemoryPoolInitialize) {
     p->storage = G(uint64_t, A(1), 0x10);
     p->size = G(uint64_t, A(1), 0x18);
     p->flags = G(uint32_t, A(1), 8);
+    if (!p->storage && ENV("LARECOMP_DEBUG_POOLS")) LOG("[nvn] pool without CPU storage: object %llx size %llx flags %x lr %llx\n",
+                         (unsigned long long)A(0), (unsigned long long)p->size, p->flags, (unsigned long long)c->x[30]);
     SET_HOST(A(0), p);
     RET(1);
 }
-NVN(nvnMemoryPoolFinalize) { free(HOST(NvnPool, A(0))); SET_HOST(A(0), 0); }
+NVN(nvnMemoryPoolFinalize) {
+    NvnPool *pool = HOST(NvnPool, A(0));
+    if (pool->command_storage) { renderer_sync(); nvn_command_pool_destroy(pool); }
+    free(pool); SET_HOST(A(0), 0);
+}
 NVN(nvnMemoryPoolSetDebugLabel) { (void)c; }
 NVN(nvnMemoryPoolMap) { RET(HOST(NvnPool, A(0))->storage); }
 NVN(nvnMemoryPoolGetBufferAddress) { RET(HOST(NvnPool, A(0))->storage); }  // GPU address == CPU address
@@ -278,7 +279,32 @@ NVN(nvnMemoryPoolFlushMappedRange) {
     backend_pool_written(p->storage + A(1), A(2));
 }
 NVN(nvnMemoryPoolInvalidateMappedRange) { (void)c; }
-NVN(nvnMemoryPoolMapVirtual) { RET(1); }
+NVN(nvnMemoryPoolMapVirtual) {
+    // Full-pool aliases keep the runtime's GPU-address == host-address model.
+    // ACNH binds its transient render-target pool once to a physical pool.
+    // Do not silently accept sparse mappings or rebind existing addresses.
+    NvnPool *dst = HOST(NvnPool, A(0));
+    if (!A(1)) { RET(1); return; }
+    if (!dst || !(dst->flags & 0x200) || A(1) != 1 || !A(2)) { RET(0); return; }
+    const uint8_t *request = AP(2);
+    uint64_t physical, physical_offset, virtual_offset, size;
+    memcpy(&physical, request, 8); memcpy(&physical_offset, request + 8, 8);
+    memcpy(&virtual_offset, request + 16, 8); memcpy(&size, request + 24, 8);
+    NvnPool *src = physical ? HOST(NvnPool, physical) : NULL;
+    if (!src || !(src->flags & 0x100) || !src->storage || virtual_offset || size != dst->size ||
+        physical_offset > src->size || size > src->size - physical_offset ||
+        physical_offset > UINT64_MAX - src->storage) {
+        LOG("[nvn] unsupported virtual pool mapping: offset %llx size %llx\n",
+            (unsigned long long)virtual_offset, (unsigned long long)size);
+        RET(0); return;
+    }
+    uint64_t address = src->storage + physical_offset;
+    if (dst->storage && dst->storage != address) { RET(0); return; }
+    dst->storage = address;
+    LOG("[nvn] mapped virtual pool %llx to %llx (%llx bytes)\n",
+        (unsigned long long)A(0), (unsigned long long)address, (unsigned long long)size);
+    RET(1);
+}
 
 // ================================================================== buffers
 // Builder: device@0 pool@8 offset@0x10 size@0x18. Buffer: address@0 pool@8 offset@0x10 size@0x18 id@0x20
@@ -428,6 +454,10 @@ static NvnTexture *texture_from_builder(uint64_t b) {
     t->pool = pool ? HOST(NvnPool, pool) : NULL;
     t->pool_offset = G(uint64_t, b, 0x40);
     t->addr = t->pool ? t->pool->storage + t->pool_offset : 0;
+    if (t->pool && !t->pool->storage && ENV("LARECOMP_DEBUG_POOLS"))
+        LOG("[nvn] unbacked texture: %ux%u format %x flags %x pool %llx offset %llx pool flags %x\n",
+            t->width, t->height, t->format, t->flags, (unsigned long long)pool,
+            (unsigned long long)t->pool_offset, t->pool->flags);
     builder_layout(b, &t->layout);
     t->debug_id = next_debug_id++;
     return t;
@@ -490,26 +520,45 @@ NVN(nvnTextureCompare) { RET(A(0) == A(1)); }
 NVN(nvnTextureFlushTexels) { (void)c; }
 NVN(nvnTextureInvalidateTexels) { (void)c; }
 
-// Texture views (our layout of the 0x28-byte guest struct)
-#define TV(T, off) G(T, A(0), off)
-NVN(nvnTextureViewSetDefaults) { memset(AP(0), 0, 0x28); }
-NVN(nvnTextureViewSetLevels) { TV(uint32_t, 0) |= 1; TV(uint16_t, 4) = (uint16_t)A(1); TV(uint16_t, 6) = (uint16_t)A(2); }
-NVN(nvnTextureViewSetLayers) { TV(uint32_t, 0) |= 2; TV(uint16_t, 8) = (uint16_t)A(1); TV(uint16_t, 10) = (uint16_t)A(2); }
-NVN(nvnTextureViewSetFormat) { TV(uint32_t, 0) |= 4; TV(uint32_t, 12) = (uint32_t)A(1); }
-NVN(nvnTextureViewSetSwizzle) {
-    NvnTextureView *v = AP(0);
-    v->setmask |= 8;
-    v->swizzle[0] = (uint8_t)A(1); v->swizzle[1] = (uint8_t)A(2); v->swizzle[2] = (uint8_t)A(3); v->swizzle[3] = (uint8_t)A(4);
+// Legacy views retain their existing layout; NVN 55 packs the same fields into 16 bytes.
+NVN(nvnTextureViewSetDefaults) { memset(AP(0), 0, nvn_compact_texture_views() ? 16 : 0x28); }
+NVN(nvnTextureViewSetLevels) {
+    NvnTextureView v = nvn_texture_view_read(AP(0)); v.setmask |= 1;
+    v.base_level = (uint16_t)A(1); v.num_levels = (uint16_t)A(2); nvn_texture_view_write(AP(0), &v);
 }
-NVN(nvnTextureViewSetDepthStencilMode) { NvnTextureView *v = AP(0); v->setmask |= 16; v->ds_mode = (uint32_t)A(1); }
-NVN(nvnTextureViewSetTarget) { NvnTextureView *v = AP(0); v->setmask |= 32; v->target = (uint32_t)A(1); }
-NVN(nvnTextureViewGetLevels) { *(int32_t *)AP(1) = TV(uint16_t, 4); *(int32_t *)AP(2) = TV(uint16_t, 6); RET(TV(uint32_t, 0) & 1); }
-NVN(nvnTextureViewGetLayers) { *(int32_t *)AP(1) = TV(uint16_t, 8); *(int32_t *)AP(2) = TV(uint16_t, 10); RET(!!(TV(uint32_t, 0) & 2)); }
-NVN(nvnTextureViewGetFormat) { *(uint32_t *)AP(1) = TV(uint32_t, 12); RET(!!(TV(uint32_t, 0) & 4)); }
-NVN(nvnTextureViewGetSwizzle) { NvnTextureView *v = AP(0); for (int i = 0; i < 4; i++) *(uint32_t *)AP(1 + i) = v->swizzle[i]; RET(!!(v->setmask & 8)); }
-NVN(nvnTextureViewGetDepthStencilMode) { NvnTextureView *v = AP(0); *(uint32_t *)AP(1) = v->ds_mode; RET(!!(v->setmask & 16)); }
-NVN(nvnTextureViewGetTarget) { NvnTextureView *v = AP(0); *(uint32_t *)AP(1) = v->target; RET(!!(v->setmask & 32)); }
-NVN(nvnTextureViewCompare) { RET(memcmp(AP(0), AP(1), 0x1C) == 0); }
+NVN(nvnTextureViewSetLayers) {
+    NvnTextureView v = nvn_texture_view_read(AP(0)); v.setmask |= 2;
+    v.min_layer = (uint16_t)A(1); v.num_layers = (uint16_t)A(2); nvn_texture_view_write(AP(0), &v);
+}
+NVN(nvnTextureViewSetFormat) {
+    NvnTextureView v = nvn_texture_view_read(AP(0)); v.setmask |= 4; v.format = (uint32_t)A(1); nvn_texture_view_write(AP(0), &v);
+}
+NVN(nvnTextureViewSetSwizzle) {
+    NvnTextureView v = nvn_texture_view_read(AP(0)); v.setmask |= 8;
+    for (int i = 0; i < 4; i++) v.swizzle[i] = (uint8_t)A(1 + i);
+    nvn_texture_view_write(AP(0), &v);
+}
+NVN(nvnTextureViewSetDepthStencilMode) {
+    NvnTextureView v = nvn_texture_view_read(AP(0)); v.setmask |= 16; v.ds_mode = (uint32_t)A(1); nvn_texture_view_write(AP(0), &v);
+}
+NVN(nvnTextureViewSetTarget) {
+    NvnTextureView v = nvn_texture_view_read(AP(0)); v.setmask |= 32; v.target = (uint32_t)A(1); nvn_texture_view_write(AP(0), &v);
+}
+NVN(nvnTextureViewGetLevels) {
+    NvnTextureView v = nvn_texture_view_read(AP(0)); *(int32_t *)AP(1) = v.base_level; *(int32_t *)AP(2) = v.num_levels; RET(!!(v.setmask & 1));
+}
+NVN(nvnTextureViewGetLayers) {
+    NvnTextureView v = nvn_texture_view_read(AP(0)); *(int32_t *)AP(1) = v.min_layer; *(int32_t *)AP(2) = v.num_layers; RET(!!(v.setmask & 2));
+}
+NVN(nvnTextureViewGetFormat) { NvnTextureView v = nvn_texture_view_read(AP(0)); *(uint32_t *)AP(1) = v.format; RET(!!(v.setmask & 4)); }
+NVN(nvnTextureViewGetSwizzle) {
+    NvnTextureView v = nvn_texture_view_read(AP(0)); for (int i = 0; i < 4; i++) *(uint32_t *)AP(1 + i) = v.swizzle[i]; RET(!!(v.setmask & 8));
+}
+NVN(nvnTextureViewGetDepthStencilMode) { NvnTextureView v = nvn_texture_view_read(AP(0)); *(uint32_t *)AP(1) = v.ds_mode; RET(!!(v.setmask & 16)); }
+NVN(nvnTextureViewGetTarget) { NvnTextureView v = nvn_texture_view_read(AP(0)); *(uint32_t *)AP(1) = v.target; RET(!!(v.setmask & 32)); }
+NVN(nvnTextureViewCompare) {
+    NvnTextureView a = nvn_texture_view_read(AP(0)), b = nvn_texture_view_read(AP(1)); RET(memcmp(&a, &b, sizeof a) == 0);
+}
 
 NVN(nvnTextureWriteTexels) {
     // (texture, view, region, data) -- linear data into block-linear storage
@@ -529,12 +578,30 @@ NVN(nvnTextureReadTexels) { LOG("[nvn] ReadTexels not implemented\n"); (void)c; 
 NVN(nvnTextureReadTexelsStrided) { (void)c; }
 
 // ================================================================== samplers
-// SamplerBuilder: device@0 then an NvnSamplerDesc at 8
-#define SD ((NvnSamplerDesc *)(AP(0) + 8))
+// Newer guests provide only 64 bytes for an opaque sampler builder. NvnSamplerDesc is a
+// larger host object (including a backend pointer); embedding it overwrote the
+// caller's saved registers when a builder lived on the guest stack.
+typedef struct {
+    uint64_t device;
+    uint8_t min_filter, mag_filter, wrap[3], compare_mode, compare_func, reduction;
+    float lod_min, lod_max, lod_bias, max_aniso;
+    float border[4];
+} SamplerBuilder;
+_Static_assert(sizeof(SamplerBuilder) <= 64, "guest sampler builder must fit its opaque storage");
+#define SD ((SamplerBuilder *)AP(0))
+static NvnSamplerDesc sampler_description(const SamplerBuilder *b) {
+    NvnSamplerDesc d = {.min_filter=b->min_filter, .mag_filter=b->mag_filter,
+        .wrap={b->wrap[0],b->wrap[1],b->wrap[2]}, .compare_mode=b->compare_mode,
+        .compare_func=b->compare_func, .reduction=b->reduction,
+        .lod_min=b->lod_min, .lod_max=b->lod_max, .lod_bias=b->lod_bias, .max_aniso=b->max_aniso};
+    memcpy(d.border, b->border, sizeof d.border);
+    return d;
+}
 NVN(nvnSamplerBuilderSetDevice) { G(uint64_t, A(0), 0) = A(1); }
 NVN(nvnSamplerBuilderSetDefaults) {
-    NvnSamplerDesc *d = SD;
-    memset(d, 0, sizeof *d);
+    SamplerBuilder *d = SD;
+    size_t guest_size = title_profile_current()->nvn_major >= 55 ? 64 : 80;
+    memset((uint8_t *)d + 8, 0, guest_size - 8); // preserve the device; initialize opaque padding too
     d->min_filter = 0; d->mag_filter = 0;
     d->wrap[0] = d->wrap[1] = d->wrap[2] = 1;  // REPEAT
     d->lod_min = 0; d->lod_max = 1000.0f; d->max_aniso = 1.0f;
@@ -566,7 +633,7 @@ NVN(nvnSamplerBuilderGetLodSnap) { RETF(0); }
 
 NVN(nvnSamplerInitialize) {
     NvnSamplerDesc *d = malloc(sizeof *d);
-    *d = *(NvnSamplerDesc *)(AP(1) + 8);
+    *d = sampler_description((const SamplerBuilder *)AP(1));
     SET_HOST(A(0), d);
     RET(1);
 }
@@ -630,7 +697,7 @@ static void register_texture(Cpu *c) {
     if (e->tex) e->tex->pool_refs++;
     e->dead_format = 0;
     e->has_view = A(3) != 0;
-    if (e->has_view) memcpy(&e->view, AP(3), sizeof e->view);
+    if (e->has_view) e->view = nvn_texture_view_read(AP(3));
     pthread_mutex_unlock(&g_pool_lock);
 }
 
@@ -690,7 +757,7 @@ NVN(nvnSamplerPoolRegisterSampler) {
 NVN(nvnSamplerPoolRegisterSamplerBuilder) {
     NvnDescPool *d = HOST(NvnDescPool, A(0));
     int id = (int)A(1);
-    if (id >= 0 && id < d->count) ((NvnSamplerDesc *)d->entries)[id] = *(NvnSamplerDesc *)(AP(2) + 8);
+    if (id >= 0 && id < d->count) ((NvnSamplerDesc *)d->entries)[id] = sampler_description((const SamplerBuilder *)AP(2));
 }
 
 NvnDescPool *nvn_find_pool(NvnDescPool **reg, uint64_t guest_pool) {
@@ -704,12 +771,14 @@ NVN(nvnProgramSetDebugLabel) { (void)c; }
 NVN(nvnProgramSetSampleShading) { (void)c; }
 NVN(nvnProgramSetSubroutineLinkage) { RET(1); }
 static void set_shaders(Cpu *c, int stride) {
+    static _Atomic uint64_t revision;
     NvnProgram *p = HOST(NvnProgram, A(0));
     int n = (int)A(1);
     const uint8_t *data = AP(2);  // NVNshaderData[n] = {u64 data (GPU addr), const void* control}
     memset(p->stages, 0, sizeof p->stages);
     p->stage_mask = 0;
     p->backend = NULL;
+    p->revision = atomic_fetch_add(&revision, 1) + 1;
     for (int i = 0; i < n; i++) {
         uint64_t code = *(uint64_t *)(data + i * stride);
         const uint8_t *control = (const uint8_t *)(uintptr_t) * (uint64_t *)(data + i * stride + 8);
@@ -732,6 +801,9 @@ static void set_shaders(Cpu *c, int stride) {
         p->stages[stage].const_size = *(const uint32_t *)(control + 0x6FC);
         p->stage_mask |= 1u << stage;
     }
+#ifndef __APPLE__
+    backend_prepare_program(p);
+#endif
     RET(1);
 }
 
@@ -764,7 +836,7 @@ NVN(nvnWindowInitialize) {
     w->interval = (int)G(uint32_t, A(1), 0x20);
     w->active = G(uint32_t, A(1), 0x24) ? (int)G(uint32_t, A(1), 0x24) : w->num;
     SET_HOST(A(0), w);
-    LOG("[nvn] window with %d textures\n", w->num);
+    LOG("[nvn] window with %d textures, present interval %d\n", w->num, w->interval);
     RET(1);
 }
 NVN(nvnWindowFinalize) { (void)c; }
@@ -796,10 +868,49 @@ NVN(nvnQueueAcquireTexture) {
     w->next = (w->next + 1) % (w->active ? w->active : 1);
     RET(0);
 }
+
+static void window_wait_present_interval(NvnWindow *w) {
+    // LAS already waits through its emulated VI event and has a separate frame-mode policy.
+    // Generic adapters also rely on NVN's window interval: 2 on the guest's 60 Hz display
+    // requests 30 FPS, regardless of the host monitor's refresh rate.
+    // The community SDK patch sits below NVN in Android Surface, which this
+    // backend replaces. Apply that one-refresh policy only after the entire
+    // reviewed speed-corrected installation has passed its boot checks.
+    int interval = acnh60_active() ? 1 : w->interval;
+    if (title_is_las() || interval < 1 || interval > 4) {
+        w->present_time_ns = 0;
+        return;
+    }
+    uint64_t period = (1000000000ull * (uint64_t)interval + 59) / 60;
+    uint64_t now = plat_now_ns();
+    if (w->present_time_ns && now >= w->present_time_ns && now - w->present_time_ns < period) {
+        uint64_t remaining = period - (now - w->present_time_ns);
+        if (now <= UINT64_MAX - remaining) {
+            plat_sleep_until_ns(now + remaining);
+            now = plat_now_ns();
+        }
+    }
+    // Include time spent rendering the previous frame. A late frame or a restored window
+    // establishes a fresh deadline instead of causing a burst of catch-up presentations.
+    w->present_time_ns = now;
+}
+
 NVN(nvnQueuePresentTexture) {
     NvnWindow *w = HOST(NvnWindow, A(1));
     int i = (int)A(2);
-    if (i >= 0 && i < w->num) backend_present(HOST(NvnTexture, w->textures[i]));
+    if (i >= 0 && i < w->num) {
+        window_wait_present_interval(w);
+        backend_present(HOST(NvnTexture, w->textures[i]));
+        extern uint64_t renderer_present_count(void);
+        extern void backend_represent(void);
+        photo_mode_presented(renderer_present_count());
+        while (photo_mode_hold() && !rt_reboot_requested()) {
+            uint64_t start = plat_now_ns();
+            backend_represent();
+            photo_mode_presented(renderer_present_count());
+            plat_sleep_until_ns(start + 16666667); // a frozen view does not need to render at the monitor's maximum rate
+        }
+    }
 }
 
 // ================================================================== small state objects

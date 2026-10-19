@@ -8,7 +8,10 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
-for source in sorted((root/'tools').glob('test_save_*.c')):
+# The fork's mount, backup and multi-commit harnesses have their own drivers and
+# link dependencies. This runner covers the upstream host-filesystem harnesses.
+for name in ('test_save_flags.c', 'test_save_errors.c'):
+    source = root/'tools'/name
     with tempfile.TemporaryDirectory(prefix='save-test-') as temporary:
         temporary = Path(temporary)
         exe = temporary/('test.exe' if os.name == 'nt' else 'test')

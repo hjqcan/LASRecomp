@@ -13,6 +13,7 @@
 #include <algorithm>
 
 #include "imgui.h"
+#include "localization.h"
 #include "imgui_internal.h"
 #include "osk.h"
 #include "option_rows.h"
@@ -21,12 +22,17 @@ extern "C" {
 #include "../hle.h"
 #include "../paths.h"
 #include "../rando.h"
+#include "../rando_profile.h"
 #include "../settings.h"
+#include "../gameversion.h"
 extern const char *g_romfs_dir;
 extern int g_start_screen;  // hle/warp.c
 void launcher_play_seed(const char *seed);  // ui/launcher.mm
 extern char g_window_shot_request[256];  // runtime/hle/hookshot.c (test shots)
 }
+
+static std::string g_source_romfs = "extracted/romfs";
+extern "C" void rando_set_game_root(const char *root) { g_source_romfs = std::string(root) + "/romfs"; }
 
 // Play a seed ("" = vanilla): in game the game reboots on it; on the start screen (Settings) the game starts with it
 static void play_seed(const char *name) {
@@ -77,7 +83,8 @@ static void scan(void) {
         if (e->d_name[0] == '.') continue;
         std::string dir = std::string("rando/") + e->d_name;
         struct stat sb;
-        if (stat((dir + "/exefs/1.0.0.pchtxt").c_str(), &sb)) continue;
+        if (!rando_seed_compatible(dir.c_str(), game_version_current()) ||
+            stat((dir + "/exefs/" + rando_patch_filename(game_version_current())).c_str(), &sb)) continue;
         Seed s;
         s.name = e->d_name;
         s.mtime = sb.st_mtime;
@@ -120,7 +127,7 @@ struct GenOpts {
     bool shuffle_instruments = false, shuffle_dungeons = false, randomize_enemies = false, randomize_music = false;
     bool open_mabe = false, fast_songs = true, ohko = false, boss_cutscenes = false, spoiler = true;
     int start_rupees = 0;
-    // planned (LAS Recomp additions, not implemented yet)
+    // planned (Multi additions, not implemented yet)
     int entrances = 0;        // off / dungeons / + houses, caves & connector caves (3 = old "+ connectors": now 2)
     bool decoupled = false, pots = false, grass = false;
     bool no_buffs = false;    // no-buff-drops: enemies never drop Guardian Acorns / Pieces of Power
@@ -165,7 +172,7 @@ static void tri_mode_from_opts(void) {
 
 
 // ---- Seed IDs: a 30-character code (Crockford base32, XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX) holding the random seed and
-// every generation option, with a checksum in the last 5 bits. Same ID + same LAS Recomp version = the same seed, so
+// every generation option, with a checksum in the last 5 bits. Same ID + same Multi version = the same seed, so
 // IDs can be shared. The generator gets the ID itself as its seed string. Bump SEED_ID_VERSION when the bit layout
 // changes. v2: 36-bit random part; v3: + dungeon room shuffle; v4: 25 characters, + shopsanity, pets, Trendy Game
 // prizes (v2 / v3 IDs had 20: they still load, the options they don't hold are off); v5: 30 characters, + Triforce hunt
@@ -258,7 +265,7 @@ static std::string seed_id_decode(const char *text, GenOpts &o) {
     x.n = 0;
     int ver = (int)x.get(4);
     if (bits == SEED_ID_BITS ? ver != SEED_ID_VERSION : bits == SEED_ID_BITS_V4 ? ver != 4 : ver != 2 && ver != 3)
-        return "made by another LAS Recomp version (ID format " + std::to_string(ver) + ")";
+        return "made by another Multi version (ID format " + std::to_string(ver) + ")";
     GenOpts t = o;
     t.rng = x.get(36);
     t.logic = (int)x.get(3); t.dungeon_items = (int)x.get(2); t.keysanity = (int)x.get(2); t.traps = (int)x.get(3);
@@ -347,7 +354,8 @@ static void start_generation(void) {
     std::string req = dir + "/request.json";
     FILE *f = fopen(req.c_str(), "w");
     if (!f) { g_gen_status = "Cannot write " + req; g_gen_failed = g_gen_done = true; return; }
-    fprintf(f, "{\"seed\": \"%s\", \"logic\": \"basic\", \"dungeon-items\": \"%s\", \"traps\": \"%s\",\n", id,
+    fprintf(f, "{\"game-version\": \"%s\",", game_version_name(game_version_current()));
+    fprintf(f, "\"seed\": \"%s\", \"logic\": \"basic\", \"dungeon-items\": \"%s\", \"traps\": \"%s\",\n", id,
             ditems[g_opts.dungeon_items], traps[g_opts.traps]);
     fprintf(f, " \"shuffle-instruments\": %s, \"shuffle-dungeons\": %s, \"randomize-enemies\": %s, \"randomize-music\": %s,\n",
             g_opts.shuffle_instruments ? "true" : "false", g_opts.shuffle_dungeons ? "true" : "false",
@@ -397,7 +405,7 @@ static void start_generation(void) {
     fprintf(f, " \"exclude\": [%s]}\n", shell_excl[g_opts.seashells]);
     fclose(f);
     std::string log = dir + "/generate.log";
-    std::string romfs = g_romfs_dir ? g_romfs_dir : "extracted/romfs";
+    std::string romfs = g_start_screen ? g_source_romfs : g_romfs_dir ? g_romfs_dir : g_source_romfs;
     auto abs = [](std::string &p) { if (p[0] != '/' && !(p.size() > 1 && p[1] == ':')) p = std::string(rt_data_root()) + "/" + p; };
     abs(romfs), abs(dir), abs(req);  // (the helper / script change directory: absolute, in the data root)
     std::vector<std::string> cmd = generator_cmd();
@@ -469,7 +477,7 @@ static void gen_overlay(float scale) {
         char over[32];
         int secs = (int)(ImGui::GetTime() - g_gen_start);
         snprintf(over, sizeof over, "%d:%02d", secs / 60, secs % 60);
-        ImGui::TextUnformatted(g_gen_status.c_str());
+        ImGui::TextUnformatted(ui_tr(g_gen_status.c_str()));
         ImGui::ProgressBar(g_gen_frac > 0.005f ? g_gen_frac : -0.3f * (float)ImGui::GetTime(), ImVec2(-1, 0), over);
     } else {
         float bw = 230 * scale;
@@ -479,13 +487,13 @@ static void gen_overlay(float scale) {
             ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", g_gen_status.c_str());
             ImGui::PopTextWrapPos();
             ImGui::Spacing();
-            if (ImGui::Button("Close", ImVec2(bw, 0))) close = true;
+            if (ImGui::Button(ui_label("Close").c_str(), ImVec2(bw, 0))) close = true;
             ImGui::SetItemDefaultFocus();
         } else {
-            ImGui::TextUnformatted("Seed ready.");
+            ImGui::TextUnformatted(ui_tr("Seed ready."));
             ImGui::ProgressBar(1, ImVec2(-1, 0), "Done");
             ImGui::Spacing();
-            if (ImGui::Button("Play Now", ImVec2(bw, 0)) || test_play) {  // (switches in place: the game reboots on the new seed)
+            if (ImGui::Button(ui_label("Play Now").c_str(), ImVec2(bw, 0)) || test_play) {  // (switches in place: the game reboots on the new seed)
                 g_gen_done = false;
                 g_gen_status.clear();
                 ImGui::CloseCurrentPopup();
@@ -493,7 +501,7 @@ static void gen_overlay(float scale) {
             }
             ImGui::SetItemDefaultFocus();
             ImGui::SameLine();
-            if (ImGui::Button("Close", ImVec2(bw, 0))) close = true;
+            if (ImGui::Button(ui_label("Close").c_str(), ImVec2(bw, 0))) close = true;
         }
         if (close || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
             g_gen_done = false;
@@ -510,6 +518,15 @@ static std::string g_spoiler_seed;  // seed whose spoiler page is open
 
 extern "C" void rando_tab_draw(float scale) {
     (void)scale;
+    static GameVersion scanned_version = GAME_UNSUPPORTED;
+    if (scanned_version != game_version_current()) {
+        g_scanned = false; g_spoiler_seed.clear(); scanned_version = game_version_current();
+    }
+    if (game_version_current() == GAME_UNSUPPORTED) {
+        ImGui::TextWrapped("%s", ui_tr("Set up a supported game version before generating a seed.")); return;
+    }
+    if (game_version_current() == GAME_110)
+        ImGui::TextWrapped("%s", ui_tr("v1.1.0 randomizer support is experimental. Generate a new seed for this game version."));
     if (!g_scanned) scan();
     static bool spoiler_test;  // LARECOMP_SPOILER_TEST=<seed>: open that seed's spoiler page (test hook)
     if (!spoiler_test && getenv("LARECOMP_SPOILER_TEST")) { spoiler_test = true; g_spoiler_seed = getenv("LARECOMP_SPOILER_TEST"); }
@@ -603,25 +620,25 @@ extern "C" void rando_tab_draw(float scale) {
                     }
                     if (ui_input_text_cancelled()) renaming = false;
                 } else if (confirm_delete) {
-                    ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "Delete this seed and its save files?");
+                    ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "%s", ui_tr("Delete this seed and its save files?"));
                     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7f, 0.15f, 0.15f, 1));
                     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.2f, 0.2f, 1));
-                    if (ImGui::Button("Delete seed + saves", ImVec2(bw, 0))) { delete_seed(s.name); close = true; }
+                    if (ImGui::Button(ui_label("Delete seed + saves").c_str(), ImVec2(bw, 0))) { delete_seed(s.name); close = true; }
                     ImGui::PopStyleColor(2);
                     ImGui::SameLine();
                     ImGui::SetItemDefaultFocus();
-                    if (ImGui::Button("Cancel", ImVec2(bw, 0))) confirm_delete = false;
+                    if (ImGui::Button(ui_label("Cancel").c_str(), ImVec2(bw, 0))) confirm_delete = false;
                 } else {
-                    if (!is_active && ImGui::Button("Play", ImVec2(bw, 0))) { ImGui::CloseCurrentPopup(); play_seed(s.name.c_str()); }
-                    if (ImGui::Button("Spoiler log", ImVec2(bw, 0))) { g_spoiler_seed = s.name; close = true; }
+                    if (!is_active && ImGui::Button(ui_label("Play").c_str(), ImVec2(bw, 0))) { ImGui::CloseCurrentPopup(); play_seed(s.name.c_str()); }
+                    if (ImGui::Button(ui_label("Spoiler log").c_str(), ImVec2(bw, 0))) { g_spoiler_seed = s.name; close = true; }
                     ImGui::BeginDisabled(s.id.empty());
-                    if (ImGui::Button("Copy seed ID", ImVec2(bw, 0))) ImGui::SetClipboardText(s.id.c_str());
+                    if (ImGui::Button(ui_label("Copy seed ID").c_str(), ImVec2(bw, 0))) ImGui::SetClipboardText(s.id.c_str());
                     ImGui::EndDisabled();
                     ImGui::BeginDisabled(is_active);  // (the game is reading its files)
-                    if (ImGui::Button("Rename", ImVec2(bw, 0))) { renaming = true; strlcpy(rename_buf, s.name.c_str(), sizeof rename_buf); }
-                    if (ImGui::Button("Delete", ImVec2(bw, 0))) confirm_delete = true;
+                    if (ImGui::Button(ui_label("Rename").c_str(), ImVec2(bw, 0))) { renaming = true; strlcpy(rename_buf, s.name.c_str(), sizeof rename_buf); }
+                    if (ImGui::Button(ui_label("Delete").c_str(), ImVec2(bw, 0))) confirm_delete = true;
                     ImGui::EndDisabled();
-                    if (ImGui::Button("Close", ImVec2(bw, 0))) close = true;
+                    if (ImGui::Button(ui_label("Close").c_str(), ImVec2(bw, 0))) close = true;
                 }
                 if (!renaming && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))) {
                     if (confirm_delete) confirm_delete = false;
@@ -667,7 +684,7 @@ extern "C" void rando_tab_draw(float scale) {
         static std::string id_msg;
         if (!g_opts.rng) g_opts.rng = new_rng();
         if (!opt_text_editing("Seed ID")) seed_id_encode(g_opts, idbuf, sizeof idbuf);
-        std::string d = "A seed ID holds the random seed and every option below: the same ID on the same LAS Recomp "
+        std::string d = "A seed ID holds the random seed and every option below: the same ID on the same Multi "
                         "version makes the same seed. Enter a shared ID here to load its options.";
         if (!id_msg.empty()) d += "\n\n" + id_msg;
         if (opt_text("Seed ID", idbuf, sizeof idbuf, "", d.c_str())) {
@@ -800,10 +817,10 @@ extern "C" void rando_tab_draw(float scale) {
         opt_indent(-1);
         if (last) ImGui::OpenPopup("##entlast");
         if (ImGui::BeginPopupModal("##entlast", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
-            ImGui::TextUnformatted("With the entrance randomizer on, at least one kind of entrance must be shuffled.");
+            ImGui::TextUnformatted(ui_tr("With the entrance randomizer on, at least one kind of entrance must be shuffled."));
             ImGui::Spacing();
             ImGui::SetItemDefaultFocus();
-            if (ImGui::Button("OK", ImVec2(220 * scale, 0)) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+            if (ImGui::Button(ui_label("OK").c_str(), ImVec2(220 * scale, 0)) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
                 ImGui::IsKeyPressed(ImGuiKey_Escape, false))
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
@@ -924,7 +941,7 @@ extern "C" void rando_tab_draw(float scale) {
         }
         opt_split();
         ImGui::SetWindowFontScale(1.3f);  // (as the descriptions)
-        ImGui::TextWrapped("How many pieces finish the game: 1 to 50.");
+        ImGui::TextWrapped("%s", ui_tr("How many pieces finish the game: 1 to 50."));
         ImGui::SetWindowFontScale(1.0f);
         ImGui::Spacing();
         opt_section("Custom");

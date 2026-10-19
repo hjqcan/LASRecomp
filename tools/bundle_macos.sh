@@ -1,5 +1,5 @@
 #!/bin/bash
-# make app: build/LAS Recomp.app from <exe> (default build/mac15/lasrecomp). Contents/MacOS: the executable;
+# make app: build/Multi.app from <exe> (default build/mac15/lasrecomp). Contents/MacOS: the executable;
 # Contents/Frameworks: every non-system dylib it loads (SDL3, FFmpeg; from build/deps, else Homebrew), load
 # paths rewritten to @rpath; Contents/Resources: the icon, the seed generator helper (build/helper/rando-gen, when
 # built: runtime/ui/rando_tab.mm generator_cmd) and what the start screen builds the game code with on the player's
@@ -11,7 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 EXE=${1:-build/mac15/lasrecomp}
-APP="build/LAS Recomp.app"
+APP="build/Multi.app"
 DEPS=$PWD/build/deps
 BUNDLE_ID=$(sed -n 's/^#define RT_BUNDLE_ID "\(.*\)"/\1/p' runtime/paths.h)
 VERSION=$(sed -n 's/^#define LARECOMP_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
@@ -40,7 +40,7 @@ if [ -x "$HELPER/rando-gen" ]; then cp -R "$HELPER" "$C/Resources/rando-gen"; el
 cp -R "$GEN_HELPER" "$C/Resources/lasgen"
 cp -R "$ZIG" "$C/Resources/zig"
 mkdir "$C/Resources/gamelib-src"
-cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
+cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h runtime/guest_jump.h tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
    "$C/Resources/gamelib-src/"
 cp docs/icon/icon.icns "$C/Resources/icon.icns"
 cp docs/icon/icon_1024.png "$C/Resources/icon.png"  # (window / Dock icon at run time)
@@ -48,6 +48,9 @@ cp third_party/fonts/Baloo2/Baloo2-SemiBold.ttf "$C/Resources/Baloo2-SemiBold.tt
 cp third_party/fonts/Baloo2/OFL.txt "$C/Resources/Baloo2-OFL.txt"
 cp third_party/fonts/DejaVu/DejaVuSans.ttf "$C/Resources/DejaVuSans.ttf"  # (the game text's last-resort font)
 cp third_party/fonts/DejaVu/LICENSE "$C/Resources/DejaVu-LICENSE.txt"
+cp third_party/ryujinx/LICENSE.txt "$C/Resources/Ryujinx-LICENSE.txt"
+
+cp third_party/release-licenses/opus-COPYING "$C/Resources/"
 
 # ---- dylibs: copy every non-system dependency, recursively; point all references at @rpath/<name>
 is_system() { case "$1" in /usr/lib/*|/System/*) return 0;; esac; return 1; }
@@ -115,8 +118,8 @@ cat > "$C/Info.plist" <<EOF
     <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleExecutable</key><string>lasrecomp</string>
     <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
-    <key>CFBundleName</key><string>LAS Recomp</string>
-    <key>CFBundleDisplayName</key><string>LAS Recomp</string>
+    <key>CFBundleName</key><string>Multi</string>
+    <key>CFBundleDisplayName</key><string>Multi</string>
     <key>CFBundleIconFile</key><string>icon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>

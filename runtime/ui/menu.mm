@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "imgui.h"
+#include "localization.h"
 #include "option_rows.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
@@ -27,8 +28,15 @@ extern "C" {
 #include "../hle.h"
 #include "../settings.h"
 #include "menu.h"
+#include "../photo.h"
+#include "../mods.h"
+#include "../workshop.h"
+#include "../performance.h"
+#include "../game_profiles.h"
 void input_reset(void);
+extern "C" bool input_second_event(const SDL_Event *);
 void save_editor_draw(float scale);  // save_editor.mm
+void save_backups_draw(float scale, bool in_game);
 extern "C" int game_in_play(void);  // hle/warp.c
 void save_editor_on_open(void);
 void rando_tab_draw(float scale);
@@ -67,6 +75,7 @@ static void push(const QEvent &e) {
 
 bool menu_is_open(void) { return g_open.load(); }
 static void set_open(bool open);
+extern "C" void menu_close(void) { set_open(false); }
 extern "C" void menu_test_open(void) {
     set_open(true);
     if (getenv("LARECOMP_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("LARECOMP_MENU_TAB")); }
@@ -79,7 +88,7 @@ static void set_open(bool open) {
     input_reset();  // nothing held while the menu had focus leaks into the game
     bind_capture_cancel();
     if (open) {
-        save_editor_on_open();
+        if (title_is_las()) save_editor_on_open();
         static bool opened;  // the controller's cursor: the first tab (Controls) the first time this session, later the
         menu_tabs_focus(!opened);  // selected one
         opened = true;
@@ -129,11 +138,12 @@ static std::atomic<int> g_kbd{0};  // 1 open, 2 confirmed, 3 cancelled
 static std::atomic<bool> g_last_pad{false};
 static char g_kbd_text[96];
 static int g_kbd_max = 8;
-static bool capturing() { return g_open.load() || g_kbd.load() == 1; }
+static bool capturing() { return g_open.load() || g_kbd.load() == 1 || photo_mode_active(); }
 // The game gets no input while this is true (runtime/hle/input.c): menu or name entry up.
 extern "C" bool menu_input_captured(void) { return capturing(); }
 
 bool menu_handle_event(const SDL_Event *e) {
+    if(input_second_event(e))return false;
     static bool back_down, start_down;
     if (g_open.load() && bind_capture_event(e)) return true;  // Controls tab waiting for a new binding: it takes the press
     if (e->type == SDL_EVENT_KEY_DOWN) g_last_pad = false;
@@ -148,6 +158,16 @@ bool menu_handle_event(const SDL_Event *e) {
     }
     // typing (a text field, the on-screen keyboard, the name entry): keys are text, not menu shortcuts
     bool typing = g_kbd.load() == 1 || (g_open.load() && g_text_busy.load());
+    if (!typing && e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat) {
+        if (e->key.scancode == SDL_SCANCODE_F2) { set_open(false); photo_mode_toggle(); return true; }
+        if (photo_mode_active()) {
+            if (e->key.scancode == SDL_SCANCODE_ESCAPE) { photo_mode_exit(); return true; }
+            if (e->key.scancode == SDL_SCANCODE_F12) { photo_mode_capture(); return true; }
+            if (e->key.scancode == SDL_SCANCODE_TAB || e->key.scancode == SDL_SCANCODE_F1) {
+                photo_mode_toggle_controls(); return true;
+            }
+        }
+    }
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
         if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_F1 ||
@@ -186,7 +206,7 @@ bool menu_handle_event(const SDL_Event *e) {
         if (e->gbutton.button == SDL_GAMEPAD_BUTTON_BACK) back_down = down;
         if (e->gbutton.button == SDL_GAMEPAD_BUTTON_START) start_down = down;
         if (down && !typing && ((back_down && start_down) || e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE)) {
-            set_open(!g_open.load());
+            if (photo_mode_active()) photo_mode_exit(); else set_open(!g_open.load());
             return true;
         }
         if (!capturing()) return false;
@@ -337,6 +357,8 @@ static void init(void) {
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
+    for (ImFont *font : {g_font, g_font_big, g_menu_font, g_menu_font_big}) ui_merge_language_font(font);
+    ui_add_user_font();
     style_init();
 #ifdef __APPLE__
     ImGui_ImplMetal_Init(dev);
@@ -398,13 +420,13 @@ static void tab_display(void) {
         }
         float sx, sy;
         renderer_get_scale(&sx, &sy);
-        char d[400];
-        int n = snprintf(d, sizeof d, "How sharp the 3D image is. Match display: your screen's own resolution. Dynamic: "
+        char d[1600];
+        int n = snprintf(d, sizeof d, ui_tr("How sharp the 3D image is. Match display: your screen's own resolution. Dynamic: "
                                       "as sharp as your GPU keeps at full speed. 1x-4x: the Switch's 1080p times that%s. "
                                       "75%% / 50%% / 25%%: a share of the display, for slower machines.\n\nRendering at "
-                                      "%.0f x %.0f.", g_gpu_integrated ? " (1x: 720p on this GPU)" : "", 1920.0 * sx, 1080.0 * sy);
+                                      "%.0f x %.0f."), ui_tr(g_gpu_integrated ? " (1x: 720p on this GPU)" : ""), 1920.0 * sx, 1080.0 * sy);
         if (g_settings.res_mode == RES_DYNAMIC)
-            snprintf(d + n, sizeof d - n, " Dynamic: %.0f%% of the display right now.", output_scale_dynamic_factor() * 100);
+            snprintf(d + n, sizeof d - n, ui_tr(" Dynamic: %.0f%% of the display right now."), output_scale_dynamic_factor() * 100);
         if (opt_choice("Internal resolution", &ri, res, NRES, rdef, d, false))
             g_settings.res_mode = res_mode[ri], g_settings.res_auto = false;
     }
@@ -419,9 +441,9 @@ static void tab_display(void) {
                          "edge-aware upscaling and sharpening, sharper. Bilinear: plain and soft.";
 #endif
         int ui = g_settings.upscaler == UPSCALE_BILINEAR ? 0 : 1;
-        char udm[512];
+        char udm[1600];
         if (g_settings.res_mode == RES_MATCH) {  // (renders at the window's size: nothing to scale up)
-            snprintf(udm, sizeof udm, "%s\n\nNot used at Match display: the game already renders at your display's resolution.", ud);
+            snprintf(udm, sizeof udm, ui_tr("%s\n\nNot used at Match display: the game already renders at your display's resolution."), ui_tr(ud));
             ud = udm;
             opt_disable_next();
         }
@@ -477,10 +499,10 @@ static void tab_quit(float scale, bool in_game) {
     static int ask;  // 0: the two choices; 1: start screen?; 2: desktop?
     if (ask && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
         ask = 0;
-    const char *lost = in_game ? "\n\nProgress since your last save is lost." : "";
-    char d1[200], d2[200];
-    snprintf(d1, sizeof d1, "Leaves the game and goes back to the LAS Recomp start screen.%s", lost);
-    snprintf(d2, sizeof d2, "Closes LAS Recomp.%s", lost);
+    const char *lost = in_game ? ui_tr("\n\nProgress since your last save is lost.") : "";
+    char d1[600], d2[600];
+    snprintf(d1, sizeof d1, ui_tr("Leaves the game and goes back to the Multi start screen.%s"), lost);
+    snprintf(d2, sizeof d2, ui_tr("Closes Multi.%s"), lost);
     opt_begin("##quit", scale);
     opt_section("Quit");
     if (!ask) {
@@ -530,7 +552,7 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
     ImGui::Begin("##kbd", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                                     ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::PushFont(g_font_big);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Enter your name");
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", ui_tr("Enter your name"));
     ImGui::PopFont();
     static bool was_open, was_pad;
     bool pad = g_last_pad.load(), appearing = !was_open || pad != was_pad;  // (switching device: focus the new one)
@@ -544,7 +566,7 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
                          [](ImGuiInputTextCallbackData *d) -> int { return d->EventChar < 0x20 ? 1 : 0; });
         ImGui::PopFont();
         if ((int)strlen(g_kbd_text) > g_kbd_max) g_kbd_text[g_kbd_max] = 0;
-        ImGui::TextDisabled("Enter  confirm      Esc  cancel      (%d / %d)", (int)strlen(g_kbd_text), g_kbd_max);
+        ImGui::TextDisabled(ui_tr("Enter  confirm      Esc  cancel      (%d / %d)"), (int)strlen(g_kbd_text), g_kbd_max);
     } else {  // controller: on-screen keyboard (osk.mm, shared with our menus' text fields)
         int r = osk_keys(g_kbd_text, sizeof g_kbd_text, g_kbd_max, appearing, scale, g_font_big);
         if (r) g_kbd = r > 0 ? 2 : 3;  // (Start / + confirms in menu_handle_event too)
@@ -582,15 +604,15 @@ extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, in
 static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     // (id: the page; -1 = Prelaunch)
     struct Tab { const char *name; int id; bool on; };
-    Tab tabs[11];
+    Tab tabs[15];
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
-    static const char *names[] = {"Video", "Audio", "Save Editor", "Randomizer", "Warp", "Cheats", "Gameplay",
-                                  "Cosmetics", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 6, 7, 3, 5, 4, 2, 9};  // Controls, Video, Audio, Gameplay, Cosmetics, Randomizer,
+    static const char *names[] = {"Video", "Audio", "Saves", "Randomizer", "Warp", "Cheats", "Gameplay",
+                                  "Cosmetics", "Controls", "Quit", "Photo mode", "Mods", "Workshop", "Performance"};
+    static const int order[] = {8, 0, 1, 6, 7, 10, 11, 12, 13, 3, 5, 4, 2, 9};  // existing IDs stay stable for test hooks
                                                                 // Cheats, Warp, Save Editor, Quit (ids stay: test hooks)
     for (int i : order)  // (Quit: in game only - the start screen has its own QUIT, and an eleventh tab cut names short)
-        if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, in_game || (i != 2 && i != 4 && i != 5)};
+        if (((title_is_las() && (in_game || game_profile_las_extensions(game_profile_active()))) || i == 8 || i == 0 || i == 1 || i == 9 || i == 13) && (i != 9 || !prelaunch)) tabs[ntabs++] = {names[i], i, in_game || (i != 4 && i != 5)};
     int cur = 0;  // g_tab / g_tab_request hold ids
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
     if (!tabs[cur].on) cur = 0;
@@ -615,12 +637,12 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                          (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown) || ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown) ||
                           ImGui::IsKeyPressed(ImGuiKey_DownArrow));
     opt_focus_first(down_from_tab);
-    if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_NoTabListScrollingButtons)) {
+    if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_FittingPolicyScroll | ImGuiTabBarFlags_TabListPopupButton)) {
         for (int k = 0; k < ntabs; k++) {
             const Tab &t = tabs[k];
             ImGuiTabItemFlags f = g_tab_request == t.id && t.on ? ImGuiTabItemFlags_SetSelected : 0;
-            char lbl[64];
-            snprintf(lbl, sizeof lbl, prelaunch ? " %s " : "  %s  ", t.name);  // (ten tabs: tighter, so none is cut short)
+            char lbl[160];
+            snprintf(lbl, sizeof lbl, prelaunch ? " %s ###tab%d" : "  %s  ###tab%d", ui_tr(t.name), t.id);  // (ten tabs: tighter, so none is cut short)
             ImGui::BeginDisabled(!t.on);  // (out of the game: Save Editor, Warp, Cheats)
             // focus (controller / keyboard): the tab lights up a little with a gold bar along its bottom, instead of
             // ImGui's outline (it sits 4 px outside the tab and the tab bar's clipping could cut its top off on macOS)
@@ -667,10 +689,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case -1: prelaunch(scale); break;
                 case 0: tab_display(); break;
                 case 1: tab_audio(); break;
-                case 2:
-                    if (game_in_play()) save_editor_draw(scale);
-                    else ImGui::TextDisabled("Load a save file and get into the game to edit it.");
-                    break;
+                case 2: save_backups_draw(scale, in_game); break;
                 case 3: rando_tab_draw(scale); break;
                 case 4: if (warp_tab_draw(scale)) set_open(false); break;
                 case 5: cheats_draw(scale); break;
@@ -678,6 +697,10 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 7: tab_cosmetics(); break;
                 case 8: controls_tab_draw(scale); break;
                 case 9: tab_quit(scale, in_game); break;
+                case 10: photo_mode_tab(scale, in_game); break;
+                case 11: mods_draw(scale, in_game); break;
+                case 12: workshop_draw(scale, in_game); break;
+                case 13: performance_draw(scale, in_game); break;
                 }
                 static const char *scroll_test = getenv("LARECOMP_MENU_SCROLL");  // test hook: page scroll, 0..1
                 if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
@@ -709,12 +732,18 @@ void menu_render(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> targ
 void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     const double tw = target_w, th = target_h;
 #endif
+    if (photo_mode_suppress_overlay()) {
+        pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); return;
+    }
     bool open = g_open.load();
-    bool inv = !open && inventory_overlay_wanted();
-    bool trk = !open && tracker_overlay_wanted();
-    bool chaos = !open && chaos_overlay_wanted();
+    bool inv = title_is_las() && !open && inventory_overlay_wanted();
+    bool trk = title_is_las() && !open && tracker_overlay_wanted();
+    bool chaos = title_is_las() && !open && chaos_overlay_wanted();
+    if (photo_mode_suppress_overlay()) {
+        pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); return;
+    }
     bool kbd = g_kbd.load() == 1;
-    if (!open && !kbd && !g_settings.show_fps && !inv && !trk && !chaos) {
+    if (!open && !kbd && !g_settings.show_fps && !inv && !trk && !chaos && !photo_mode_active() && !workshop_overlay_wanted()) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         return;
     }
@@ -759,7 +788,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 #endif
     ImGui::NewFrame();
 
-    if (g_settings.show_fps) {
+    if (g_settings.show_fps && !photo_mode_active()) {
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 16 * scale, 16 * scale), 0, ImVec2(1, 0));
         ImGui::SetNextWindowBgAlpha(0.5f);
         ImGui::Begin("##fps", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
@@ -787,7 +816,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         // header as on the start screen's Settings: the title, and a close X in the corner (B / Esc too). ("Title
         // screen" - rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user 2026-10-11.)
         ImGui::PushFont(g_font_big);
-        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Settings");
+        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", ui_tr("Settings"));
         ImGui::PopFont();
         {
             float bx = 44 * scale;
@@ -820,6 +849,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         osk_draw(g_font_big, scale);  // (a text field activated with the controller)
     }
 
+    if (photo_mode_active()) photo_mode_draw(scale);
+    if (!open && !photo_mode_active() && workshop_overlay_wanted()) workshop_overlay(scale);
     if (kbd) keyboard_draw(io, scale);
     ImGui::Render();
     g_text_busy = open && ui_text_busy();

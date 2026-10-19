@@ -192,11 +192,14 @@ void renderer_texture_fraction(NvnTexture *t, float *fx, float *fy) {
 }
 uint64_t renderer_present_count(void);
 
-static bool tex_scalable(const NvnTexture *t) {
+static bool tex_scalable(const NvnTexture *t, bool render_target) {
     static int off = -1;  // (per texture lookup: cached)
     if (off < 0) off = getenv("LARECOMP_NO_SCALE") != NULL;
     if (off) return false;
-    if (t->target != 1 || t->samples > 1 || !(t->flags & 8) || t->width < 32 || t->height < 16) return false;
+    // The compression hint is not a render-target requirement. ACNH uses ordinary R8/R16F/RG16F
+    // screen buffers alongside compressed depth attachments. Scaling only the latter clips the
+    // pass to a smaller rectangle, which then becomes a visible lighting/occlusion boundary.
+    if (t->target != 1 || t->samples > 1 || (!(t->flags & 8) && !render_target) || t->width < 32 || t->height < 16) return false;
     float a = (float)t->width / (float)t->height;
     return a > 1.74f && a < 1.81f;
 }
@@ -227,7 +230,7 @@ bool renderer_texture_frame_fresh(NvnTexture *t) {
     TexBackend *b = t ? (TexBackend *)t->backend : NULL;
     extern uint64_t renderer_exec_frame(void);
     uint64_t total_frames = renderer_exec_frame();  // (the frame being translated)
-    if (!on || !b || !b->scalable || b->frame_cleared == total_frames + 1) return false;
+    if (!on || !b || !b->scalable || !(t->flags & 8) || b->frame_cleared == total_frames + 1) return false;
     b->frame_cleared = total_frames + 1;
     return true;
 }
@@ -237,7 +240,7 @@ bool renderer_texture_level_fresh(NvnTexture *t) {
     static int keep = -1;
     if (keep < 0) keep = getenv("LARECOMP_KEEP_TARGETS") != NULL;
     if (!b || keep || b->level_gen == g_level_gen) return false;
-    if (!b->scalable) { b->level_gen = g_level_gen; return false; }
+    if (!b->scalable || !(t->flags & 8)) { b->level_gen = g_level_gen; return false; }
     bool fresh = b->level_gen != 0;
     b->level_gen = g_level_gen;
     return fresh;
@@ -275,10 +278,14 @@ void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags as
 typedef struct { VkImage img; VmaAllocation mem; VkImageView view; uint64_t seq; } Dead;
 static Dead *dead;
 static int ndead, cap_dead;
+// Finalizers can run on guest worker threads while the render thread collects.
+// Keep storage growth, appends and compaction under the same lock.
+static pthread_mutex_t dead_lock = PTHREAD_MUTEX_INITIALIZER;
 static void views_forget(TexBackend *b);
 
 void vk_collect_dead(void) {
     uint64_t done = vk_completed_seq();
+    pthread_mutex_lock(&dead_lock);
     int k = 0;
     for (int i = 0; i < ndead; i++) {
         if (dead[i].seq > done) { dead[k++] = dead[i]; continue; }
@@ -286,6 +293,7 @@ void vk_collect_dead(void) {
         else vmaDestroyImage(g_vk.vma, dead[i].img, dead[i].mem);
     }
     ndead = k;
+    pthread_mutex_unlock(&dead_lock);
 }
 
 static void create_image(NvnTexture *t, TexBackend *b) {
@@ -342,6 +350,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     if (depthfmt) usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     else if (format_supports(vf, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     VkImageCreateFlags flags = 0;
+    if (type == VK_IMAGE_TYPE_3D) flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
     if (!depthfmt) flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;  // format views (NVN texture views, raw sRGB views)
     if (type == VK_IMAGE_TYPE_2D && layers >= 6 && tw == th && samples == 1) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = type, .format = vf,
@@ -372,15 +381,24 @@ static void create_image(NvnTexture *t, TexBackend *b) {
                  : t->target == 8 ? VK_IMAGE_VIEW_TYPE_CUBE : t->target == 9 ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
                  : layers > 1 || t->target == 4 || t->target == 6 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     vk_image_init_layout(vk_upload_cmd(), b->image, b->aspect);
-    if (depthfmt) {
-        // New depth / stencil images start zeroed (as fresh memory reads on Apple GPUs). The game builds its depth
+    if (depthfmt || (ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
+        // Fresh attachments start zeroed (as fresh memory reads on Apple GPUs). Color effects may
+        // render only part of a target before sampling the rest; undefined VRAM becomes colored
+        // noise on the ACNH airport's floor and glass. Compressed sampled images are uploaded,
+        // not cleared here (vkCmdClearColorImage does not support compressed formats).
+        // The game builds its depth
         // pyramid with depth-only copies, so the stencil of those images was never written: whatever the memory
         // held, different per image and per run, then failed or passed the depth-of-field passes' stencil test in
         // patches (flicker that came and went between runs, every other frame, below 1x internal resolution).
         VkCommandBuffer cb = vk_upload_cmd();
-        VkClearDepthStencilValue zero = {0.0f, 0};
         VkImageSubresourceRange rg = {b->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
-        vkCmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+        if (depthfmt) {
+            VkClearDepthStencilValue zero = {0.0f, 0};
+            vkCmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+        } else {
+            VkClearColorValue zero = {0};
+            vkCmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+        }
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
@@ -390,9 +408,20 @@ static void create_image(NvnTexture *t, TexBackend *b) {
 }
 
 static void defer(Dead d) {
-    if (ndead == cap_dead) { cap_dead = cap_dead ? cap_dead * 2 : 256; dead = realloc(dead, cap_dead * sizeof *dead); }
+    pthread_mutex_lock(&dead_lock);
+    if (ndead == cap_dead) {
+        int capacity = cap_dead ? cap_dead * 2 : 256;
+        Dead *grown = realloc(dead, (size_t)capacity * sizeof *dead);
+        if (!grown) {
+            pthread_mutex_unlock(&dead_lock);
+            FATAL("Vulkan texture retirement queue allocation failed\n");
+        }
+        dead = grown;
+        cap_dead = capacity;
+    }
     d.seq = vk_pending_seq();
     dead[ndead++] = d;
+    pthread_mutex_unlock(&dead_lock);
 }
 
 void vk_defer_image(VkImage img, VmaAllocation mem) { defer((Dead){.img = img, .mem = mem}); }
@@ -426,23 +455,50 @@ static void live_remove(TexBackend *b) {
     b->reg = 0;
 }
 
-static TexBackend *tex_backend(NvnTexture *t) {
+static TexBackend *tex_backend_for_usage(NvnTexture *t, bool render_target) {
     TexBackend *b = t->backend;
     if (b) {
+        bool promoted = !b->scalable && render_target && tex_scalable(t, true);
+        if (promoted) b->scalable = true;
         if (b->scalable && (b->ax != g_al_x || b->ay != g_al_y)) {  // output resolution changed: reallocate
+            TexBackend old = *b;
             destroy_image(b);
             create_image(t, b);
+            // A texture can be uploaded, cleared or copied before its first attachment use.
+            // Keep those contents when learning that it belongs to the scaled scene buffers.
+            if (promoted && (old.gpu_owned || old.uploaded)) {
+                VkCommandBuffer cb = vk_cmd();
+                vk_full_barrier(cb);
+                for (uint32_t lv = 0; lv < old.levels && lv < b->levels; lv++)
+                    for (uint32_t aspect = 1; aspect <= VK_IMAGE_ASPECT_STENCIL_BIT; aspect <<= 1) {
+                        if (!(b->aspect & aspect)) continue;
+                        VkImageBlit bl = {
+                            .srcSubresource = {aspect, lv, 0, 1},
+                            .srcOffsets = {{0, 0, 0}, {(int32_t)level_w(&old, lv), (int32_t)level_h(&old, lv), 1}},
+                            .dstSubresource = {aspect, lv, 0, 1},
+                            .dstOffsets = {{0, 0, 0}, {(int32_t)level_w(b, lv), (int32_t)level_h(b, lv), 1}}};
+                        if (aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
+                            vk_blit_depth_nearest(cb, &old, b, &bl);
+                        else vkCmdBlitImage(cb, old.image, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL,
+                                            1, &bl, VK_FILTER_NEAREST);
+                    }
+                vk_full_barrier(cb);
+            }
         }
         return b;
     }
     vk_collect_dead();
     b = calloc(1, sizeof *b);
-    b->scalable = tex_scalable(t);
+    b->scalable = tex_scalable(t, render_target);
     create_image(t, b);
     t->backend = b;
     live_add(t, b);
     return b;
 }
+
+static TexBackend *tex_backend(NvnTexture *t) { return tex_backend_for_usage(t, false); }
+
+void vk_mark_render_target(NvnTexture *t) { tex_backend_for_usage(t, true)->gpu_owned = true; }
 
 void backend_texture_destroyed(NvnTexture *t) {
     TexBackend *b = t->backend;
@@ -825,7 +881,14 @@ static bool vk_view_compatible(VkFormat image, VkFormat view) {
 // render: attachment view (one level, one layer). Otherwise a sampled view of type want_textype (TEXTYPE_*),
 // with the NVN component swizzle, converting between compatible types the way renderer.m does.
 VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool render, int want_textype) {
+    if (render) vk_mark_render_target(t);
     TexBackend *b = vk_tex(t, render);
+    return vk_view_backend(t, b, v, has_view, render, want_textype);
+}
+
+// Feedback copies retain the original texture's mip/layer range, format and
+// swizzle. Only the backing image changes; each descriptor still needs its view.
+VkImageView vk_view_backend(NvnTexture *t, TexBackend *b, const NvnTextureView *v, bool has_view, bool render, int want_textype) {
     if (!has_view) v = NULL;
     VkFormat fmt = b->format;
     if (v && (v->setmask & 4) && !(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
@@ -846,11 +909,17 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     uint32_t nly = v && (v->setmask & 2) && v->num_layers ? v->num_layers : b->layers - (ly0 < b->layers ? ly0 : 0);
     if (lv0 >= b->levels) lv0 = b->levels - 1;
     if (lv0 + nlv > b->levels) nlv = b->levels - lv0;
-    if (ly0 >= b->layers) ly0 = b->layers - 1;
-    if (ly0 + nly > b->layers) nly = b->layers - ly0;
+    uint32_t view_layers = render && b->base_type == VK_IMAGE_VIEW_TYPE_3D ? b->depth >> lv0 : b->layers;
+    if (!view_layers) view_layers=1;
+    if (ly0 >= view_layers) ly0 = view_layers - 1;
+    if (ly0 + nly > view_layers) nly = view_layers - ly0;
     if (render) {
         VkImageViewType type = b->base_type == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
-        if (b->base_type == VK_IMAGE_VIEW_TYPE_3D) return VK_NULL_HANDLE;  // (3D render targets: not used by the game)
+        if (b->base_type == VK_IMAGE_VIEW_TYPE_3D && getenv("LARECOMP_DEBUG_VOLUME")) {
+            static unsigned logged;
+            if (logged++<64) LOG("[volume] render %llx level %u slice %u count %u view %d\n",
+                                 (unsigned long long)t->addr,lv0,ly0,nly,has_view);
+        }
         return vk_image_view(b, type, fmt, lv0, 1, ly0, 1, IDENTITY, b->aspect);
     }
     VkImageAspectFlags aspect = b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : b->aspect;
@@ -880,7 +949,8 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
         return vk_image_view(b, want, fmt, lv0, nlv, ly0, 1, sw, aspect);
     if (want == VK_IMAGE_VIEW_TYPE_2D_ARRAY && (have == VK_IMAGE_VIEW_TYPE_2D || have == VK_IMAGE_VIEW_TYPE_CUBE))
         return vk_image_view(b, want, fmt, lv0, nlv, ly0, have == VK_IMAGE_VIEW_TYPE_CUBE ? nly : 1, sw, aspect);
-    if (want == VK_IMAGE_VIEW_TYPE_CUBE && have == VK_IMAGE_VIEW_TYPE_2D_ARRAY && b->layers >= 6 && b->width == b->height)
+    if (want == VK_IMAGE_VIEW_TYPE_CUBE && (have == VK_IMAGE_VIEW_TYPE_2D_ARRAY || have == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) &&
+        b->layers >= 6 && b->width == b->height)
         return vk_image_view(b, want, fmt, lv0, nlv, ly0 + 6 <= b->layers ? ly0 : 0, 6, sw, aspect);
     if (want == VK_IMAGE_VIEW_TYPE_1D_ARRAY && have == VK_IMAGE_VIEW_TYPE_1D)
         return vk_image_view(b, want, fmt, lv0, nlv, 0, 1, sw, aspect);

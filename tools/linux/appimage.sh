@@ -1,5 +1,5 @@
 #!/bin/bash
-# make appimage ARCH=<x86_64|aarch64>: build/dist/LAS Recomp-<version>-linux-<arch>.AppImage, built in Ubuntu 22.04
+# make appimage ARCH=<x86_64|aarch64>: build/dist/Multi-<version>-linux-<arch>.AppImage, built in Ubuntu 22.04
 # containers (podman; tools/linux/Containerfile) so it runs on glibc 2.35+ distributions. Everything is built inside
 # the amd64 container - aarch64 cross-compiled against the arm64 image's root filesystem (build/linux/aarch64/sysroot)
 # - except the generator helpers, which PyInstaller freezes in a container of their own arch (arm64: QEMU, binfmt).

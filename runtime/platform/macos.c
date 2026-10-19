@@ -46,11 +46,43 @@ static void log_to_file_in_app(void) {
 
 void plat_init(void) { log_to_file_in_app(); }
 
+static uint64_t g_guest_lo, g_guest_hi;
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
     // Everything readable/writable: macOS pages are 16K but the guest maps at 4K granularity.
     // Untouched pages cost nothing.
     mach_vm_address_t a = lo;
-    return mach_vm_allocate(mach_task_self(), &a, hi - lo, VM_FLAGS_FIXED) == KERN_SUCCESS;
+    if (mach_vm_allocate(mach_task_self(), &a, hi - lo, VM_FLAGS_FIXED) != KERN_SUCCESS) return false;
+    g_guest_lo = lo; g_guest_hi = hi;
+    return true;
+}
+
+bool plat_reserve_guest_extra(uint64_t lo, uint64_t hi) {
+    if (lo != g_guest_hi || hi <= lo) return false;
+    mach_vm_address_t a = lo;
+    if (mach_vm_allocate(mach_task_self(), &a, hi - lo, VM_FLAGS_FIXED) != KERN_SUCCESS) return false;
+    g_guest_hi = hi;
+    return true;
+}
+
+bool plat_commit_physical(uint64_t addr, uint64_t size) {
+    if (!size || addr < g_guest_lo || addr >= g_guest_hi || size > g_guest_hi - addr) return false;
+    memset((void *)(uintptr_t)addr, 0, size);
+    return true;
+}
+
+bool plat_discard_physical(uint64_t addr, uint64_t size) {
+    if (!size || addr < g_guest_lo || addr >= g_guest_hi || size > g_guest_hi - addr) return false;
+    uint64_t page = (uint64_t)getpagesize(), end = addr + size;
+    uint64_t begin_full = (addr + page - 1) & ~(page - 1), end_full = end & ~(page - 1);
+    if (begin_full >= end_full) memset((void *)(uintptr_t)addr, 0, size);
+    else {
+        memset((void *)(uintptr_t)addr, 0, begin_full - addr);
+        mach_vm_address_t a = begin_full;
+        if (mach_vm_allocate(mach_task_self(), &a, end_full - begin_full, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE) != KERN_SUCCESS)
+            memset((void *)(uintptr_t)begin_full, 0, end_full - begin_full);
+        memset((void *)(uintptr_t)end_full, 0, end - end_full);
+    }
+    return true;
 }
 
 // Fresh zero pages over the whole window (the old ones are released at once).
@@ -146,14 +178,14 @@ void plat_fatal_notice(void) {
     if (!g_log_path[0]) return;
     fflush(stderr);
     CFStringRef msg = CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8);
-    CFUserNotificationDisplayAlert(0, kCFUserNotificationStopAlertLevel, NULL, NULL, NULL, CFSTR("LAS Recomp"), msg,
+    CFUserNotificationDisplayAlert(0, kCFUserNotificationStopAlertLevel, NULL, NULL, NULL, CFSTR("Multi"), msg,
                                    CFSTR("OK"), NULL, NULL, NULL);
     if (msg) CFRelease(msg);
 }
 
 static void *notice_thread(void *text) {
     CFStringRef msg = CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8);
-    CFUserNotificationDisplayAlert(0, kCFUserNotificationCautionAlertLevel, NULL, NULL, NULL, CFSTR("LAS Recomp"), msg,
+    CFUserNotificationDisplayAlert(0, kCFUserNotificationCautionAlertLevel, NULL, NULL, NULL, CFSTR("Multi"), msg,
                                    CFSTR("OK"), NULL, NULL, NULL);
     if (msg) CFRelease(msg);
     free(text);

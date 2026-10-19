@@ -16,7 +16,9 @@ typedef struct __attribute__((aligned(16))) Cpu {
     void *thread;            // 312: runtime thread object
     uint64_t fpcr;           // 320: guest FPCR/FPSR (portable FP/SIMD lowering only; the asm path uses the host's)
     uint64_t fpsr;           // 328
-    uint8_t _pad[512 - 336];
+    uint64_t excl_hi;        // 336: upper half of a 128-bit exclusive reservation
+    uint64_t excl_size;      // 344: reservation width in bytes (0 means none)
+    uint8_t _pad[512 - 352];
     __uint128_t v[32];       // 512
 } Cpu;
 
@@ -25,7 +27,9 @@ _Static_assert(offsetof(Cpu, pc) == 264, "pc");
 _Static_assert(offsetof(Cpu, nzcv) == 272, "nzcv");
 _Static_assert(offsetof(Cpu, fpcr) == 320, "fpcr");
 _Static_assert(offsetof(Cpu, fpsr) == 328, "fpsr");
+_Static_assert(offsetof(Cpu, excl_hi) == 336, "exclusive high half");
 _Static_assert(offsetof(Cpu, v) == 512, "v");
+_Static_assert(sizeof(Cpu) == 1024, "CPU state ABI");
 
 typedef void (*GuestFn)(Cpu *);
 
@@ -74,16 +78,25 @@ void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
 #define ST64(a, v) (*(u64u *)(uintptr_t)(a) = (uint64_t)(v))
 
 // ---- exclusive monitor (emulated with compare-and-swap)
+// Reservations are value based, as in the original single-register helpers:
+// they do not detect an intervening write that restores the identical value.
+// Acquire loads and sequentially consistent stores also cover the relaxed forms.
+static inline void excl_clear(Cpu *c) {
+    c->excl_addr = ~0ull;
+    c->excl_size = 0;
+}
 #define EXCL(N, T)                                                                         \
     static inline uint64_t ldx##N(Cpu *c, uint64_t a) {                                    \
         T v = __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_ACQUIRE);                        \
         c->excl_addr = a;                                                                  \
         c->excl_val = v;                                                                   \
+        c->excl_size = sizeof(T);                                                         \
         return v;                                                                          \
     }                                                                                      \
     static inline uint32_t stx##N(Cpu *c, uint64_t a, uint64_t v) {                        \
-        if (c->excl_addr != a) return 1;                                                   \
-        c->excl_addr = ~0ull;                                                              \
+        int match = c->excl_addr == a && c->excl_size == sizeof(T);                        \
+        excl_clear(c);                                                                    \
+        if (!match) return 1;                                                             \
         T expected = (T)c->excl_val;                                                       \
         return !__atomic_compare_exchange_n((T *)(uintptr_t)a, &expected, (T)v, 0,         \
                                             __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);           \
@@ -98,6 +111,46 @@ EXCL(8, uint8_t)
 EXCL(16, uint16_t)
 EXCL(32, uint32_t)
 EXCL(64, uint64_t)
+
+// The supported x86-64 hosts already require x86-64-v3. A per-function target
+// also keeps source/test builds without -march from emitting an external atomic
+// helper. __sync's 128-bit CAS lowers to CMPXCHG16B or an AArch64 LL/SC loop;
+// unlike some __atomic implementations it does not require libatomic here.
+#if defined(__x86_64__)
+__attribute__((target("cx16")))
+#endif
+static inline __uint128_t excl_cas128(uint64_t a, __uint128_t expected, __uint128_t desired) {
+    return __sync_val_compare_and_swap((__uint128_t *)(uintptr_t)a, expected, desired);
+}
+static inline uint64_t ldxp32(Cpu *c, uint64_t a) {
+    if (a & 7) __builtin_trap();
+    return ldx64(c, a);
+}
+static inline uint32_t stxp32(Cpu *c, uint64_t a, uint64_t lo, uint64_t hi) {
+    if (c->excl_addr == a && c->excl_size == 8 && (a & 7)) __builtin_trap();
+    return stx64(c, a, (uint32_t)lo | ((uint64_t)(uint32_t)hi << 32));
+}
+static inline __uint128_t ldxp64(Cpu *c, uint64_t a) {
+    if (a & 15) __builtin_trap();
+    // ARMv8's 64-bit-pair load need not be single-copy atomic. Two 64-bit
+    // atomic loads also work on read-only memory; the subsequent 128-bit CAS
+    // validates both halves together before any store can succeed.
+    uint64_t lo = lda64(a), hi = lda64(a + 8);
+    c->excl_addr = a;
+    c->excl_val = lo;
+    c->excl_hi = hi;
+    c->excl_size = 16;
+    return lo | ((__uint128_t)hi << 64);
+}
+static inline uint32_t stxp64(Cpu *c, uint64_t a, uint64_t lo, uint64_t hi) {
+    int match = c->excl_addr == a && c->excl_size == 16;
+    excl_clear(c);
+    if (!match) return 1;
+    if (a & 15) __builtin_trap();
+    __uint128_t expected = c->excl_val | ((__uint128_t)c->excl_hi << 64);
+    __uint128_t desired = lo | ((__uint128_t)hi << 64);
+    return excl_cas128(a, expected, desired) != expected;
+}
 
 // ---- flags (packed NZCV in bits 31..28)
 #define FLAG_N(c) (((c)->nzcv >> 31) & 1)

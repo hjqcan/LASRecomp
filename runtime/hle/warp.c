@@ -9,6 +9,7 @@
 // main+0x80d718); tools/patches.py hooks those stores to tell us where R is. A warp then writes the same
 // fields main+0x81b950 writes, from the presenter's per-frame callback.
 #include "../game_addresses.h"
+#include "../workshop.h"
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -66,6 +67,7 @@ static const char *const kManboRemap[][3] = {
 };
 
 void warp_request(const char *level, const char *locator) {
+    workshop_mark_assisted();
     for (size_t i = 0; i < sizeof kManboRemap / sizeof kManboRemap[0]; i++)
         if (!strcmp(level, kManboRemap[i][0]) && !strcmp(locator, kManboRemap[i][1])) {
             LOG("[warp] %s / %s is a Manbo arrival point: using %s\n", level, locator, kManboRemap[i][2]);
@@ -85,7 +87,7 @@ void warp_request(const char *level, const char *locator) {
 int g_start_screen;  // runtime/ui/launcher.mm: the start screen is up - before the first boot nothing is loaded here
 
 int game_in_play(void) {
-    if (g_start_screen) return 0;
+    if (!title_is_las() || g_start_screen) return 0;
     uint64_t gm = LD64(GA_GAME_MGR);
     return gm && LD64(gm + 0x4b8) != 0;
 }
@@ -201,6 +203,7 @@ static void shots_test(uint64_t frame) {
 
 void warp_frame(uint64_t frame) {
     g_frame_now = frame;
+    if (!title_is_las()) return;
     crash_test(frame);
     shots_test(frame);
     { extern void shader_tour_tick(uint64_t); shader_tour_tick(frame); }
@@ -262,6 +265,7 @@ void warp_game_tick(Cpu *c) {
 static int g_give_id, g_give_count, g_give_index;
 
 void give_item_request(int id, int count, int index) {
+    workshop_mark_assisted();
     g_give_id = id; g_give_count = count; g_give_index = index;
     g_give_pending = 1;
 }

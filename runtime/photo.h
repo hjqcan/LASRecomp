@@ -1,0 +1,44 @@
+#pragma once
+#include <stdbool.h>
+#include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+typedef struct {
+    bool active, frozen, hide_hud;
+    float zoom, pan_x, pan_y, exposure, saturation, contrast, vignette;
+    int aspect; // 0: original, 1: 16:9, 2: 4:3, 3: square, 4: portrait, 5: cinema
+    uint64_t armed, clean_frame;
+} PhotoState;
+void photo_state_reset(PhotoState *s);
+void photo_state_enter(PhotoState *s, uint64_t frame);
+void photo_state_refresh(PhotoState *s, uint64_t frame);
+void photo_state_presented(PhotoState *s, uint64_t frame);
+bool photo_state_skip_draw(PhotoState *s, uint64_t frame, bool screen_target, bool composite);
+bool photo_scene_composite(unsigned target_w, unsigned target_h, unsigned source_w, unsigned source_h,
+                           bool fullscreen, bool blended, int textures);
+void photo_state_crop(const PhotoState *s, float crop[4]);
+void photo_state_frame(const PhotoState *s, float crop[4], double rect[4]);
+void photo_state_color(const PhotoState *s, float color[4]);
+
+bool photo_mode_active(void);
+bool photo_mode_available(void);
+void photo_mode_toggle(void);
+void photo_mode_exit(void);
+void photo_mode_capture(void);
+void photo_mode_toggle_controls(void);
+void photo_mode_frame(uint64_t frame);
+void photo_mode_presented(uint64_t frame);
+bool photo_mode_hold(void);
+bool photo_mode_skip_draw(uint64_t frame, bool screen_target, bool composite);
+void photo_mode_compose(float crop[4], double width, double height, double *x, double *y, double *w, double *h);
+void photo_mode_color(float color[4]); // exposure multiplier, saturation, contrast delta, vignette
+bool photo_mode_capture_rect(unsigned width, unsigned height, int rect[4]);
+const char *photo_mode_capture_path(void);
+void photo_mode_capture_done(void);
+bool photo_mode_suppress_overlay(void);
+void photo_mode_draw(float scale);
+void photo_mode_tab(float scale, bool in_game);
+#ifdef __cplusplus
+}
+#endif

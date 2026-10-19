@@ -3,12 +3,16 @@
 #include <string.h>
 
 #include "rt.h"
+#include "title_profile.h"
+#include "relr.h"
+#include "elf_hash.h"
 
-Module g_modules[4];
+Module g_modules[TITLE_MAX_MODULES];
 int g_nmodules;
 
 enum { DT_NULL = 0, DT_PLTRELSZ = 2, DT_HASH = 4, DT_STRTAB = 5, DT_SYMTAB = 6, DT_RELA = 7, DT_RELASZ = 8,
-       DT_JMPREL = 23, DT_INIT_ARRAY = 25, DT_FINI_ARRAY = 26, DT_INIT_ARRAYSZ = 27, DT_FINI_ARRAYSZ = 28 };
+       DT_JMPREL = 23, DT_INIT_ARRAY = 25, DT_FINI_ARRAY = 26, DT_INIT_ARRAYSZ = 27, DT_FINI_ARRAYSZ = 28,
+       DT_RELRSZ = 35, DT_RELR = 36, DT_RELRENT = 37, DT_GNU_HASH = 0x6ffffef5 };
 enum { R_ABS64 = 257, R_GLOB_DAT = 1025, R_JUMP_SLOT = 1026, R_RELATIVE = 1027 };
 
 typedef struct { uint32_t name; uint8_t info, other; uint16_t shndx; uint64_t value, size; } Elf64Sym;
@@ -52,7 +56,13 @@ static uint8_t *read_file(const char *path, size_t *len) {
 static void load_nso(Module *m, const char *path, uint64_t base) {
     size_t len;
     uint8_t *raw = read_file(path, &len);
-    if (!raw || memcmp(raw, "NSO0", 4)) FATAL("cannot load %s\n", path);
+    if (!raw || len < 0x100 || memcmp(raw, "NSO0", 4)) FATAL("cannot load %s\n", path);
+    const TitleProfile *profile = title_profile_current();
+    bool matched = false;
+    for (unsigned i = 0; i < profile->module_count; i++)
+        if (!strcmp(m->name, profile->modules[i].name) && title_module_matches(&profile->modules[i], raw + 0x40))
+            matched = true;
+    if (!matched) FATAL("module build ID mismatch: %s\n", path);
     uint32_t flags = *(uint32_t *)(raw + 0xC);
     uint32_t seg[3][3];  // file_off, mem_off, size
     for (int i = 0; i < 3; i++) memcpy(seg[i], raw + 0x10 + i * 0x10, 12);
@@ -79,11 +89,15 @@ static void load_nso(Module *m, const char *path, uint64_t base) {
     uint32_t mod0 = *(uint32_t *)(base + 4);
     uint64_t mod = base + mod0;
     m->dynamic = mod + *(int32_t *)(mod + 4);
+    uint64_t gnu_hash = 0, syment = sizeof(Elf64Sym);
+    bool have_sysv_hash = false, have_gnu_hash = false;
     for (uint64_t *d = (uint64_t *)m->dynamic; d[0] != DT_NULL; d += 2) {
         switch (d[0]) {
         case DT_SYMTAB: m->symtab = base + d[1]; break;
         case DT_STRTAB: m->strtab = base + d[1]; break;
-        case DT_HASH: m->nsyms = *(uint32_t *)(base + d[1] + 4); break;
+        case DT_HASH: m->nsyms = *(uint32_t *)(base + d[1] + 4); have_sysv_hash = true; break;
+        case DT_GNU_HASH: gnu_hash = d[1]; have_gnu_hash = true; break;
+        case 11: syment = d[1]; break;  // DT_SYMENT
         case 12: m->init = base + d[1]; break;  // DT_INIT
         case 13: m->fini = base + d[1]; break;  // DT_FINI
         case DT_INIT_ARRAY: m->init_array = base + d[1]; break;
@@ -91,6 +105,12 @@ static void load_nso(Module *m, const char *path, uint64_t base) {
         case DT_FINI_ARRAY: m->fini_array = base + d[1]; break;
         case DT_FINI_ARRAYSZ: m->fini_array_sz = d[1]; break;
         }
+    }
+    if (!have_sysv_hash && have_gnu_hash) {
+        if (m->symtab < base || m->symtab - base > size || syment != sizeof(Elf64Sym) ||
+            !gnu_hash_symbol_count((const uint8_t *)(uintptr_t)base, size, gnu_hash,
+                                   (size - (m->symtab - base)) / sizeof(Elf64Sym), &m->nsyms))
+            FATAL("%s: invalid GNU symbol hash table\n", m->name);
     }
     LOG("loaded %-5s at %llx size %llx syms %llu\n", m->name, base, size, m->nsyms);
 }
@@ -142,12 +162,20 @@ static uint64_t resolve(Module *m, uint32_t symidx) {
 
 static void relocate(Module *m) {
     uint64_t rela = 0, relasz = 0, jmprel = 0, pltsz = 0;
+    uint64_t relr = 0, relrsz = 0, relrent = 0;
+    unsigned relr_tags = 0;
     for (uint64_t *d = (uint64_t *)m->dynamic; d[0] != DT_NULL; d += 2) {
         if (d[0] == DT_RELA) rela = m->base + d[1];
         if (d[0] == DT_RELASZ) relasz = d[1];
         if (d[0] == DT_JMPREL) jmprel = m->base + d[1];
         if (d[0] == DT_PLTRELSZ) pltsz = d[1];
+        if (d[0] == DT_RELR) { relr = d[1]; relr_tags |= 1; }
+        if (d[0] == DT_RELRSZ) { relrsz = d[1]; relr_tags |= 2; }
+        if (d[0] == DT_RELRENT) { relrent = d[1]; relr_tags |= 4; }
     }
+    if (relr_tags && (relr_tags != 7 ||
+        !relr_apply((uint8_t *)(uintptr_t)m->base, m->size, m->base, relr, relrsz, relrent)))
+        FATAL("%s: invalid packed relative relocations\n", m->name);
     int unresolved = 0;
     for (int pass = 0; pass < 2; pass++) {
         Elf64Rela *r = (Elf64Rela *)(pass ? jmprel : rela);
@@ -174,12 +202,18 @@ static void relocate(Module *m) {
 
 void loader_load(const char *exefs) {
     char path[1024];
-    static const struct { const char *name; uint64_t base; } mods[] = {{"main", MAIN_BASE}, {"sdk", SDK_BASE}};
-    for (unsigned i = 0; i < 2; i++) {
+    const TitleProfile *profile = title_profile_current();
+    if (!profile->module_count || profile->module_count > TITLE_MAX_MODULES) FATAL("invalid module plan\n");
+    for (unsigned i = 0; i < profile->module_count; i++) {
         Module *m = &g_modules[g_nmodules++];
-        m->name = mods[i].name;
+        m->name = profile->modules[i].name;
         snprintf(path, sizeof path, "%s/%s", exefs, m->name);
-        load_nso(m, path, mods[i].base);
+        load_nso(m, path, profile->modules[i].base);
+        for (unsigned j = 0; j < i; j++) {
+            Module *other = &g_modules[j];
+            if (m->base < other->base + other->size && other->base < m->base + m->size)
+                FATAL("module address overlap: %s and %s\n", m->name, other->name);
+        }
     }
     for (int i = 0; i < g_nmodules; i++) relocate(&g_modules[i]);
 }

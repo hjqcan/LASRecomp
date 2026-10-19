@@ -2,6 +2,7 @@
 // so changes apply immediately and are written out (with fresh checksums) the next time the game saves.
 // Layout: notes/save_format.md.
 #include "../game_addresses.h"
+#include "../workshop.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -9,6 +10,7 @@
 #include <string.h>
 
 #include "imgui.h"
+#include "localization.h"
 #include "osk.h"
 #include "item_names.h"
 #include "option_rows.h"
@@ -130,8 +132,10 @@ static void max_out(void) {
 }
 
 extern "C" void save_editor_draw(float scale) {
+    // Opening the live editor marks a practice attempt as tool-assisted, even if no value is changed.
+    workshop_mark_assisted();
     if (!loaded()) {
-        ImGui::TextDisabled("Load a save file first: the editor changes the save that's currently being played.");
+        ImGui::TextDisabled("%s", ui_tr("Load a save file first: the editor changes the save that's currently being played."));
         return;
     }
     opt_begin("##save", scale);
@@ -303,6 +307,7 @@ extern "C" void save_editor_file_read(const char *path, uint64_t addr, int64_t o
 extern "C" void cheats_frame(void);      // cheats.mm
 extern "C" void difficulty_frame(void);  // difficulty.mm
 extern "C" void save_editor_frame(uint64_t frame) {
+    if (!title_is_las()) return;
     cheats_frame();
     difficulty_frame();
     static int watch = -1;  // LARECOMP_WATCH_SAVE=<lo>,<hi> (save offsets): log code touching that range

@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "id": "pokemon_za",
+  "name": "Pokémon Legends: Z-A",
+  "application_id": "0100f43008c44000",
+  "order": 20,
+  "generator_profile": "generic",
+  "adapter_revision": 1,
+  "romfs_roots": ["arc", "audio", "system"],
+  "init_order": ["sdk", "main"],
+  "runtime": {"nvn_major": 55, "nvn_minor": 15, "heap_scale": 1, "system_resource_size": 16777216, "features": []},
+  "requirements": {
+    "module_tables": "4",
+    "cpu.exclusive_pairs": "value_cas",
+    "cpu.relocations": "relr",
+    "cpu.jump_tables": "low_mask_relative",
+    "kernel.virtual_memory": "dynamic_physical",
+    "services.ipc": "tipc",
+    "audio.opus": "service",
+    "gpu.api": "nvn55",
+    "gpu.surface_write": "store_reduce",
+    "services.network": "offline"
+  },
+  "acceptance": ["startup", "controls", "graphics-audio", "save-reopen", "repeated-start", "extended-play"],
+  "releases": [
+    {
+      "version": "1.0.0",
+      "role": "base",
+      "content_version": 0,
+      "status": "development",
+      "installable": false,
+      "content": {"minimum_files": 22, "image_satisfies_count": false},
+      "modules": [
+        {
+          "name": "main",
+          "build_id": "7222e13ecf6adb3249b5dd5c57fa40b102245fce000000000000000000000000",
+          "base": "0x7000000000",
+          "hle": false
+        },
+        {
+          "name": "sdk",
+          "build_id": "df7a3960c74c3a4803f826c5871532523aa9cf2a000000000000000000000000",
+          "base": "0x7008000000",
+          "hle": true
+        }
+      ]
+    }
+  ]
+}

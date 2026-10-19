@@ -1,4 +1,4 @@
-// Link's Awakening 1.0.0: patch sites and targets used by tools/patches.py and the runtime.
+// Link's Awakening 1.0.0: patch sites, version mapping and diagnostic code-generation inputs.
 // Keep definitions literal: tools/game_addresses.py reads these same UINT64_C values.
 // These are guest addresses, not host pointers. Object field offsets remain with their structures.
 #pragma once
@@ -96,6 +96,10 @@
 #define GA_GOHMA_ARRIVED_SKIP               UINT64_C(0x70003995c0)
 #define GA_MCHIEF_STORY_SKIP                UINT64_C(0x70001f8b58)
 #define GA_EMPTY_HANDLER_CATCH              UINT64_C(0x700108de00)
+#define GA_RESEARCH_RNG_STATE                 UINT64_C(0x7001c341f8)
+#define GA_VERSION_CHANGED_TAIL               UINT64_C(0x7000dfaee0)
+#define GA_VERSION_TEXT_CUT                   UINT64_C(0x7000dfaf50)
+#define GA_VERSION_TEXT_END                   UINT64_C(0x7001433830)
 #define GA_FONT_BOX_GLYPH_SITE              UINT64_C(0x700111e000)
 #define GA_FONT_BOX_GLYPH_SKIP              UINT64_C(0x700111e06c)
 #define GA_SHADOW_LINK_APPEAR_SKIP         UINT64_C(0x7000d15814)

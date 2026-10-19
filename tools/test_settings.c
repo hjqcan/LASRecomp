@@ -55,6 +55,7 @@ int main(int argc, char **argv) {
     assert(g_settings.upscaler == UPSCALE_BILINEAR);
     assert(g_settings.prompts == PROMPTS_XBOX);
     assert(g_settings.volume == 1.25f);
+    assert(g_settings.acnh_speedfix60);
     settings_save();
     return 0;
 }

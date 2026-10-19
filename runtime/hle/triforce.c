@@ -65,6 +65,7 @@ static void load(void) {
 RT_ON_RESET(triforce_reset) { g_needed = -1; g_got_frame = 0; }  // (seed switch: reload rando/<seed>/triforce.tsv)
 
 static bool on(void) {
+    if (!title_is_las()) return false;
     if (g_needed < 0) load();
     return g_needed > 0;
 }
@@ -153,6 +154,7 @@ static const char *level_name(void) {
 // being received (the hold-up and its message) and where a piece stands in the world. m: the draw's bone matrices
 // (vertex cbuf 3: the first row-major 3x4, translation in m[3], m[7], m[11]) or NULL.
 void triforce_model_tint(const float *m, uint32_t m_size, float tint[8]) {
+    if (!title_is_las()) return;
     if (!on() && !getenv("LARECOMP_TRIFORCE_TINT")) return;
     bool gold = getenv("LARECOMP_TRIFORCE_TINT") || (g_got_frame && renderer_present_count() - g_got_frame <= 600);
     const char *lv = level_name();

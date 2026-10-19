@@ -94,6 +94,7 @@ static void wt_init(uint64_t lo, uint64_t hi) {
 }
 
 // ---- guest address space
+static uint64_t g_guest_lo, g_guest_hi;
 // Everything readable/writable from the start, like macOS: the guest maps at 4K granularity, and untouched pages
 // cost nothing (MAP_NORESERVE: the 12 GB window doesn't count against overcommit).
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
@@ -102,6 +103,39 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
     if (p == MAP_FAILED) return false;
     if (p != (void *)(uintptr_t)lo) { munmap(p, hi - lo); return false; }  // (kernels before 4.17: just a hint)
     wt_init(lo, hi);
+    g_guest_lo = lo; g_guest_hi = hi;
+    return true;
+}
+
+bool plat_reserve_guest_extra(uint64_t lo, uint64_t hi) {
+    if (lo != g_guest_hi || hi <= lo) return false;
+    void *p = mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE,
+                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+    if (p == MAP_FAILED) return false;
+    if (p != (void *)(uintptr_t)lo) { munmap(p, hi - lo); return false; }
+    if (g_uffd >= 0 && !wt_register(lo, hi)) wt_off("register extended window");
+    g_wt_hi = g_guest_hi = hi;
+    return true;
+}
+
+bool plat_commit_physical(uint64_t addr, uint64_t size) {
+    if (!size || addr < g_guest_lo || addr >= g_guest_hi || size > g_guest_hi - addr) return false;
+    memset((void *)(uintptr_t)addr, 0, size);
+    return true;
+}
+
+bool plat_discard_physical(uint64_t addr, uint64_t size) {
+    if (!size || addr < g_guest_lo || addr >= g_guest_hi || size > g_guest_hi - addr) return false;
+    uint64_t page = (uint64_t)sysconf(_SC_PAGESIZE), end = addr + size;
+    uint64_t begin_full = (addr + page - 1) & ~(page - 1), end_full = end & ~(page - 1);
+    if (begin_full >= end_full) memset((void *)(uintptr_t)addr, 0, size);
+    else {
+        // Never discard a neighboring 4-KiB guest mapping on a larger-page host.
+        memset((void *)(uintptr_t)addr, 0, begin_full - addr);
+        if (madvise((void *)(uintptr_t)begin_full, end_full - begin_full, MADV_DONTNEED))
+            memset((void *)(uintptr_t)begin_full, 0, end_full - begin_full);
+        memset((void *)(uintptr_t)end_full, 0, end - end_full);
+    }
     return true;
 }
 
@@ -203,7 +237,7 @@ static void log_to_file_without_terminal(void) {
 static void require_cpu(void) {
     __builtin_cpu_init();
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2")) return;
-    fprintf(stderr, "FATAL: LAS Recomp needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or "
+    fprintf(stderr, "FATAL: Multi needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or "
                     "newer).\n");
     exit(1);
 }
@@ -265,11 +299,11 @@ void plat_fatal_notice(void) {
     rt_crash_explain(text, sizeof text, g_log_path);
     if (!g_log_path[0]) return;
     fflush(stderr);
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "LAS Recomp", text, NULL);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Multi", text, NULL);
 }
 
 static void *notice_thread(void *text) {
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "LAS Recomp", text, NULL);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Multi", text, NULL);
     free(text);
     return NULL;
 }
@@ -386,4 +420,4 @@ bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPT
 
 // End the process at once, skipping the library teardown: as on Windows, the GPU driver's threads crashed in exit()
 // while the game's threads still submitted work.
-void plat_terminate(void) { _exit(0); }
+void plat_terminate(int status) { _exit(status); }

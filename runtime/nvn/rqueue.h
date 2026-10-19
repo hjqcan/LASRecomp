@@ -20,6 +20,8 @@ void rq_upload(NvnTexture *t, int kind, void *data, uint32_t w, uint32_t h, uint
 // Waiting (any thread): everything up to item q is translated and submitted to the GPU; the returned value is the
 // backend's submission number to wait on for the GPU side (renderer_wait_seq).
 uint64_t rq_wait_item(uint64_t q);
+// NVN wait result: 0 already translated, 1 waited, 2 timeout, 3 interrupted.
+int rq_wait_item_timeout(uint64_t q, uint64_t timeout, uint64_t *gpu_seq);
 uint64_t rq_fence_seq(void);  // the item a fence placed now belongs to (the last one queued)
 // (LARECOMP_LOG_PACE) item q's place: items queued after it, not translated yet; true: in the frame being recorded
 bool rq_fence_info(uint64_t q, uint64_t *behind, bool *untranslated);

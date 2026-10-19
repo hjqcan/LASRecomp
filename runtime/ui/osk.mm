@@ -12,6 +12,7 @@
 #include <string>
 
 #include "imgui.h"
+#include "localization.h"
 #include "imgui_internal.h"
 #include "osk.h"
 #include "pad_nav.h"
@@ -56,7 +57,7 @@ bool ui_input_text(const char *label, char *buf, size_t size, ImGuiInputTextFlag
     ImGuiContext &g = *GImGui;
     int test = test_focus(label);
     if (test == 2) ImGui::SetKeyboardFocusHere();
-    bool r = hint ? ImGui::InputTextWithHint(label, hint, buf, size, flags) : ImGui::InputText(label, buf, size, flags);
+    bool r = hint ? ImGui::InputTextWithHint(label, ui_tr(hint), buf, size, flags) : ImGui::InputText(label, buf, size, flags);
     ImGuiID id = ImGui::GetItemID();
     if (test == 1) { ImGui::FocusItem(); ImGui::SetNavCursorVisible(true); }
     // (and in view for the screenshots for a few frames: the focus' own scroll misses on a NavFlattened page)
@@ -110,7 +111,7 @@ int osk_keys(char *text, size_t cap, int max_chars, bool appearing, float scale,
     if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, ImGuiInputFlags_Repeat, own)) del();
 
     ImGui::PushFont(big);
-    ImGui::Text("%s_", text);
+    ImGui::Text(ui_tr("%s_"), text);
     ImGui::PopFont();
     static const char *rows_u[] = {"ABCDEFGHIJ", "KLMNOPQRST", "UVWXYZ-.'!", "0123456789"};
     static const char *rows_l[] = {"abcdefghij", "klmnopqrst", "uvwxyz-.'!", "0123456789"};
@@ -124,19 +125,19 @@ int osk_keys(char *text, size_t cap, int max_chars, bool appearing, float scale,
                 ImGui::SetKeyboardFocusHere();
                 ImGui::SetNavCursorVisible(true);
             }
-            if (ImGui::Button(lbl, ImVec2(k, k))) add(rows[row][i]);
+            if (ImGui::Button(ui_label(lbl).c_str(), ImVec2(k, k))) add(rows[row][i]);
         }
     }
-    if (ImGui::Button(upper ? "abc" : "ABC", ImVec2(k * 2, k))) upper = !upper;
+    if (ImGui::Button(ui_label(upper ? "abc" : "ABC").c_str(), ImVec2(k * 2, k))) upper = !upper;
     ImGui::SameLine();
-    if (ImGui::Button("Space", ImVec2(k * 3, k)) && len > 0) add(' ');
+    if (ImGui::Button(ui_label("Space").c_str(), ImVec2(k * 3, k)) && len > 0) add(' ');
     ImGui::SameLine();
-    if (ImGui::Button("Delete", ImVec2(k * 2, k))) del();
+    if (ImGui::Button(ui_label("Delete").c_str(), ImVec2(k * 2, k))) del();
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(k * 2, k))) r = -1;
+    if (ImGui::Button(ui_label("Cancel").c_str(), ImVec2(k * 2, k))) r = -1;
     ImGui::SameLine();
-    if (ImGui::Button("OK", ImVec2(k * 2, k))) r = 1;
-    ImGui::TextDisabled("%s  type      %s  delete      %s  OK      (%d / %d)", ui_pad_confirm_label(), ui_pad_back_label(),
+    if (ImGui::Button(ui_label("OK").c_str(), ImVec2(k * 2, k))) r = 1;
+    ImGui::TextDisabled(ui_tr("%s  type      %s  delete      %s  OK      (%d / %d)"), ui_pad_confirm_label(), ui_pad_back_label(),
                         ui_pad_start_label(), len, max_chars);
     return r;
 }
@@ -175,7 +176,7 @@ void osk_draw(ImFont *big, float scale) {
         return;
     }
     ImGui::PushFont(big);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", s.title);
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", ui_tr(s.title));
     ImGui::PopFont();
     int max = (int)(s.size < sizeof s.text ? s.size : sizeof s.text) - 1;
     int r = cancel ? -1 : osk_keys(s.text, sizeof s.text, max, s.appearing, scale, big);

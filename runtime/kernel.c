@@ -6,6 +6,9 @@
 
 #include "hle.h"
 #include "kernel.h"
+#include "kernel_memory.h"
+#include "guest_jump.h"
+#include "research.h"
 #ifdef _WIN32
 #include "platform/windows_threads.h"
 #endif
@@ -20,6 +23,7 @@
 #define R_INVALID_ADDRESS 0xCC01
 #define R_NOT_FOUND 0xF201
 #define R_INVALID_ENUM 0xF001
+#define R_INVALID_COMBINATION 0xE801
 #define R_OUT_OF_RESOURCE 0xD001
 
 #define PSEUDO_THREAD 0xFFFF8000u
@@ -109,66 +113,8 @@ static bool kwait(int64_t timeout_ns, const struct timespec *ts) {
     return r;
 }
 
-// ------------------------------------------------------------------ memory map
-typedef struct { uint64_t addr, size; uint32_t type, perm; } Region;
-static Region regions[1024];
-static int nregions;
-static uint64_t heap_size;
+// TLS allocation is independent of the page mapping model.
 static uint64_t tls_next = TLS_BASE;
-uint64_t kernel_heap_size(void) { return heap_size; }  // bytes from HEAP_BASE set by SetHeapSize
-// Writable guest data regions (heap, mapped/physical memory, module .data): for debug/runtime memory scans.
-int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
-    int n = 0;
-    for (int i = 0; i < nregions && n < max; i++)
-        if ((regions[i].perm & 2) && regions[i].type != 0xB && regions[i].type != 0xC) {
-            addr[n] = regions[i].addr; size[n] = regions[i].size; n++;
-        }
-    return n;
-}
-
-static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
-    if (nregions == 1024) FATAL("too many regions\n");
-    plat_commit(addr, size);  // back it before the OS writes there (Windows: file reads into the heap)
-    int i = nregions++;
-    while (i > 0 && regions[i - 1].addr > addr) { regions[i] = regions[i - 1]; i--; }
-    regions[i] = (Region){addr, size, type, perm};
-}
-
-static void region_remove(uint64_t addr) {
-    for (int i = 0; i < nregions; i++) {
-        if (regions[i].addr == addr) {
-            memmove(&regions[i], &regions[i + 1], (nregions - i - 1) * sizeof(Region));
-            nregions--;
-            return;
-        }
-    }
-}
-
-static void query_memory(uint64_t addr, uint64_t out) {
-    uint64_t prev_end = 0;
-    uint64_t info[5] = {0};  // addr, size, type|attr<<32, perm|ipc<<32, device|pad<<32
-    for (int i = 0; i < nregions; i++) {
-        Region *r = &regions[i];
-        if (addr >= r->addr && addr < r->addr + r->size) {
-            info[0] = r->addr;
-            info[1] = r->size;
-            info[2] = r->type;
-            info[3] = r->perm;
-            memcpy((void *)out, info, 0x28);
-            return;
-        }
-        if (addr < r->addr) {
-            info[0] = prev_end;
-            info[1] = r->addr - prev_end;
-            memcpy((void *)out, info, 0x28);
-            return;
-        }
-        prev_end = r->addr + r->size;
-    }
-    info[0] = prev_end;
-    info[1] = (1ull << 39) - prev_end;
-    memcpy((void *)out, info, 0x28);
-}
 
 // ------------------------------------------------------------------ threads
 static uint64_t next_thread_id = 0x50;
@@ -183,6 +129,28 @@ static uint64_t next_thread_id = 0x50;
 volatile int g_rt_unwind;
 static KThread *g_threads;  // every thread of this boot (g_klock)
 
+// Optional timed boot diagnostics; PCs are approximate while a thread is active.
+void kernel_log_threads(void) {
+    pthread_mutex_lock(&g_klock);
+    for (KThread *t = g_threads; t; t = t->anext)
+        if (t->started && !t->finished) {
+            LOG("[thread] id=%llu h=%x pc=%llx lr=%llx sp=%llx wait=%d sync=%d addr=%llx mutex=%llx\n",
+                t->id, t->handle, t->cpu.pc, t->cpu.x[30], t->cpu.sp, t->wait_kind, t->in_sync_wait, t->wait_addr, t->wait_mutex);
+            if (!t->wait_kind && !t->in_sync_wait) {
+                uint64_t fp = t->cpu.x[29];
+                LOG("[thread-stack] %llu:", t->id);
+                for (int i = 0; i < 12 && fp >= STACK_BASE && fp < STACK_BASE + STACK_SIZE - 16 && !(fp & 7); i++) {
+                    uint64_t next = *(uint64_t *)(uintptr_t)fp, lr = *(uint64_t *)(uintptr_t)(fp + 8);
+                    LOG(" %llx", lr);
+                    if (next <= fp) break;
+                    fp = next;
+                }
+                LOG("\n");
+            }
+        }
+    pthread_mutex_unlock(&g_klock);
+}
+
 void rt_unwind_point(void) {
     if (__builtin_expect(g_rt_unwind, 0) && t_cur) longjmp(t_cur->unwind, 1);
 }
@@ -194,6 +162,7 @@ static void *thread_main(void *arg) {
     crash_handler_install();
     rt_set_fpcr(0);
     if (!setjmp(t->unwind)) guest_call(&t->cpu, t->entry);
+    rt_guest_jump_reset(&t->cpu);
     pthread_mutex_lock(&g_klock);
     t->finished = true;
     kernel_signal(&t->obj);
@@ -209,6 +178,8 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
     t->entry = entry;
     t->prio = prio;
     t->core = core < 0 ? 0 : core;
+    t->preferred_core = t->core;
+    t->core_mask = 1ull << t->core;
     t->cpu.x[0] = arg;
     t->cpu.sp = stack_top & ~15ull;
     t->cpu.excl_addr = ~0ull;
@@ -241,7 +212,7 @@ static void thread_start(KThread *t) {
 
 KThread *kernel_create_main_thread(uint64_t entry, uint64_t stack_size, int prio) {
     uint64_t stack = STACK_BASE + STACK_SIZE - ((stack_size + 0xFFFF) & ~0xFFFFull);
-    region_add(stack, stack_size, 0xB, 3);
+    kernel_region_add(stack, stack_size, 0xB, 3);
     KThread *t = thread_new(entry, 0, stack + stack_size, prio, 0);
     t->handle = kernel_new_handle(&t->obj);
     return t;
@@ -250,8 +221,9 @@ KThread *kernel_create_main_thread(uint64_t entry, uint64_t stack_size, int prio
 static KThread *g_main_thread;  // (g_klock) for hang_watch
 static void *hang_watch(void *arg);
 
-void kernel_run_main(KThread *t, uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3) {
+void kernel_run_main(KThread *t, uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3, uint64_t x4) {
     t->cpu.x[0] = x0; t->cpu.x[1] = x1; t->cpu.x[2] = x2; t->cpu.x[3] = x3;
+    t->cpu.x[4] = x4;
     thread_start(t);  // the host main thread goes on to run the window event loop
     pthread_mutex_lock(&g_klock);
     g_main_thread = t;
@@ -270,6 +242,21 @@ uint32_t kernel_current_thread_handle(void) { return t_cur ? t_cur->handle : 0; 
 Cpu *kernel_current_cpu(void) { return t_cur ? &t_cur->cpu : NULL; }
 KThread *kernel_current_thread(void) { return t_cur; }
 uint64_t kernel_current_thread_id(void) { return t_cur ? t_cur->id : 0; }
+
+static uint32_t thread_set_core_mask(KThread *t, int preferred, uint64_t mask) {
+    if (preferred == -2) { preferred = 0; mask = 1; } // process default
+    else if (preferred == -3) preferred = __atomic_load_n(&t->preferred_core, __ATOMIC_RELAXED);
+    if (!mask || (mask & ~UINT64_C(15)) || preferred < -1 || preferred > 3)
+        return R_INVALID_ENUM;
+    if (preferred >= 0 && !(mask & (1ull << preferred))) return R_INVALID_ENUM;
+    int current = __atomic_load_n(&t->core, __ATOMIC_RELAXED);
+    if (preferred >= 0) current = preferred;
+    else if (!(mask & (1ull << current))) current = __builtin_ctzll(mask);
+    __atomic_store_n(&t->core_mask, mask, __ATOMIC_RELAXED);
+    __atomic_store_n(&t->preferred_core, preferred, __ATOMIC_RELAXED);
+    __atomic_store_n(&t->core, current, __ATOMIC_RELEASE);
+    return R_OK;
+}
 
 // ------------------------------------------------------------------ mutex / condvar (Horizon semantics)
 // Mutex word: owner handle | WAITERS_BIT. Waiting threads sleep on the global cond and are handed ownership.
@@ -414,6 +401,11 @@ static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t
     pthread_mutex_lock(&g_klock);
     KThread *t = t_cur;
     uint32_t mbefore = rdw(mutex), kbefore = rdw(key);
+    // The next owner can acquire the guest mutex without g_klock and skip its
+    // signal syscall when the key is zero. Publish the waiter before releasing
+    // that mutex, or a message can arrive between unlock and this store and its
+    // notification is lost. g_klock keeps a signal syscall behind registration.
+    __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
     mutex_release(mutex);
     bool traced = !kt_timed_key(key, timeout >= 0);
     if (traced) kt(KT_WAIT, key, mutex, kbefore, mbefore, rdw(mutex), 0xffffffffu);
@@ -421,7 +413,6 @@ static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t
     t->wait_addr = key;
     t->wait_mutex = mutex;
     t->wait_tag = tag;
-    __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
     // Timed out / cancelled: returns without the mutex, as Horizon does - nn::os takes it again itself (TimedWait on
     // 0xEA01 calls the critical section's Enter). Taking it here as well left the thread holding it when Enter ran:
     // Enter saw its own handle in the lock word and ArbitrateLock waited on itself forever (issue #19's thread dump: a
@@ -645,32 +636,27 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     uint64_t *x = c->x;
     switch (imm) {
     case 0x01: {  // SetHeapSize
-        uint64_t size = x[1];
-        if (size > HEAP_MAX) { x[0] = R_OUT_OF_RESOURCE; break; }
-        heap_size = size;
-        region_remove(HEAP_BASE);
-        if (size) region_add(HEAP_BASE, size, 5, 3);
-        x[0] = R_OK;
-        x[1] = HEAP_BASE;
+        x[0] = kernel_set_heap_size(x[1]);
+        x[1] = x[0] == KM_OK ? HEAP_BASE : 0;
         break;
     }
     case 0x02: case 0x03: x[0] = R_OK; break;  // SetMemoryPermission / SetMemoryAttribute
     case 0x04:  // MapMemory(dst, src, size): src is inaccessible while mapped, so copying is equivalent
         memcpy((void *)x[0], (void *)x[1], x[2]);
-        region_add(x[0], x[2], 0xB, 3);
+        kernel_region_add(x[0], x[2], 0xB, 3);
         x[0] = R_OK;
         break;
     case 0x05:  // UnmapMemory(dst, src, size): copy back
         memcpy((void *)x[1], (void *)x[0], x[2]);
-        region_remove(x[0]);
+        kernel_region_remove(x[0]);
         x[0] = R_OK;
         break;
     case 0x06:  // QueryMemory(out_info, _, addr)
-        query_memory(x[2], x[0]);
+        kernel_query_memory(x[2], x[0]);
         x[0] = R_OK;
         x[1] = 0;
         break;
-    case 0x07: LOG("ExitProcess\n"); exit(0);
+    case 0x07: LOG("ExitProcess\n"); plat_exit(0);
     case 0x08: {  // CreateThread(_, entry, arg, stack_top, prio, core)
         KThread *t = thread_new(x[1], x[2], x[3], (int)x[4], (int)(int32_t)x[5]);
         t->handle = kernel_new_handle(&t->obj);
@@ -712,13 +698,21 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     }
     case 0x0E: {  // GetThreadCoreMask(_, _, handle)
         KObject *o = handle_get((uint32_t)x[2]);
-        x[0] = o ? R_OK : R_INVALID_HANDLE;
-        x[1] = o ? (uint64_t)((KThread *)o)->core : 0;
-        x[2] = 0xF;
+        bool valid = o && o->type == KOBJ_THREAD;
+        x[0] = valid ? R_OK : R_INVALID_HANDLE;
+        x[1] = valid ? (uint64_t)(int64_t)__atomic_load_n(&((KThread *)o)->preferred_core, __ATOMIC_RELAXED) : 0;
+        x[2] = valid ? __atomic_load_n(&((KThread *)o)->core_mask, __ATOMIC_RELAXED) : 0;
         break;
     }
-    case 0x0F: x[0] = R_OK; break;  // SetThreadCoreMask
-    case 0x10: x[0] = t_cur->core; break;  // GetCurrentProcessorNumber
+    case 0x0F: {  // SetThreadCoreMask; guest identity is independent of the host CPU scheduler.
+        KObject *o = handle_get((uint32_t)x[0]);
+        int preferred = (int32_t)x[1]; uint64_t mask = x[2];
+        x[0] = o && o->type == KOBJ_THREAD ? thread_set_core_mask((KThread *)o, preferred, mask) : R_INVALID_HANDLE;
+        if (ENV("LARECOMP_LOG_CORES")) LOG("[kernel] core mask id=%llu preferred=%d mask=%llx result=%llx\n",
+            o && o->type == KOBJ_THREAD ? ((KThread *)o)->id : 0, preferred, mask, x[0]);
+        break;
+    }
+    case 0x10: x[0] = __atomic_load_n(&t_cur->core, __ATOMIC_ACQUIRE); break;  // GetCurrentProcessorNumber
     case 0x11: case 0x12: case 0x17: {  // SignalEvent / ClearEvent / ResetSignal
         pthread_mutex_lock(&g_klock);
         KObject *o = handle_get((uint32_t)x[0]);
@@ -742,12 +736,12 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         KSharedMem *s = (KSharedMem *)o;
         memset((void *)x[1], 0, x[2]);
         s->guest_addr = x[1];  // HLE services write straight into the guest's mapping
-        region_add(x[1], x[2], 6, 3);
+        kernel_region_add(x[1], x[2], 6, 3);
         if (s->on_map) s->on_map(s);
         x[0] = R_OK;
         break;
     }
-    case 0x14: region_remove(x[1]); x[0] = R_OK; break;  // UnmapSharedMemory
+    case 0x14: kernel_region_remove(x[1]); x[0] = R_OK; break;  // UnmapSharedMemory
     case 0x15: {  // CreateTransferMemory(_, addr, size, perm)
         KTransferMem *t = calloc(1, sizeof *t);
         t->obj.type = KOBJ_TMEM;
@@ -808,6 +802,14 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     }
     case 0x26:  // Break
         if (x[0] & 0x80000000u) { LOG("[kernel] Break notification %llx\n", x[0]); x[0] = R_OK; break; }
+        // SDK aborts often place a Result on the current stack. Preserve it in
+        // the report so intermittent filesystem failures can be diagnosed.
+        if (x[2] == 4 && x[1] >= c->sp && x[1] - c->sp < 0x1000 &&
+            x[1] >= GUEST_LO && x[1] <= GUEST_LO + kernel_memory_info(13) - 4) {
+            uint32_t result;
+            memcpy(&result, (const void *)(uintptr_t)x[1], sizeof result);
+            LOG("[kernel] Break result 0x%08x (module %u, description %u)\n", result, result & 511, result >> 9);
+        }
         FATAL("svcBreak(reason=%llx, info=%llx, size=%llx) at %llx\n", x[0], x[1], x[2], pc);
     case 0x27: debug_string(x[0], x[1]); x[0] = R_OK; break;
     case 0x29: {  // GetInfo(_, id0, handle, id1)
@@ -817,22 +819,32 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         switch (id0) {
         case 0: v = 0xF; break;
         case 1: v = 0xFFFFFFFFFFFFFFFFull; break;
-        case 2: v = ALIAS_BASE; break;
-        case 3: v = ALIAS_SIZE; break;
-        case 4: v = HEAP_BASE; break;
-        case 5: v = HEAP_MAX; break;
-        case 6: case 21: v = 0xCD500000ull; break;  // application memory (3.2 GB, as on hardware)
-        case 7: case 22: v = heap_size + 0x4000000; break;
+        case 2: case 3: case 4: case 5: case 6: case 7: case 21: case 22:
+            v = kernel_memory_info(id0); break;
         case 8: v = 0; break;
         case 9: v = 0; break;
-        case 11: v = ((uint64_t)arc4random() << 32) | arc4random(); break;
-        case 12: v = GUEST_LO; break;
-        case 13: v = GUEST_HI - GUEST_LO; break;
+        case 11:
+            v = ((uint64_t)arc4random() << 32) | arc4random();
+            research_external(RESEARCH_EXTERNAL_ENTROPY,pc,kernel_current_thread_handle(),x[3],v);
+            break;
+        case 12: case 13: v = kernel_memory_info(id0); break;
         case 14: v = STACK_BASE; break;
         case 15: v = STACK_SIZE; break;
-        case 16: case 17: v = 0; break;
-        case 18: v = 0x01006BB00C6F0000ull; break;
-        case 20: v = 0; break;
+        case 16: case 17:
+            if (x[3] != 0) r = R_INVALID_COMBINATION;
+            else if ((uint32_t)x[2] != PSEUDO_PROCESS) r = R_INVALID_HANDLE;
+            else v = kernel_memory_info(id0);
+            break;
+        case 18: v = title_profile_current()->program_id; break;
+        case 20:  // UserExceptionContextAddress: the SDK stores its handler stack here.
+            if (x[3] != 0) r = R_INVALID_COMBINATION;
+            else if ((uint32_t)x[2] != PSEUDO_PROCESS) r = R_INVALID_HANDLE;
+            else v = PROCESS_LOCAL_BASE;
+            break;
+        case 28:  // AliasRegionExtraSize (18.0.0+): no dedicated alias-extra subregion.
+            if (x[3] != 0) r = R_INVALID_COMBINATION;
+            else if ((uint32_t)x[2] != PSEUDO_PROCESS) r = R_INVALID_HANDLE;
+            break;
         default: r = R_INVALID_ENUM; LOG("[kernel] GetInfo unknown id %u/%llu\n", id0, x[3]);
         }
         x[0] = r;
@@ -840,13 +852,8 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         break;
     }
     case 0x2C:  // MapPhysicalMemory(addr, size)
-        memset((void *)x[0], 0, x[1]);
-        region_add(x[0], x[1], 0x7, 3);
-        x[0] = R_OK;
-        break;
-    case 0x2D:  // UnmapPhysicalMemory
-        region_remove(x[0]);
-        x[0] = R_OK;
+    case 0x2D:  // UnmapPhysicalMemory(addr, size)
+        x[0] = kernel_map_physical(x[0], x[1], imm == 0x2C);
         break;
     case 0x34: x[0] = svc_wait_for_address(x[0], (uint32_t)x[1], (int32_t)x[2], (int64_t)x[3]); break;
     case 0x35: x[0] = svc_signal_to_address(x[0], (uint32_t)x[1], (int32_t)x[2], (int32_t)x[3]); break;
@@ -1025,8 +1032,7 @@ void kernel_reset(void) {
     g_waitlist = NULL;
     g_syncwaiters = NULL;
     memset(handles, 0, sizeof handles);
-    nregions = 0;
-    heap_size = 0;
+    kernel_memory_reset();
     tls_next = TLS_BASE;
     next_thread_id = 0x50;
     g_rt_unwind = 0;
@@ -1035,12 +1041,19 @@ void kernel_reset(void) {
 
 void kernel_init(void) {
     // Reserve the heap, alias, stack, and TLS regions.
-    region_add(TLS_BASE, TLS_SIZE, 0xC, 3);
+    // The SDK chooses shared-memory addresses using QueryMemory. Host-owned
+    // callback/data ranges must not look free or an ASLR mapping can overlap
+    // font buffers and other HLE objects allocated later in the same boot.
+    kernel_region_add(HLE_BASE, HLE_SIZE, 3, 5);
+    kernel_region_add(HLE_HEAP, HLE_HEAP_SIZE, 4, 3);
+    kernel_region_add(TLS_BASE, TLS_SIZE, 0xC, 3);
+    plat_commit(PROCESS_LOCAL_BASE, PROCESS_LOCAL_SIZE);
+    kernel_region_add(PROCESS_LOCAL_BASE, PROCESS_LOCAL_SIZE, 0xC, 3);
     for (int i = 0; i < g_nmodules; i++) {
         Module *m = &g_modules[i];
-        region_add(m->base + m->text_off, m->ro_off - m->text_off, 3, 5);
-        region_add(m->base + m->ro_off, m->data_off - m->ro_off, 3, 1);
-        region_add(m->base + m->data_off, m->size - m->data_off, 4, 3);
+        kernel_region_add(m->base + m->text_off, m->ro_off - m->text_off, 3, 5);
+        kernel_region_add(m->base + m->ro_off, m->data_off - m->ro_off, 3, 1);
+        kernel_region_add(m->base + m->data_off, m->size - m->data_off, 4, 3);
     }
 }
 

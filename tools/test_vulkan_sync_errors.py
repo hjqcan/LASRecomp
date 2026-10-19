@@ -35,6 +35,9 @@ static const char *wait_why;
 static VkResult result;
 #define LOG(...) fprintf(stderr, __VA_ARGS__)
 #define FATAL(...) do { fprintf(stderr, __VA_ARGS__); fflush(stderr); _Exit(17); } while (0)
+#define VK_WATCHDOG(operation, sequence, call) do { (void)(operation); (void)(sequence); call; } while (0)
+#define rt_fatal_msg(...) fprintf(stderr, __VA_ARGS__)
+static void plat_terminate(int status) { assert(status==1); _Exit(17); }
 static uint64_t SDL_GetTicksNS(void) { return ++ticks; }
 static void wait_account(uint64_t elapsed) { assert(elapsed); accounts++; wait_why=NULL; }
 static void cq_resolve_done(uint64_t seq) { resolved=seq; }

@@ -7,6 +7,7 @@
 
 #include "cpu.h"
 #include "platform.h"
+#include "title_profile.h"
 
 // One write per line: stderr is unbuffered (main.c / platform: crash logs aren't lost), and Windows' CRT then wrote a
 // formatted line as dozens of separate WriteFile calls - the 2-second stats line cost ~40 ms, a hitch every 2 s.
@@ -36,6 +37,8 @@ static inline void __attribute__((format(printf, 1, 2))) rt_log(const char *fmt,
 #define HLE_SIZE     0x0000100000ull
 #define TLS_BASE     0x7090000000ull
 #define TLS_SIZE     0x0000100000ull
+#define PROCESS_LOCAL_SIZE 0x1000ull
+#define PROCESS_LOCAL_BASE (TLS_BASE - PROCESS_LOCAL_SIZE)  // process exception context, before thread TLS
 #define HLE_HEAP     0x7092000000ull   // guest-visible memory owned by host code
 #define HLE_HEAP_SIZE 0x000E000000ull
 #define ALIAS_BASE   0x7100000000ull   // alias region (svcMapMemory targets)
@@ -52,7 +55,7 @@ typedef struct Module {
     uint64_t symtab, strtab, nsyms;
 } Module;
 
-extern Module g_modules[4];
+extern Module g_modules[TITLE_MAX_MODULES];
 extern int g_nmodules;
 void loader_load(const char *exefs_dir);  // (again after a reboot: modules are reloaded into wiped memory)
 uint64_t loader_find_symbol(const char *name);
@@ -62,6 +65,7 @@ const char *loader_symbol_at(uint64_t addr, uint64_t *offset);
 typedef void (*HostFn)(Cpu *c);
 void dispatch_init(void);
 GuestFn dispatch_lookup(uint64_t addr);
+GuestFn research_dispatch_override(uint64_t addr); // opt-in, verified LAS callback observations
 uint64_t hle_register(const char *name, HostFn fn);  // returns fake guest address
 HostFn hle_lookup_impl(const char *name);
 void hle_override(uint64_t guest_addr, HostFn fn, const char *name);
@@ -79,7 +83,7 @@ void kernel_init(void);
 void kernel_stop_threads(void (*idle)(void));  // reboot: unwind every guest thread and join it (idle: called while waiting)
 void kernel_reset(void);                       // reboot: empty handle table, memory map, thread list
 KThread *kernel_create_main_thread(uint64_t entry, uint64_t stack_size, int prio);
-void kernel_run_main(KThread *t, uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3);
+void kernel_run_main(KThread *t, uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3, uint64_t x4);
 uint32_t kernel_current_thread_handle(void);
 Cpu *kernel_current_cpu(void);
 

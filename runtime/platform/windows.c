@@ -7,6 +7,7 @@
 #include <shellapi.h>
 #include <timeapi.h>
 #include <io.h>
+#include <tlhelp32.h>
 
 #include "../platform.h"
 
@@ -29,9 +30,69 @@ static bool lazy_commit(uint64_t a) {
 }
 
 static bool g_report_crashes;
+static uint64_t debug_write_address;
+static LONG debug_write_hits;
+
+static DWORD WINAPI debug_write_watch_thread(void *unused) {
+    (void)unused;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return 0;
+    THREADENTRY32 entry = {.dwSize = sizeof entry};
+    unsigned armed = 0;
+    for (BOOL more = Thread32First(snapshot, &entry); more; more = Thread32Next(snapshot, &entry)) {
+        if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId()) continue;
+        HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, entry.th32ThreadID);
+        if (!thread) continue;
+        if (SuspendThread(thread) != (DWORD)-1) {
+            CONTEXT context = {.ContextFlags = CONTEXT_DEBUG_REGISTERS};
+            if (GetThreadContext(thread, &context) && !(context.Dr7 & 0xff)) {
+                context.Dr0 = debug_write_address;
+                context.Dr6 = 0;
+                context.Dr7 = 0x90001;  // local DR0, write only, eight-byte watch
+                if (SetThreadContext(thread, &context)) armed++;
+            }
+            ResumeThread(thread);
+        }
+        CloseHandle(thread);
+    }
+    CloseHandle(snapshot);
+    fprintf(stderr, "[write-watch] %llx initial %llx armed %u threads\n",
+            (unsigned long long)debug_write_address,
+            (unsigned long long)*(uint64_t *)(uintptr_t)debug_write_address, armed);
+    return 0;
+}
+
+void plat_debug_write_watch(uint64_t frame) {
+    static bool started;
+    if (started) return;
+    const char *setting = getenv("LARECOMP_DEBUG_WRITE_WATCH");
+    if (!setting) { started = true; return; }
+    unsigned long long address, at;
+    if (sscanf(setting, "%llx:%llu", &address, &at) != 2) { started = true; return; }
+    if (frame < at) return;
+    started = true;
+    if ((address & 7) || address < g_lo || address + 8 > g_hi) return;
+    debug_write_address = address;
+    HANDLE thread = CreateThread(NULL, 0, debug_write_watch_thread, NULL, 0, NULL);
+    if (thread) CloseHandle(thread);
+}
 
 static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *ep) {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
+    if (er->ExceptionCode == EXCEPTION_SINGLE_STEP && debug_write_address && (ep->ContextRecord->Dr6 & 1)) {
+        LONG hit = InterlockedIncrement(&debug_write_hits);
+        if (hit <= 32) {
+            extern const char *rt_host_fn_name(uint64_t pc, uint64_t *offset);
+            uint64_t offset = 0;
+            const char *name = rt_host_fn_name(ep->ContextRecord->Rip, &offset);
+            fprintf(stderr, "[write-watch] hit %ld thread %lu value %llx pc %llx %s+%llx\n", hit, GetCurrentThreadId(),
+                    (unsigned long long)*(uint64_t *)(uintptr_t)debug_write_address,
+                    (unsigned long long)ep->ContextRecord->Rip, name ? name : "host", (unsigned long long)offset);
+            plat_print_backtrace();
+        } else ep->ContextRecord->Dr7 = 0;
+        ep->ContextRecord->Dr6 = 0;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
     uint64_t fa = er->ExceptionInformation[1];
     if (lazy_commit(fa)) return EXCEPTION_CONTINUE_EXECUTION;
@@ -52,6 +113,27 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
     g_hi = hi;
     AddVectoredExceptionHandler(1, vectored_handler);
     return true;
+}
+
+bool plat_reserve_guest_extra(uint64_t lo, uint64_t hi) {
+    if (lo != g_hi || hi <= lo) return false;
+    DWORD flags = MEM_RESERVE | (g_write_watch ? MEM_WRITE_WATCH : 0);
+    void *p = VirtualAlloc((void *)(uintptr_t)lo, hi - lo, flags, PAGE_READWRITE);
+    if (p != (void *)(uintptr_t)lo) return false;
+    g_hi = hi;
+    return true;
+}
+
+bool plat_commit_physical(uint64_t addr, uint64_t size) {
+    if (!size || addr < g_lo || addr >= g_hi || size > g_hi - addr) return false;
+    if (!VirtualAlloc((void *)(uintptr_t)addr, size, MEM_COMMIT, PAGE_READWRITE)) return false;
+    memset((void *)(uintptr_t)addr, 0, size);
+    return true;
+}
+
+bool plat_discard_physical(uint64_t addr, uint64_t size) {
+    return size && addr >= g_lo && addr < g_hi && size <= g_hi - addr &&
+        VirtualFree((void *)(uintptr_t)addr, size, MEM_DECOMMIT) != 0;
 }
 
 int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, uint64_t *page) {
@@ -349,8 +431,8 @@ static void log_to_file_without_console(void) {
 static void require_cpu(void) {
     __builtin_cpu_init();
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2")) return;
-    MessageBoxA(NULL, "LAS Recomp needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or newer).",
-                "LAS Recomp", MB_ICONERROR | MB_OK);
+    MessageBoxA(NULL, "Multi needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or newer).",
+                "Multi", MB_ICONERROR | MB_OK);
     ExitProcess(1);
 }
 
@@ -362,11 +444,11 @@ void plat_fatal_notice(void) {
     rt_crash_explain(text, sizeof text, g_log_path);
     if (!g_log_path[0]) return;
     fflush(stderr);
-    MessageBoxA(NULL, text, "LAS Recomp", MB_ICONERROR | MB_OK);
+    MessageBoxA(NULL, text, "Multi", MB_ICONERROR | MB_OK);
 }
 
 static DWORD WINAPI notice_thread(LPVOID text) {
-    MessageBoxA(NULL, text, "LAS Recomp", MB_ICONWARNING | MB_OK);
+    MessageBoxA(NULL, text, "Multi", MB_ICONWARNING | MB_OK);
     free(text);
     return 0;
 }
@@ -388,7 +470,7 @@ bool plat_module_name(uint64_t pc, char *out, size_t n) {
 
 void plat_init(void) {
     // abort() (rt_fatal_trace, after the crash dialog) without the C runtime's own "Microsoft Visual C++ Runtime
-    // Library - abort() has been called" box and the Windows error report: the player sees only LAS Recomp's dialog
+    // Library - abort() has been called" box and the Windows error report: the player sees only Multi's dialog
 #ifdef _WRITE_ABORT_MSG  // (MinGW's stdlib.h declares it with these flags)
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif
@@ -480,8 +562,8 @@ void plat_print_backtrace(void) {
     uint64_t exe = (uint64_t)(uintptr_t)GetModuleHandleA(NULL);
     for (int i = 0; i < n; i++) {
         uint64_t pc = (uint64_t)(uintptr_t)bt[i], off = 0;
-        const char *s = plat_symbol(pc, &off);
-        if (!s) s = rt_host_fn_name(pc, &off);
+        const char *s = rt_host_fn_name(pc, &off);
+        if (!s) s = plat_symbol(pc, &off);
         if (s) fprintf(stderr, "  #%-2d %016llx %s+%llx\n", i, (unsigned long long)pc, s, (unsigned long long)off);
         else fprintf(stderr, "  #%-2d %016llx lasrecomp+%llx\n", i, (unsigned long long)pc,
                      (unsigned long long)(pc - exe));
@@ -619,5 +701,6 @@ bool plat_remove_tree(const char *dir) {
     return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
 }
 
-// End the process at once, skipping DLL teardown (from an atexit handler, after flushing). Exit status 0.
-void plat_terminate(void) { publish_log(); TerminateProcess(GetCurrentProcess(), 0); }
+// End the process at once, preserving its result and skipping DLL teardown after publishing the log.
+// Emergency failures must not wait on log-file or stdio locks.
+void plat_terminate(int status) { if (!status) publish_log(); TerminateProcess(GetCurrentProcess(), (UINT)status); }

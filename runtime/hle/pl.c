@@ -167,7 +167,7 @@ static int load_one_checked(const char *path, Font *ft, bool check) {
 static int g_fonts_loaded;
 RT_ON_RESET(pl_reset) { g_fonts_loaded = 0; memset(fonts, 0, sizeof fonts); }  // (they were in the HLE heap)
 
-static void load_fonts(void) {
+static void load_fonts_locked(void) {
     if (g_fonts_loaded) return;
     g_fonts_loaded = 1;
     const char *env = getenv("LARECOMP_FONT");
@@ -217,7 +217,14 @@ static void load_fonts(void) {
     if (!fonts[F_STD].addr && rt_resource("DejaVuSans.ttf", "third_party/fonts/DejaVu/DejaVuSans.ttf", bundled, sizeof bundled))
         load_one_checked(bundled, &fonts[F_STD], true);
     if (!fonts[F_STD].addr)  // (only a broken install: the app ships DejaVu Sans)
-        FATAL("no font for the game's text: import the Switch fonts in Settings (Game font), or reinstall LAS Recomp\n");
+        FATAL("no font for the game's text: import the Switch fonts in Settings (Game font), or reinstall Multi\n");
+}
+
+static void load_fonts(void) {
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&lock);
+    load_fonts_locked();
+    pthread_mutex_unlock(&lock);
 }
 
 // SharedFontType: 0 Standard, 1 ChineseSimple, 2 ChineseSimpleExt, 3 ChineseTraditional, 4 Korean, 5 NintendoExt
@@ -231,3 +238,35 @@ static const Font *font_for(uint64_t type) {
 HLE_FUNC("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", pl_get_load_state) { c->x[0] = 1; }
 HLE_FUNC("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE", pl_get_address) { c->x[0] = font_for(c->x[0])->addr; }
 HLE_FUNC("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", pl_get_size) { c->x[0] = font_for(c->x[0])->size; }
+
+HLE_FUNC("_ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE", pl_request_load) {
+    (void)font_for(c->x[0]);
+    c->x[0] = 0;
+}
+
+// SDK ABI (24 bytes): type at +0, address at +8, size at +16. The SDK
+// returns a boolean and the total number of fonts, writing at most capacity.
+HLE_FUNC("_ZN2nn2pl13GetSharedFontEPiPNS0_14SharedFontDataEiNS_8settings12LanguageCodeE", pl_get_shared_fonts) {
+    typedef struct { uint32_t type, reserved; uint64_t address, size; } FontData;
+    _Static_assert(sizeof(FontData) == 24, "SharedFontData ABI");
+    int32_t *count = (int32_t *)(uintptr_t)c->x[0];
+    FontData *out = (FontData *)(uintptr_t)c->x[1];
+    int capacity = (int32_t)c->x[2];
+    if (!count || capacity < 0 || (capacity > 0 && !out)) { c->x[0] = 0; return; }
+    char language[9] = {0};
+    memcpy(language, &c->x[3], 8);
+    int order[N_FONT_TYPES] = {F_STD, F_ZH_CN, F_ZH_CN_EXT, F_ZH_TW, F_KO, F_EXT};
+    int preferred = !strcmp(language, "zh-Hans") || !strcmp(language, "zh-CN") ? F_ZH_CN :
+                    !strcmp(language, "zh-Hant") || !strcmp(language, "zh-TW") ? F_ZH_TW :
+                    !strcmp(language, "ko") ? F_KO : F_STD;
+    if (preferred != F_STD) { order[preferred] = F_STD; order[0] = preferred; }
+    load_fonts();
+    *count = N_FONT_TYPES;
+    int n = capacity < N_FONT_TYPES ? capacity : N_FONT_TYPES;
+    for (int i = 0; i < n; i++) {
+        const Font *f = font_for(order[i]);
+        out[i] = (FontData){(uint32_t)order[i], 0, f->addr, f->size};
+    }
+    LOG("[pl] font list for %s: %d/%d entries\n", language, n, N_FONT_TYPES);
+    c->x[0] = 1;
+}

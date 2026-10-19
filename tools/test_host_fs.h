@@ -42,6 +42,20 @@ static ssize_t test_write(int fd, const void *p, size_t n, off_t off) {
 #undef fsync
 const char *g_romfs_dir;
 int rt_romfs_files;
+static const TitleProfile test_profile = {.version = "1.0.0"};
+const TitleProfile *title_profile_current(void) { return &test_profile; }
+bool title_is_las(void) { return true; }
+bool title_content_validate(const TitleProfile *p, const char *root, bool image, int *count, char *why, size_t cap) { abort(); }
+int game_profile_active(void) { return 0; }
+const char *game_profile_save_dir(int profile) { return "save"; }
+const char *workshop_save_dir(void) { return NULL; }
+bool save_backup_create(const char *root, const char *reason, const char *version, bool deduplicate, char *why, size_t cap) { return true; }
+bool acnh60_romfs_override(const char *p, char *out, size_t n) { abort(); }
+void romfs_layout_free(RomfsLayout *p) { abort(); }
+bool research_io_begin(void) { abort(); }
+void research_io_end(int64_t n) { abort(); }
+void service_retain(Service *s) { ++s->refs; }
+void service_release(Service *s) { if (!--s->refs && s->on_close) s->on_close(s); }
 const char *rando_seed_dir(void) { return NULL; }
 bool romfs_layout(const char *p, RomfsLayout *l, char *why, size_t n) { abort(); }
 bool rando_romfs_override(const char *p, char *out, size_t n) { abort(); }

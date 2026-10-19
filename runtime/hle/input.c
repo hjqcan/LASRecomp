@@ -14,7 +14,9 @@
 #include "../nvn/nvn.h"
 #include "../nvn/renderer.h"
 #include "../settings.h"
+#include "../research.h"
 #include "../input_bind.h"
+#include "../coop.h"
 #include "../rumble.h"
 #include "../ui/menu.h"
 
@@ -26,9 +28,13 @@ enum {
 _Static_assert(BTN_DOWN == BIND_DOWN && BTN_ZL == BIND_ZL, "bindings follow the button bits");
 
 static _Atomic uint64_t key_buttons, pad_buttons;
+static _Atomic uint64_t input_frame_number, key_pressed_until[BIND_PAD_COUNT];
 static _Atomic int32_t key_lx, key_ly, key_rx, key_ry, pad_lx, pad_ly, pad_rx, pad_ry;
 static uint8_t keys_down[SDL_SCANCODE_COUNT];
 static SDL_Gamepad *pad;
+static SDL_Gamepad *pad2;
+static bool second_focused=true;
+static bool second_text_key;
 static _Atomic int64_t sampling;
 static bool host_test;  // scripted runs must not vibrate the user's controller
 
@@ -118,7 +124,34 @@ static uint8_t test_keys[SDL_SCANCODE_COUNT];
 static _Atomic uint32_t test_pad;
 static _Atomic int32_t test_lx, test_ly;  // (a resting stick's drift: "lstick" in LARECOMP_HOST_INPUT)
 
-static int held_key(int sc) { return sc > 0 && sc < SDL_SCANCODE_COUNT && (keys_down[sc] || test_keys[sc]); }
+static bool coop_key(int sc) { return sc==SDL_SCANCODE_KP_4||sc==SDL_SCANCODE_KP_6||sc==SDL_SCANCODE_KP_8||sc==SDL_SCANCODE_KP_5||sc==SDL_SCANCODE_KP_0; }
+static int held_key(int sc) { return sc > 0 && sc < SDL_SCANCODE_COUNT && !(coop_active()&&coop_key(sc)) && (keys_down[sc] || test_keys[sc]); }
+static int second_key(int sc){return keys_down[sc]||test_keys[sc];}
+static void recompute_second(void) {
+    int32_t x=0,y=0;bool attack=false;
+    if(coop_active()&&(second_focused||host_test)) {
+        x=(second_key(SDL_SCANCODE_KP_6)-second_key(SDL_SCANCODE_KP_4))*32767;
+        y=(second_key(SDL_SCANCODE_KP_8)-second_key(SDL_SCANCODE_KP_5))*32767;
+        attack=second_key(SDL_SCANCODE_KP_0);
+        if(pad2&&!host_test) {
+            x+=SDL_GetGamepadAxis(pad2,SDL_GAMEPAD_AXIS_LEFTX);
+            y-=SDL_GetGamepadAxis(pad2,SDL_GAMEPAD_AXIS_LEFTY);
+            attack|=SDL_GetGamepadButton(pad2,SDL_GAMEPAD_BUTTON_SOUTH);
+        }
+    }
+    coop_host_input(x,y,attack);
+}
+bool input_second_event(const SDL_Event *event) {
+    if(!coop_active()){second_text_key=false;return false;}
+    if(event->type==SDL_EVENT_KEY_DOWN){second_text_key=coop_key(event->key.scancode);return second_text_key;}
+    if(event->type==SDL_EVENT_KEY_UP)return coop_key(event->key.scancode);
+    if(event->type==SDL_EVENT_TEXT_INPUT&&second_text_key)return true;
+    if(!pad2)return false;
+    SDL_JoystickID id=SDL_GetGamepadID(pad2);
+    if(event->type==SDL_EVENT_GAMEPAD_AXIS_MOTION)return event->gaxis.which==id;
+    if(event->type==SDL_EVENT_GAMEPAD_BUTTON_DOWN||event->type==SDL_EVENT_GAMEPAD_BUTTON_UP)return event->gbutton.which==id;
+    return false;
+}
 
 // Through the bindings (runtime/hle/bindings.c: g_bind_key), read on every key event, so a rebind applies at once.
 static void recompute_keyboard(void) {
@@ -130,10 +163,19 @@ static void recompute_keyboard(void) {
     key_ly = (held_key(g_bind_key[BIND_LS_UP]) - held_key(g_bind_key[BIND_LS_DOWN])) * 32767;
     key_rx = (held_key(g_bind_key[BIND_RS_RIGHT]) - held_key(g_bind_key[BIND_RS_LEFT])) * 32767;
     key_ry = (held_key(g_bind_key[BIND_RS_UP]) - held_key(g_bind_key[BIND_RS_DOWN])) * 32767;
+    recompute_second();
+}
+
+static uint64_t keyboard_buttons_sample(void) {
+    uint64_t buttons = key_buttons, frame = input_frame_number;
+    for (int i = 0; i < BIND_PAD_COUNT; i++)
+        if (key_pressed_until[i] > frame) buttons |= UINT64_C(1) << i;
+    return buttons;
 }
 
 // Controller buttons (and the triggers as buttons) -> Switch buttons through g_bind_pad; the sticks stay the sticks.
 static void recompute_pad(void) {
+    recompute_second();
     uint32_t host = test_pad;
     if (pad && !host_test) {
         for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT; i++)
@@ -156,6 +198,7 @@ static void recompute_pad(void) {
 void input_reset(void) {
     rumble_clear();
     memset(keys_down, 0, sizeof keys_down);
+    for (int i=0;i<BIND_PAD_COUNT;i++) key_pressed_until[i]=0;
     recompute_keyboard();
 }
 
@@ -179,7 +222,7 @@ bool input_user_blocked(const SDL_Event *e) {
     static int on = -1;
     if (on < 0) {
         const char *v = getenv("LARECOMP_NO_USER_INPUT");
-        on = v ? atoi(v) != 0 : (getenv("LARECOMP_INPUT") || getenv("LARECOMP_DOORJUMP_TEST") || getenv("LARECOMP_PLACE") ||
+        on = v ? atoi(v) != 0 : (getenv("LARECOMP_INPUT") || getenv("LARECOMP_INPUT_FILE") || getenv("LARECOMP_DOORJUMP_TEST") || getenv("LARECOMP_PLACE") ||
                                  getenv("LARECOMP_HOST_INPUT") || getenv("LARECOMP_BIND_TEST"));
         if (on) LOG("[input] scripted run: keyboard, mouse and controllers ignored\n");
     }
@@ -245,6 +288,19 @@ int input_pad_family(void) {
     return env >= 0 ? env : pad_family;
 }
 
+// Preserve each pad's assignment when the other player disconnects; never give P1 P2's pad.
+static void refresh_pads(void) {
+    bool two=coop_requested();
+    if(!two&&pad2){SDL_CloseGamepad(pad2);pad2=NULL;}
+    int n=0;SDL_JoystickID *ids=SDL_GetGamepads(&n);
+    for(int i=0;i<n;++i) {
+        if((pad&&SDL_GetGamepadID(pad)==ids[i])||(pad2&&SDL_GetGamepadID(pad2)==ids[i]))continue;
+        if(!pad){pad=SDL_OpenGamepad(ids[i]);if(pad)LOG("[input] gamepad: %s\n",SDL_GetGamepadName(pad));note_family();}
+        else if(two&&!pad2){pad2=SDL_OpenGamepad(ids[i]);if(pad2)LOG("[coop] player 2 gamepad: %s\n",SDL_GetGamepadName(pad2));}
+    }
+    SDL_free(ids);recompute_pad();
+}
+
 // Our menus' face buttons (#172): the family whose layout they use - Nintendo (0): the right button confirms, the
 // bottom one goes back; Xbox / PlayStation (1 / 2): the bottom one confirms, the right one goes back. "Button icons"
 // forced to a style wins (icons and menus agree); Auto: the controller `which` that pressed (0, or not a connected
@@ -265,19 +321,19 @@ void input_handle_event(const SDL_Event *e) {
     static bool scanned;  // pads present at startup: their ADDED event may have gone to the start screen's loop
     if (!scanned) {
         scanned = true;
-        int n = 0;
-        SDL_JoystickID *ids = SDL_GetGamepads(&n);
-        if (n > 0 && !pad) { pad = SDL_OpenGamepad(ids[0]); LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad)); note_family(); }
-        SDL_free(ids);
+        refresh_pads();
     }
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) g_debug_frame_request = 1;
         if (e->key.scancode < SDL_SCANCODE_COUNT) keys_down[e->key.scancode] = e->type == SDL_EVENT_KEY_DOWN;
+        if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat)
+            for (int i=0;i<BIND_PAD_COUNT;i++) if (g_bind_key[i] == e->key.scancode)
+                key_pressed_until[i] = input_frame_number + 2;
         recompute_keyboard();
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
-        if (!pad) { pad = SDL_OpenGamepad(e->gdevice.which); LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad)); note_family(); }
+        refresh_pads();
         break;
     case SDL_EVENT_GAMEPAD_REMOVED:
         if (pad && SDL_GetGamepadID(pad) == e->gdevice.which) {
@@ -285,8 +341,13 @@ void input_handle_event(const SDL_Event *e) {
             SDL_CloseGamepad(pad); pad = NULL; note_family();
             rumble_clear(); rumble_last_lo = rumble_last_hi = 0; rumble_warned = false;
         }
+        if (pad2 && SDL_GetGamepadID(pad2) == e->gdevice.which) { SDL_CloseGamepad(pad2); pad2=NULL; }
         recompute_pad();
         break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+        second_focused=false;second_text_key=false;input_reset();break;
+    case SDL_EVENT_WINDOW_FOCUS_GAINED:
+        second_focused=true;recompute_second();break;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
         recompute_pad();
         break;
@@ -436,6 +497,14 @@ static uint64_t g_pad_obj;
 volatile int g_inject_plus;  // frames to hold Plus for the game (movie.c: A/B skip the opening on rando seeds)
 RT_ON_RESET(input_reboot_reset) { g_pad_obj = 0; g_inject_plus = 0; }  // (reboot: the controller object was guest memory)
 void input_frame(uint64_t frame) {
+    static bool second_wanted;
+    bool want=coop_requested();
+    if(want!=second_wanted){second_wanted=want;refresh_pads();recompute_keyboard();}
+    input_frame_number = frame;
+    extern void performance_frame(uint64_t frame);
+    performance_frame(frame);
+    extern void workshop_frame(uint64_t frame);
+    if (title_is_las()) workshop_frame(frame);
     atomic_store(&rumble_frame_ms, SDL_GetTicks());
     if (g_pad_obj && getenv("LARECOMP_DUMP_PAD") && frame % 600 == 0) {
         const uint8_t *m = (const uint8_t *)(uintptr_t)(g_pad_obj - 0x98);
@@ -454,6 +523,18 @@ void input_frame(uint64_t frame) {
     watch_arm();
     host_test_frame(frame);
     const char *spec = getenv("LARECOMP_INPUT");
+    // Optional live regression script; callers append future frame commands to
+    // a scratch file after observing a checkpoint, without restarting the game.
+    const char *script_file = ENV("LARECOMP_INPUT_FILE");
+    static char file_spec[16384];
+    if (script_file) {
+        if (frame % 30 == 0 || frame == 1) {
+            FILE *f = fopen(script_file, "rb");
+            if (f) { size_t n = fread(file_spec, 1, sizeof file_spec - 1, f); file_spec[n] = 0; fclose(f); }
+            else file_spec[0] = 0;
+        }
+        spec = file_spec;
+    }
     if (!spec) return;
     static const char *const names[] = {"A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R", "ZL", "ZR", "PLUS",
                                         "MINUS", "LEFT", "UP", "RIGHT", "DOWN"};
@@ -463,6 +544,11 @@ void input_frame(uint64_t frame) {
     snprintf(buf, sizeof buf, "%s", spec);
     for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
         unsigned long start = 0, len = 10;
+        char shot[192];
+        if (sscanf(tok, "%lu:shot:%191[A-Za-z0-9_-]", &start, shot) == 2) {
+            test_push(frame, start, 0, "shot", shot);
+            continue;
+        }
         char name[32] = "";
         if (sscanf(tok, "%lu:%31[A-Z_0-9]:%lu", &start, name, &len) < 2) continue;
         if (frame < start || frame >= start + len) continue;
@@ -497,7 +583,7 @@ void input_frame(uint64_t frame) {
 extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or name entry up (it has the keys / pad)
 
 // Buttons held right now (keyboard, gamepad, test script), independent of whether the game polls (movies).
-uint64_t input_buttons_now(void) { return (menu_input_captured() ? 0 : key_buttons | pad_buttons) | script_buttons; }
+uint64_t input_buttons_now(void) { return (menu_input_captured() ? 0 : keyboard_buttons_sample() | pad_buttons) | script_buttons; }
 
 static int32_t clamp_axis(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
 
@@ -511,6 +597,7 @@ static void fill_state(Cpu *c) {
     static int nlog;
     if (nlog < 6 && (sampling % 600) == 1) { nlog++; LOG("[input] GetNpadState id %#x lr %llx\n", id, c->x[30]); }
     if (id != 0) return;  // docked: only player 1 (FullKey); Handheld stays disconnected
+    if (title_is_las()) {
     extern void warp_game_tick(Cpu *c);
     warp_game_tick(c);  // game main thread, once per frame: apply a queued warp
     { extern void give_item_tick(Cpu *c, uint64_t frame); extern uint64_t renderer_present_count(void);
@@ -526,10 +613,12 @@ static void fill_state(Cpu *c) {
       extern void qol_tick(void);
       qol_tick();
       extern void pets_game_tick(Cpu *c);
-      pets_game_tick(c); }
+      pets_game_tick(c);
+      extern void coop_game_tick(Cpu *c);coop_game_tick(c); }
+    }
     extern uint64_t g_watch_lo, g_watch_hi;
-    if (id == 0 && !g_pad_obj) g_pad_obj = c->x[1] - 8;
-    if (id == 0 && !g_watch_lo && getenv("LARECOMP_WATCH_PAD")) {
+    if (title_is_las() && id == 0 && !g_pad_obj) g_pad_obj = c->x[1] - 8;
+    if (title_is_las() && id == 0 && !g_watch_lo && getenv("LARECOMP_WATCH_PAD")) {
         unsigned lo = 0x98 + 0x10, hi = 0x98 + 0x48;  // offsets from the controller manager
         sscanf(getenv("LARECOMP_WATCH_PAD"), "%x,%x", &lo, &hi);
         g_watch_lo = c->x[1] - 8 - 0x98 + lo;
@@ -537,7 +626,7 @@ static void fill_state(Cpu *c) {
         LOG("[input] watching controller object %llx\n", c->x[1] - 8);
     }
     bool menu = menu_input_captured();  // the overlay menu / name entry has the controls (typing there isn't for the game)
-    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | script_buttons;
+    uint64_t b = menu ? script_buttons : keyboard_buttons_sample() | pad_buttons | script_buttons;
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
         static uint64_t until;
@@ -547,7 +636,7 @@ static void fill_state(Cpu *c) {
     int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly) + script_ly);
     int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry) + script_ry);
     extern bool mirror_input(void);  // mirror mode, the world on screen (runtime/hle/mirror.c): left and right swap
-    bool mirrored = !menu && mirror_input();
+    bool mirrored = title_is_las() && !menu && mirror_input();
     if (mirrored) {
         lx = -lx;
         uint64_t l = (b >> BTN_LEFT) & 1, r = (b >> BTN_RIGHT) & 1;
@@ -555,7 +644,7 @@ static void fill_state(Cpu *c) {
     }
     // d-pad / arrow keys walk (setting) while the stick is at rest. "At rest" has a dead zone: a controller's stick
     // never reads exactly 0 (a DualSense rests at a few hundred), which used to turn the d-pad off altogether.
-    if (!menu && g_settings.dpad_move && (int64_t)lx * lx + (int64_t)ly * ly < 8000ll * 8000) {
+    if (title_is_las() && !menu && g_settings.dpad_move && (int64_t)lx * lx + (int64_t)ly * ly < 8000ll * 8000) {
         uint64_t d = key_buttons | pad_buttons | script_buttons;
         int dx = (int)((d >> BTN_RIGHT) & 1) - (int)((d >> BTN_LEFT) & 1);
         if (mirrored) dx = -dx;
@@ -563,7 +652,7 @@ static void fill_state(Cpu *c) {
         int32_t m = dx && dy ? 23170 : 32767;  // diagonals: same speed (32767 / sqrt 2)
         if (dx || dy) lx = dx * m, ly = dy * m;
     }
-    {   // door jumps stop Link for a moment before moving him (runtime/hle/doorjump.c): stick + d-pad released
+    if (title_is_las()) {   // door jumps stop Link for a moment before moving him (runtime/hle/doorjump.c): stick + d-pad released
         extern int32_t g_stick_lx, g_stick_ly;  // (what the player holds, before that: doorjump.c reads it)
         g_stick_lx = lx, g_stick_ly = ly;
         extern uint64_t g_stick_freeze_until;
@@ -582,15 +671,23 @@ static void fill_state(Cpu *c) {
     if (ry > 16000) b |= 1ull << 21;
     if (rx > 16000) b |= 1ull << 22;
     if (ry < -16000) b |= 1ull << 23;
-    {   // the pause menu's companion slot (runtime/hle/pets.c) takes the d-pad / sticks / A while the cursor is on it
+    if (title_is_las()) {   // the pause menu's companion slot (runtime/hle/pets.c) takes the d-pad / sticks / A while the cursor is on it
         extern uint64_t pets_menu_input(uint64_t b, int32_t st[4]);
         int32_t st[4] = {lx, ly, rx, ry};
         b = pets_menu_input(b, st);
         lx = st[0], ly = st[1], rx = st[2], ry = st[3];
     }
+    if (title_is_las() && research_active()) {
+        extern uint64_t renderer_present_count(void);
+        int32_t axes[4]={lx,ly,rx,ry};research_input(renderer_present_count(),&b,axes);
+        lx=axes[0];ly=axes[1];rx=axes[2];ry=axes[3];
+    }
     *(uint64_t *)(s + 8) = b;
+    { extern void workshop_game_tick(uint64_t frame,uint64_t buttons,int lx,int ly,int rx,int ry);
+      extern uint64_t renderer_present_count(void);
+      if (title_is_las()) workshop_game_tick(renderer_present_count(),b,lx,ly,rx,ry); }
     static uint64_t last_b;
-    if (b != last_b && getenv("LARECOMP_INPUT")) LOG("[input] id %#x buttons %#llx (sampling %lld, lr %llx)\n", id, (unsigned long long)b, (long long)sampling, c->x[30]);
+    if (b != last_b && (getenv("LARECOMP_INPUT") || getenv("LARECOMP_INPUT_FILE"))) LOG("[input] id %#x buttons %#llx (sampling %lld, lr %llx)\n", id, (unsigned long long)b, (long long)sampling, c->x[30]);
     last_b = b;
     *(int32_t *)(s + 16) = lx;
     *(int32_t *)(s + 20) = ly;
@@ -605,6 +702,24 @@ HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", hid_state_dual)
 HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyLeftStateERKj", hid_state_left) { fill_state(c); }
 HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", hid_state_handheld) { fill_state(c); }
 HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_17NpadJoyRightStateERKj", hid_state_right) { fill_state(c); }
+
+// ACNH consumes the array form of the API. One freshly sampled state is a valid
+// short history; reporting no entries would leave every button disconnected.
+static void fill_states(Cpu *c) {
+    int capacity = (int32_t)c->x[1];
+    if (capacity <= 0 || !c->x[0] || !c->x[2] || *(uint32_t *)(uintptr_t)c->x[2] != 0) {
+        c->x[0] = 0;
+        return;
+    }
+    c->x[1] = c->x[2];
+    fill_state(c);
+    c->x[0] = 1;
+}
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj", hid_states_fullkey) { fill_states(c); }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyDualStateEiRKj", hid_states_dual) { c->x[0] = 0; }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyLeftStateEiRKj", hid_states_left) { c->x[0] = 0; }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_17NpadHandheldStateEiRKj", hid_states_handheld) { c->x[0] = 0; }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_17NpadJoyRightStateEiRKj", hid_states_right) { c->x[0] = 0; }
 
 // FullKey for player 1 only (we report docked mode, where Handheld is unavailable)
 HLE_FUNC("_ZN2nn3hid15GetNpadStyleSetERKj", hid_style_set) {

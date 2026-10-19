@@ -23,7 +23,7 @@ if [ ! -f "$V/.ok" ]; then
         -r third_party/LAS-Randomizer/requirements.txt pyinstaller==6.22.3
     touch "$V/.ok"
 fi
-if [ ! -f "$V/.gen-ok" ]; then
+if [ ! -f "$V/.gen-ok" ] || [ tools/linux/rando_helper.sh -nt "$V/.gen-ok" ]; then
     "$V/bin/python" -m pip install -q capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5
     touch "$V/.gen-ok"
 fi

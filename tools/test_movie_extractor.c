@@ -37,6 +37,8 @@ const char *g_romfs_dir;
 Settings g_settings = {.movie_audio = true};
 volatile int g_inject_plus;
 uint64_t input_buttons_now(void) { return 0; }
+bool rando_romfs_override(const char *p, char *o, size_t n) { (void)p; (void)o; (void)n; return false; }
+bool mods_romfs_override(const char *p, char *o, size_t n) { (void)p; (void)o; (void)n; return false; }
 uint64_t guest_sym(const char *name) { return 0; }
 void guest_call(Cpu *c, uint64_t address) { assert(!"No decoder events in the fixture"); }
 

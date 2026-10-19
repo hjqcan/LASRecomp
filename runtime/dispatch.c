@@ -6,10 +6,14 @@
 #include <unistd.h>
 
 #include "gamelib.h"
+#include "guest_jump.h"
 #include "hle.h"
 
 typedef struct { const uint64_t *addrs; const GuestFn *fns; uint64_t count, lo, hi; } FnTable;
-static FnTable tables[2];
+static FnTable tables[TITLE_MAX_MODULES];
+static unsigned table_count;
+static uint64_t debug_jpeg_entry;
+static unsigned debug_jpeg_count;
 
 // HLE stubs live at fake addresses HLE_BASE + 16*i
 #define MAX_HLE 4096
@@ -75,6 +79,8 @@ static __thread uint64_t unimpl_pc;
 static int unimpl_counts[MAX_HLE];
 static void hle_unimplemented(Cpu *c) {
     int i = (int)((unimpl_pc - HLE_BASE) / 16);
+    if (getenv("LARECOMP_STRICT_HLE") || getenv("ACNH_STRICT_HLE"))
+        FATAL("[adapter] missing host implementation: %s (lr=%llx)\n", hle_slots[i].name, c->x[30]);
     if (unimpl_counts[i]++ < 3)
         LOG("[hle] UNIMPLEMENTED %s (x0=%llx x1=%llx lr=%llx) -> returning 0\n", hle_slots[i].name, c->x[0],
             c->x[1], c->x[30]);
@@ -113,14 +119,22 @@ void *hle_alloc(uint64_t size) {
 }
 
 void dispatch_init(void) {  // (after gamelib_load)
+    debug_jpeg_count = 0;
+    debug_jpeg_entry = getenv("LARECOMP_LOG_JPEG") ?
+        loader_find_symbol("_ZN2nn5image11JpegEncoder6EncodeEPmPvmS3_mPNS0_11ExifBuilderE") : 0;
     const GameLibTables *g = gamelib_tables();
-    uint64_t nm = *g->main_count, ns = *g->sdk_count;
-    tables[0] = (FnTable){g->main_addrs, g->main_fns, nm, g->main_addrs[0], g->main_addrs[nm - 1]};
-    tables[1] = (FnTable){g->sdk_addrs, g->sdk_fns, ns, g->sdk_addrs[0], g->sdk_addrs[ns - 1]};
+    table_count = g->module_count;
+    memset(tables, 0, sizeof tables);
+    for (unsigned i=0; i<table_count; i++) {
+        const GameLibModule *m=&g->modules[i];
+        uint64_t n=*m->count;
+        tables[i]=(FnTable){m->addrs,m->fns,n,m->addrs[0],m->addrs[n-1]};
+        LOG("[dispatch] %s: %llu functions\n",m->name,(unsigned long long)n);
+    }
 }
 
 GuestFn dispatch_lookup(uint64_t addr) {
-    for (int t = 0; t < 2; t++) {
+    for (unsigned t = 0; t < table_count; t++) {
         FnTable *ft = &tables[t];
         if (addr < ft->lo || addr > ft->hi) continue;
         uint64_t lo = 0, hi = ft->count;
@@ -140,6 +154,13 @@ static __thread struct { uint64_t addr; GuestFn fn; } dcache[DCACHE];
 
 static GuestFn dispatch_slow(Cpu *c) {
     uint64_t pc = c->pc;
+    if (debug_jpeg_entry && pc == debug_jpeg_entry && debug_jpeg_count++ < 4) {
+        LOG("[jpeg] encode output capacity %llu work capacity %llu exif %llx\n",
+            (unsigned long long)c->x[3], (unsigned long long)c->x[5], (unsigned long long)c->x[6]);
+        if (c->x[0]) LOG("[jpeg] image %ux%u format %u options %u/%u/%u\n",
+            LD32(c->x[0] + 0x1c), LD32(c->x[0] + 0x20), LD32(c->x[0] + 0x18),
+            LD32(c->x[0] + 0x24), LD32(c->x[0] + 0x28), LD32(c->x[0] + 0x2c));
+    }
     if (pc >= HLE_BASE && pc < HLE_BASE + HLE_SIZE) {
         rt_unwind_point();  // (HLE calls aren't cached below, so every one passes here: a reboot's safe point)
         int i = (int)((pc - HLE_BASE) / 16);
@@ -151,7 +172,10 @@ static GuestFn dispatch_slow(Cpu *c) {
     }
     for (int i = 0; i < override_count; i++)
         if (overrides[i].addr == pc) return overrides[i].fn;
-    GuestFn f = dispatch_lookup(pc);
+    extern GuestFn coop_dispatch_override(uint64_t);
+    GuestFn f = coop_dispatch_override(pc);
+    if (!f) f = research_dispatch_override(pc);
+    if (!f) f = dispatch_lookup(pc);
     if (!f) {
         uint64_t off;
         const char *s = loader_symbol_at(c->x[30], &off);
@@ -165,6 +189,7 @@ static GuestFn dispatch_slow(Cpu *c) {
 
 // Always tail-calls, so chains of indirect jumps don't grow the host stack.
 void rt_dispatch(Cpu *c) {
+    if (__builtin_expect(rt_guest_jump_head != NULL, 0)) rt_guest_jump_resume(c);
     unsigned h = (unsigned)(c->pc >> 2) & (DCACHE - 1);
     GuestFn f = dcache[h].addr == c->pc ? dcache[h].fn : dispatch_slow(c);
     __attribute__((musttail)) return f(c);
@@ -188,10 +213,11 @@ const char *rt_host_fn_name(uint64_t pc, uint64_t *offset) {
     static uint64_t n;
     static __thread char name[32];
     if (!byhost) {
-        uint64_t total = tables[0].count + tables[1].count, k = 0;
+        uint64_t total = 0, k = 0;
+        for (unsigned t=0; t<table_count; t++) total+=tables[t].count;
         uint64_t (*v)[2] = malloc(total * sizeof *v);
         if (!v) return NULL;
-        for (int t = 0; t < 2; t++)
+        for (unsigned t = 0; t < table_count; t++)
             for (uint64_t i = 0; i < tables[t].count; i++) {
                 v[k][0] = (uint64_t)(uintptr_t)tables[t].fns[i];
                 v[k++][1] = tables[t].addrs[i];

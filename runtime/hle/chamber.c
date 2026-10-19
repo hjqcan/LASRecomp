@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "../hle.h"
+#include "../gameversion.h"
 
 
 
@@ -98,7 +99,7 @@ static uint64_t call(Cpu *c, uint64_t fn, uint64_t a0) { return call3(c, fn, a0,
 static uint64_t chamber_setup(Cpu *c) {
     uint64_t mgr = LD64(GA_CHAMBER_MGR);
     if (!mgr) {
-        mgr = call(c, GA_GUEST_NEW, 0x1920);
+        mgr = call(c, game_main_address(GA_GUEST_NEW), 0x1920);
         call(c, GA_CHAMBER_CTOR, mgr);
         ST64(GA_CHAMBER_MGR, mgr);
         LOG("[chamber] created manager %llx\n", (unsigned long long)mgr);

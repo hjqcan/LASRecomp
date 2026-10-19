@@ -30,6 +30,7 @@
 #include <unistd.h>
 
 #include "../hle.h"
+#include "../gameversion.h"
 #include "../rando.h"
 
 // GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
@@ -185,7 +186,7 @@ static void drop(Cpu *c, uint64_t *slot) {
     if (!*slot) return;
     c->x[0] = *slot;
     *slot = 0;
-    guest_call(c, GA_WEAK_RELEASE);
+    guest_call(c, game_main_address(GA_WEAK_RELEASE));
 }
 
 // shovel dig commit, right after the hole's spawn: [sp+0x10] the hole (actor, control block), x21 its transform
