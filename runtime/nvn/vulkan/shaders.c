@@ -208,7 +208,14 @@ const VkPreparedShader *vk_prepare_shader(const char *src, int stage) {
     size_t n = 0;
     uint32_t *spv = vk_glsl_to_spirv(src, stage, stage == STAGE_VERTEX ? "vs" : stage == STAGE_FRAGMENT ? "fs" : "cs", &n);
     if (spv) {
-        entry->shader.nbinds = vk_reflect(spv, n, entry->shader.binds, 128);
+        // Heap chunks use a shared set whose layout/bindings are built by exec.c.
+        // Keep it out of the per-stage set: up to 256 chunk bindings must not
+        // crowd out textures or uniform buffers in this cache's 128 entries.
+        VkBindingInfo reflected[GMEM_CHUNKS_MAX + 128];
+        int count = vk_reflect(spv, n, reflected, GMEM_CHUNKS_MAX + 128);
+        uint32_t own_set = stage == STAGE_FRAGMENT ? 1 : 0;
+        for (int i = 0; i < count && entry->shader.nbinds < 128; i++)
+            if (reflected[i].set == own_set) entry->shader.binds[entry->shader.nbinds++] = reflected[i];
         entry->shader.module = vk_module(spv, n);
         if (stage == STAGE_FRAGMENT && spirv_strip_early_tests(spv, &n))
             entry->shader.module_late = vk_module(spv, n);

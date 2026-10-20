@@ -62,6 +62,17 @@ int main(void) {
     const VkPreparedShader *early = vk_prepare_shader(early_source, STAGE_FRAGMENT);
     assert(early->module && early->module_late && early->module != early->module_late);
     assert(vk_prepare_shader(early_source, STAGE_FRAGMENT) == early);
+    char chunked[32768];
+    size_t used = (size_t)snprintf(chunked, sizeof chunked, "#version 450\nlayout(local_size_x=1) in;\n");
+    for (int i=0;i<160;i++)
+        used += (size_t)snprintf(chunked+used,sizeof chunked-used,
+            "layout(set=1,binding=%d,std430) readonly buffer Chunk%d { uint value; } chunk%d;\n",i,i,i);
+    used += (size_t)snprintf(chunked+used,sizeof chunked-used,
+        "layout(set=0,binding=0,std430) buffer Result { uint value; } result;\nvoid main() { result.value=0u");
+    for (int i=0;i<160;i++) used += (size_t)snprintf(chunked+used,sizeof chunked-used,"+chunk%d.value",i);
+    snprintf(chunked+used,sizeof chunked-used,"; }\n");
+    const VkPreparedShader *chunks = vk_prepare_shader(chunked, STAGE_COMPUTE);
+    assert(chunks->module && chunks->nbinds==1 && chunks->binds[0].set==0 && chunks->binds[0].binding==0);
     Init init={0}; shader_job_submit(&init.job,build,&init);
     shader_job_wait(&init.job); assert(init.pipeline);
 
