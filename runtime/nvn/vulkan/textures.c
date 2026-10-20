@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../rqueue.h"
 #include "vk.h"
 #include "../astc.h"
 #include "../renderer.h"
@@ -178,9 +179,17 @@ VkFormat vk_image_format(uint32_t nvn, VkImageAspectFlags *aspect) {
 
 // ================================================================== output resolution / per-frame clears
 // Same rules as metal.m (see the comments there).
-static float g_rs_x = 1, g_rs_y = 1;
+static float g_rs_x = 1, g_rs_y = 1;   // the render scale: what the frame is drawn at
+static float g_al_x = 1, g_al_y = 1;   // the allocation scale: the size of scalable textures (Dynamic: the frame uses a part)
 void renderer_get_scale(float *sx, float *sy) { *sx = g_rs_x; *sy = g_rs_y; }
 void renderer_set_scale(float sx, float sy) { g_rs_x = sx; g_rs_y = sy; }
+void renderer_set_alloc_scale(float ax, float ay) { g_al_x = ax; g_al_y = ay; }
+// The part of a scalable texture its contents occupy (Dynamic: the render scale over the allocation scale; 1 otherwise).
+void renderer_texture_fraction(NvnTexture *t, float *fx, float *fy) {
+    TexBackend *b = t ? (TexBackend *)t->backend : NULL;
+    *fx = *fy = 1;
+    if (b && b->scalable && b->ax > 0 && b->ay > 0) { *fx = b->sx / b->ax; *fy = b->sy / b->ay; }
+}
 uint64_t renderer_present_count(void);
 
 static bool tex_scalable(const NvnTexture *t) {
@@ -194,7 +203,8 @@ static bool tex_scalable(const NvnTexture *t) {
 
 bool renderer_texture_first_write(NvnTexture *t) {
     TexBackend *b = t ? (TexBackend *)t->backend : NULL;
-    uint64_t total_frames = renderer_present_count();
+    extern uint64_t renderer_exec_frame(void);
+    uint64_t total_frames = renderer_exec_frame();  // (the frame being translated)
     if (!b || !b->presented || (b->sx == b->sy) || b->touched_frame == total_frames + 1) return false;
     b->touched_frame = total_frames + 1;
     return true;
@@ -212,11 +222,13 @@ void vk_level_change_check(void) {
 }
 
 bool renderer_texture_frame_fresh(NvnTexture *t) {
-    static int on = -1;
-    if (on < 0) on = getenv("LARECOMP_NO_FRAME_CLEAR") == NULL;
     TexBackend *b = t ? (TexBackend *)t->backend : NULL;
-    uint64_t total_frames = renderer_present_count();
-    if (!on || !b || !b->scalable || b->frame_cleared == total_frames + 1) return false;
+    extern uint64_t renderer_exec_frame(void);
+    uint64_t total_frames = renderer_exec_frame();  // (the frame being translated)
+    if (!b || !b->scalable || b->frame_cleared == total_frames + 1) return false;
+    // LARECOMP_NO_FRAME_CLEAR skips the clear only while the contents cover the whole target: below 1x a frame draws
+    // into part of it, and the rest would show what an earlier frame left there (issue #205: the upper part flickered)
+    if (g_vk.no_frame_clear && b->sx >= 1.0f && b->sy >= 1.0f) return false;
     b->frame_cleared = total_frames + 1;
     return true;
 }
@@ -261,7 +273,7 @@ void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags as
 }
 
 // Images destroyed by the guest are kept until the submissions that may use them have completed.
-typedef struct { VkImage img; VmaAllocation mem; VkImageView view; uint64_t seq; } Dead;
+typedef struct { VkImage img; VmaAllocation mem; VkImageView view; VkBuffer buf; VkDeviceMemory bmem; uint64_t seq; } Dead;
 static Dead *dead;
 static int ndead, cap_dead;
 static void views_forget(TexBackend *b);
@@ -272,18 +284,51 @@ void vk_collect_dead(void) {
     for (int i = 0; i < ndead; i++) {
         if (dead[i].seq > done) { dead[k++] = dead[i]; continue; }
         if (dead[i].view) vkDestroyImageView(g_vk.dev, dead[i].view, NULL);
+        else if (dead[i].buf) { vkDestroyBuffer(g_vk.dev, dead[i].buf, NULL); vkFreeMemory(g_vk.dev, dead[i].bmem, NULL); }
         else vmaDestroyImage(g_vk.vma, dead[i].img, dead[i].mem);
     }
     ndead = k;
 }
 
+// The sRGB / UNORM counterpart of a colour format (VK_FORMAT_UNDEFINED: none). (g_vk.lean_usage format lists)
+static VkFormat srgb_twin(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_SRGB;
+    case VK_FORMAT_R8G8B8A8_SRGB: return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_SRGB;
+    case VK_FORMAT_B8G8R8A8_SRGB: return VK_FORMAT_B8G8R8A8_UNORM;
+    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+    case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+    case VK_FORMAT_BC2_UNORM_BLOCK: return VK_FORMAT_BC2_SRGB_BLOCK;
+    case VK_FORMAT_BC2_SRGB_BLOCK: return VK_FORMAT_BC2_UNORM_BLOCK;
+    case VK_FORMAT_BC3_UNORM_BLOCK: return VK_FORMAT_BC3_SRGB_BLOCK;
+    case VK_FORMAT_BC3_SRGB_BLOCK: return VK_FORMAT_BC3_UNORM_BLOCK;
+    case VK_FORMAT_BC7_UNORM_BLOCK: return VK_FORMAT_BC7_SRGB_BLOCK;
+    case VK_FORMAT_BC7_SRGB_BLOCK: return VK_FORMAT_BC7_UNORM_BLOCK;
+    default:
+        if (f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK)  // (UNORM, SRGB alternate)
+            return (f - VK_FORMAT_ASTC_4x4_UNORM_BLOCK) & 1 ? f - 1 : f + 1;
+        return VK_FORMAT_UNDEFINED;
+    }
+}
+
+VkFormat vk_view_format(TexBackend *b, VkFormat want) {
+    if (!b || !b->nview_fmt || want == b->format) return want;
+    for (int i = 0; i < b->nview_fmt; i++) if (b->view_fmt[i] == want) return want;
+    static int nlog;
+    if (nlog++ < 10) LOG("[vk] lean usage: view format %d of an image of format %d refused (its own instead)\n", want, b->format);
+    return b->format;
+}
+
 static void create_image(NvnTexture *t, TexBackend *b) {
     VkFmt mf = fmt_of(t->format);
+    b->ax = b->scalable ? g_al_x : 1;
+    b->ay = b->scalable ? g_al_y : 1;
     b->sx = b->scalable ? g_rs_x : 1;
     b->sy = b->scalable ? g_rs_y : 1;
     uint32_t tw = t->width ? t->width : 1, th = t->height ? t->height : 1;
     if (b->scalable) {
-        tw = (uint32_t)lroundf(tw * b->sx); th = (uint32_t)lroundf(th * b->sy);
+        tw = (uint32_t)lroundf(tw * b->ax); th = (uint32_t)lroundf(th * b->ay);
         if (tw < 1) tw = 1;
         if (th < 1) th = 1;
     }
@@ -331,7 +376,22 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     VkImageCreateFlags flags = 0;
     if (!depthfmt) flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;  // format views (NVN texture views, raw sRGB views)
     if (type == VK_IMAGE_TYPE_2D && layers >= 6 && tw == th && samples == 1) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = type, .format = vf,
+    // g_vk.lean_usage (integrated GPUs): colour images may only be viewed as their own format and its sRGB / UNORM
+    // twin, listed in a VkImageFormatListCreateInfo (no twin: not mutable at all). Mesa's AMD / Intel drivers keep
+    // DCC / CCS compression for such images; with MUTABLE_FORMAT and no list they turn it off. Views in any other
+    // format fall back to the image's own (vk_view_format, logged).
+    VkImageFormatListCreateInfo fl = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
+    b->nview_fmt = 0;
+    if (!depthfmt && g_vk.lean_usage) {
+        VkFormat twin = srgb_twin(vf);
+        b->view_fmt[0] = vf;
+        b->view_fmt[1] = twin;
+        b->nview_fmt = twin != VK_FORMAT_UNDEFINED ? 2 : 1;
+        if (b->nview_fmt == 1) flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        else fl.viewFormatCount = 2, fl.pViewFormats = b->view_fmt;
+    }
+    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .pNext = fl.viewFormatCount ? &fl : NULL,
+                            .flags = flags, .imageType = type, .format = vf,
                             .extent = {tw, th, depth}, .mipLevels = levels, .arrayLayers = layers,
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
@@ -345,6 +405,9 @@ static void create_image(NvnTexture *t, TexBackend *b) {
             ci.usage, ci.flags, ci.mipLevels, ci.arrayLayers, (unsigned)ci.samples);
         vk_log_memory("image creation failed");
         ci.format = vf = VK_FORMAT_R8G8B8A8_UNORM;
+        ci.pNext = NULL;  // (g_vk.lean_usage: the fallback image is mutable as before, no format list)
+        ci.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        b->nview_fmt = 0;
         ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         ci.flags &= ~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
@@ -384,6 +447,7 @@ static void defer(Dead d) {
 
 void vk_defer_image(VkImage img, VmaAllocation mem) { defer((Dead){.img = img, .mem = mem}); }
 void vk_defer_view(VkImageView v) { defer((Dead){.view = v}); }
+void vk_defer_buffer(VkBuffer b, VkDeviceMemory m) { defer((Dead){.buf = b, .bmem = m}); }  // (raw memory, not VMA)
 
 void vk_dl_note_upload(void *img, uint32_t w, uint32_t h, uint32_t lv);  // (exec.c: LARECOMP_VK_DEVLOST_TRACE)
 
@@ -416,7 +480,7 @@ static void live_remove(TexBackend *b) {
 static TexBackend *tex_backend(NvnTexture *t) {
     TexBackend *b = t->backend;
     if (b) {
-        if (b->scalable && (b->sx != g_rs_x || b->sy != g_rs_y)) {  // output resolution changed: reallocate
+        if (b->scalable && (b->ax != g_al_x || b->ay != g_al_y)) {  // output resolution changed: reallocate
             destroy_image(b);
             create_image(t, b);
         }
@@ -634,12 +698,17 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     return b;
 }
 
-void renderer_mark_gpu_owned(NvnTexture *t) { tex_backend(t)->gpu_owned = true; }
+// A GPU write (render target, copy destination): the contents are at the current render scale from here on.
+void renderer_mark_gpu_owned(NvnTexture *t) {
+    TexBackend *b = tex_backend(t);
+    b->gpu_owned = true;
+    if (b->scalable) { b->sx = g_rs_x; b->sy = g_rs_y; }
+}
 bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
 void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
 // Host-produced texel data (decoded video, any thread): applied on the render thread at the texture's next use.
-void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t h, uint32_t stride) {
+static void upload_rgba_now(NvnTexture *t, const void *rgba, uint32_t w, uint32_t h, uint32_t stride) {
     TexBackend *b = t->backend;
     if (!b) return;  // the game binds the texture before decoding into it; first frames may arrive earlier
     void *copy = malloc((size_t)stride * h);
@@ -656,12 +725,39 @@ void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t 
 // Decoded video as NV12 (runtime/hle/movie.c): the planes (half the bytes of RGBA) go to the GPU, which converts them
 // into the texture (exec.c vk_convert_nv12) - swscale plus the RGBA upload cost mid-range CPUs most of a frame at the
 // movies' 60 fps. false: a texture format this doesn't handle (the caller converts on the CPU).
+static bool nv12_format_ok(VkFormat f) {
+    return f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_B8G8R8A8_UNORM || f == VK_FORMAT_B8G8R8A8_SRGB;
+}
+static bool upload_nv12_now(NvnTexture *t, const void *nv12, uint32_t w, uint32_t h, uint32_t stride, uint32_t uv_off);
+// Movie frames (runtime/hle/movie.c, the game thread): with the render thread on they are queued behind the lists
+// already submitted (rqueue.c), as a copy.
+void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t h, uint32_t stride) {
+    if (!rq_on()) { upload_rgba_now(t, rgba, w, h, stride); return; }
+    if (!t->backend) return;
+    size_t n = (size_t)stride * h;
+    void *copy = malloc(n);
+    memcpy(copy, rgba, n);
+    rq_upload(t, RQ_UPLOAD_RGBA, copy, w, h, stride, 0);
+}
 bool renderer_upload_nv12(NvnTexture *t, const void *nv12, uint32_t w, uint32_t h, uint32_t stride, uint32_t uv_off) {
+    if (!rq_on()) return upload_nv12_now(t, nv12, w, h, stride, uv_off);
+    if (!t->backend) return true;
+    if (!nv12_format_ok(vk_format(t->format))) return false;
+    size_t n = (size_t)uv_off + (size_t)stride * (h / 2);
+    void *copy = malloc(n);
+    memcpy(copy, nv12, n);
+    rq_upload(t, RQ_UPLOAD_NV12, copy, w, h, stride, uv_off);
+    return true;
+}
+void backend_upload_now(NvnTexture *t, int kind, void *data, uint32_t w, uint32_t h, uint32_t stride, uint32_t uv_off) {
+    if (kind == RQ_UPLOAD_RGBA) upload_rgba_now(t, data, w, h, stride);
+    else upload_nv12_now(t, data, w, h, stride, uv_off);
+    free(data);
+}
+static bool upload_nv12_now(NvnTexture *t, const void *nv12, uint32_t w, uint32_t h, uint32_t stride, uint32_t uv_off) {
     TexBackend *b = t->backend;
     if (!b) return true;  // (as renderer_upload_rgba: a frame before the texture is first bound is dropped)
-    if (b->format != VK_FORMAT_R8G8B8A8_UNORM && b->format != VK_FORMAT_R8G8B8A8_SRGB && b->format != VK_FORMAT_B8G8R8A8_UNORM &&
-        b->format != VK_FORMAT_B8G8R8A8_SRGB)
-        return false;
+    if (!nv12_format_ok(b->format)) return false;
     size_t n = (size_t)uv_off + (size_t)stride * (h / 2);
     void *copy = malloc(n);
     memcpy(copy, nv12, n);
@@ -692,6 +788,7 @@ static void views_forget(TexBackend *b) {
 
 VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uint32_t lv0, uint32_t nlv, uint32_t ly0,
                           uint32_t nly, VkComponentMapping sw, VkImageAspectFlags aspect) {
+    fmt = vk_view_format(b, fmt);  // (g_vk.lean_usage: only the listed formats)
     uint64_t k1 = (uint64_t)type | (uint64_t)fmt << 8 | (uint64_t)lv0 << 40 | (uint64_t)nlv << 48 | (uint64_t)aspect << 56;
     uint64_t k2 = (uint64_t)ly0 | (uint64_t)nly << 16 | (uint64_t)sw.r << 32 | (uint64_t)sw.g << 40 | (uint64_t)sw.b << 48 | (uint64_t)sw.a << 56;
     uint64_t h = ((uint64_t)(uintptr_t)b * 0x9E3779B97F4A7C15ull) ^ (k1 * 0xC2B2AE3D27D4EB4Full) ^ (k2 * 0x165667B19E3779F9ull);
@@ -732,6 +829,51 @@ static VkImageViewType view_type_for(int textype) {
 static const VkComponentMapping IDENTITY = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                                             VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
 
+// Format views of a VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT image must stay in the image format's compatibility class:
+// ordinary colour formats of the same texel size, a compressed format only with its own class (BCn / ASTC block size:
+// unorm, snorm and sRGB twins). Anything else is invalid usage (the Metal side aborted on it: a texture pool slot whose
+// texture was finalized and the address reused by another format, runtime/nvn/objects.c).
+static int vk_color_bytes(VkFormat f) {  // texel size of an ordinary colour format, 0 = not one
+    switch (f) {
+    case VK_FORMAT_R8_UNORM: case VK_FORMAT_R8_SNORM: case VK_FORMAT_R8_UINT: case VK_FORMAT_R8_SINT: case VK_FORMAT_R8_SRGB:
+        return 1;
+    case VK_FORMAT_R16_UNORM: case VK_FORMAT_R16_SNORM: case VK_FORMAT_R16_UINT: case VK_FORMAT_R16_SINT:
+    case VK_FORMAT_R16_SFLOAT: case VK_FORMAT_R8G8_UNORM: case VK_FORMAT_R8G8_SNORM: case VK_FORMAT_R8G8_UINT:
+    case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8_SRGB: case VK_FORMAT_R4G4B4A4_UNORM_PACK16: case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
+    case VK_FORMAT_R5G6B5_UNORM_PACK16: case VK_FORMAT_B5G6R5_UNORM_PACK16: case VK_FORMAT_R5G5B5A1_UNORM_PACK16:
+    case VK_FORMAT_B5G5R5A1_UNORM_PACK16: case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
+        return 2;
+    case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R16G16_UNORM:
+    case VK_FORMAT_R16G16_SNORM: case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16_SFLOAT:
+    case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SNORM: case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_R8G8B8A8_SINT:
+    case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB:
+    case VK_FORMAT_A8B8G8R8_UNORM_PACK32: case VK_FORMAT_A8B8G8R8_SRGB_PACK32: case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+    case VK_FORMAT_A2B10G10R10_UINT_PACK32: case VK_FORMAT_A2R10G10B10_UNORM_PACK32: case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+    case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32:
+        return 4;
+    case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32_SINT: case VK_FORMAT_R32G32_SFLOAT: case VK_FORMAT_R16G16B16A16_UNORM:
+    case VK_FORMAT_R16G16B16A16_SNORM: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R16G16B16A16_SINT:
+    case VK_FORMAT_R16G16B16A16_SFLOAT:
+        return 8;
+    case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_R32G32B32A32_SINT: case VK_FORMAT_R32G32B32A32_SFLOAT:
+        return 16;
+    default:
+        return 0;
+    }
+}
+static int vk_block_class(VkFormat f) {  // compressed formats: one id per compatibility class, 0 = not compressed
+    if (f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK) return 1 + (f - VK_FORMAT_BC1_RGB_UNORM_BLOCK) / 2;
+    if (f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) return 100 + (f - VK_FORMAT_ASTC_4x4_UNORM_BLOCK) / 2;
+    return 0;
+}
+static bool vk_view_compatible(VkFormat image, VkFormat view) {
+    if (image == view) return true;
+    int ib = vk_color_bytes(image), vb = vk_color_bytes(view);
+    if (ib || vb) return ib == vb;
+    int ic = vk_block_class(image);
+    return ic && ic == vk_block_class(view);
+}
+
 // render: attachment view (one level, one layer). Otherwise a sampled view of type want_textype (TEXTYPE_*),
 // with the NVN component swizzle, converting between compatible types the way renderer.m does.
 VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool render, int want_textype) {
@@ -740,7 +882,15 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     VkFormat fmt = b->format;
     if (v && (v->setmask & 4) && !(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
         VkFormat vf = fmt_of(v->format).vf;
-        if (vk_format(t->format) == b->format) fmt = vf;  // (fallback images keep their own format)
+        if (vk_format(t->format) == b->format && vf != fmt) {  // (fallback images keep their own format)
+            if (vk_view_compatible(fmt, vf)) fmt = vf;
+            else {
+                static int nlog;
+                if (!nlog++)
+                    LOG("[vk] texture %ux%u fmt %#x (vk %d) can't be viewed as nvn %#x (vk %d): its own format instead "
+                        "(logged once)\n", t->width, t->height, t->format, b->format, v->format, vf);
+            }
+        }
     }
     uint32_t lv0 = v && (v->setmask & 1) ? v->base_level : 0;
     uint32_t nlv = v && (v->setmask & 1) && v->num_levels ? v->num_levels : b->levels - (lv0 < b->levels ? lv0 : 0);
@@ -819,6 +969,39 @@ VkImageView vk_dummy_view(int textype) {
     b->layers = cube ? 6 : 1;
     views[textype] = vk_image_view(b, vt, b->format, 0, 1, 0, cube ? 6 : 1, IDENTITY, VK_IMAGE_ASPECT_COLOR_BIT);
     return views[textype];
+}
+
+// Throwaway color attachment for passes that have none (exec.c begin_pass, Intel only): R8, at least w x h (the pass's
+// render area: the attachments' level extent, which Dynamic resolution's sub-rect lies inside), never sampled; its
+// contents are don't-care. One image per sample count, grown to the largest render area seen (the outgrown one is
+// destroyed once the submissions that may use it are done), so changing render scales don't pile up images. Only the
+// image is kept: its view comes from the view table on each use, like a game target's (a cached handle could be
+// evicted from that table and destroyed under us). Called by the translating thread only (the render thread, or the
+// game's GPU thread with LARECOMP_RENDER_THREAD=0), as vk_dummy_view and the view table are.
+VkImageView vk_dummy_color_view(uint32_t w, uint32_t h, uint32_t samples) {
+    static TexBackend imgs[5];  // samples 1, 2, 4, 8, 16
+    int k = 0;
+    while (k < 4 && (1u << k) < samples) k++;
+    TexBackend *b = &imgs[k];
+    if (!b->image || b->width < w || b->height < h || b->samples != samples) {
+        if (b->width > w) w = b->width;
+        if (b->height > h) h = b->height;
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_R8_UNORM, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
+                                .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VkImage img;
+        VmaAllocation mem;
+        if (vmaCreateImage(g_vk.vma, &ci, &ai, &img, &mem, NULL) != VK_SUCCESS) return VK_NULL_HANDLE;
+        if (b->image) { views_forget(b); defer((Dead){.img = b->image, .mem = b->mem}); }
+        vk_image_init_layout(vk_upload_cmd(), img, VK_IMAGE_ASPECT_COLOR_BIT);
+        *b = (TexBackend){.image = img, .mem = mem, .format = VK_FORMAT_R8_UNORM, .base_type = VK_IMAGE_VIEW_TYPE_2D,
+                          .width = w, .height = h, .depth = 1, .layers = 1, .levels = 1, .samples = samples,
+                          .aspect = VK_IMAGE_ASPECT_COLOR_BIT, .gpu_owned = true};
+        LOG("[vk] placeholder color attachment %ux%u (samples %u) for passes without one\n", w, h, samples);
+    }
+    return vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, b->format, 0, 1, 0, 1, IDENTITY, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
 // ================================================================== samplers
@@ -902,3 +1085,5 @@ VkSampler vk_default_sampler(bool linear) {
     }
     return s[linear];
 }
+
+void backend_texture_view_format(NvnTexture *t, uint32_t format) { (void)t; (void)format; }  // (images are made mutable-format)

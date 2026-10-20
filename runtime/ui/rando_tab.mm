@@ -13,6 +13,7 @@
 #include <algorithm>
 
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "osk.h"
 #include "option_rows.h"
 
@@ -125,11 +126,12 @@ struct GenOpts {
     bool no_buffs = false;    // no-buff-drops: enemies never drop Guardian Acorns / Pieces of Power
     bool bushes = false;      // bushsanity: every overworld bush hides an item (tools/rando/bushes.py)
     bool digs = false;        // digsanity: every diggable overworld tile is a check (tools/rando/digs.py)
+    bool shellsanity = false; // every Secret Seashell spot is a check (tools/rando/seashell_spots.py); off: vanilla
     int room_shuffle = 0;     // dungeon-room-shuffle: off / coherent / chaos / madness (tools/rando/dungeon_gen.py)
     bool pet_rooster = false, pet_ghost = false;  // pets in the pool (tools/rando/pets.py)
     bool pet_marin = false;   // Marin in the pool, the desert closed until she wakes the Walrus (open-desert off)
     int shopsanity = 0;       // off / vanilla prices / random prices (tools/rando/shopsanity.py)
-    int miniboss_freq = 0;    // miniboss-frequency: overworld mini-boss chance 1x / 2x / 3x / every room (enemies.py)
+    int miniboss_freq = 0;    // miniboss-frequency: overworld mini-boss chance 1x / 2x / 3x / every enemy that fits (enemies.py)
     int enemy_mode = 0;       // enemy-mode: seeded (fixed in the seed) / random (re-rolled at every load: enemy_random.c)
     bool trendsanity = false; // every Trendy Game prize is a check (tools/rando/trendsanity.py)
     bool boss_souls = false;  // boss-souls: a boss only appears once its soul is found (tools/rando/souls.py)
@@ -138,19 +140,46 @@ struct GenOpts {
     // starting-items (the game's own start): stored as "not" so seed IDs made before these options (zeros) keep them
     bool no_start_sword = false, no_start_shield = false, no_start_ocarina = false;  // (ocarina: with Manbo's Mambo)
     bool tunic_upgrades = false;  // tunic-upgrades: the red / blue tunics add up instead of swapping (runtime: qol.c)
+    // stealing (LAS 'stealing': never / normal / always), stored so that seed IDs made before these options (zeros)
+    // keep their old rule, 'always' (stealing allowed, no sword needed); new seeds default to the vanilla sword rule
+    bool no_stealing = false;       // with Shopsanity: the shopkeeper never lets you steal ('never')
+    bool steal_needs_sword = true;  // off = "Steal without sword" ('always'); on = the vanilla rule ('normal')
+    // Triforce hunt (tools/rando/triforce.py): pieces needed (0 = off, 1-50), extra pieces 0 none / 1 +25% / 2 +50%
+    int tri_needed = 0, tri_extra = 0;
 };
 static GenOpts g_opts;
 
+// Triforce hunt rows: "Pieces needed" 3 / 12 / 24 / Custom; Custom's count is picked in the right pane (a stepper and a
+// slider), reached with Right / A on the row and left with B (as the Controls tab's Configure inputs page)
+static const int kTriPresets[3] = {3, 12, 24};
+static int g_tri_custom = 24;      // the Custom count (kept while a preset is chosen)
+static int g_tri_mode = 2;         // 0..2 a preset, 3 Custom (follows a loaded seed ID)
+static bool g_tri_row_on, g_tri_in_right, g_tri_right_hover, g_tri_to_right, g_tri_to_row;
+static int g_tri_back_frame = -10;  // the frame B went back from the right pane (the menu mustn't close on it)
+extern "C" bool rando_tab_took_back(void) { return g_tri_back_frame == ImGui::GetFrameCount(); }
+static void tri_mode_from_opts(void) {
+    g_tri_mode = 3;
+    for (int i = 0; i < 3; i++) if (g_opts.tri_needed == kTriPresets[i]) g_tri_mode = i;
+    if (g_tri_mode == 3 && g_opts.tri_needed > 0) g_tri_custom = g_opts.tri_needed;
+    if (!g_opts.tri_needed) g_tri_mode = 2;
+}
 
-// ---- Seed IDs: a 25-character code (Crockford base32, XXXXX-XXXXX-XXXXX-XXXXX-XXXXX) holding the random seed and
+
+// ---- Seed IDs: a 30-character code (Crockford base32, XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX) holding the random seed and
 // every generation option, with a checksum in the last 5 bits. Same ID + same LAS Recomp version = the same seed, so
 // IDs can be shared. The generator gets the ID itself as its seed string. Bump SEED_ID_VERSION when the bit layout
 // changes. v2: 36-bit random part; v3: + dungeon room shuffle; v4: 25 characters, + shopsanity, pets, Trendy Game
-// prizes (v2 / v3 IDs had 20: they still load, the options they don't hold are off). The logic, skip-story and
-// entrance tier 3 fields stay in the layout but are fixed now (basic, on, tier 2 includes the connector caves).
-enum { SEED_ID_VERSION = 4, SEED_ID_BITS = 125, SEED_ID_BITS_V3 = 100, SEED_ID_FLAGS_V3 = 23 };
-enum { SEED_ID_MBFREQ = SEED_ID_BITS - 5 - 2 };  // mini-boss frequency: 2 bits at the end of the data (v4 IDs)
-enum { SEED_ID_ENEMYMODE = SEED_ID_MBFREQ - 1 };  // enemy mode: 1 bit just before it (older IDs: 0 = Seeded)
+// prizes (v2 / v3 IDs had 20: they still load, the options they don't hold are off); v5: 30 characters, + Triforce hunt
+// (v4 IDs still load, without the hunt). The logic, skip-story and entrance tier 3 fields stay in the layout but are
+// fixed now (basic, on, tier 2 includes the connector caves). Layout: version, random part, fields, the yes/no flags
+// (growing up), then fixed places counted back from the end: [v5: hunt pieces needed 6, extra 2] steal-needs-sword,
+// no-stealing, enemy mode, mini-boss frequency 2, checksum 5.
+enum { SEED_ID_VERSION = 5, SEED_ID_BITS = 150, SEED_ID_BITS_V4 = 125, SEED_ID_BITS_V3 = 100, SEED_ID_FLAGS_V3 = 23 };
+static int id_mbfreq(int bits) { return bits - 5 - 2; }              // mini-boss frequency
+static int id_enemymode(int bits) { return id_mbfreq(bits) - 1; }    // enemy mode (older IDs: 0 = Seeded)
+static int id_nosteal(int bits) { return id_enemymode(bits) - 1; }   // stealing off (older IDs: 0 = stealing allowed)
+static int id_stealsword(int bits) { return id_nosteal(bits) - 1; }  // stealing needs the sword (older: 0 = no sword)
+static int id_hunt(int bits) { return id_stealsword(bits) - 8; }     // (v5) Triforce hunt: pieces needed 6, extra 2
 static const char kB32[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 struct Bits {
@@ -167,7 +196,7 @@ static bool *opt_flags(GenOpts &o, int i) {  // the yes/no options, in ID order 
                  &o.boss_cutscenes, &o.spoiler, &o.decoupled, &o.pots, &o.no_buffs, &o.bushes,
                  &o.pet_rooster, &o.pet_ghost, &o.pet_marin, &o.trendsanity, &o.boss_souls, &o.hookshot_any,
                  &o.digs, &o.miniboss_souls, &o.no_start_sword, &o.no_start_shield, &o.no_start_ocarina,
-                 &o.tunic_upgrades};
+                 &o.tunic_upgrades, &o.shellsanity};
     return i < (int)(sizeof f / sizeof *f) ? f[i] : NULL;
 }
 
@@ -186,11 +215,15 @@ static void seed_id_encode(GenOpts &o, char *out, size_t cap) {
     x.put(o.room_shuffle, 2);  // (v3)
     x.put(o.shopsanity, 2);    // (v4)
     for (int i = 0; bool *f = opt_flags(o, i); i++) x.put(*f, 1);
-    int data = x.n;  // (the flags may grow up to SEED_ID_ENEMYMODE)
+    int data = x.n;  // (the flags may grow up to id_hunt)
     x.put(0, SEED_ID_BITS - 5 - data);
-    x.n = SEED_ID_ENEMYMODE;  // (fixed places before the checksum: IDs made before them hold 0 = Seeded / normal)
+    x.n = id_hunt(SEED_ID_BITS);  // (fixed places before the checksum: IDs made before them hold 0 = the old behaviour)
+    x.put(o.tri_needed, 6);
+    x.put(o.tri_extra, 2);
+    x.put(o.steal_needs_sword, 1);
+    x.put(o.no_stealing, 1);
     x.put(o.enemy_mode, 1);
-    x.n = SEED_ID_MBFREQ;
+    x.n = id_mbfreq(SEED_ID_BITS);
     x.put(o.miniboss_freq, 2);
     x.put(id_check(x, SEED_ID_BITS - 5), 5);
     std::string s;
@@ -218,14 +251,14 @@ static std::string seed_id_decode(const char *text, GenOpts &o) {
         x.put((uint64_t)(q - kB32), 5);
         chars++;
     }
-    int bits = chars * 5;  // 25 characters (v4), or 20 (v2 / v3)
-    if (bits != SEED_ID_BITS && bits != SEED_ID_BITS_V3) return "a seed ID has 25 characters";
+    int bits = chars * 5;  // 30 characters (v5), 25 (v4), or 20 (v2 / v3)
+    if (bits != SEED_ID_BITS && bits != SEED_ID_BITS_V4 && bits != SEED_ID_BITS_V3) return "a seed ID has 30 characters";
     uint32_t sum = 0;
     for (int i = 0; i < 5; i++) sum |= (uint32_t)x.b[bits - 5 + i] << i;
     if (sum != id_check(x, bits - 5)) return "typo? (checksum doesn't match)";
     x.n = 0;
     int ver = (int)x.get(4);
-    if (bits == SEED_ID_BITS ? ver != SEED_ID_VERSION : ver != 2 && ver != 3)
+    if (bits == SEED_ID_BITS ? ver != SEED_ID_VERSION : bits == SEED_ID_BITS_V4 ? ver != 4 : ver != 2 && ver != 3)
         return "made by another LAS Recomp version (ID format " + std::to_string(ver) + ")";
     GenOpts t = o;
     t.rng = x.get(36);
@@ -234,10 +267,15 @@ static std::string seed_id_decode(const char *text, GenOpts &o) {
     t.room_shuffle = ver >= 3 ? (int)x.get(2) : 0;
     t.shopsanity = ver >= 4 ? (int)x.get(2) : 0;
     for (int i = 0; bool *f = opt_flags(t, i); i++) *f = ver >= 4 || i < SEED_ID_FLAGS_V3 ? x.get(1) : 0;
-    if (bits == SEED_ID_BITS) { x.n = SEED_ID_MBFREQ; t.miniboss_freq = (int)x.get(2); } else t.miniboss_freq = 0;
-    if (bits == SEED_ID_BITS) { x.n = SEED_ID_ENEMYMODE; t.enemy_mode = (int)x.get(1); } else t.enemy_mode = 0;
+    bool v4up = bits != SEED_ID_BITS_V3;
+    if (v4up) { x.n = id_mbfreq(bits); t.miniboss_freq = (int)x.get(2); } else t.miniboss_freq = 0;
+    if (v4up) { x.n = id_enemymode(bits); t.enemy_mode = (int)x.get(1); } else t.enemy_mode = 0;
+    if (v4up) { x.n = id_stealsword(bits); t.steal_needs_sword = x.get(1); t.no_stealing = x.get(1); }
+    else t.steal_needs_sword = t.no_stealing = false;
+    if (bits == SEED_ID_BITS) { x.n = id_hunt(bits); t.tri_needed = (int)x.get(6); t.tri_extra = (int)x.get(2); }
+    else t.tri_needed = t.tri_extra = 0;
     if (t.room_shuffle > 3 || t.shopsanity > 2 || t.logic > 4 || t.traps > 4 || t.seashells > 5 || t.tunic >= 14 ||
-        t.entrances > 3 || t.start_rupees > 999)
+        t.entrances > 3 || t.start_rupees > 999 || t.tri_needed > 50 || t.tri_extra > 2)
         return "not a valid seed ID";
     t.ohko = false;
     // retired choices (older IDs still load): logic is always basic, story scenes always skipped, and tier 3
@@ -294,7 +332,7 @@ static void start_generation(void) {
     }
     strlcpy(g_opts.seed, name.c_str(), sizeof g_opts.seed);
     if (!g_opts.rng) g_opts.rng = new_rng();
-    char id[32];
+    char id[48];
     seed_id_encode(g_opts, id, sizeof id);
     std::string dir = std::string("rando/") + g_opts.seed;
     mkdir("rando", 0755);
@@ -329,7 +367,8 @@ static void start_generation(void) {
     }
     fprintf(f, " \"pots\": %s, \"no-buff-drops\": %s, \"bushes\": %s, \"digs\": %s,\n", g_opts.pots ? "true" : "false",
             g_opts.no_buffs ? "true" : "false", g_opts.bushes ? "true" : "false", g_opts.digs ? "true" : "false");
-    fprintf(f, " \"tunic-upgrades\": %s,\n", g_opts.tunic_upgrades ? "true" : "false");
+    fprintf(f, " \"tunic-upgrades\": %s, \"shellsanity\": %s,\n", g_opts.tunic_upgrades ? "true" : "false",
+            g_opts.shellsanity ? "true" : "false");
     fprintf(f, " \"include-fishing\": %s, \"include-rapids\": %s, \"include-dampe\": %s, \"include-trade-gifts\": %s,"
                " \"include-blue-rupees\": %s,\n", g_opts.inc_fishing ? "true" : "false", g_opts.inc_rapids ? "true" : "false",
             g_opts.inc_dampe ? "true" : "false", g_opts.inc_trade ? "true" : "false", g_opts.inc_blue ? "true" : "false");
@@ -347,9 +386,12 @@ static void start_generation(void) {
     fprintf(f, " \"dungeon-room-shuffle\": \"%s\",\n", rs[g_opts.room_shuffle]);
     static const char *shop[] = {"off", "vanilla", "random"};
     fprintf(f, " \"shopsanity\": \"%s\", \"trendsanity\": %s,\n", shop[g_opts.shopsanity], g_opts.trendsanity ? "true" : "false");
+    fprintf(f, " \"stealing\": \"%s\",\n", g_opts.shopsanity && g_opts.no_stealing ? "never"
+                                          : g_opts.steal_needs_sword ? "normal" : "always");
     fprintf(f, " \"boss-souls\": %s, \"miniboss-souls\": %s,\n", g_opts.boss_souls ? "true" : "false",
             g_opts.miniboss_souls ? "true" : "false");
     fprintf(f, " \"hookshot-anything\": %s,\n", g_opts.hookshot_any ? "true" : "false");
+    fprintf(f, " \"triforce-hunt\": %d, \"triforce-extra\": %d,\n", g_opts.tri_needed, g_opts.tri_extra * 25);
     fprintf(f, " \"entrance-tier\": %d, \"entrance-decoupled\": %s,\n", g_opts.entrances, g_opts.entrances >= 2 && g_opts.decoupled ? "true" : "false");
     fprintf(f, " \"pet-rooster\": %s, \"pet-ghost\": %s, \"open-desert\": %s,\n", g_opts.pet_rooster ? "true" : "false",
             g_opts.pet_ghost ? "true" : "false", g_opts.pet_marin ? "false" : "true");
@@ -392,6 +434,8 @@ static void poll_generation(void) {
         g_gen_failed = st != 0;
         g_gen_done = true;
         g_gen_status = g_gen_failed ? "Generation failed: see rando/" + g_gen_seed + "/generate.log" : "Seed \"" + g_gen_seed + "\" ready.";
+        size_t e = g_gen_failed ? log.rfind("\nerror ") : std::string::npos;  // (a reason the player can act on)
+        if (e != std::string::npos) g_gen_status = log.substr(e + 7, log.find('\n', e + 1) - e - 7);
         g_scanned = false;
         g_opts.seed[0] = 0;
         g_opts.rng = new_rng();  // next seed: a fresh ID
@@ -474,6 +518,14 @@ extern "C" void rando_tab_draw(float scale) {
     if (!g_spoiler_seed.empty()) {  // the spoiler page replaces the tab until Back
         if (!spoiler_view_draw(g_spoiler_seed, scale)) g_spoiler_seed.clear();
         return;
+    }
+    static bool id_once;  // LARECOMP_RANDO_ID=<seed ID>: the tab starts with that ID's options (test hook)
+    if (const char *t = getenv("LARECOMP_RANDO_ID"); !id_once && t) {
+        id_once = true;
+        std::string err = seed_id_decode(t, g_opts);
+        if (!err.empty()) LOG("[rando] test seed ID: %s\n", err.c_str());
+        tri_mode_from_opts();
+        if (getenv("LARECOMP_TRI_RIGHT")) g_tri_to_right = true;  // (test: the Custom count's pane, cursor on it)
     }
     static bool test_once;  // LARECOMP_RANDO_GEN_TEST=1|<name>[:<seed ID>]: generate a seed (with that ID's options)
     if (const char *t = getenv("LARECOMP_RANDO_GEN_TEST"); !test_once && t) {  // as soon as the tab is shown (test hook)
@@ -596,6 +648,11 @@ extern "C" void rando_tab_draw(float scale) {
                        "with logic."))
             g_opts.no_start_ocarina = !oc;
     }
+    {  // (part of the seed: LAS 'stealing' normal / always)
+        bool any = !g_opts.steal_needs_sword;
+        if (opt_toggle("Steal without sword", &any, false, "You can steal from the shop before you have the sword."))
+            g_opts.steal_needs_sword = !any;
+    }
     opt_toggle("Treat Tunics as Upgrades", &g_opts.tunic_upgrades, false,
                "The red and blue tunics add up instead of replacing each other: the blue one always halves the damage "
                "Link takes, the red one always strengthens his attacks, and with both he has both.");
@@ -623,6 +680,7 @@ extern "C" void rando_tab_draw(float scale) {
                 strlcpy(keep, g_opts.seed, sizeof keep);
                 g_opts = t;
                 strlcpy(g_opts.seed, keep, sizeof g_opts.seed);
+                tri_mode_from_opts();
                 id_msg = "Loaded: the options are set from this ID.";
             }
         }
@@ -630,14 +688,45 @@ extern "C" void rando_tab_draw(float scale) {
         if (opt_action("New seed ID", "", "A new random seed with the same options.")) { g_opts.rng = new_rng(); id_msg.clear(); }
     }
 
+    opt_section("Goal");
+    {
+        bool hunt = g_opts.tri_needed > 0;
+        if (opt_toggle("Triforce hunt", &hunt, false,
+                       "Collect Triforce pieces: the last one needed rolls the credits. The Wind Fish isn't needed."))
+            g_opts.tri_needed = hunt ? (g_tri_mode < 3 ? kTriPresets[g_tri_mode] : g_tri_custom) : 0;
+        opt_indent(1);
+        static const char *const pn[] = {"3", "12", "24", "Custom"};
+        if (!hunt) opt_disable_next();
+        if (opt_choice("Pieces needed", &g_tri_mode, pn, 4, 2, "How many pieces finish the game.", false))
+            g_opts.tri_needed = g_tri_mode < 3 ? kTriPresets[g_tri_mode] : g_tri_custom;
+        ImGuiID row = ImGui::GetItemID();
+        bool focused = ImGui::IsItemFocused();
+        g_tri_row_on = hunt && g_tri_mode == 3 && (focused || ImGui::IsItemHovered());
+        if (g_tri_to_row) {  // (back from the right pane)
+            g_tri_to_row = false;
+            ImGui::SetFocusID(row, ImGui::GetCurrentWindow());
+            ImGui::SetNavCursorVisible(true);
+        }
+        // on Custom: Right / A (or a click) takes the cursor to the count on the right
+        if (g_tri_row_on && (ImGui::IsItemClicked() ||
+                             (focused && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, false) ||
+                                          ImGui::IsKeyPressed(ImGuiKey_GamepadLStickRight, false) ||
+                                          ImGui::IsKeyPressed(ImGuiKey_RightArrow, false) ||
+                                          ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) ||
+                                          ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false)))))
+            g_tri_to_right = true;
+        static const char *const ex[] = {"None", "+25%", "+50%"};
+        if (!hunt) opt_disable_next();
+        opt_choice("Extra pieces", &g_opts.tri_extra, ex, 3, 0, "More pieces than needed are hidden, so you can skip some.");
+        opt_indent(-1);
+    }
+
     opt_section("Items");
     static const char *ditems[] = {"Shuffled", "Start with stone beaks", "Start with maps + compasses", "Start with all three"};
     opt_choice("Dungeon items", &g_opts.dungeon_items, ditems, 4, 0,
                "Maps, compasses and stone beaks: shuffled into the item pool, or given at the start.");
-    opt_toggle("Bombs must be found first", &g_opts.bomb_bag, false,
-               "Bombs are an item in the pool: until you find them, shops don't sell bombs and none drop.");
-    opt_toggle("Magic Powder must be found first", &g_opts.powder_bag, false,
-               "Magic Powder is an item in the pool: until you find it, none can be bought or found.");
+    opt_toggle("Bomb bag", &g_opts.bomb_bag, false, "You must find your bomb bag to collect and carry bombs.");
+    opt_toggle("Powder bag", &g_opts.powder_bag, false, "You must find your powder bag to collect and carry Magic Powder.");
     static const char *traps[] = {"None", "Few", "Several", "Many", "Trapsanity"};
     opt_choice("Traps", &g_opts.traps, traps, 5, 1, "How many traps hide among the items.");
     static const char *shells[] = {"None", "Up to 5", "Up to 15", "Up to 30", "Up to 40", "All (50)"};
@@ -659,6 +748,7 @@ extern "C" void rando_tab_draw(float scale) {
                "INSANE: every diggable tile on the overworld is a check - about 5,000 more, and most important items end "
                "up buried. The first dig of a tile brings its item up; grass and bushes have to be cut first. Holes stay "
                "dug, so you can see where you've been.");
+    opt_toggle("Shellsanity", &g_opts.shellsanity, false, "Every hidden Secret Seashell spot holds an item from the pool.");
     static const char *ksn[] = {"Off", "Small keys", "Small + Nightmare", "All dungeon items"};
     opt_choice("Keysanity", &g_opts.keysanity, ksn, 4, 0,
                "Dungeon keys (and with the last choice every dungeon item) can be anywhere in the world, with logic. A "
@@ -668,8 +758,15 @@ extern "C" void rando_tab_draw(float scale) {
                "Unchecked pots are golden: lift, smash or throw one to reveal its item.");
     static const char *shopn[] = {"Off", "Vanilla prices", "Random prices"};
     opt_choice("Shopsanity", &g_opts.shopsanity, shopn, 3, 0,
-               "Every good in the Mabe Village shop is a check: the shield, hearts, shovel, bow, arrows, bombs, the seven "
-               "chamber stones and the piece of heart. Buy it, or steal it (the shopkeeper remembers a thief).");
+               "Every good in the Mabe Village shop is a check: the shield, hearts, shovel, bombs, chamber stone and "
+               "piece of heart. Buy it, or steal it (the shopkeeper remembers a thief).");
+    {
+        opt_indent(1);
+        bool steal = !g_opts.no_stealing;
+        if (!g_opts.shopsanity) opt_disable_next();
+        if (opt_toggle("Stealing", &steal, true, "Off: the shopkeeper never lets you steal.")) g_opts.no_stealing = !steal;
+        opt_indent(-1);
+    }
     opt_toggle("Trendy Game prizes", &g_opts.trendsanity, false,
                "Each of the 5 crane prize spots holds a check; won spots then hold ordinary prizes.");
     opt_toggle("Fishing prizes", &g_opts.inc_fishing, false, "The fishing pond's prizes hold items from the pool.");
@@ -768,13 +865,13 @@ extern "C" void rando_tab_draw(float scale) {
     opt_toggle("Include mini-bosses", &g_opts.enemy_minibosses, false,
                "Some overworld enemies become mini-bosses: Hinox, Armos Knight, Dodongo Snake, Giant Buzz Blob, Smasher, "
                "Avalaunch, Rolling Bones, Cue Ball, Blaino, Master Stalfos, Moblin Chief, Lanmola, the Ball-and-Chain "
-               "Soldier or Shadow Link.");
+               "Soldier or Shadow Link. Shadow Link, Blaino and the Soldier also appear in dungeons and caves.");
     {
         opt_indent(1);
         if (!g_opts.randomize_enemies || !g_opts.enemy_minibosses) opt_disable_next();
         static const char *const freq[] = {"Normal", "2x", "3x", "All"};
         opt_choice("Mini-boss frequency", &g_opts.miniboss_freq, freq, 4, 0,
-                   "How often overworld enemies become mini-bosses. All: one in every screen with enemies.");
+                   "How often overworld enemies become mini-bosses. All: every one with room for one.");
         opt_indent(-1);
     }
     opt_indent(-1);
@@ -816,7 +913,40 @@ extern "C" void rando_tab_draw(float scale) {
         opt_disable_next();
         opt_action(g_gen_status.c_str(), "", g_gen_status.c_str(), false);
     }
-    opt_end();
+    // the right pane: the row's description, or with the Triforce hunt's Custom count there, the count to pick
+    static bool tri_test = getenv("LARECOMP_TRI_RIGHT") != NULL;  // (test: the Custom count's pane stays shown)
+    bool custom = g_opts.tri_needed > 0 && g_tri_mode == 3 && (g_tri_row_on || g_tri_in_right || g_tri_right_hover ||
+                                                                 g_tri_to_right || tri_test);
+    if (!custom) {
+        g_tri_in_right = g_tri_right_hover = false;
+        opt_end();
+    } else {
+        if (g_tri_in_right && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))) {
+            g_tri_back_frame = ImGui::GetFrameCount();  // B: back to the row
+            g_tri_to_row = true;
+        }
+        opt_split();
+        ImGui::SetWindowFontScale(1.3f);  // (as the descriptions)
+        ImGui::TextWrapped("How many pieces finish the game: 1 to 50.");
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::Spacing();
+        opt_section("Custom");
+        int v = g_tri_custom;
+        if (opt_int("Pieces needed", &v, 1, 50, 1, 24, "%d", NULL)) g_tri_custom = v;
+        if (g_tri_to_right) {
+            g_tri_to_right = false;
+            ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+            ImGui::SetNavCursorVisible(true);
+        }
+        g_tri_in_right = ImGui::IsItemFocused() && !g_tri_to_row;
+        ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);  // (the slider is for the mouse: the row above steps it)
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderInt("##tricount", &v, 1, 50, "")) g_tri_custom = v;
+        ImGui::PopItemFlag();
+        g_tri_right_hover = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) || ImGui::IsItemActive();
+        g_opts.tri_needed = g_tri_custom;
+        opt_split_end();
+    }
     ImGui::EndDisabled();
     gen_overlay(scale);
 }

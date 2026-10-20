@@ -4,14 +4,20 @@
 //   <dungeon> <type> <flag> <name> <reward key>   a boss (0 = Color Dungeon) and its reward actor (instrument / fairy)
 //   mini <type> <flag> <name>                     a mini-boss kind (every encounter of it)
 //   room <level> <soul flag> <defeat flag> <cells>  a room whose shutters stay open without its enemy
+//   door <key> <c,r> <N|S|W|E> <flag>             one of that room's shutters (the last room line's)
 // The actor factory asks rt_actor_create_fn for a type's create function (tools/patches.py BOSS_SPAWN_SITE); for a
 // held-back boss / mini-boss / reward we hand back none - the factory's own path for a type without a class. Rooms
 // create their actors as they stream in, so a soul found inside the dungeon counts once the room is loaded again.
 //
-// An empty room's shutters stay open (they follow the enemy), so the way on would be free: souls_tick keeps Link in
-// such a room unless he leaves into the cell he came from, until the room's defeat flag is set (vanilla: the shutters
-// open on that same flag) or the soul is found (then the enemy is there and the game's own shutters take over).
-// Entered by falling / stairs (no neighbouring cell before): no wall (he can't go back the way he came).
+// An empty room's shutters would stay open (they follow the enemy), so the way on would be free: souls_tick keeps Link
+// in such a room unless he leaves through the doorway he came in by, until the room's defeat flag is set (vanilla: the
+// shutters open on that same flag) or the soul is found. Entered by falling / stairs / a warp (not at a doorway): no
+// wall (he can't go back the way he came).
+// The shutters themselves are the game's fight-room doors at seed time (souls.py hold_shutters, as Tail Cave 07C's:
+// open while Link is outside, shut behind him as he comes in - an AreaEventBox sets a room flag -, open once their
+// flag is set), each on a door flag of its own driven here (door_flags): the room's defeat flag when the enemy is
+// there (its soul was found before the level loaded: the vanilla fight), and while it's held back also open for the
+// doorway he came in by.
 #include "../game_addresses.h"
 #include <math.h>
 #include <stdio.h>
@@ -24,20 +30,25 @@
 // GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
 
 bool flags_ext_get(int idx);
+void flags_ext_set(int idx);
+void flags_ext_clear(int idx);
 uint64_t doorjump_player(uint64_t frame);  // PlayerCollision component: position at +0x80 (and +0xb0)
 
 typedef struct { int kind, dungeon; uint32_t type; int flag; char name[32]; unsigned long long reward; } Soul;  // kind 0 boss, 1 mini
-typedef struct { char level[32]; int soul_flag, defeat_flag, ncells; int8_t cells[8][2]; } Wall;
+typedef struct { char level[32]; int soul_flag, defeat_flag, ncells; int8_t cells[8][2]; bool present; } Wall;
+typedef struct { int wall, flag; int8_t c, r, side; } Door;  // side: 0 N 1 S 2 W 3 E
 static Soul g_souls[32];
 static int g_nsouls = -1;
 static Wall g_walls[48];
 static int g_nwalls;
+static Door g_doors[160];
+static int g_ndoors;
 typedef struct { char level[32]; float x, y, z; int kind; } Spot;  // a soul's item model standing in the world
 static Spot g_spots[32];
 static int g_nspots;
 
 static void load(void) {
-    g_nsouls = g_nwalls = g_nspots = 0;
+    g_nsouls = g_nwalls = g_nspots = g_ndoors = 0;
     const char *dir = rando_seed_dir();
     if (!dir) return;
     char p[1024], line[256];
@@ -57,6 +68,17 @@ static void load(void) {
         } else if (!strncmp(line, "spot\t", 5)) {
             if (g_nspots < 32 && sscanf(line + 5, "%31[^\t]\t%f\t%f\t%f\t%d", sp->level, &sp->x, &sp->y, &sp->z, &sp->kind) == 5)
                 g_nspots++;
+        } else if (!strncmp(line, "door\t", 5)) {
+            Door *d = &g_doors[g_ndoors];
+            unsigned long long key;
+            int c, r, flag;
+            char side;
+            if (g_ndoors < 160 && g_nwalls > 0 &&
+                sscanf(line + 5, "%llx\t%d,%d\t%c\t%d", &key, &c, &r, &side, &flag) == 5 && strchr("NSWE", side)) {
+                d->wall = g_nwalls - 1, d->flag = flag, d->c = (int8_t)c, d->r = (int8_t)r;
+                d->side = (int8_t)(strchr("NSWE", side) - "NSWE");
+                g_ndoors++;
+            }
         } else if (!strncmp(line, "room\t", 5)) {
             if (g_nwalls < 48 && sscanf(line + 5, "%31[^\t]\t%d\t%d\t%159s", w->level, &w->soul_flag, &w->defeat_flag, cells) == 4) {
                 w->ncells = 0;
@@ -79,7 +101,7 @@ static void load(void) {
         }
     }
     fclose(f);
-    LOG("[souls] %d souls, %d walled rooms in this seed\n", g_nsouls, g_nwalls);
+    LOG("[souls] %d souls, %d walled rooms (%d shutters) in this seed\n", g_nsouls, g_nwalls, g_ndoors);
 }
 
 static const char *level_name(void) {
@@ -90,6 +112,10 @@ static const char *level_name(void) {
 uint64_t rt_actor_create_fn(uint64_t fn, uint32_t type, uint64_t info) {
     extern bool rt_digs_skip_plant(uint32_t type, uint64_t info);  // digsanity: no grass / bush on a dug tile
     if (rt_digs_skip_plant(type, info)) return 0;
+    extern bool rt_bush_item_skip(uint32_t type, uint64_t info);  // bushsanity: no item until its bush is cut
+    if (rt_bush_item_skip(type, info)) return 0;
+    extern bool rt_shell_skip(uint32_t type, uint64_t info);  // Secret Seashell spots (shell_spots.c)
+    if (rt_shell_skip(type, info)) return 0;
     extern bool rt_no_buff_actor(uint32_t type);  // no-buff-drops (qol.c): no Piece of Power / Guardian Acorn at all
     if (rt_no_buff_actor(type)) return 0;
     if (g_nsouls < 0) load();
@@ -117,7 +143,7 @@ static bool in_wall(const Wall *w, int c, int r) {
     return false;
 }
 
-static struct { int wall; int from_c, from_r; bool way_back; } g_in = {-1};
+static struct { int wall; int from_c, from_r, side; bool way_back; } g_in = {-1};  // from: the cell he came in at
 static float g_last[3];
 static int g_last_c = -999, g_last_r = -999;
 static char g_last_level[32];
@@ -173,37 +199,79 @@ void souls_fairy_tint(const float *m, uint32_t m_size, float tint[8]) {
     memcpy(tint, kind ? mini : boss, sizeof boss);
 }
 
+static bool wall_open(const Wall *w) { return flags_ext_get(w->defeat_flag) || flags_ext_get(w->soul_flag); }
+
+// the door flags. A fight-room door opened by its flag stays open for the rest of the level visit (cleared again it
+// shows shut but lets Link through), so flags are only set while he is in the level and cleared once he has left it
+// (`here`: the level he is in, NULL = none). Set: the room's defeat flag (with the enemy there: the vanilla fight);
+// with the enemy held back also the doorway Link came in by (all of them: entered by a fall / stairs, soul found)
+static void door_flags(const char *here) {
+    for (int i = 0; i < g_ndoors; i++) {
+        const Door *d = &g_doors[i];
+        const Wall *w = &g_walls[d->wall];
+        bool open = flags_ext_get(w->defeat_flag), set = flags_ext_get(d->flag);
+        if (!here || strcmp(w->level, here)) {  // (not loaded: shut again for the next visit)
+            if (set && !open) {
+                flags_ext_clear(d->flag);
+                if (ENV("LARECOMP_LOG_SOULS")) LOG("[souls] door flag %d reset\n", d->flag);
+            }
+            continue;
+        }
+        if (!open && !w->present && g_in.wall == d->wall)
+            open = !g_in.way_back || flags_ext_get(w->soul_flag) ||
+                   (d->c == g_in.from_c && d->r == g_in.from_r && d->side == g_in.side);
+        if (open && !set) {
+            flags_ext_set(d->flag);
+            if (ENV("LARECOMP_LOG_SOULS"))
+                LOG("[souls] door flag %d (%d,%d %c) open\n", d->flag, d->c, d->r, "NSWE"[(int)d->side]);
+        }
+    }
+}
+
 void souls_tick(uint64_t frame) {
     if (g_nsouls < 0) load();
     if (g_nsouls > 0) watch_flags();
     if (!g_nwalls) return;
     const char *lv = level_name();
-    if (strncmp(lv, "Lv", 2)) return;
+    if (strncmp(lv, "Lv", 2)) {  // (back in a dungeon later: a new load, its enemies made again)
+        g_last_level[0] = 0;
+        if (g_ndoors) door_flags(NULL);
+        return;
+    }
     uint64_t pc = doorjump_player(frame);
     if (!pc) return;
     float *pos = (float *)(uintptr_t)(pc + 0x80), *pos2 = (float *)(uintptr_t)(pc + 0xb0);
-    if (strncmp(g_last_level, lv, sizeof g_last_level - 1)) {  // new level: no history
+    if (strncmp(g_last_level, lv, sizeof g_last_level - 1)) {  // new level: no history; which enemies it made
         strlcpy(g_last_level, lv, sizeof g_last_level);
         g_in.wall = -1;
         g_last_c = -999;
+        for (int i = 0; i < g_nwalls; i++) g_walls[i].present = flags_ext_get(g_walls[i].soul_flag);
     }
     int c = (int)floorf(pos[0] / 15.0f), r = (int)floorf(pos[2] / 12.0f);
     int now = -1;
     for (int i = 0; i < g_nwalls && now < 0; i++)
         if (!strcmp(g_walls[i].level, lv) && in_wall(&g_walls[i], c, r)) now = i;
     if (g_in.wall >= 0 && now != g_in.wall) g_in.wall = -1;  // left (the way back, a fall, a warp)
-    if (now >= 0 && g_in.wall != now) {  // entering: remember the cell he came from (a neighbour of the room)
+    if (now >= 0 && g_in.wall != now) {  // entering: the doorway he came in by (the cell edge he stands at)
         g_in.wall = now;
-        g_in.from_c = g_last_c, g_in.from_r = g_last_r;
-        g_in.way_back = abs(c - g_last_c) + abs(r - g_last_r) == 1;
+        g_in.from_c = c, g_in.from_r = r;
+        float dx = pos[0] - c * 15.0f, dz = pos[2] - r * 12.0f;
+        float edge[4] = {dz, 12.0f - dz, dx, 15.0f - dx};  // N S W E
+        int sd = 0;
+        for (int k = 1; k < 4; k++)
+            if (edge[k] < edge[sd]) sd = k;
+        g_in.side = sd;
+        // (at a doorway: from a neighbour or a door jump; not: a fall, stairs, a warp)
+        g_in.way_back = edge[sd] < 3.0f;
         const Wall *w = &g_walls[now];
-        if (!flags_ext_get(w->defeat_flag) && !flags_ext_get(w->soul_flag))
-            LOG("[souls] f%llu entered a walled room (%d,%d) from (%d,%d)%s\n", (unsigned long long)frame, c, r, g_last_c,
-                g_last_r, g_in.way_back ? "" : ": not from a neighbour, no wall");
+        if (!wall_open(w))
+            LOG("[souls] f%llu entered a walled room (%d,%d) from (%d,%d) by its %c side%s\n", (unsigned long long)frame, c,
+                r, g_last_c, g_last_r, "NSWE"[sd], g_in.way_back ? "" : ": not at a doorway, no wall");
     }
-    if (g_in.wall >= 0 && g_in.way_back) {  // inside: keep him off every wall but the one toward where he came from
+    door_flags(lv);
+    if (g_in.wall >= 0 && g_in.way_back) {  // inside: keep him off every wall but the doorway he came in by
         const Wall *w = &g_walls[g_in.wall];
-        if (!flags_ext_get(w->defeat_flag) && !flags_ext_get(w->soul_flag)) {
+        if (!wall_open(w)) {
             // (a margin short of the doorway: once he steps into it the game takes him through to the next room)
             const float M = 1.6f;
             float x = pos[0], z = pos[2];
@@ -213,7 +281,7 @@ void souls_tick(uint64_t frame) {
                 static const int8_t step[4][2] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};  // N S W E
                 for (int sd = 0; sd < 4; sd++) {
                     int nc = c + step[sd][0], nr = r + step[sd][1];
-                    if (in_wall(w, nc, nr) || (nc == g_in.from_c && nr == g_in.from_r)) continue;
+                    if (in_wall(w, nc, nr) || (c == g_in.from_c && r == g_in.from_r && sd == g_in.side)) continue;
                     if (sd == 0 && z < z0 + M) z = z0 + M;
                     if (sd == 1 && z > z0 + 12.0f - M) z = z0 + 12.0f - M;
                     if (sd == 2 && x < x0 + M) x = x0 + M;
@@ -254,6 +322,7 @@ RT_ON_RESET(souls_reset) {  // (seed switch: reload rando/<seed>/souls.tsv)
     g_nspots = 0;
     g_nsouls = -1;
     g_nwalls = 0;
+    g_ndoors = 0;
     g_in.wall = -1;
     g_last_c = g_last_r = -999;
     g_last_level[0] = 0;

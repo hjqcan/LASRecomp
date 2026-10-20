@@ -55,6 +55,20 @@ struct NvnShaderStage;
 uint64_t shader_stage_hash(const struct NvnShaderStage *s);  // its code up to the end of its constants; 0: unknown
 uint8_t shader_topo_class(uint32_t mode);                     // NVN draw mode -> ShaderRec.topo
 
+// Stale-program detector. The in-process program and compute lookups are keyed by guest code address; a hit is not
+// otherwise checked against the code. Each program keeps a fingerprint of the code it was built from (its full hash,
+// taken once, plus its length and a few sampled words); every bind compares only the length and the sampled words.
+// A mismatch logs "[shader] stale program: ..." (16 lines at most) and stops checking that fingerprint. Detection
+// only: the program returned is unchanged.
+typedef struct ShaderFp {
+    uint64_t hash;   // shader_stage_hash when taken
+    uint32_t len;    // bytes hashed (code up to the end of its constants)
+    uint32_t w[4];   // sampled words
+    uint8_t state;   // 0 not taken, 1 checking, 2 off (no constants to bound the code, or already reported)
+} ShaderFp;
+// Takes the fingerprint on first use, compares it after that. stage: "vs", "fs", "cs" (for the log)
+void shader_fp_check(ShaderFp *fp, const struct NvnShaderStage *s, const char *stage);
+
 // (LARECOMP_RECORD_KEYS) note a variant the game builds; cheap when recording is off
 bool shader_rec_recording(void);
 void shader_rec_note(const ShaderRec *r);

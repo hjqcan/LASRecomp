@@ -10,8 +10,10 @@
 
 #include "../../paths.h"
 #include "../../photo.h"
+#include "../../rt.h"  // (HEAP_MAX: lazy_heap_predicted)
 #include "../../settings.h"
 #include "../../ui/menu.h"
+#include "../rqueue.h"
 #include "vk.h"
 #include "../output_scale.h"
 #include "../renderer.h"
@@ -21,6 +23,91 @@
 
 VkG g_vk;
 static SDL_Window *window;
+
+// The system memory heap a whole-heap import (exec.c host_import) lands in and what it can hold: the largest heap with
+// a host-visible memory type that isn't device-local (all of them device-local: the largest host-visible one), the
+// smaller of its size and its budget (budget 0: unknown). -1: no host-visible heap. Plain types, so
+// tools/test_gmem_lowmem.py builds it without Vulkan headers.
+typedef struct { uint64_t size, budget; bool device_local, host_visible; } ImportHeap;
+static int import_heap_room(const ImportHeap *h, uint32_t n, uint64_t *room) {
+    int best = -1;
+    for (int pass = 0; pass < 2 && best < 0; pass++)
+        for (uint32_t i = 0; i < n; i++)
+            if (h[i].host_visible && (pass || !h[i].device_local) && (best < 0 || h[i].size > h[best].size)) best = (int)i;
+    if (best >= 0) *room = h[best].budget && h[best].budget < h[best].size ? h[best].budget : h[best].size;
+    return best;
+}
+// What the heap must hold beyond the import: the transient ring's chunks once they spill to system memory (64 MB
+// each), readback, the driver's own. Issue #205 (8 GB laptop, Ryzen 5 5500U, AMD's Windows driver): system heap
+// 2738 MB, budget 2601 - the 3220 MB import was accepted, then the first submission failed with out of device memory.
+// An 8 GB desktop with a GPU of its own (system heap ~3950 MB, budget ~3840) stays on one import.
+#define IMPORT_MARGIN (256ull << 20)
+// Under this much room one import should fit but might not (a driver's own limits, other programs): the import is
+// tried once at the start (exec.c whole_import_probe_oom), with buffer device addresses enabled so lazy chunks can take
+// over. Machines with more (an RTX with 16 GB or more of RAM) skip the probe and keep the device as before.
+#define IMPORT_PROBE_BELOW (2 * HEAP_MAX)
+
+// Whether one import of the whole heap fits its system memory heap (import_heap_room), from the physical device;
+// *probe: it fits, but not by much (IMPORT_PROBE_BELOW), or LARECOMP_VK_SIM_HEAP_OOM=1 (the probe then fails).
+static bool whole_import_fits(bool budget_ext, bool *probe) {
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT bp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 mp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+                                             .pNext = budget_ext ? &bp : NULL};
+    vkGetPhysicalDeviceMemoryProperties2(g_vk.phys, &mp2);
+    const VkPhysicalDeviceMemoryProperties *mp = &mp2.memoryProperties;
+    ImportHeap h[VK_MAX_MEMORY_HEAPS] = {{0}};
+    for (uint32_t i = 0; i < mp->memoryHeapCount; i++) {
+        h[i].size = mp->memoryHeaps[i].size;
+        h[i].budget = budget_ext ? bp.heapBudget[i] : 0;
+        h[i].device_local = (mp->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+    }
+    for (uint32_t i = 0; i < mp->memoryTypeCount; i++)
+        if (mp->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) h[mp->memoryTypes[i].heapIndex].host_visible = true;
+    uint64_t room = 0;
+    int heap = import_heap_room(h, mp->memoryHeapCount, &room);
+    const char *sim = getenv("LARECOMP_VK_SIM_HEAP_OOM");
+    if (heap < 0 || room >= HEAP_MAX + IMPORT_MARGIN) {
+        *probe = (heap >= 0 && room < IMPORT_PROBE_BELOW) || (sim && atoi(sim));
+        return true;
+    }
+    LOG("[vk] guest heap: memory heap %d holds %llu MB (size %llu, budget %llu), one import needs %llu MB: "
+        "imported in chunks as the game binds them\n", heap, (unsigned long long)(room >> 20),
+        (unsigned long long)(h[heap].size >> 20), (unsigned long long)(h[heap].budget >> 20),
+        (unsigned long long)((HEAP_MAX + IMPORT_MARGIN) >> 20));
+    return false;
+}
+
+// Whether the guest heap will be imported chunk by chunk (exec.c gmem_lazy): on a GPU whose storage buffers can't
+// span the heap (maxStorageBufferRange < HEAP_MAX: Intel, 1 GB); where the system memory heap or its budget can't hold
+// one import of the whole heap (whole_import_fits: 8 GB laptops, issue #205); and on RADV when the dma-buf heap
+// (exec.c guest_heap_dmabuf) has no cached host-visible memory type that holds it - the same test, which needs only
+// the physical device - or LARECOMP_VK_GMEM_LAZY=1 (=0: never; a GPU with a short range then gets windows of one
+// import, exec.c gmem_chunk_shift). Decided before the device exists because the lazy import needs buffer device
+// addresses, and on RADV enabling them puts every allocation on the driver's global BO list (amdgpu checks all of
+// them each submission): a device that imports the heap another way shouldn't pay for that.
+// *probe: one import is to be tried first (whole_import_fits), lazy chunks if it runs out of memory.
+static bool lazy_heap_predicted(bool budget_ext, bool *probe) {
+    *probe = false;
+    const char *e = getenv("LARECOMP_VK_GMEM_LAZY");
+    if (e) return atoi(e) != 0;
+    if (getenv("LARECOMP_VK_NO_GMEM")) return false;
+    uint64_t lim = g_vk.props.limits.maxStorageBufferRange;
+    if (lim && lim < HEAP_MAX) return true;  // (UHD 770 main pass: lazy 8.4 ms, 512 MB windows 8.5)
+    if (!whole_import_fits(budget_ext, probe)) return true;
+    if (!strstr(g_vk.props.deviceName, "RADV")) return false;
+    *probe = false;  // (RADV: as before - the dma-buf heap or lazy chunks, no probe)
+#ifdef __linux__
+    const char *d = getenv("LARECOMP_VK_HEAP_DMABUF");
+    if ((d ? atoi(d) != 0 : true) && g_vk.dmabuf) {
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+        const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        for (uint32_t i = 0; i < mp.memoryTypeCount; i++)
+            if ((mp.memoryTypes[i].propertyFlags & want) == want && mp.memoryHeaps[mp.memoryTypes[i].heapIndex].size >= HEAP_MAX) return false;
+    }
+#endif
+    return true;
+}
 static atomic_bool ui_ready;
 static VkDebugUtilsMessengerEXT messenger;
 
@@ -125,11 +212,27 @@ static void pick_device(void) {
     for (uint32_t i = 0; i < nq; i++) {
         VkBool32 present = VK_FALSE;
         vkGetPhysicalDeviceSurfaceSupportKHR(g_vk.phys, i, g_vk.surface, &present);
-        if ((qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && present) { g_vk.qfam = i; break; }
+        if ((qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && present) {
+            g_vk.qfam = i, g_vk.ts_bits = qp[i].timestampValidBits;
+            break;
+        }
     }
     free(qp);
     if (g_vk.qfam == UINT32_MAX) FATAL("no graphics+present queue\n");
     LOG("[vk] using %s\n", g_vk.props.deviceName);
+    settings_resolve_defaults(g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);
+    // On by default on integrated GPUs only: lean usage and the SMAA stencil measured faster on an Intel UHD 770 and
+    // slightly slower on an RTX 3080 Ti; skipping the per-frame target clears saved 3.7 ms on the UHD 770 (2x) with
+    // identical images. LARECOMP_VK_LEAN_USAGE / LARECOMP_VK_SMAA_STENCIL / LARECOMP_NO_FRAME_CLEAR =0 / =1 override.
+    bool igpu = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+    const char *e = getenv("LARECOMP_VK_LEAN_USAGE");
+    g_vk.lean_usage = e && *e ? atoi(e) != 0 : igpu;
+    e = getenv("LARECOMP_VK_SMAA_STENCIL");
+    g_vk.smaa_stencil = e && *e ? atoi(e) != 0 : igpu;
+    e = getenv("LARECOMP_NO_FRAME_CLEAR");
+    g_vk.no_frame_clear = e && *e ? atoi(e) != 0 : igpu;
+    LOG("[vk] lean usage %s, SMAA stencil %s, per-frame target clears %s (%s GPU)\n", g_vk.lean_usage ? "on" : "off",
+        g_vk.smaa_stencil ? "on" : "off", g_vk.no_frame_clear ? "off" : "on", igpu ? "integrated" : "not an integrated");
 }
 
 static bool g_fault_ext;
@@ -229,8 +332,13 @@ static void create_device(void) {
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
-    VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    VkPhysicalDeviceVulkan12Features have12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &have12};
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &have);
+    bool probe;
+    g_vk.lazy_heap = lazy_heap_predicted(budget, &probe);
+    g_vk.heap_probe = !g_vk.lazy_heap && probe && g_vk.host_import && have12.bufferDeviceAddress;
+    g_vk.bda = (g_vk.lazy_heap || g_vk.heap_probe) && have12.bufferDeviceAddress;
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT div = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT,
         .vertexAttributeInstanceRateDivisor = VK_TRUE, .vertexAttributeInstanceRateZeroDivisor = VK_FALSE};
@@ -245,7 +353,7 @@ static void create_device(void) {
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                             .timelineSemaphore = VK_TRUE, .shaderInt8 = VK_TRUE, .samplerMirrorClampToEdge = VK_TRUE,
                                             .uniformAndStorageBuffer8BitAccess = VK_TRUE, .storageBuffer8BitAccess = VK_TRUE,
-                                            .scalarBlockLayout = VK_TRUE, .pNext = &f13};
+                                            .scalarBlockLayout = VK_TRUE, .bufferDeviceAddress = g_vk.bda, .pNext = &f13};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .storageBuffer16BitAccess = VK_TRUE, .pNext = &f12};
     VkPhysicalDeviceFaultFeaturesEXT ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .deviceFault = VK_TRUE,
@@ -267,6 +375,7 @@ static void create_device(void) {
     b->fragmentStoresAndAtomics = h->fragmentStoresAndAtomics;
     b->vertexPipelineStoresAndAtomics = h->vertexPipelineStoresAndAtomics;
     b->robustBufferAccess = h->robustBufferAccess;  // guest shaders index cbufs freely: keep OOB reads harmless
+    g_vk.ssbo_chunks = h->fragmentStoresAndAtomics && h->vertexPipelineStoresAndAtomics && h->robustBufferAccess;
     b->shaderClipDistance = h->shaderClipDistance;
     if (!h->shaderInt64) LOG("[vk] warning: no shaderInt64 (64-bit address math in shaders)\n");
     float prio = 1.0f;
@@ -414,7 +523,11 @@ static void recreate_swapchain(void) {
 // every frame look ~16.6 ms: the game's 30 fps mode outdoors on a fast GPU (issue #44). GPU-bound frames still show
 // in the game's GPU counters.
 extern __thread uint64_t g_blocked_ns;  // kernel.c
-#define WAITING(x) do { uint64_t w0_ = plat_now_ns(); x; g_blocked_ns += plat_now_ns() - w0_; } while (0)
+#define WAITING(x) do { uint64_t w0_ = plat_now_ns(); rq_watch(#x, 0); x; rq_watch(NULL, 0); g_blocked_ns += plat_now_ns() - w0_; } while (0)
+// the same, also counted by place (dynamic resolution's log / LARECOMP_VK_PROF: 0 frame slot, 1 acquire, 2 present)
+uint64_t g_vk_frame_waits[4];
+#define WAITING_AT(i, x) do { uint64_t w0_ = plat_now_ns(); rq_watch(#x, 0); x; rq_watch(NULL, 0); uint64_t w1_ = plat_now_ns() - w0_; \
+                              g_blocked_ns += w1_; g_vk_frame_waits[i] += w1_; } while (0)
 
 // ================================================================== frames (start screen and game)
 // Acquire semaphores rotate per frame in flight; a slot is reused once the submission that waited on it is done.
@@ -459,12 +572,12 @@ bool vk_frame_begin(const float clear[4]) {
     if (trace) LOG("[vk] frame begin %dx%d (swapchain %ux%u)\n", w, h, g_vk.sc_extent.width, g_vk.sc_extent.height);
     slot = (slot + 1) % FRAMES;
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
-    WAITING(vk_wait_seq(slot_seq[slot]));
+    WAITING_AT(0, vk_wait_seq(slot_seq[slot]));
     VkResult r;
-    WAITING(r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image));
+    WAITING_AT(1, r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image));
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
-        WAITING(r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE,
+        WAITING_AT(1, r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE,
                                           &cur_frame.image));
     }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { LOG("[vk] acquire failed: %d\n", r); return false; }
@@ -472,6 +585,7 @@ bool vk_frame_begin(const float clear[4]) {
     slot_seq[slot] = vk_pending_seq();
     VkCommandBuffer cb = vk_cmd();
     image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    vk_gpu_timer_window_start();  // (the GPU timer: this submission's work starts after that barrier, which waits for the image)
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = g_vk.sc_views[cur_frame.image],
                                     .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -535,7 +649,8 @@ void vk_frame_end(const char *shot_path) {
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done_sem[img],
                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
     VkResult r;
-    WAITING(r = vkQueuePresentKHR(g_vk.queue, &pi));
+    WAITING_AT(2, r = vkQueuePresentKHR(g_vk.queue, &pi));
+    g_vk_frame_waits[3]++;
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreate_swapchain();
     cur_frame.ok = false;
     if (shot_path) {
@@ -559,14 +674,18 @@ void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h) 
 // ================================================================== game presentation (metal.m backend_present)
 // Draws the game's image into the window with the widescreen crop, then the overlay menu.
 extern void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, float vw, float vh, const float pv[12]);
+extern bool g_debug_frame;  // (exec.c; set in present_hooks, read in the render thread's present)
 void renderer_submit(void);
 void renderer_set_scale(float sx, float sy);
 uint64_t renderer_present_count(void);
 void renderer_save_texture_tex(TexBackend *b, const char *path);
 
 static uint64_t frames, total_frames, g_frame_counter;
-uint64_t renderer_present_count(void) { return total_frames; }
-uint64_t vk_frame_counter(void) { return g_frame_counter; }
+uint64_t renderer_present_count(void) { return total_frames; }  // (the game thread's frame: the HLE hooks')
+// The frame whose work is being translated (rqueue.h rq_frame): "once per frame" state of the translation. Without the
+// render thread, total_frames.
+uint64_t renderer_exec_frame(void) { return rq_current_item() ? rq_frame() : total_frames; }
+uint64_t vk_frame_counter(void) { return renderer_exec_frame(); }  // (the translation's: g_frame_counter == total_frames)
 static float g_shot_crop[4] = {0, 0, 1, 1};
 static double last_fps_time;
 static NvnTexture *g_last_presented;
@@ -574,17 +693,24 @@ static NvnTexture *g_last_presented;
 const float *vk_shot_crop(void) { return g_shot_crop; }
 
 void backend_present(NvnTexture *t);
+void *backend_pool_push(void) { return NULL; }
+void backend_pool_pop(void *p) { (void)p; }
 void backend_represent(void) {
-    if (g_last_presented) backend_present(g_last_presented);
-    else SDL_Delay(16);
+    if (!g_last_presented) { SDL_Delay(16); return; }
+    if (rq_on()) rq_present(g_last_presented, total_frames, false);
+    else backend_present_now(g_last_presented, total_frames);
 }
 
-void backend_present(NvnTexture *t) {
-    photo_mode_frame(total_frames);
-    g_last_presented = t;
+// The GPU side of a present (the render thread when it's on, rqueue.c): the present pass, the overlay, shots.
+// frame: the number of this present (the game thread's frame when it was queued).
+void backend_present_now(NvnTexture *t, uint64_t frame) {
+    photo_mode_frame(frame);
     TexBackend *b = vk_tex(t, true);
     b->presented = true;
     vk_end_pass();
+    // the frame's work goes to the GPU now, in a submission of its own: it starts while we wait for the window's image.
+    // Its GPU time is counted, and the window image's submission's from after its wait (exec.c gpu_timer_add)
+    renderer_submit();
     static const float black[4] = {0, 0, 0, 1};
     uint64_t t0 = SDL_GetTicksNS();
     bool have = vk_frame_begin(black);
@@ -596,20 +722,46 @@ void backend_present(NvnTexture *t) {
     if (have) {
         double dw = g_vk.sc_extent.width, dh = g_vk.sc_extent.height;
         extern void widescreen_frame_end(uint64_t frame);
-        widescreen_frame_end(total_frames);
+        widescreen_frame_end(frame);
         extern void widescreen_set_factor(float f);
         extern bool widescreen_allowed(void);
         // render scale + placement in the window: runtime/nvn/output_scale.c (Video tab "Internal resolution");
-        // no GPU timer here (-1): dynamic resolution goes by the frame time
+        // GPU time since the last frame (exec.c's GPU timer; -1 without one: dynamic resolution goes by frame times):
+        // the game's submissions and the window image's (LARECOMP_DYNRES_COUNT_PRESENT=0: the game's only, as before)
+        static int count_present = -1;
+        if (count_present < 0) count_present = !getenv("LARECOMP_DYNRES_COUNT_PRESENT") || atoi(getenv("LARECOMP_DYNRES_COUNT_PRESENT"));
+        static uint64_t sp_prev[4], wt_prev[4], cw_prev;
+        static bool sp_have;
+        uint64_t sp[4];
+        double game_ms = -1, win_ms = -1;
+        if (vk_gpu_split_ns(sp)) {
+            uint64_t cw = vk_cum_wait_ns();
+            if (sp_have) {
+                double game = (sp[0] - sp_prev[0]) / 1e6, win = (sp[1] - sp_prev[1]) / 1e6;
+                game_ms = game, win_ms = count_present ? win : -1;
+                double slotw = (g_vk_frame_waits[0] - wt_prev[0]) / 1e6;
+                DynSplit ds = {game, win, (sp[2] - sp_prev[2]) / 1e6, (double)(sp[3] - sp_prev[3]), slotw,
+                               (g_vk_frame_waits[1] - wt_prev[1]) / 1e6, (g_vk_frame_waits[2] - wt_prev[2]) / 1e6,
+                               fmax(0, (cw - cw_prev) / 1e6 - slotw), count_present != 0};
+                output_scale_note_split(&ds);
+            }
+            memcpy(sp_prev, sp, sizeof sp);
+            memcpy(wt_prev, g_vk_frame_waits, sizeof wt_prev);
+            cw_prev = cw;
+            sp_have = true;
+        }
         OutScale os;
-        output_scale(dw, dh, widescreen_allowed(), SDL_GetTicksNS() / 1e9, -1, &os);
+        output_scale(dw, dh, widescreen_allowed(), SDL_GetTicksNS() / 1e9, game_ms, win_ms, &os);
         double sx = os.sx, sy = os.sy, vx = os.vx, vy = os.vy, vw = os.vw, vh = os.vh, shape = os.shape;
+        output_scale_log((unsigned long long)frame, dw, dh, &os);  // (diagnostics: [scale] on a change)
         // interiors / dungeons: their 16:9 centre, or the part inside a room wider than one screen
         extern void widescreen_present_crop(uint64_t, double, float *, double *, double *, double *, double *);
         float crop[4];  // uv origin and size
-        widescreen_present_crop(total_frames, shape, crop, &vx, &vy, &vw, &vh);
+        widescreen_present_crop(frame, shape, crop, &vx, &vy, &vw, &vh);
         photo_mode_compose(crop, dw, dh, &vx, &vy, &vw, &vh);
         widescreen_set_factor((float)shape);
+        extern void renderer_set_alloc_scale(float ax, float ay);
+        renderer_set_alloc_scale((float)os.ax, (float)os.ay);
         renderer_set_scale((float)sx, (float)sy);
         VkCommandBuffer cb = vk_cmd();
         float pv[12] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3], 1, 1, 0, 0};
@@ -618,12 +770,12 @@ void backend_present(NvnTexture *t) {
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
         static long menu_at = -1;
         if (menu_at < 0) menu_at = getenv("LARECOMP_MENU_AT") ? atol(getenv("LARECOMP_MENU_AT")) : 0;
-        if (menu_at && (long)total_frames + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
+        if (menu_at && (long)frame + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
         const char *photo_path = photo_mode_capture_path();
         menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("LARECOMP_WINDOW_SHOT") ? atol(getenv("LARECOMP_WINDOW_SHOT")) : 0;
-        bool shot = win_shot && (long)total_frames + 1 == win_shot;
+        bool shot = win_shot && (long)frame + 1 == win_shot;
         vk_frame_end(photo_path ? photo_path : shot ? (getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/window.png") : NULL);
         if (photo_path) photo_mode_capture_done();
         if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) { fflush(stderr); _exit(0); }
@@ -631,8 +783,70 @@ void backend_present(NvnTexture *t) {
         renderer_submit();
     }
     extern void vk_prof_frame(uint64_t frame, uint64_t present_ns);
-    vk_prof_frame(total_frames, SDL_GetTicksNS() - t0);
+    vk_prof_frame(frame, SDL_GetTicksNS() - t0);
     frames++;
+    static long shot_every = -1;
+    if (shot_every < 0) { const char *e = getenv("LARECOMP_SCREENSHOT_EVERY"); shot_every = e ? atol(e) : 0; }
+    {   // LARECOMP_GPUPROF_AT=<frame>[,<frame>...]: GPU time per pass of those frames ("[gpuprof]" in the log)
+        extern bool g_gpuprof_frame;
+        extern void vk_gpuprof_report(void);
+        if (g_gpuprof_frame) { g_gpuprof_frame = false; vk_gpuprof_report(); }
+        const char *e = getenv("LARECOMP_GPUPROF_AT");
+        for (const char *p = e; p && *p;) {
+            long at = strtol(p, (char **)&p, 10);
+            if (at == (long)frame) { g_gpuprof_frame = true; break; }
+            if (*p == ',') p++; else break;
+        }
+    }
+    if (g_debug_frame) LOG("===== debug frame %llu =====\n", (unsigned long long)frame);
+    {   // LARECOMP_SHOT_AT=<frame>,<frame>,... (ascending): the game image at those frames -> build/frames/frame_N.png
+        static const char *next;
+        static int init;
+        if (!init) { init = 1; next = getenv("LARECOMP_SHOT_AT"); if (next) mkdir("build/frames", 0755); }
+        while (next && *next) {
+            long at = strtol(next, (char **)&next, 10);
+            if ((long)frame < at) { while (next > getenv("LARECOMP_SHOT_AT") && next[-1] != ',') next--; break; }
+            if ((long)frame == at) {
+                char path[256];
+                snprintf(path, sizeof path, "build/frames/frame_%05llu.png", (unsigned long long)frame);
+                renderer_save_texture_tex(b, path);
+            }
+            if (*next == ',') next++;
+        }
+    }
+    static long shot_from = -1;
+    if (shot_from < 0) { const char *e = getenv("LARECOMP_SCREENSHOT_FROM"); shot_from = e ? atol(e) : 0; }
+    if (shot_every && frame % shot_every == 0 && (long)frame >= shot_from) {
+        char path[256];
+        if (shot_from) mkdir("build/frames", 0755);
+        snprintf(path, sizeof path, shot_from ? "build/frames/frame_%05llu.png" : "build/frame_%05llu.png",
+                 (unsigned long long)frame);
+        renderer_save_texture_tex(b, path);
+        // a series (SCREENSHOT_FROM) runs on until LARECOMP_WINDOW_SHOT exits
+        if (getenv("LARECOMP_EXIT_AFTER_SHOT") && !shot_from) { fflush(stderr); _exit(0); }
+    }
+    double now = SDL_GetTicks() / 1000.0;
+    static double fps_iv = -1, prev_present, max_gap;
+    if (fps_iv < 0) fps_iv = getenv("LARECOMP_FPS_INTERVAL") ? atof(getenv("LARECOMP_FPS_INTERVAL")) : 2.0;
+    if (prev_present > 0 && now - prev_present > max_gap) max_gap = now - prev_present;
+    prev_present = now;
+    if (now - last_fps_time >= fps_iv) {
+        extern const char *game_level_name(void);
+        if (last_fps_time > 0)
+            LOG("[vk] t=%.1f frame %llu %.1f fps max %.0fms level %s (%s)\n", now, (unsigned long long)frame,
+                frames / (now - last_fps_time), max_gap * 1000.0, game_level_name(), renderer_stats());
+        max_gap = 0;
+        frames = 0;
+        last_fps_time = now;
+    }
+    static double mem_at = 60.0;  // (memory in steady state: a minute in, then every 10 minutes)
+    if (now >= mem_at) { vk_log_memory("playing"); mem_at = now + 600.0; }
+    photo_mode_presented(frame + 1);
+
+}
+
+// The game thread's side of a present: the frame counters and the per-frame hooks (input, pacing, test hooks).
+static void present_hooks(void) {
     total_frames++;
     g_frame_counter++;
     pace_frame();  // (pace.c: the game's 30 fps mode when frames don't fit 60)
@@ -653,9 +867,6 @@ void backend_present(NvnTexture *t) {
     save_editor_frame(total_frames);
     extern void vk_level_change_check(void);
     vk_level_change_check();
-    static long shot_every = -1;
-    if (shot_every < 0) { const char *e = getenv("LARECOMP_SCREENSHOT_EVERY"); shot_every = e ? atol(e) : 0; }
-    extern bool g_debug_frame;
     static long debug_at = -1;
     if (debug_at < 0) { const char *e = getenv("LARECOMP_DEBUG_FRAME"); debug_at = e ? atol(e) : 0; }
     extern volatile int g_debug_frame_request;
@@ -664,60 +875,17 @@ void backend_present(NvnTexture *t) {
     static long debug_n = -1;
     if (debug_n < 0) { const char *e = getenv("LARECOMP_DEBUG_FRAMES"); debug_n = e && atol(e) > 1 ? atol(e) : 1; }
     g_debug_frame = debug_at && total_frames >= (uint64_t)debug_at && total_frames < (uint64_t)debug_at + (uint64_t)debug_n;
-    {   // LARECOMP_GPUPROF_AT=<frame>[,<frame>...]: GPU time per pass of those frames ("[gpuprof]" in the log)
-        extern bool g_gpuprof_frame;
-        extern void vk_gpuprof_report(void);
-        if (g_gpuprof_frame) { g_gpuprof_frame = false; vk_gpuprof_report(); }
-        const char *e = getenv("LARECOMP_GPUPROF_AT");
-        for (const char *p = e; p && *p;) {
-            long at = strtol(p, (char **)&p, 10);
-            if (at == (long)total_frames) { g_gpuprof_frame = true; break; }
-            if (*p == ',') p++; else break;
-        }
-    }
-    if (g_debug_frame) LOG("===== debug frame %llu =====\n", (unsigned long long)total_frames);
-    {   // LARECOMP_SHOT_AT=<frame>,<frame>,... (ascending): the game image at those frames -> build/frames/frame_N.png
-        static const char *next;
-        static int init;
-        if (!init) { init = 1; next = getenv("LARECOMP_SHOT_AT"); if (next) mkdir("build/frames", 0755); }
-        while (next && *next) {
-            long at = strtol(next, (char **)&next, 10);
-            if ((long)total_frames < at) { while (next > getenv("LARECOMP_SHOT_AT") && next[-1] != ',') next--; break; }
-            if ((long)total_frames == at) {
-                char path[256];
-                snprintf(path, sizeof path, "build/frames/frame_%05llu.png", (unsigned long long)total_frames);
-                renderer_save_texture_tex(b, path);
-            }
-            if (*next == ',') next++;
-        }
-    }
-    static long shot_from = -1;
-    if (shot_from < 0) { const char *e = getenv("LARECOMP_SCREENSHOT_FROM"); shot_from = e ? atol(e) : 0; }
-    if (shot_every && total_frames % shot_every == 0 && (long)total_frames >= shot_from) {
-        char path[256];
-        if (shot_from) mkdir("build/frames", 0755);
-        snprintf(path, sizeof path, shot_from ? "build/frames/frame_%05llu.png" : "build/frame_%05llu.png",
-                 (unsigned long long)total_frames);
-        renderer_save_texture_tex(b, path);
-        // a series (SCREENSHOT_FROM) runs on until LARECOMP_WINDOW_SHOT exits
-        if (getenv("LARECOMP_EXIT_AFTER_SHOT") && !shot_from) { fflush(stderr); _exit(0); }
-    }
-    double now = SDL_GetTicks() / 1000.0;
-    static double fps_iv = -1, prev_present, max_gap;
-    if (fps_iv < 0) fps_iv = getenv("LARECOMP_FPS_INTERVAL") ? atof(getenv("LARECOMP_FPS_INTERVAL")) : 2.0;
-    if (prev_present > 0 && now - prev_present > max_gap) max_gap = now - prev_present;
-    prev_present = now;
-    if (now - last_fps_time >= fps_iv) {
-        extern const char *game_level_name(void);
-        if (last_fps_time > 0)
-            LOG("[vk] t=%.1f frame %llu %.1f fps max %.0fms level %s (%s)\n", now, (unsigned long long)total_frames,
-                frames / (now - last_fps_time), max_gap * 1000.0, game_level_name(), renderer_stats());
-        max_gap = 0;
-        frames = 0;
-        last_fps_time = now;
-    }
-    static double mem_at = 60.0;  // (memory in steady state: a minute in, then every 10 minutes)
-    if (now >= mem_at) { vk_log_memory("playing"); mem_at = now + 600.0; }
+}
+
+void backend_present(NvnTexture *t) {
+    g_last_presented = t;
+    uint64_t frame = total_frames, t0 = plat_now_ns();
+    if (rq_on()) rq_present(t, frame, true);
+    else backend_present_now(t, frame);
+    uint64_t t1 = plat_now_ns();
+    g_present_ns += t1 - t0;  // (LARECOMP_LOG_PACE, pace.c)
+    present_hooks();
+    g_hooks_ns += plat_now_ns() - t1;
 }
 
 // ================================================================== UI thread
@@ -746,8 +914,8 @@ static void quick_exit_handler(void) {
 void ui_window_init(void) {
     if (window) return;
     atexit(quick_exit_handler);
-    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     settings_load();
+    input_apply_background();  // controllers in the background: "Allow background inputs" (Controls tab)
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
     input_load_user_mappings();
     int win_w = 1280, win_h = 720;
@@ -785,6 +953,7 @@ void backend_init(void) {
 // ---- in-place reboot (runtime/main.c teardown; main thread, guest threads stopped)
 void backend_reset(void) {
     if (!g_vk.dev) return;
+    rq_drain();  // (the render thread: everything queued ran; it idles while the game is down)
     vkDeviceWaitIdle(g_vk.dev);
     extern void vk_textures_reset(void);
     extern void vk_exec_reset(void);
@@ -794,6 +963,7 @@ void backend_reset(void) {
 }
 void backend_guest_memory_reset(void) {}  // (exec.c re-imports the heap on first use)
 void backend_clear_window(void) {
+    rq_drain();
     static const float black[4] = {0, 0, 0, 1};
     if (g_vk.dev && vk_frame_begin(black)) vk_frame_end(NULL);
 }
@@ -808,6 +978,7 @@ int ui_run(void) {
             input_rumble_poll();
             if (e.type == SDL_EVENT_QUIT) {
                 input_rumble_stop();
+                input_led_stop();
                 LOG("window closed\n");
                 exit(0);
             }
@@ -818,5 +989,6 @@ int ui_run(void) {
         }
         menu_apply_window_requests(window);
         input_rumble_poll();
+        input_led_poll();
     }
 }

@@ -20,12 +20,14 @@ extern "C" {
 int game_in_play(void);
 void input_reset(void);
 uint64_t renderer_present_count(void);
+uint64_t renderer_exec_frame(void);
 bool renderer_origin_lower_left(void);
 }
 static PhotoState state;
 static std::atomic<unsigned> requests;
 static std::atomic<bool> active;
 static std::atomic<bool> framing;
+static std::atomic<bool> held; // the game thread only reads the published hold state
 enum { TOGGLE = 1, EXIT = 2, CAPTURE = 4, CONTROLS = 8, FRAME_CANCEL = 16, FRAME_TAKE = 32 };
 static bool controls = true, capture_pending, capture_drawing, focus;
 static std::string capture_path, saved_path, message;
@@ -61,6 +63,9 @@ extern "C" bool photo_mode_pad_button(int host, bool down) {
 }
 extern "C" void photo_mode_frame(uint64_t frame) {
     unsigned r = requests.exchange(0);
+    // Test hooks count actual presentations, including repeats while the game frame is held.
+    static uint64_t presentations;
+    uint64_t presentation = ++presentations;
     if (reveal_process && plat_proc_wait(reveal_process, false) >= 0) reveal_process = 0;
     static const uint64_t test_at = [] { const char *p = getenv("LARECOMP_PHOTO_AT"); return p ? strtoull(p, NULL, 10) : UINT64_MAX; }();
     static const uint64_t test_exit = [] { const char *p = getenv("LARECOMP_PHOTO_EXIT_AT"); return p ? strtoull(p, NULL, 10) : UINT64_MAX; }();
@@ -73,11 +78,11 @@ extern "C" void photo_mode_frame(uint64_t frame) {
         }
         return shots;
     }();
-    if (frame + 1 == test_at) r |= TOGGLE;
-    for (auto at : test_shots) if (frame + 1 == at) r |= CAPTURE;
-    if (frame + 1 == test_exit) r |= EXIT;
+    if (presentation == test_at) r |= TOGGLE;
+    for (auto at : test_shots) if (presentation == at) r |= CAPTURE;
+    if (presentation == test_exit) r |= EXIT;
     if ((r & EXIT) || ((r & TOGGLE) && state.active)) {
-        photo_state_reset(&state); active = framing = false; capture_pending = false; capture_drawing = false;
+        photo_state_reset(&state); active = framing = held = false; capture_pending = false; capture_drawing = false;
         capture_path.clear(); input_reset();
         fprintf(stderr, "[photo] resumed at frame %llu\n", (unsigned long long)frame);
         return;
@@ -102,12 +107,13 @@ extern "C" void photo_mode_frame(uint64_t frame) {
 extern "C" void photo_mode_presented(uint64_t frame) {
     bool before = state.frozen;
     photo_state_presented(&state, frame);
+    held = state.active && state.frozen;
     if (!before && state.frozen) {
         fprintf(stderr, "[photo] frozen at frame %llu\n", (unsigned long long)frame);
         if (state.hide_hud && state.clean_frame != frame - 1) message = "Interface hiding is unavailable in this scene.";
     }
 }
-extern "C" bool photo_mode_hold(void) { return state.active && state.frozen; }
+extern "C" bool photo_mode_hold(void) { return held.load(); }
 extern "C" bool photo_mode_skip_draw(uint64_t frame, bool screen_target, bool composite) {
     return photo_state_skip_draw(&state, frame, screen_target, composite);
 }
@@ -280,7 +286,7 @@ extern "C" void photo_mode_draw(float scale) {
         ImGui::SliderFloat("Exposure", &state.exposure, -2, 2, "%+.1f EV");
         ImGui::SliderFloat("Saturation", &state.saturation, 0, 2, "%.2f");
         ImGui::PopItemWidth();
-        if (ImGui::Checkbox("Hide game interface", &state.hide_hud)) photo_state_refresh(&state, renderer_present_count());
+        if (ImGui::Checkbox("Hide game interface", &state.hide_hud)) photo_state_refresh(&state, renderer_exec_frame());
         if (ImGui::Button("Reset framing and color")) {
             state.zoom = state.saturation = 1; state.pan_x = state.pan_y = state.exposure = 0;
         }

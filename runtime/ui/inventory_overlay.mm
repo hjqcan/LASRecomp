@@ -27,7 +27,9 @@ int pets_menu_options(int out[6]);
 int pets_current(void);
 int pets_menu_slot(void);      // highlighted choice while the cursor is on the companion slot, else -1
 const char *souls_at(int i, int *kind, bool *owned);
+bool triforce_counts(int *have, int *needed);  // runtime/hle/triforce.c: false = no Triforce hunt
 }
+bool triforce_icon_draw(ImDrawList *dl, ImVec2 c, float size, ImU32 tint);  // triforce_icons.mm
 #include "../input_bind.h"
 
 #define DUNGEON_RECORDS (GA_LIVE_SAVE + 0xE0)  // live save: 0x10-byte records (+0 keys, +1 item bits)
@@ -133,40 +135,60 @@ static bool trade_shown(void) {
 
 extern "C" int rt_tunic_upgrades(void);  // runtime/hle/qol.c
 extern "C" bool inventory_overlay_wanted(void) {
-    return (trade_shown() || pets_ghost_state() >= 0 || companion_card() || rt_tunic_upgrades()) &&
+    int have, need;
+    return (trade_shown() || pets_ghost_state() >= 0 || companion_card() || rt_tunic_upgrades() || triforce_counts(&have, &need)) &&
            rando_seed_dir() && items_page_shown();
 }
 
 // ---- pets. Drawn glyphs (no game art): the Ghost, and a face per companion for the card.
 static ImU32 mul_alpha(ImU32 c, float a) { return (c & 0x00ffffff) | (ImU32)(((c >> 24) & 0xff) * a) << 24; }
 
-// The Ghost: a round head over a body with a scalloped hem and a tail; closed happy eyes, a blush
-static void ghost_icon(ImDrawList *dl, ImVec2 c, float s) {
-    ImU32 body = IM_COL32(236, 238, 255, 255), shade = IM_COL32(176, 182, 226, 255), line = IM_COL32(70, 70, 120, 255);
-    dl->AddCircleFilled(ImVec2(c.x + s * 0.04f, c.y + s * 0.08f), s * 0.42f, IM_COL32(0, 0, 0, 60), 32);  // shadow
-    float hr = s * 0.36f, hy = c.y - s * 0.08f, hem = c.y + s * 0.30f;
-    dl->AddCircleFilled(ImVec2(c.x, hy), hr, body, 32);
-    dl->AddRectFilled(ImVec2(c.x - hr, hy), ImVec2(c.x + hr, hem), body);
-    for (int k = 0; k < 3; k++)  // hem scallops
-        dl->AddCircleFilled(ImVec2(c.x - hr + hr / 3 + k * hr * 2 / 3, hem), hr / 3, body, 16);
-    dl->AddTriangleFilled(ImVec2(c.x - hr, hy + s * 0.18f), ImVec2(c.x - hr + s * 0.14f, hem + s * 0.06f),
-                          ImVec2(c.x - hr - s * 0.16f, hem + s * 0.14f), body);  // tail
-    dl->AddCircleFilled(ImVec2(c.x + s * 0.16f, c.y + s * 0.14f), s * 0.14f, mul_alpha(shade, 0.45f), 20);
-    // outline: head arc, sides, scallops, tail
-    float t = s * 0.045f;
-    dl->PathArcTo(ImVec2(c.x, hy), hr, 3.14159f, 6.28318f, 24);
-    dl->PathLineTo(ImVec2(c.x + hr, hem));
-    for (int k = 2; k >= 0; k--) dl->PathArcTo(ImVec2(c.x - hr + hr / 3 + k * hr * 2 / 3, hem), hr / 3, 0.0f, 3.14159f, 10);
-    dl->PathLineTo(ImVec2(c.x - hr - s * 0.16f, hem + s * 0.14f));
-    dl->PathLineTo(ImVec2(c.x - hr, hy + s * 0.18f));
-    dl->PathStroke(line, ImDrawFlags_Closed, t);
-    for (int e = -1; e <= 1; e += 2) {
-        ImVec2 ec(c.x + e * s * 0.13f, c.y - s * 0.08f);
-        dl->AddBezierQuadratic(ImVec2(ec.x - s * 0.06f, ec.y + s * 0.02f), ImVec2(ec.x, ec.y - s * 0.07f),
-                               ImVec2(ec.x + s * 0.06f, ec.y + s * 0.02f), line, t, 10);
-        dl->AddCircleFilled(ImVec2(ec.x + e * s * 0.04f, ec.y + s * 0.09f), s * 0.045f, IM_COL32(255, 150, 170, 200), 12);
+// A disc with a soft edge (a circle blurred by `blur`, the gaussian's sigma): rings from the outside in, each band's
+// coverage following the gaussian's falloff up to `a`
+static void soft_circle(ImDrawList *dl, ImVec2 c, float r, ImU32 col, float a, float blur) {
+    static const float off[6] = {1.5f, 0.9f, 0.3f, -0.3f, -0.9f, -1.5f}, cdf[6] = {0.115f, 0.274f, 0.5f, 0.726f, 0.885f, 1.0f};
+    float prev = 0;
+    for (int i = 0; i < 6; i++) {
+        float cov = a * cdf[i], step = 1.0f - (1.0f - cov) / (1.0f - prev);
+        dl->AddCircleFilled(c, r + blur * off[i], mul_alpha(col, step), 32);
+        prev = cov;
     }
-    dl->AddCircleFilled(ImVec2(c.x, c.y + s * 0.05f), s * 0.035f, line, 10);  // little "o" mouth
+}
+
+// The Ghost as he looks in LAS: a round pink blob with two ears on top and two little arm nubs, outlined; hollow
+// slanted eyes (inner ends raised) and a wide-open wailing mouth
+static void ghost_icon(ImDrawList *dl, ImVec2 c, float s) {
+    ImU32 fill = IM_COL32(246, 190, 230, 255), shade = IM_COL32(222, 146, 202, 255), hi = IM_COL32(255, 236, 250, 255),
+          line = IM_COL32(128, 52, 116, 255), hole = IM_COL32(78, 26, 70, 255);
+    float r = s * 0.34f, t = s * 0.045f;
+    dl->AddCircleFilled(ImVec2(c.x + s * 0.04f, c.y + s * 0.09f), s * 0.44f, IM_COL32(0, 0, 0, 45), 32);  // shadow
+    // knobs: (degrees from straight up, distance from the centre, radius) - ears, then arm nubs
+    static const float kn[4][3] = {{-38, 0.33f, 0.10f}, {38, 0.33f, 0.10f}, {-104, 0.35f, 0.085f}, {100, 0.35f, 0.085f}};
+    ImVec2 kp[4];
+    for (int i = 0; i < 4; i++) {
+        float a = (kn[i][0] - 90) * 3.14159265f / 180;
+        kp[i] = ImVec2(c.x + cosf(a) * kn[i][1] * s, c.y + sinf(a) * kn[i][1] * s);
+    }
+    dl->AddCircleFilled(c, r + t, line, 40);  // outline: everything a bit bigger in the line colour first
+    for (int i = 0; i < 4; i++) dl->AddCircleFilled(kp[i], kn[i][2] * s + t, line, 20);
+    for (int i = 0; i < 4; i++) dl->AddCircleFilled(kp[i], kn[i][2] * s, fill, 20);
+    dl->AddCircleFilled(c, r, fill, 40);
+    soft_circle(dl, ImVec2(c.x + r * 0.30f, c.y + r * 0.34f), r * 0.70f, shade, 120 / 255.0f, s * 0.05f);  // lower right
+    soft_circle(dl, ImVec2(c.x - r * 0.14f, c.y - r * 0.16f), r * 0.80f, fill, 230 / 255.0f, s * 0.06f);  // face side
+    dl->AddEllipseFilled(ImVec2(c.x - r * 0.52f, c.y - r * 0.58f), ImVec2(r * 0.16f, r * 0.09f), hi, -0.6981f, 16);
+    // eyes: beans lying slanted (outer ends low), a bit fuller at the outer end
+    for (int e = -1; e <= 1; e += 2) {
+        ImVec2 ec(c.x + e * s * 0.122f, c.y - s * 0.06f);
+        dl->AddEllipseFilled(ec, ImVec2(s * 0.088f, s * 0.055f), hole, e * 0.6981f, 20);
+        dl->AddCircleFilled(ImVec2(ec.x + e * s * 0.035f, ec.y + s * 0.03f), s * 0.05f, hole, 16);
+    }
+    // mouth: open and drooping - the top edge arches up, the corners hang down
+    float w = 0.15f, h = 0.19f, mx = c.x + s * 0.005f, my = c.y + s * 0.15f;
+    ImVec2 l(mx - s * w, my + s * h * 0.45f), rr(mx + s * w, my + s * h * 0.38f);
+    dl->PathLineTo(l);
+    dl->PathBezierQuadraticCurveTo(ImVec2(mx - s * w * 0.1f, my - s * h * 1.15f), rr, 16);
+    dl->PathBezierQuadraticCurveTo(ImVec2(mx, my + s * h * 0.55f), l, 16);
+    dl->PathFillConvex(hole);
 }
 
 // "Turned in": a green tick with a dark outline over the slot's lower right
@@ -339,6 +361,30 @@ static void tunics_draw(ImDrawList *dl, ImFont *font, float ox, float oy, float 
     }
 }
 
+// Triforce hunt: pieces found / needed, under the souls' column (the right of the item grid)
+static void triforce_box(ImDrawList *dl, ImFont *font, float ox, float oy, float u) {
+    int have, need;
+    if (!triforce_counts(&have, &need)) return;
+    ImVec2 a(ox + 1138 * u, oy + 506 * u), b(ox + 1246 * u, oy + 600 * u);
+    float cx = (a.x + b.x) * 0.5f;
+    dl->AddRectFilled(a, b, IM_COL32(52, 38, 20, 215), 12 * u);
+    dl->AddRect(a, b, IM_COL32(214, 176, 92, 230), 12 * u, 0, 2 * u);
+    bool done = have >= need;
+    ImU32 tint = have ? IM_COL32(255, 255, 255, 255) : IM_COL32(150, 150, 150, 170);
+    if (!triforce_icon_draw(dl, ImVec2(cx, a.y + 34 * u), 54 * u, tint)) {  // (no game file: drawn triangles)
+        ImU32 g = IM_COL32(240, 200, 70, 255);
+        float s = 27 * u, x = cx, y = a.y + 9 * u;
+        dl->AddTriangleFilled(ImVec2(x, y), ImVec2(x + s * 0.5f, y + s * 0.87f), ImVec2(x - s * 0.5f, y + s * 0.87f), g);
+        dl->AddTriangleFilled(ImVec2(x - s * 0.5f, y + s * 0.87f), ImVec2(x, y + s * 1.73f), ImVec2(x - s, y + s * 1.73f), g);
+        dl->AddTriangleFilled(ImVec2(x + s * 0.5f, y + s * 0.87f), ImVec2(x + s, y + s * 1.73f), ImVec2(x, y + s * 1.73f), g);
+    }
+    char t[16];
+    snprintf(t, sizeof t, "%d / %d", have, need);
+    float fs = 22 * u;
+    ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
+    dl->AddText(font, fs, ImVec2(cx - ts.x * 0.5f, b.y - ts.y - 8 * u), done ? IM_COL32(250, 220, 90, 255) : IM_COL32(255, 245, 225, 255), t);
+}
+
 struct Dungeon { const char *label; int index; };
 // record = 2 x (dungeon number - 1); the Color Dungeon is record 18 (verified from the in-dungeon key HUD)
 static const Dungeon kDungeons[] = {{"D1", 0}, {"D2", 2}, {"D3", 4}, {"D4", 6}, {"D5", 8},
@@ -427,6 +473,7 @@ extern "C" void inventory_overlay_draw(ImVec2 display, ImFont *font) {
     ImDrawList *dl = ImGui::GetForegroundDrawList();
     pets_draw(dl, font, ox, oy, u);
     if (rt_tunic_upgrades()) tunics_draw(dl, font, ox, oy, u);
+    triforce_box(dl, font, ox, oy, u);
     bool keys = keys_shown();
     if (!keys && !trade_shown()) return;
     float trade_y = p0.y + 84 * u;  // (the trade row: under the keys, or alone in a short panel at the same place)

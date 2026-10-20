@@ -113,12 +113,19 @@ def build(seed_dir, romfs):
 
     region_cells = {}
     pos = {}
+    shell_rooms = {}
+    sp = os.path.join(seed_dir, 'shell_spots.tsv')
+    if os.path.exists(sp):
+        shell_rooms = {c[0]: (c[3], c[4]) for c in (ln.rstrip('\n').split('\t') for ln in open(sp))
+                       if len(c) > 4 and not c[0].startswith('#')}
     absent = set(settings.get('absent-locations', ()))  # (rooms the dungeon shuffle left out: not in the game)
     for name, v in logic.items():
         if v.get('type') != 'item' or name.startswith('starting-') or name in absent:
             continue
         lr = loc_rooms.get(name, {})
         room, level = lr.get('room'), lr.get('level')
+        if not room and name in shell_rooms:  # (Secret Seashell spots: their room, tools/rando/seashell_spots.py)
+            level, room = shell_rooms[name]
         g = -1
         cell = None
         if name.startswith('pot-') or re.match(r'D\d-pot-', name) or name.startswith('bush-'):

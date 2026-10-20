@@ -40,6 +40,7 @@ static void wait_account(uint64_t elapsed) { assert(elapsed); accounts++; wait_w
 static void cq_resolve_done(uint64_t seq) { resolved=seq; }
 void vk_device_fault_report(void) { faults++; }
 void vk_devlost_dump(void) { dumps++; }
+void rq_watch(const char *what, uint64_t arg) { (void)what; (void)arg; }  // (the render thread's hang dump view)
 static VkResult vkGetSemaphoreCounterValue(int device, int semaphore, uint64_t *value) {
     assert(device==1 && semaphore==2); calls++;
     *value=result==VK_SUCCESS ? 42 : 999; // output is unusable after an API error

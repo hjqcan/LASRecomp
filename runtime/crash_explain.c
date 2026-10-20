@@ -66,6 +66,11 @@ void rt_crash_explain(char *out, size_t n, const char *log_path) {
         snprintf(what, sizeof what, "LAS Recomp found %d of the game's %d files, and the game stopped when it needed "
                  "one that's missing. Copy your game files again so none are missing, then set them up again on the "
                  "start screen (Game Files).", rt_romfs_files, (int)ROMFS_FILES);
+    } else if (has("doesn't fit its language")) {
+        snprintf(head, sizeof head, "Your game files' text has been changed");
+        snprintf(what, sizeof what, "The game's text for this language comes from another language (a translation "
+                 "patch), and the game stopped at a question it can't show that way. Set up unmodified game files on "
+                 "the start screen (Game Files). To play in another language, pick it in Settings (Language).");
     } else if (has("built for another version")) {
         snprintf(head, sizeof head, "The game code is from another version of LAS Recomp");
         snprintf(what, sizeof what, "Start LAS Recomp again: the start screen rebuilds the game code for this version "
@@ -74,7 +79,8 @@ void rt_crash_explain(char *out, size_t n, const char *log_path) {
         snprintf(head, sizeof head, "No font for the game's text");
         snprintf(what, sizeof what, "Import the Switch fonts in Settings (Game font), or reinstall LAS Recomp - it "
                  "comes with a font of its own.");
-    } else if (has("get_terminate")) {  // (an uncaught C++ exception in the game: recompiled code can't unwind)
+    } else if (has("get_terminate") || has("uncaught C++ exception")) {  // (the game threw: recompiled code can't
+                                                                         // unwind; runtime/hle/warp.c rt_cxa_throw)
         snprintf(head, sizeof head, "The game ran into an error it couldn't recover from");
         snprintf(what, sizeof what, "This is a bug in LAS Recomp, not a problem with your game files or PC. %s", report);
     } else if (in_gpu_driver(g_pc)) {

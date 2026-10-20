@@ -482,6 +482,7 @@ CHEST_SIZES = {
     'important-health': 1.2,
     'trade': 1.2,
     'seashell': 1.2,
+    'triforce': 1.2,  # (LAS Recomp Triforce hunt: tools/rando/triforce.py)
     'good': 0.8,
     'junk': 0.8,
     # 'D1': 1.0,

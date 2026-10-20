@@ -26,6 +26,12 @@ static int max_hp(void) {  // quarter-hearts, as GetMaxHealth() computes it
     return 12 + 4 * (__builtin_popcount(F<uint16_t>(CONTAINERS) & 0x1FF) + __builtin_popcountll(F<uint64_t>(PIECES)) / 4);
 }
 
+// Link's health and its maximum, in quarter-hearts (controller light: runtime/hle/input.c). Only while game_in_play().
+extern "C" int cheats_link_health(int *max) {
+    *max = max_hp();
+    return F<int16_t>(HP);
+}
+
 static void fill_ammo(uint32_t count_off, int item_bit, int up_bit, int base_cap) {
     if (!((F<uint32_t>(ITEMS) >> item_bit) & 1)) return;  // only bags Link owns
     int cap = ((F<uint8_t>(UPGRADES) >> up_bit) & 1) ? base_cap * 2 : base_cap;

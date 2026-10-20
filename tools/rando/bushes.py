@@ -3,7 +3,8 @@
 shrubs, model parts GrassBase / GrassTop; 381 on the Field) hides an item, like the pots (pots.py does the writing: a
 scaled-down SinkingSword item actor inside the bush, cutting it reveals the item). Tall grass (ObjLawn 0xb5, 916 on
 the Field - the names are misleading; checked by tinting each kind gold in game 2026-10-09) is NOT randomized, nor
-are the 73 bushes over a hole / staircase (scan(): the item fell in) - 308 checks.
+are the 73 bushes over a hole / staircase (scan(): the item fell in) - 308 checks. The 5 bushes hiding a Secret
+Seashell are their seashell spot's check (seashell_spots.absorb), whatever the Shellsanity setting.
 Unchecked bushes are drawn gold (runtime/hle/pot_glow.c reads bushes.tsv; bushes are drawn instanced, the renderer
 splits those draws).
 
@@ -12,8 +13,8 @@ extends the flag bitfield (runtime/hle/flags_ext.c, turned on by the seed's `fla
 
 Logic: LAS's break-bush (sword | powders | bracelet | bombs | rod | boomerang) AND the logic regions of the bush's
 screen. A screen's regions come from the LAS locations on it (location_rooms.json) and the house / cave doors on it
-(entrance_data.yml); a screen with neither takes the regions of the nearest screens that have some - all of them
-must be reachable (conservative: a bush never counts as reachable before the player can get there). A bush in a
+(entrance_data.yml); a screen with neither takes the regions of the nearest screens that have some (or SCREENS, by
+hand) - all of them must be reachable (conservative: a bush never counts as reachable before the player can get there). A bush in a
 pocket of its screen (POCKETS: behind pits / a rock / a crystal) also needs what that pocket's LAS check needs.
 """
 import glob
@@ -23,6 +24,7 @@ import re
 import struct
 
 import pots
+import seashell_spots
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -81,7 +83,9 @@ def scan(romfs, leb, pits=False, open_mabe=False):
                 any(abs(x - a.posX) < 0.1 and abs(z - a.posZ) < 0.1 for x, z in tips)
             gone = open_mabe and a.key in OPEN_MABE_REMOVED
             if len(out) < limit and (not only or room_name in only.split(',')) and (pits or not pit) and not gone:
-                out.append({'level': 'Field', 'room': room_name, 'key': a.key, 'n': n, 'tile': _tile(room_name, a)})
+                # (shell: the Secret Seashell spot it hides - add_to_logic makes the spot this bush's check)
+                out.append({'level': 'Field', 'room': room_name, 'key': a.key, 'n': n, 'tile': _tile(room_name, a),
+                            'shell': seashell_spots.shell_index(a)})
             n += 1
     return out
 
@@ -116,7 +120,43 @@ POCKETS = {
     # taltal-ledge-chest: the walled courtyard from the cave door (tile 1) down the corridor (col 3) to the chest
     'Field_02N': ('bombs', _cols([0], [1]) | _cols(range(1, 4), range(1, 4)) | _cols([4, 5], [3]) | _cols([6], [3, 4])
                   | _cols([7], range(3, 6))),
+    # Pothole Field (LAS pothole: golden-leaf:5, through Richard's villa; issue #144): its south end shares the villa's
+    # screen (the villa door is plains, so the screen's region was plains) and the screen east of it - the bush field
+    # north of the villa roof / the wall on 14H. The villa's front yard, the west and east paths stay plains.
+    'Field_14G': ('pothole', _cols(range(0, 3), range(3, 10)) | _cols([3], range(6, 10))),
+    'Field_14H': ('pothole', _cols(range(0, 5), range(0, 7))),
+    # More screens shared by two regions (field_reach.py, issue #144): the part named here is walled off from the
+    # region the screen got and only opens on the one given
+    'Field_03E': ('wasteland', frozenset({49, 58, 59, 68, 69, 79})),          # Tabahl Wasteland's west rim
+    'Field_04E': ('wasteland', frozenset({39, 47, 48, 49, 55, 56, 57, 58, 64, 65, 74, 75})),
+    'Field_05E': ('wasteland', frozenset({3, 5, 13, 14, 15})),
+    # (past the pits / rocks on the woods' east side, below Tracy's: LAS wasteland = woods & feather | bracelet ...)
+    'Field_06F': ('wasteland', _cols(range(3, 8), range(10))),
+    'Field_07F': ('wasteland', frozenset({7, 8, 16, 17, 18, 26, 27, 37, 57, 58, 59, 67, 68, 69, 77, 78})),
+    'Field_07K': ('bridge', frozenset({28, 29, 38, 39, 48})),                 # across the bridge
+    'Field_07L': ('bridge', _cols(range(8), range(10))),
+    'Field_12K': ('animal-village', _cols(range(5, 8), range(6, 10))),       # the path down to Animal Village
+    'Field_02D': ('taltal-west-2', frozenset({4, 10, 11, 12, 13, 23})),       # the Turtle Rock plateau's south rim
+    'Field_03B': ('taltal-west-2', frozenset({4})),                           # (its foot, above Write's house)
+    'Field_03N': ('taltal-east-2 | taltal-river', _cols([0], [0, 1, 7, 8, 9])),  # the ledges above the cliff
+    'Field_03P': ('taltal-east-2', _cols([0], range(3, 8))),
+    'Field_04B': ('mr-write-house', _cols(range(0, 3), range(1, 9))),         # Write's house side of the swamp pits
+    'Field_09P': ('armos-maze', _cols(range(3, 8), [6, 7])),                  # the Armos maze, north end
+    'Field_10P': ('armos-maze', _cols(range(0, 8), range(10), skip=(0, 1, 11, 20, 21))),
+    'Field_12N': ('armos-maze', _cols(range(0, 5), range(10))),               # (the desert is below the cliff)
+    'Field_12P': ('armos-maze', _cols(range(0, 5), range(10))),
+    'Field_12E': ('sign-maze', frozenset({38, 39, 48, 57, 58, 59, 67, 68, 69, 74, 75, 76, 77})),  # the sign maze
+    'Field_13F': ('sign-maze', _cols(range(1, 8), range(10), skip=(16, 17, 18, 19, 26, 27, 28, 29, 37, 38, 39))),
+    'Field_15F': ('ghost-house', frozenset({39, 49})),                        # the ghost's house garden
+    'Field_15G': ('ghost-house', _cols(range(2, 8), range(10), skip=(26, 27, 28, 29, 38))),
 }
+
+
+# Screens with no LAS location or door to name their region, where the nearest screens' would be wrong. Yarna
+# Desert's west column (Lanmola's pit, the sand down to the beach): east of the sleeping Walrus (Field_16N), so LAS
+# desert (Marin-gated with open-desert off) - the nearest screens are Animal Village's, which would leave a bush /
+# dig there open without Marin.
+SCREENS = {f'Field_{row}O': ('desert',) for row in (13, 14, 15, 16)}
 
 
 def pocket_condition(room, tile):
@@ -151,6 +191,7 @@ def screen_regions():
                 elif dist == best:
                     regs |= s
             out[room] = regs
+    out.update((room, set(regs)) for room, regs in SCREENS.items())  # (after: the other screens keep their nearest)
     return out
 
 
@@ -159,25 +200,30 @@ def location_name(b):
 
 
 def add_to_logic(bushes, logic_defs, item_defs, traps='none', rng=None):
-    """A location per bush in LAS's logic + matching filler in the pool. Returns {location: bush}."""
+    """A location per bush in LAS's logic + matching filler in the pool. Returns {location: bush}. A bush hiding a
+    Secret Seashell is that spot's check (seashell_spots.absorb: the spot's LAS location goes, its seashell fills
+    this check - no filler for it)."""
     regions = screen_regions()
     spoiler_of = {}
     for k, v in logic_defs.items():
         if v.get('type') == 'item' and v.get('region') and v.get('spoiler-region'):
             spoiler_of.setdefault(v['region'], v['spoiler-region'])
-    locs = {}
+    locs, absorbed = {}, 0
     for b in bushes:
         regs = sorted(r for r in regions.get(b['room'], ()) if r in logic_defs)
         if not regs:
             continue
         name = location_name(b)
         cond = pots._and(*regs[1:], pocket_condition(b['room'], b.get('tile')), 'break-bush')
-        logic_defs[name] = {'type': 'item', 'subtype': 'standing', 'content': 'rupee-5', 'region': regs[0],
-                            'spoiler-region': spoiler_of.get(regs[0], 'mabe-village'), 'condition-basic': cond}
+        loc = {'type': 'item', 'subtype': 'standing', 'content': 'rupee-5', 'region': regs[0],
+               'spoiler-region': spoiler_of.get(regs[0], 'mabe-village'), 'condition-basic': cond}
+        if b.get('shell') is not None and seashell_spots.absorb(logic_defs, b['shell'], loc):
+            absorbed += 1
+        logic_defs[name] = loc
         locs[name] = b
     for k, d in pots.FILLER_DEFS.items():
         item_defs.setdefault(k, dict(d, type='junk', quantity=0, **{'chest-type': 'junk'}))
-    n = len(locs)
+    n = len(locs) - absorbed
     trap_kinds = [k for k in item_defs if k.endswith('-trap') and not k.startswith('zol')]
     n_traps = int(round(n * BUSH_TRAPS.get(traps, 0.0))) if trap_kinds else 0
     if n_traps:

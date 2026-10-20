@@ -1,5 +1,5 @@
-// Gameplay tab (was Difficulty): damage taken multiplier / one-hit KO (applied where the game computes Link's damage, see
-// tools/patches.py DAMAGE_*_SITES); rt_hero_mode() reads the game's own Hero Mode flag (PlayerStatus+0x120 = save
+// Gameplay tab (was Difficulty): walk speed (runtime/hle/qol.c rt_walk_speed), damage taken multiplier / one-hit KO
+// (applied where the game computes Link's damage, see tools/patches.py DAMAGE_*_SITES); rt_hero_mode() reads the game's own Hero Mode flag (PlayerStatus+0x120 = save
 // 0x55E0). Settings persist in larecomp.ini (g_settings.diff_*).
 #include "../game_addresses.h"
 #include <math.h>
@@ -52,6 +52,17 @@ extern "C" void difficulty_frame(void) {}
 extern "C" void difficulty_draw(float scale) {
     opt_begin("##gameplay", scale);
     opt_section("General");
+    {
+        // what the game is told the console's language is: its text follows this (runtime/settings.c)
+        char autol[64];
+        snprintf(autol, sizeof autol, "Auto (%s)", settings_language_name());
+        const char *names[N_LANGUAGES];
+        names[0] = autol;
+        for (int i = 1; i < N_LANGUAGES; i++) names[i] = g_language_names[i];
+        if (opt_choice("Language", &g_settings.language, names, N_LANGUAGES, LANG_AUTO,
+                       "The game's text language, as its own system setting. Applies when the game restarts."))
+            settings_save();
+    }
     if (rt_hookshot_seed_forced()) {  // (the seed's logic counts on it: always on, the toggle greyed out)
         bool on = true;
         opt_disable_next();
@@ -73,6 +84,22 @@ extern "C" void difficulty_draw(float scale) {
     if (opt_toggle("Mirror mode", &g_settings.mirror_mode, false,
                    "Mirrors the game world."))
         settings_save();
+    {
+        static const char *const names[] = {"Normal", "Brisk", "Running", "Sprinting", "Zoomies"};
+        static const float mult[] = {1, 1.25f, 1.5f, 1.75f, 2.5f};
+        int wi = 0;  // (the closest step to the setting)
+        for (int i = 0; i < 5; i++)
+            if (fabsf(mult[i] - g_settings.walk_speed) < fabsf(mult[wi] - g_settings.walk_speed)) wi = i;
+        if (opt_choice("Walk speed", &wi, names, 5, 0, "How fast Link walks. The Pegasus Boots and swimming are unchanged.")) {
+            g_settings.walk_speed = mult[wi];
+            settings_save();
+        }
+        opt_indent(1);
+        if (wi == 0) opt_disable_next();
+        if (opt_toggle("Indoors", &g_settings.walk_speed_dungeons, false, "Also in houses, caves and dungeons. Off: normal speed there."))
+            settings_save();
+        opt_indent(-1);
+    }
     opt_section("Difficulty");
     static const char *const names[] = {"Half", "Default", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
     static const float mult[] = {0.5f, 1, 2, 3, 4, 5, 6, 7, 8};

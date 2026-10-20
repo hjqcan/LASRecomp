@@ -40,6 +40,33 @@ int rt_snap_dir(Cpu *c) {
     return 1;
 }
 
+// Walk speed (Gameplay tab, setting walk_speed): tools/patches.py WALK_SPEED_SITES hand over the multiplier Link's walk
+// / shield-walk state applies to its ramped speed (1, or 1.15 with a Piece of Power; s0) with the player actor.
+float rt_walk_speed(uint64_t player, float m, int site) {
+    static float env = -1;  // LARECOMP_WALK_SPEED=<mult>: test override; LARECOMP_LOG_WALK: log some calls
+    static int logn = -1;
+    static long mask = -1;  // LARECOMP_WALK_SITES=<bitmask>: (test) which sites scale (bits 30 / 31: animations)
+    if (env < 0) {
+        const char *e = getenv("LARECOMP_WALK_SPEED");
+        env = e ? (float)atof(e) : 0;
+        logn = ENV("LARECOMP_LOG_WALK") ? 0 : -1;
+        e = getenv("LARECOMP_WALK_SITES");
+        mask = e ? strtol(e, NULL, 0) : -1;
+    }
+    float k = env > 0 ? env : g_settings.walk_speed;
+    if (!(k > 0.5f && k <= 4)) k = 1;
+    if (k != 1 && !g_settings.walk_speed_dungeons) {  // (off indoors: every level but the overworld, "Field")
+        uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+        if (ps && strcmp((const char *)(uintptr_t)ps, "Field")) k = 1;
+    }
+    if (!(mask >> (site >= 100 ? 30 + site - 100 : site) & 1)) k = 1;
+    if (logn >= 0) {
+        static int cnt[102];
+        if (cnt[site]++ % 30 == 0) LOG("[qol] walk site %d #%d: %.2f x %.2f\n", site, cnt[site], m, k);
+    }
+    return m * k;
+}
+
 // No Guardian Acorns / Pieces of Power (randomizer option no-buff-drops). Enemy kills count up two bytes of PlayerStatus
 // (+0xa4, +0xa5, saturating at 255; shared death code main+0x7c6950). The drop roll main+0x89b960 takes the dropper's
 // ItemDrop row; a row with mAllowBuffReplace (+0x38: NormalLow / NormalMid / RupeeMid...) first checks the

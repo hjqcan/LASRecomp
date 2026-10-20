@@ -18,18 +18,27 @@ rando/<seed>/digs.tsv: screen, tile, ground height, item name, then for a check 
 seashell (1/0), scale and turn (degrees) ('-' on a tile that isn't a check), and what stands on the tile (grass / bush:
 the runtime keeps it from growing back once the tile is dug, so the hole stays).
 
+A buried Secret Seashell's tile (13 on the Field) is that seashell spot's check here (seashell_spots.absorb: the
+spot's LAS location goes, its conditions ANDed in; the game's buried shell is taken out of the room) - proven
+diggable by the game itself, whatever dig_tiles.txt or what stands on it says.
+
 Logic: the shovel AND the logic regions of the tile's screen (the same screen regions as bushsanity: bushes.py, with
 its POCKETS).
 Filler: what digging turns up in the original game - rupees and hearts mostly, a few refills.
 """
+import copy
 import glob
 import os
 
 import bushes
 import pots
+import seashell_spots
 import spoiler_view
 
 FLAG_BASE = 4096  # runtime/hle/digs.c DIG_FLAG_BASE: flag of tile g = FLAG_BASE + g
+GOT_FLAG_BASE = FLAG_BASE + 256 * 80  # (digs.c GOT_FLAG_BASE: its item picked up - the tracker's found flag)
+SHELL_KEY_TAG = 0x7E  # actor keys of the buried shells added (Secret Seashells placed on dig tiles)
+SHELLS = []  # [(location, seashell index, found flag)] of those (seashell_spots.apply: the runtime sets the flag)
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Tiles proven diggable in game (the dig test, LARECOMP_DIG_TEST, dug a hole there): the grid flag alone isn't enough
 # - walls, cliff bases and doorways are 3D collision the grid doesn't know about. Tile ids only (no game data).
@@ -94,15 +103,25 @@ def scan(romfs, leb):
     out = []
     for name, screen, room in _rooms(romfs, leb):
         blocked = _blockers(room, screen)
+        row, col = screen
+        shells = {int((a.posZ - (row - 1) * 12.0) // 1.5) * 10 + int((a.posX - col * 15.0) // 1.5): a.parameters[0]
+                  for a in room.actors if a.type == seashell_spots.T_SHELL and isinstance(a.parameters[0], int)}
         for i, t in enumerate(room.grid.tilesdata):
             if t.flags3['isdigspot'] and not t.flags1['containscollision'] and not t.flags1['deepwaterlava']:  # (pits)
-                out.append({'room': name, 'tile': i, 'y': t.elevation, 'blocker': blocked.get(i)})
+                # (shell: the seashell index of the Secret Seashell buried there, None: none)
+                out.append({'room': name, 'tile': i, 'y': t.elevation, 'blocker': blocked.get(i), 'shell': shells.get(i)})
     return out
 
 
 def tile_id(d):
     row, col = bushes._screen_pos(d['room'])
     return ((row - 1) * 16 + col) * 80 + d['tile']
+
+
+def tile_xz(d):
+    """The centre (x, z) of a dig tile."""
+    row, col = bushes._screen_pos(d['room'])
+    return col * 15.0 + d['tile'] % 10 * 1.5 + 0.75, (row - 1) * 12.0 + d['tile'] // 10 * 1.5 + 0.75
 
 
 def location_name(d):
@@ -121,27 +140,34 @@ def verified_tiles():
 
 
 def add_to_logic(digs, logic_defs, item_defs):
-    """A location per proven dig tile in LAS's logic + matching filler in the pool. Returns {location: dig}."""
+    """A location per proven dig tile in LAS's logic + matching filler in the pool. Returns {location: dig}. A buried
+    Secret Seashell's tile is that spot's check (seashell_spots.absorb - no filler for it)."""
     regions = bushes.screen_regions()
     proven = verified_tiles()
     spoiler_of = {}
     for k, v in logic_defs.items():
         if v.get('type') == 'item' and v.get('region') and v.get('spoiler-region'):
             spoiler_of.setdefault(v['region'], v['spoiler-region'])
-    locs = {}
+    locs, absorbed = {}, 0
     for d in digs:
         regs = sorted(r for r in regions.get(d['room'], ()) if r in logic_defs)
-        if not regs or d['blocker'] == 'other' or (proven is not None and tile_id(d) not in proven):
+        shell = d.get('shell') is not None  # (the game digs it up: proven, whatever stands on it - LAS's logic says what)
+        if not regs or (not shell and (d['blocker'] == 'other' or (proven is not None and tile_id(d) not in proven))):
             continue
         name = location_name(d)
-        logic_defs[name] = {'type': 'item', 'subtype': 'standing', 'content': 'rupee-5', 'region': regs[0],
-                            'spoiler-region': spoiler_of.get(regs[0], 'mabe-village'),
-                            'condition-basic': pots._and(*regs[1:], bushes.pocket_condition(d['room'], d['tile']),
-                                                         'shovel', CUT.get(d['blocker']))}
+        loc = {'type': 'item', 'subtype': 'standing', 'content': 'rupee-5', 'region': regs[0],
+               'spoiler-region': spoiler_of.get(regs[0], 'mabe-village'),
+               'condition-basic': pots._and(*regs[1:], bushes.pocket_condition(d['room'], d['tile']),
+                                            'shovel', CUT.get(d['blocker']))}
+        if shell:
+            if not seashell_spots.absorb(logic_defs, d['shell'], loc):
+                continue  # (no such LAS spot - an underwater shell's tile, say: not a check)
+            absorbed += 1
+        logic_defs[name] = loc
         locs[name] = d
     for k, v in list(pots.FILLER_DEFS.items()) + list(FILLER_DEFS.items()):
         item_defs.setdefault(k, dict(v, type='junk', quantity=0, **{'chest-type': 'junk'}))
-    left = n = len(locs)
+    left = n = len(locs) - absorbed
     for i, (item, frac) in enumerate(JUNK_MIX):
         k = left if i == len(JUNK_MIX) - 1 else int(round(n * frac))
         item_defs[item]['quantity'] += k
@@ -150,7 +176,9 @@ def add_to_logic(digs, logic_defs, item_defs):
 
 
 def apply(locs, digs, mods, out_dir, romfs, event_tools, oead_tools, item_get, data):
-    """Flow entries for the dug-up items (SinkingSword.bfevfl), their actor flag, and rando/<seed>/digs.tsv."""
+    """Flow entries for the dug-up items (SinkingSword.bfevfl), their actor flag, and rando/<seed>/digs.tsv; a Secret
+    Seashell on a tile: a buried shell (SHELLS)."""
+    SHELLS.clear()
     common_out = os.path.join(out_dir, 'romfs', 'region_common')
 
     def path(rel):
@@ -171,10 +199,17 @@ def apply(locs, digs, mods, out_dir, romfs, event_tools, oead_tools, item_get, d
     entries = {}
     by_tile = {tile_id(d): name for name, d in locs.items()}
     lines, spoiler = ['# screen\ttile\ty\titem\tmodel\tname\tentry\tshell\tscale\tturn\tblocker (tools/rando/digs.py)\n'], []
+    buried = {}  # Field room -> [(tile, seashell index)]: a Secret Seashell placed on a tile is the game's own buried
+    #              shell there (the Seashell Sensor rings for it until it is found, as for any buried shell)
     for d in sorted(digs, key=tile_id):
         name = by_tile.get(tile_id(d))
         cols = ['-'] * 7
-        if name:
+        if name and mods.placements[name] == 'seashell':
+            index = mods.getItemInfo(name, mods.trap_models)[1]
+            buried.setdefault(d['room'], []).append((d, index))
+            SHELLS.append((name, index, GOT_FLAG_BASE + tile_id(d)))
+            spoiler.append(f'  {name:34} seashell (buried)')
+        elif name:
             item = mods.placements[name]
             item_key, item_index, model_path, model_name = mods.getItemInfo(name, mods.trap_models)
             quick = item_key[:3] == 'Rup' or item in pots.QUICK or item in FILLER_DEFS  # (no item-get: like rupees)
@@ -196,6 +231,35 @@ def apply(locs, digs, mods, out_dir, romfs, event_tools, oead_tools, item_get, d
             spoiler.append(f'  {name:34} {item}')
         lines.append('\t'.join([d['room'].split('_')[-1], str(d['tile']), f"{d['y']:g}"] + cols + [d['blocker'] or '-']) + '\n')
     event_tools.writeFlow(out('event/SinkingSword.bfevfl'), flow)
+    # the game's own buried shells on the tiles that are checks now (seashell spots digsanity took over): out
+    taken = {}
+    for name, d in locs.items():
+        if d.get('shell') is not None:
+            taken.setdefault(d['room'], set()).add(d['tile'])
+    if buried or taken:
+        from RandomizerCore.Tools import leb
+        from RandomizerCore.Randomizers import enemies
+        with open(os.path.join(romfs, 'region_common', 'level', 'Field', 'Field_11F.leb'), 'rb') as fh:
+            shell = next(a for a in leb.Room(fh.read()).actors if a.type == seashell_spots.T_SHELL)  # (a template)
+        for room in sorted(set(buried) | set(taken)):
+            with open(path(f'level/Field/{room}.leb'), 'rb') as fh:
+                r = leb.Room(fh.read())
+            row, col = bushes._screen_pos(room)
+            gone = [i for i, a in enumerate(r.actors) if a.type == seashell_spots.T_SHELL
+                    and int((a.posZ - (row - 1) * 12.0) // 1.5) * 10 + int((a.posX - col * 15.0) // 1.5)
+                    in taken.get(room, ())]
+            if gone:  # (with the room's links renumbered: actors refer to each other by index)
+                enemies.remove_actors(r, gone)
+            for d, index in buried.get(room, ()):
+                a = copy.deepcopy(shell)
+                a.key = SHELL_KEY_TAG << 56 | tile_id(d)
+                a.name = b'ItemSecretSe-%016X' % a.key  # (the game's naming: class name cut to 12)
+                a.posX, a.posZ = tile_xz(d)
+                a.posY = d['y']
+                a.parameters[0] = index
+                r.actors.append(a)
+            with open(out(f'level/Field/{room}.leb'), 'wb') as fh:
+                fh.write(r.repack())
     with open(os.path.join(out_dir, 'digs.tsv'), 'w') as f:
         f.writelines(lines)
     open(os.path.join(out_dir, 'flags_ext'), 'w').write('digsanity / bushsanity: event flags 2048+ (runtime/hle/flags_ext.c)\n')

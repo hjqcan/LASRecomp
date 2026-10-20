@@ -2,6 +2,7 @@
 #include <dirent.h>
 #include <inttypes.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +21,40 @@ uint64_t shader_code_hash(const uint8_t *code, size_t n) {  // FNV-1a, 64-bit
 uint64_t shader_stage_hash(const struct NvnShaderStage *s) {
     if (!s->code_addr || !s->const_offset) return 0;
     return shader_code_hash((const uint8_t *)(uintptr_t)s->code_addr, (size_t)s->const_offset + s->const_size);
+}
+
+// ------------------------------------------------------------------ stale-program detector (shader_prep.h)
+static uint32_t fp_len(const struct NvnShaderStage *s) { return s->const_offset ? s->const_offset + s->const_size : 0; }
+
+static void fp_sample(const struct NvnShaderStage *s, uint32_t len, uint32_t w[4]) {
+    const uint32_t *code = (const uint32_t *)(uintptr_t)s->code_addr;
+    uint32_t n = len / 4;  // (len >= 4: checked by the caller)
+    w[0] = code[n > 0x20 ? 0x20 : 0];  // the first instruction word (after the NVN header and the program header)
+    w[1] = code[n / 3];
+    w[2] = code[2 * (n / 3)];
+    w[3] = code[n - 1];                // the last word of the constants
+}
+
+void shader_fp_check(ShaderFp *fp, const struct NvnShaderStage *s, const char *stage) {
+    if (fp->state == 2) return;
+    uint32_t len = fp_len(s), w[4];
+    if (fp->state == 0) {
+        if (!s->code_addr || len < 4) { fp->state = 2; return; }
+        fp->hash = shader_stage_hash(s);
+        fp->len = len;
+        fp_sample(s, len, fp->w);
+        fp->state = 1;
+        return;
+    }
+    if (len == fp->len && s->code_addr) {
+        fp_sample(s, len, w);
+        if (!memcmp(w, fp->w, sizeof w)) return;
+    }
+    fp->state = 2;  // (reported once per fingerprint: no per-draw rehash after this)
+    static _Atomic int logged;
+    if (atomic_fetch_add(&logged, 1) < 16)
+        LOG("[shader] stale program: code %" PRIx64 " was %016" PRIx64 " now %016" PRIx64 " (stage %s, %#x -> %#x bytes)\n",
+            s->code_addr, fp->hash, s->code_addr && len ? shader_stage_hash(s) : 0, stage, fp->len, len);
 }
 
 uint8_t shader_topo_class(uint32_t mode) { return mode == 0 ? 0 : mode == 1 || mode == 3 ? 1 : 2; }

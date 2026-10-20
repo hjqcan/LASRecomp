@@ -1,10 +1,12 @@
 // NVN objects, builders, and state objects (everything except command recording).
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "../kernel.h"
 #include "../photo.h"
 #include "nvn.h"
+#include "rqueue.h"
 
 void renderer_sync(void);
 
@@ -39,6 +41,7 @@ NVN(nvnDeviceInitialize) {
     static bool once;
     if (!once) {
         once = true;
+        rq_hang_watch_start();  // (before anything of the renderer can hang: rqueue.c)
         backend_init();
         extern void shader_prep_boot(const char *romfs);
         shader_prep_boot(g_romfs_dir);  // (LARECOMP_SHADER_PREP=1, tests: what the start screen's setup does)
@@ -121,10 +124,25 @@ NVN(nvnQueueResetMemoryUsageCounts) { (void)c; }
 NVN(nvnQueueSubmitCommands) {
     int n = (int)A(1);
     const uint64_t *handles = AP(2);
-    for (int i = 0; i < n; i++) backend_execute(handles[i]);
+    bool rq = rq_on();
+    uint64_t t0 = plat_now_ns();
+    for (int i = 0; i < n; i++) {
+        if (rq) rq_submit(handles[i]);  // the render thread translates it (rqueue.c)
+        else backend_execute(handles[i]);
+    }
+    g_submit_ns += plat_now_ns() - t0;
 }
+__thread uint64_t g_submit_ns, g_gpu_wait_ns;
 NVN(nvnQueueFlush) { (void)c; }
-NVN(nvnQueueFinish) { (void)c; renderer_sync(); }
+NVN(nvnQueueFinish) {
+    (void)c;
+    if (rq_on()) rq_drain();
+    uint64_t t0 = plat_now_ns();
+    rq_watch("QueueFinish: the GPU", 0);
+    renderer_sync();
+    rq_watch(NULL, 0);
+    g_gpu_wait_ns += plat_now_ns() - t0;
+}
 
 static NvnSync *sync_of(uint64_t guest) {
     NvnSync *s = HOST(NvnSync, guest);
@@ -133,8 +151,16 @@ static NvnSync *sync_of(uint64_t guest) {
 }
 uint64_t renderer_fence_seq(void);
 void renderer_wait_seq(uint64_t seq);
-NVN(nvnQueueFenceSync) { NvnSync *s = sync_of(A(1)); s->signaled = 1; s->seq = renderer_fence_seq(); }
-void nvn_sync_set_seq(uint64_t guest, uint64_t seq) { NvnSync *s = sync_of(guest); s->signaled = 1; s->seq = seq; }
+// A fence's seq: the render thread's item number when it's on (rqueue.c), else the backend's submission number.
+NVN(nvnQueueFenceSync) { NvnSync *s = sync_of(A(1)); s->signaled = 1; s->seq = rq_on() ? rq_fence_seq() : renderer_fence_seq(); }
+void nvn_sync_set_seq(uint64_t guest, uint64_t seq) {
+    // (the render thread: the list's number was set when it was queued; the game may have placed this sync again in
+    // a later list since, and that number must stay)
+    if (rq_current_item()) return;
+    NvnSync *s = sync_of(guest);
+    s->signaled = 1;
+    s->seq = seq;
+}
 NVN(nvnQueueWaitSync) { RET(1); }
 
 // ================================================================== sync / event
@@ -149,9 +175,55 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     if (getenv("LARECOMP_LOG_SYNC") && n++ % 60 == 0) LOG("[nvn] SyncWait #%llu (lr %llx)\n", (unsigned long long)n, c->x[30]);
     static int whole = -1;  // LARECOMP_SYNC_ALL=1: old behaviour, wait for all submitted work
     if (whole < 0) whole = getenv("LARECOMP_SYNC_ALL") ? 1 : 0;
-    if (flush) renderer_flush();
-    else if (whole) renderer_sync();
-    else renderer_wait_seq(sync_of(A(0))->seq);  // only the submission that holds this fence
+    uint64_t t0 = 0;
+    if (flush) { if (rq_on()) rq_flush(); else { t0 = plat_now_ns(); renderer_flush(); } }
+    else if (whole) { if (rq_on()) rq_drain(); t0 = plat_now_ns(); rq_watch("SyncWait (all): the GPU", 0); renderer_sync(); }
+    else {  // only the submission that holds this fence
+        uint64_t seq = sync_of(A(0))->seq, q = seq;
+        static int stats = -1;  // (LARECOMP_LOG_PACE: which fences the game waits on, and how long)
+        if (stats < 0) stats = getenv("LARECOMP_LOG_PACE") != NULL;
+        uint64_t behind = 0, w0 = 0;
+        bool cur = false, untranslated = false;
+        if (seq && rq_on()) {
+            if (stats) { cur = rq_fence_info(seq, &behind, &untranslated); w0 = plat_now_ns(); }
+            seq = rq_wait_item(seq);  // translated and submitted; then its GPU work
+        }
+        t0 = plat_now_ns();
+        rq_watch("SyncWait: the GPU, submission", seq);
+        renderer_wait_seq(seq);
+        static long tr_at = -1;  // (debug, rqueue.c LARECOMP_RQ_TRACE) the game thread's fence waits in those frames
+        if (tr_at < 0) tr_at = getenv("LARECOMP_RQ_TRACE") ? atol(getenv("LARECOMP_RQ_TRACE")) : 0;
+        extern uint64_t renderer_present_count(void);
+        if (tr_at && renderer_present_count() >= (uint64_t)tr_at && renderer_present_count() < (uint64_t)tr_at + 4)
+        {
+            extern uint64_t rq_trace_t0;
+            LOG("[rq-trace] game frame %llu: fence wait item %llu (gpu %llu) from %.3f, translation %.3f ms, GPU %.3f ms\n",
+                (unsigned long long)renderer_present_count(), (unsigned long long)q, (unsigned long long)seq,
+                ((w0 ? w0 : t0) - rq_trace_t0) / 1e6, w0 ? (t0 - w0) / 1e6 : 0.0, (plat_now_ns() - t0) / 1e6);
+        }
+        if (stats && q && rq_on()) {
+            static struct { uint64_t n, untranslated, behind, rq_ns, gpu_ns, tr_ns, head_ns; } st[2];
+            static uint64_t total;
+            uint64_t t1 = plat_now_ns(), tr, head;
+            extern void rq_fence_times(uint64_t wait_start, uint64_t *translate_ns, uint64_t *head_ns);
+            rq_fence_times(w0, &tr, &head);
+            st[cur].n++, st[cur].untranslated += untranslated, st[cur].behind += behind;
+            st[cur].rq_ns += t0 - w0, st[cur].gpu_ns += t1 - t0, st[cur].tr_ns += tr, st[cur].head_ns += head;
+            if (++total % 600 == 0) {
+                for (int k = 1; k >= 0; k--)
+                    if (st[k].n)
+                        LOG("[rq] fence waits (%s frame): %llu, not translated yet %llu, avg %.1f items queued after it, "
+                            "avg wait for translation %.3f ms, for the GPU %.3f ms; its list: queued to translated %.3f ms, "
+                            "translated %.3f ms before the wait\n", k ? "this" : "an earlier",
+                            (unsigned long long)st[k].n, (unsigned long long)st[k].untranslated, (double)st[k].behind / st[k].n,
+                            st[k].rq_ns / 1e6 / st[k].n, st[k].gpu_ns / 1e6 / st[k].n, st[k].tr_ns / 1e6 / st[k].n,
+                            st[k].head_ns / 1e6 / st[k].n);
+                memset(st, 0, sizeof st);
+            }
+        }
+    }
+    rq_watch(NULL, 0);
+    if (t0) g_gpu_wait_ns += plat_now_ns() - t0;
     RET(0);
 }
 NVN(nvnSyncCreateGLSync) { RET(0); }
@@ -370,9 +442,23 @@ NVN(nvnTextureInitialize) {
     SET_HOST(A(0), t);
     RET(1);
 }
+static void pool_entries_forget(NvnTexture *t);
+// The end of a finalized texture: its texture pool slots emptied (pool_entries_forget), the backend's copy, the host
+// object. With the render thread, it runs there in queue order (rq_destroy_texture): lists queued before the
+// finalize still sample it through its slots, as they did when they were translated at submit; lists queued after
+// it see the slots empty, as without the render thread. (The NvnTexture stays allocated until then, so no other
+// texture can take its address while a slot still names it.)
+void nvn_texture_destroy(NvnTexture *t) {
+    pool_entries_forget(t);
+    backend_texture_destroyed(t);
+    free(t);
+}
 NVN(nvnTextureFinalize) {
     NvnTexture *t = HOST(NvnTexture, A(0));
-    if (t) { backend_texture_destroyed(t); free(t); }
+    if (t) {
+        if (rq_on()) rq_destroy_texture(t);  // after the queued lists that refer to it
+        else nvn_texture_destroy(t);
+    }
     SET_HOST(A(0), 0);
 }
 NVN(nvnTextureSetDebugLabel) {
@@ -503,6 +589,11 @@ NVN(nvnSamplerGetDebugID) { RET(A(0)); }
 
 // ================================================================== descriptor pools
 NvnDescPool *g_texture_pools[64], *g_sampler_pools[64];
+// Texture pool registrations (the game's threads) and the emptying of a finalized texture's slots (the render thread
+// when it's on: nvn_texture_destroy) both change entries and pool_refs: this lock keeps them from crossing. (Reads by
+// the translation take no lock: the game doesn't change a slot that queued work still uses before its fence, as on
+// the Switch, and the emptying runs on the translating thread itself.)
+static pthread_mutex_t g_pool_lock = PTHREAD_MUTEX_INITIALIZER;
 RT_ON_RESET(desc_pools_reset) { memset(g_texture_pools, 0, sizeof g_texture_pools); memset(g_sampler_pools, 0, sizeof g_sampler_pools); }
 
 static NvnDescPool *desc_pool_init(uint64_t guest, uint64_t pool, uint64_t off, int count, size_t entry, NvnDescPool **reg) {
@@ -514,7 +605,9 @@ static NvnDescPool *desc_pool_init(uint64_t guest, uint64_t pool, uint64_t off, 
     G(uint64_t, guest, 8) = pool;
     G(uint64_t, guest, 16) = off;
     G(uint32_t, guest, 24) = (uint32_t)count;
+    pthread_mutex_lock(&g_pool_lock);  // (pool_entries_forget walks the registry)
     for (int i = 0; i < 64; i++) if (!reg[i]) { reg[i] = d; break; }
+    pthread_mutex_unlock(&g_pool_lock);
     return d;
 }
 
@@ -532,9 +625,52 @@ static void register_texture(Cpu *c) {
     int id = (int)A(1);
     if (id < 0 || id >= d->count) return;
     NvnTexEntry *e = &((NvnTexEntry *)d->entries)[id];
+    pthread_mutex_lock(&g_pool_lock);
+    if (e->tex && e->tex->pool_refs) e->tex->pool_refs--;
     e->tex = HOST(NvnTexture, A(2));
+    if (e->tex) e->tex->pool_refs++;
+    e->dead_format = 0;
     e->has_view = A(3) != 0;
     if (e->has_view) memcpy(&e->view, AP(3), sizeof e->view);
+    if (e->has_view) nvn_texture_note_view(e->tex, &e->view);
+    pthread_mutex_unlock(&g_pool_lock);
+}
+
+// A finalized texture can stay registered: the game frees a room's textures on a level / room change and leaves
+// their pool slots as they are until it registers something else there, and a draw can still name such a slot.
+// Entries held its NvnTexture pointer, so the next texture allocated at the same address (another format) got the
+// old entry's view: a BC4 / BC5 / BC1 texture viewed as RGBA8 or the reverse, a Metal assertion that stopped the
+// game (about 1 in 6 long dungeon runs). Those entries are emptied (sampled as nothing, like an unregistered slot).
+static void pool_entries_forget(NvnTexture *t) {
+    pthread_mutex_lock(&g_pool_lock);
+    if (!t->pool_refs) { pthread_mutex_unlock(&g_pool_lock); return; }
+    int n = 0;
+    for (int p = 0; p < 64 && t->pool_refs; p++) {
+        NvnDescPool *d = g_texture_pools[p];
+        if (!d) continue;
+        NvnTexEntry *ents = (NvnTexEntry *)d->entries;
+        for (int i = 0; i < d->count && t->pool_refs; i++)
+            if (ents[i].tex == t) {
+                ents[i].tex = NULL;
+                ents[i].has_view = false;
+                ents[i].dead_format = t->format + 1;
+                t->pool_refs--;
+                n++;
+            }
+    }
+    pthread_mutex_unlock(&g_pool_lock);
+    static int nlog;
+    if (n && nlog++ < 8)
+        LOG("[nvn] texture %ux%u fmt %#x finalized while in %d texture pool slot(s): emptied%s\n", t->width, t->height,
+            t->format, n, nlog == 8 ? " (further ones not logged)" : "");
+}
+void nvn_dead_slot_sampled(const NvnTexEntry *e, uint32_t slot) {
+    static int nlog;
+    if (nlog < 8) {
+        nlog++;
+        LOG("[nvn] draw samples texture pool slot %u, whose texture (fmt %#x) was finalized: nothing bound%s\n", slot,
+            e->dead_format - 1, nlog == 8 ? " (further ones not logged)" : "");
+    }
 }
 NVN(nvnTexturePoolRegisterTexture) { register_texture(c); }
 NVN(nvnTexturePoolRegisterImage) { register_texture(c); }
@@ -641,7 +777,12 @@ NVN(nvnWindowGetNumTextures) { RET(WIN->num); }
 NVN(nvnWindowGetNumActiveTextures) { RET(WIN->active); }
 NVN(nvnWindowSetNumActiveTextures) { WIN->active = (int)A(1); }
 NVN(nvnWindowGetPresentInterval) { RET(WIN->interval); }
-NVN(nvnWindowSetPresentInterval) { WIN->interval = (int)A(1); }
+NVN(nvnWindowSetPresentInterval) {  // (the game's 60 / 30 fps mode: 1 / 2; LARECOMP_LOG_INTERVAL=1 logs each change)
+    static int log = -1;
+    if (log < 0) log = getenv("LARECOMP_LOG_INTERVAL") != NULL;
+    if (log && WIN->interval != (int)A(1)) LOG("[nvn] present interval %d -> %d\n", WIN->interval, (int)A(1));
+    WIN->interval = (int)A(1);
+}
 NVN(nvnWindowSetCrop) { int *cr = WIN->crop; cr[0] = (int)A(1); cr[1] = (int)A(2); cr[2] = (int)A(3); cr[3] = (int)A(4); }
 NVN(nvnWindowGetCrop) { memcpy(AP(1), WIN->crop, 16); }
 NVN(nvnWindowAcquireTexture) {
@@ -662,15 +803,16 @@ NVN(nvnQueuePresentTexture) {
     int i = (int)A(2);
     if (i >= 0 && i < w->num) {
         backend_present(HOST(NvnTexture, w->textures[i]));
-        extern uint64_t renderer_present_count(void);
         extern void backend_represent(void);
-        photo_mode_presented(renderer_present_count());
+        // The render thread owns photo state. Wait for this present while photo mode is active;
+        // ordinary play keeps the queue's overlap. The queue allows at most one pending present.
+        if (photo_mode_active()) rq_drain();
         // Hold this present call after a clean frame. Re-presenting it still services the photo controls;
         // resuming returns to the game so it can submit the next scene (other guest threads are not paused).
         while (photo_mode_hold() && !rt_reboot_requested()) {
             uint64_t start = plat_now_ns();
             backend_represent();
-            photo_mode_presented(renderer_present_count());
+            rq_drain(); // process capture, refresh and resume before reading the published hold state
             plat_sleep_until_ns(start + 16666667); // a frozen view does not need to render at the monitor's maximum rate
         }
     }

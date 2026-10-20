@@ -32,9 +32,9 @@ void photo_mode_exit(void);
 void photo_mode_capture(void);
 void photo_mode_toggle_controls(void);
 bool photo_mode_pad_button(int host, bool down);  // remapped framing actions; true when the photo consumes the event
-void photo_mode_frame(uint64_t frame);
-void photo_mode_presented(uint64_t frame);
-bool photo_mode_hold(void);
+void photo_mode_frame(uint64_t frame); // render thread: before presenting this frame
+void photo_mode_presented(uint64_t frame); // render thread: the completed frame plus one
+bool photo_mode_hold(void); // atomic snapshot for the game thread's present hold loop
 bool photo_mode_skip_draw(uint64_t frame, bool screen_target, bool composite);
 void photo_mode_compose(float crop[4], double width, double height, double *x, double *y, double *w, double *h);
 void photo_mode_color(float color[4]); // exposure multiplier, saturation, reserved, reserved

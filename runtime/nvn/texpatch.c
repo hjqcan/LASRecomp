@@ -38,13 +38,13 @@
 
 enum { K_BC5, K_BC3, K_ASTC4, K_RGBA8, K_BC1 };
 enum { R_A = 1, R_B, R_X, R_Y, R_L, R_R, R_ZL, R_ZR, R_PLUS, R_MINUS, R_HERO, R_SHEET, R_BOTTLE, R_BOTTLE_MODEL, R_FAIRY_MODEL,
-       R_ITEM_CURSOR, R_TUNIC, R_TUNIC_RED, R_TUNIC_BLUE, R_HEART, R_POWDER_MODEL };
+       R_ITEM_CURSOR, R_TUNIC, R_TUNIC_RED, R_TUNIC_BLUE, R_HEART, R_POWDER_MODEL, R_DGN_MAP, R_MAP_MODEL, R_POWER_PIECE_MODEL };
 enum { STYLE_NINTENDO, STYLE_XBOX, STYLE_PS };
 // labels: R_A..R_MINUS = the button that role is on by default; or these
 enum { L_LS = 32, L_RS, L_DUP, L_DDOWN, L_DLEFT, L_DRIGHT, L_OTHER };
 
 typedef struct {
-    uint8_t role, kind, srgb;
+    uint8_t role, kind, srgb, bhl;  // bhl: log2 of the block height (GOBs) it is stored with
     uint16_t w, h, levels;
     uint32_t size;
     uint8_t *data;  // the texture's (block-linear) bytes as stored in the game files
@@ -97,6 +97,11 @@ static int role_of(const char *name) {
         // the Magic Powder sack's colour map (ItemMagicPowder.bfres; after the tunic's: same name prefix): held up as
         // the Bomb Bag, tinted bomb blue then (runtime/hle/escape.c bomb_bag_tint)
         {"MI_body_alb", R_POWDER_MODEL},
+        // the Hint Sheet (runtime/hle/hint_sheet.c): the dungeon map's UI icon (drawn in place of the first bottle's,
+        // texpatch_hint_icon) and its 3D model's colour map (ItemDungeonMap.bfres: Tarin's hand-over, tinted)
+        {"DgnMap_00^q", R_DGN_MAP}, {"MI_dungeonMap_alb", R_MAP_MODEL},
+        // the Piece of Power's colour map (ItemPowerPiece.bfres): Triforce pieces are one drawn gold (runtime/hle/triforce.c)
+        {"MI_powerPiece_alb", R_POWER_PIECE_MODEL},
         {"Hp_00^w", R_HEART}, {"Hp_01^w", R_HEART}, {"Hp_02^w", R_HEART}, {"HeartUp^w", R_HEART},
         // the Items page's cursor brackets: identified only (hidden while the companion card has the cursor, pets.c)
         {"ItemCursor_", R_ITEM_CURSOR},
@@ -107,12 +112,13 @@ static int role_of(const char *name) {
 }
 
 static void add_ref(int role, int kind, int srgb, uint32_t w, uint32_t h, uint32_t levels, const uint8_t *data, uint32_t size,
-                    const char *name) {
+                    const char *name, uint32_t bhl) {
     for (int i = 0; i < g_nrefs; i++)  // (the archives share copies of the same textures)
         if (g_refs[i].w == w && g_refs[i].h == h && g_refs[i].size == size && !memcmp(g_refs[i].data, data, size)) return;
     if (g_nrefs == (int)(sizeof g_refs / sizeof *g_refs)) return;
     Ref *r = &g_refs[g_nrefs++];
-    *r = (Ref){(uint8_t)role, (uint8_t)kind, (uint8_t)srgb, (uint16_t)w, (uint16_t)h, (uint16_t)levels, size, malloc(size), ""};
+    *r = (Ref){(uint8_t)role, (uint8_t)kind, (uint8_t)srgb, (uint8_t)bhl, (uint16_t)w, (uint16_t)h, (uint16_t)levels, size,
+               malloc(size), ""};
     memcpy(r->data, data, size);
     strlcpy(r->name, name, sizeof r->name);
 }
@@ -140,7 +146,7 @@ static void scan_bntx(const uint8_t *b, size_t len, bool sheet) {
         int kind = (fmt >> 8) == 0x1e ? K_BC5 : (fmt >> 8) == 0x1c ? K_BC3 : (fmt >> 8) == 0x2d ? K_ASTC4 :
                    (fmt >> 8) == 0x0b ? K_RGBA8 : (fmt >> 8) == 0x1a ? K_BC1 : -1;
         if (kind < 0 || (sheet && kind != K_RGBA8)) continue;
-        add_ref(role, kind, (fmt & 0xff) == 6, w, h, levels, b + data, size, name);
+        add_ref(role, kind, (fmt & 0xff) == 6, w, h, levels, b + data, size, name, rd32(t + 36) & 7);
     }
 }
 
@@ -170,8 +176,10 @@ static void load_refs(void) {
     size_t len;
     uint8_t *f;
     static const char *const models[] = {"region_common/actor/ItemBottle.bfres", "region_common/actor/Playerlink.bfres",
-                                         "region_common/actor/ItemFairy.bfres", "region_common/actor/ItemMagicPowder.bfres"};
-    for (int m = 0; m < 4; m++)
+                                         "region_common/actor/ItemFairy.bfres", "region_common/actor/ItemMagicPowder.bfres",
+                                         "region_common/actor/ItemDungeonMap.bfres",
+                                         "region_common/actor/ItemPowerPiece.bfres"};
+    for (int m = 0; m < (int)(sizeof models / sizeof *models); m++)
         if ((f = read_all(models[m], &len))) {  // (their textures: one BNTX inside)
             for (size_t i = 0; i + 8 < len; i += 4)
                 if (!memcmp(f + i, "BNTX\0\0\0\0", 8)) { scan_bntx(f + i, len - i, false); break; }
@@ -190,7 +198,7 @@ static void load_refs(void) {
 int texpatch_bottle_kind(int id) {
     if (id < 0 || id >= g_nrefs) return 0;
     return g_refs[id].role == R_BOTTLE ? 1 : g_refs[id].role == R_BOTTLE_MODEL ? 2 : g_refs[id].role == R_FAIRY_MODEL ? 3
-         : g_refs[id].role == R_POWDER_MODEL ? 4 : 0;
+         : g_refs[id].role == R_POWDER_MODEL ? 4 : g_refs[id].role == R_MAP_MODEL ? 5 : g_refs[id].role == R_POWER_PIECE_MODEL ? 6 : 0;
 }
 
 int texpatch_heart_kind(int id) {
@@ -246,7 +254,8 @@ int texpatch_identify(const NvnTexture *t) {
         const Ref *r = &g_refs[i];
         // (only the bottle model's and the tunic's maps have mip levels: compared in full, all levels)
         bool tunic = r->role == R_TUNIC || r->role == R_TUNIC_RED || r->role == R_TUNIC_BLUE;
-        if (r->w != t->width || r->h != t->height || (r->role != R_POWDER_MODEL &&
+        if (r->w != t->width || r->h != t->height || (r->role != R_POWDER_MODEL && r->role != R_MAP_MODEL &&
+            r->role != R_POWER_PIECE_MODEL &&
             (t->levels > 1) != (r->role == R_BOTTLE_MODEL || r->role == R_FAIRY_MODEL || tunic))) continue;
         uint64_t n = r->size < total ? r->size : total;
         if (!memcmp((const void *)(uintptr_t)t->addr, r->data, n)) {
@@ -1032,7 +1041,7 @@ void texpatch_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h
     if (r->role == R_TUNIC || r->role == R_TUNIC_RED || r->role == R_TUNIC_BLUE) { tunic_apply(lv, blocks, w, h, row); return; }
     if (lv || r->w != w || r->h != h) return;
     if (r->role == R_BOTTLE || r->role == R_BOTTLE_MODEL || r->role == R_FAIRY_MODEL || r->role == R_POWDER_MODEL ||
-        r->role == R_ITEM_CURSOR ||
+        r->role == R_ITEM_CURSOR || r->role == R_DGN_MAP || r->role == R_MAP_MODEL || r->role == R_POWER_PIECE_MODEL ||
         r->role == R_HEART) return;
     if (r->role == R_HERO) {  // fully transparent (BC5 blocks of zeros)
         if (hide_hero()) for (uint32_t y = 0; y < (h + 3) / 4; y++) memset(blocks + y * row, 0, (w + 3) / 4 * 16);
@@ -1062,4 +1071,98 @@ void texpatch_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h
     encode_image(r, img, dirty, blocks, row);
     free(img);
     free(dirty);
+}
+
+// The Hint Sheet's icon (runtime/hle/hint_sheet.c): the dungeon map's (120 x 120) centred on a bottle-sized canvas
+// (144 x 144, as ItemBottle_00^w: the same pane draws it at the size the game draws its own item icons), RGBA8 sRGB,
+// made once from the user's own game files. The renderers sample it in place of the bottle icon for the Hint Sheet's
+// draws. NULL: the game files don't have it.
+NvnTexture *texpatch_hint_icon(void) {
+    static NvnTexture t;
+    static int state;  // 0 not made yet, 1 made, -1 none
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&lock);
+    if (!state) {
+        state = -1;
+        pthread_once(&g_once, load_refs);
+        int i = ref_of(R_DGN_MAP);
+        if (i >= 0 && g_refs[i].kind == K_BC3) {
+            const Ref *r = &g_refs[i];
+            uint32_t bw = (r->w + 3) / 4, bh = (r->h + 3) / 4, S = 144;
+            uint8_t *lin = malloc((size_t)bw * bh * 16), *img = malloc((size_t)r->w * r->h * 4), *canvas = calloc((size_t)S * S, 4);
+            tegra_deswizzle(r->data, lin, bw, bh, 1, 16, r->bhl, 0);
+            decode_image(r, lin, bw * 16, img);
+            uint32_t ox = (S - r->w) / 2, oy = (S - r->h) / 2;
+            for (uint32_t y = 0; y < r->h; y++) memcpy(canvas + ((y + oy) * S + ox) * 4, img + y * r->w * 4, r->w * 4);
+            t.target = 1;  // (2D)
+            t.format = r->srgb ? 0x38 : 0x25;  // RGBA8 sRGB / unorm, as the map's own colour space
+            t.width = t.height = S;
+            t.depth = t.levels = 1;
+            t.layout = (TexLayout){.width = S, .height = S, .depth = 1, .layers = 1, .levels = 1, .fmt = nvn_format_info(t.format)};
+            tegra_layout_init(&t.layout);
+            uint64_t total = tegra_total_size(&t.layout);
+            uint8_t *mem = calloc(total, 1);
+            LevelLayout l0 = tegra_level(&t.layout, 0);
+            tegra_swizzle(canvas, mem, l0.wb, l0.hb, 1, 4, l0.block_height_log2, l0.block_depth_log2);
+            t.addr = (uint64_t)(uintptr_t)mem;
+            strlcpy(t.label, "HintSheetIcon", sizeof t.label);
+            free(lin), free(img), free(canvas);
+            state = 1;
+            LOG("[texpatch] Hint Sheet icon made from %s\n", r->name);
+        }
+    }
+    pthread_mutex_unlock(&lock);
+    return state > 0 ? &t : NULL;
+}
+
+// One of the game's own UI textures, by name (e.g. "MapMark_05^w"), decoded to RGBA8 (w x h, the texture's own colour
+// encoding) from the user's UI archives; NULL if it isn't there or its format isn't one of ours. The caller frees it.
+// (Runtime-made icons for our overlays: runtime/ui/triforce_icons.mm - nothing of the game ships.)
+uint8_t *texpatch_ui_rgba(const char *want, int *w_out, int *h_out) {
+    static const char *const arcs[] = {"region_common/ui/Game.arc", "regionUS/common/ui/GameRegionCommon.arc",
+                                       "regionEU/common/ui/GameRegionCommon.arc", "region_common/ui/StartUp.arc"};
+    for (int a = 0; a < 4; a++) {
+        size_t len;
+        uint8_t *d = read_all(arcs[a], &len), *out = NULL;
+        if (!d) continue;
+        if (len > 0x20 && !memcmp(d, "SARC", 4)) {
+            uint32_t data_off = rd32(d + 0xC);
+            uint16_t n = rd16(d + 0x1A);
+            const uint8_t *ent = d + 0x20, *names = d + 0x20 + 16 * n + 8;
+            for (uint16_t i = 0; i < n && !out && ent + 16 * (i + 1) <= d + len; i++) {
+                uint32_t attr = rd32(ent + 16 * i + 4), s = rd32(ent + 16 * i + 8), e = rd32(ent + 16 * i + 12);
+                const char *nm = (attr >> 24) ? (const char *)names + (attr & 0xffffff) * 4 : "";
+                if ((const uint8_t *)nm >= d + len || strcmp(nm, "timg/__Combined.bntx") || data_off + e > len) continue;
+                const uint8_t *b = d + data_off + s;
+                size_t blen = e - s;
+                if (blen < 0x40 || memcmp(b, "BNTX", 4)) continue;
+                uint32_t count = rd32(b + 0x24);
+                uint64_t infos = rd64(b + 0x28);
+                for (uint32_t k = 0; k < count && !out && infos + 8 * k + 8 <= blen; k++) {
+                    uint64_t brti = rd64(b + infos + 8 * k);
+                    if (brti + 0x90 > blen || memcmp(b + brti, "BRTI", 4)) continue;
+                    const uint8_t *t = b + brti + 16;
+                    uint64_t name_at = rd64(t + 80), ptrs = rd64(t + 96);
+                    if (name_at + 2 >= blen) continue;
+                    uint16_t nl = rd16(b + name_at);
+                    if (nl != strlen(want) || memcmp(b + name_at + 2, want, nl) || ptrs + 8 > blen) continue;
+                    uint32_t fmt = rd32(t + 12), w = rd32(t + 20), h = rd32(t + 24), size = rd32(t + 64);
+                    uint64_t data = rd64(b + ptrs);
+                    int kind = (fmt >> 8) == 0x1c ? K_BC3 : (fmt >> 8) == 0x2d ? K_ASTC4 : -1;
+                    if (kind < 0 || data + size > blen) continue;
+                    Ref r = {0, (uint8_t)kind, (uint8_t)((fmt & 0xff) == 6), 0, (uint16_t)w, (uint16_t)h, 1, size, NULL, ""};
+                    uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
+                    uint8_t *lin = calloc((size_t)bw * bh, 16);
+                    tegra_deswizzle(b + data, lin, bw, bh, 1, 16, rd32(t + 36) & 7, 0);
+                    out = malloc((size_t)w * h * 4);
+                    decode_image(&r, lin, bw * 16, out);
+                    free(lin);
+                    *w_out = (int)w, *h_out = (int)h;
+                }
+            }
+        }
+        free(d);
+        if (out) return out;
+    }
+    return NULL;
 }

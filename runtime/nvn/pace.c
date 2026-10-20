@@ -11,13 +11,14 @@
 // The game advances its world one fixed step per frame in its 60 fps mode, and two steps per frame in its 30 fps mode
 // (measured: Link walks twice as far per frame there) - so a 60-mode frame that takes 20 ms plays in slow motion, while
 // the 30 mode plays at full speed. The game reads its timing counters (GPU time per frame) as on the Switch: they set
-// its dynamic resolution (main pass 1920x1080 down to 1280x720 from ~12 ms, the floor from ~15 ms) and, with frames
-// really missing 60, keep it in the 30 fps mode (only from ~15 ms: below that it keeps trying 60 - slow motion half the
-// time). But our frames can be slow for reasons GPU time doesn't show (command translation, a slower CPU). So each
-// presented frame's busy time is measured (present to present, minus the time the presenting thread was blocked in
-// kernel waits, sleeps and the window's image: idle); when frames don't fit 60 (12 of the last 60 over 16.2 ms), the
-// counters report a frame of at least PACE_SLOW_NS: the game takes its 30 fps mode, at full speed (and its lower
-// resolution with it - the same reading). Back to the real times after 120 frames with headroom (busy under 13 ms on average,
+// its dynamic resolution (main pass 1920x1080 down to 1280x720 from ~12 ms, the floor from ~15 ms - off here:
+// tools/patches.py GAME_DYNRES_SITE, the resolution is ours) and, with frames really missing 60, keep it in the 30 fps
+// mode (only from ~15 ms: below that it keeps trying 60 - slow motion half the time). But our frames can be slow for
+// reasons GPU time doesn't show (command translation, a slower CPU). So each presented frame's busy time is measured
+// (present to present, minus the time the presenting thread was blocked in kernel waits, sleeps and the window's image:
+// idle); when frames don't fit 60 (12 of the last 60 over 16.2 ms), the counters report a frame of at least
+// PACE_SLOW_NS: the game takes its 30 fps mode, at full speed (its resolution stays: its own dynamic resolution, which
+// read the same counters, is off). Back to the real times after 120 frames with headroom (busy under 13 ms on average,
 // at most 2 of the last 60 frames over). The game itself also tries 60 again now and then.
 // Backoff (issue #70): a machine right at the edge (a handheld on a low power profile) gains headroom at 30 fps just by
 // cooling down, goes back to 60, and doesn't fit again a few seconds later - 60 / 30 flicker. Falling back within 10 s
@@ -34,7 +35,21 @@ uint64_t pace_frames_over(void) {
     return n;
 }
 
+// LARECOMP_SPIKE_MS=<ms> [LARECOMP_SPIKE_EVERY=<frames>, default 60]: the presenting (game) thread sleeps that long
+// every that many frames from frame 2700 on (in play after a scripted load): a CPU-side hitch with the GPU idle
+// (dynamic resolution tests).
+static void spike_test(void) {
+    static long ms = -1, every, frame;
+    if (ms < 0) {
+        ms = getenv("LARECOMP_SPIKE_MS") ? atol(getenv("LARECOMP_SPIKE_MS")) : 0;
+        every = getenv("LARECOMP_SPIKE_EVERY") ? atol(getenv("LARECOMP_SPIKE_EVERY")) : 60;
+        if (every < 1) every = 60;
+    }
+    if (ms > 0 && ++frame > 2700 && frame % every == 0) plat_sleep_until_ns(plat_now_ns() + (uint64_t)ms * 1000000);
+}
+
 void pace_frame(void) {
+    spike_test();
     static int on = -1;
     if (on < 0) { const char *e = getenv("LARECOMP_PACE"); on = !e || atoi(e) != 0; }
     static uint64_t last, last_wait;
@@ -51,7 +66,24 @@ void pace_frame(void) {
     avg = avg ? avg + (busy - avg) * 0.05 : busy;
     static int log = -1;  // LARECOMP_LOG_PACE=1: each frame's period, vsync wait and busy time
     if (log < 0) log = getenv("LARECOMP_LOG_PACE") != NULL;
-    if (log) LOG("[pace] period %.2f blocked %.2f busy %.2f ms\n", p / 1e6, wt / 1e6, busy);
+    extern __thread uint64_t g_rq_wait_ns;  // rqueue.c: waits for the render thread (translation), counted as busy
+    static uint64_t last_rq;
+    uint64_t rqw = g_rq_wait_ns - last_rq;
+    last_rq = g_rq_wait_ns;
+    if (log) {  // (plus this thread's CPU time per frame and the render thread's: work, independent of waits; and where
+                // this thread's frame went in the renderer's frontend - rqueue.h)
+        extern uint64_t rq_render_cpu_ns(void);
+        extern __thread uint64_t g_rq_lock_ns, g_submit_ns, g_gpu_wait_ns, g_present_ns, g_hooks_ns;
+        static uint64_t last_cpu, last_rcpu, l_lock, l_sub, l_gpu, l_pres, l_hooks;
+        uint64_t cpu = plat_thread_cpu_ns(), rcpu = rq_render_cpu_ns();
+        LOG("[pace] period %.2f blocked %.2f busy %.2f ms (queue wait %.2f, cpu %.2f, render cpu %.2f, gpu wait %.2f, submit %.2f, "
+            "present %.2f, hooks %.2f, lock %.2f)\n", p / 1e6, wt / 1e6, busy, rqw / 1e6, last_cpu ? (cpu - last_cpu) / 1e6 : 0.0,
+            last_rcpu ? (rcpu - last_rcpu) / 1e6 : 0.0, (g_gpu_wait_ns - l_gpu) / 1e6, (g_submit_ns - l_sub) / 1e6,
+            (g_present_ns - l_pres) / 1e6, (g_hooks_ns - l_hooks) / 1e6, (g_rq_lock_ns - l_lock) / 1e6);
+        last_cpu = cpu;
+        last_rcpu = rcpu;
+        l_lock = g_rq_lock_ns, l_sub = g_submit_ns, l_gpu = g_gpu_wait_ns, l_pres = g_present_ns, l_hooks = g_hooks_ns;
+    }
     int o = busy > 16.2;
     stat_pace_over += o;
     nover += o - over[idx];

@@ -16,6 +16,7 @@
 #include "../settings.h"
 #include "../input_bind.h"
 #include "../rumble.h"
+#include "../led.h"
 #include "../ui/menu.h"
 
 enum {
@@ -113,6 +114,64 @@ RT_ON_RESET(input_rumble_reset) {
     input_rumble_permit(true);
 }
 
+// Controller light (runtime/led.h): the light bar of the game's controller shows Link's health. UI thread only.
+// While the option is off (or nothing is in play) SDL_SetGamepadLED is never called: the one call that hands the
+// light back is made when we stop owning it.
+int game_in_play(void);                // hle/warp.c
+int cheats_link_health(int *max);      // ui/cheats.mm
+static SDL_JoystickID led_pad_id;      // the pad the state below is about
+static bool led_capable, led_lit;      // it has an RGB light / we set its colour
+static LedColor led_last;
+static uint64_t led_last_ms, led_log_ms, led_hurt_ms;
+static int led_prev_hp = -1, led_prev_max;
+
+static void led_forget(void) { led_lit = false, led_prev_hp = -1, led_pad_id = 0; }
+static void led_restore(const char *why) {
+    if (led_lit && pad) {
+        LedColor c = led_default_color(SDL_GetGamepadType(pad) == SDL_GAMEPAD_TYPE_PS4, SDL_GetGamepadPlayerIndex(pad));
+        SDL_SetGamepadLED(pad, c.r, c.g, c.b);
+        LOG("[led] %s: controller colour restored\n", why);
+    }
+    led_lit = false, led_prev_hp = -1;
+}
+void input_led_stop(void) { led_restore("quit"); }  // before exit / teardown
+static void led_atexit(void) { led_restore("exit"); }
+RT_ON_RESET(input_led_reset) { led_restore("reset"); }
+
+void input_led_poll(void) {
+    if (!pad || host_test) { led_forget(); return; }
+    SDL_JoystickID id = SDL_GetGamepadID(pad);
+    if (id != led_pad_id) {
+        led_forget();
+        led_pad_id = id;
+        led_capable = SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, false);
+        if (led_capable) LOG("[led] %s has a light\n", SDL_GetGamepadName(pad));
+    }
+    if (!led_capable) return;
+    if (!g_settings.controller_light) { led_restore("off"); return; }
+    int max = 0, hp = game_in_play() ? cheats_link_health(&max) : -1;
+    if (hp < 0 || max <= 0) { led_restore("not in play"); return; }
+    uint64_t now = SDL_GetTicks();
+    if (led_prev_hp >= 0 && hp < led_prev_hp && max == led_prev_max) led_hurt_ms = now;
+    if (led_prev_hp < 0) led_hurt_ms = 0;  // (entering play: no flash)
+    led_prev_hp = hp, led_prev_max = max;
+    LedColor c = led_health_color(hp, max, now, led_hurt_ms ? now - led_hurt_ms : UINT64_MAX);
+    if (led_lit && (led_equal(c, led_last) || now - led_last_ms < LED_MIN_INTERVAL_MS)) return;
+    if (!SDL_SetGamepadLED(pad, c.r, c.g, c.b)) {
+        LOG("[led] unavailable: %s\n", SDL_GetError());
+        led_capable = false;
+        return;
+    }
+    static bool registered;
+    if (!registered) registered = true, atexit(led_atexit);
+    if (!led_lit || now - led_log_ms >= 1000) {  // (the pulse changes it all the time: one line a second at most)
+        LOG("[led] %d,%d,%d (health %d/%d quarter-hearts%s)\n", c.r, c.g, c.b, hp, max,
+            led_hurt_ms && now - led_hurt_ms < LED_FLASH_MS ? ", hurt" : "");
+        led_log_ms = now;
+    }
+    led_lit = true, led_last = c, led_last_ms = now;
+}
+
 // Host keys / buttons held by a test script (LARECOMP_HOST_INPUT, input_frame): they go through the bindings
 static uint8_t test_keys[SDL_SCANCODE_COUNT];
 static _Atomic uint32_t test_pad;
@@ -198,6 +257,15 @@ bool input_user_blocked(const SDL_Event *e) {
     }
 }
 
+// "Allow background inputs" (Controls tab, off by default): controllers keep working while the window isn't in front.
+// SDL drops controller events without keyboard focus unless this hint is set; it reads the hint live. (On macOS the
+// hint makes the system ask for Input Monitoring - reading HID input for a background app - so it was taken out as a
+// default there; the player opts in here.)
+SDL_JoystickID input_active_pad(void) { return pad ? SDL_GetGamepadID(pad) : 0; }
+void input_apply_background(void) {
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, g_settings.bg_input ? "1" : "0");
+}
+
 // A controller SDL has no mapping for (on macOS e.g. a generic Bluetooth HID pad, such as a phone app posing as one)
 // is only a joystick to SDL, and the game reads gamepads only. gamecontrollerdb.txt in the data root holds the
 // player's own mappings, in SDL's format (lines for other platforms are skipped, so SDL_GameControllerDB's file works
@@ -209,17 +277,22 @@ void input_load_user_mappings(void) {
     else LOG("[input] gamecontrollerdb.txt: %d controller mapping(s) added\n", n);
 }
 
-// Controller family for the button prompts (runtime/nvn/texpatch.c): 0 Nintendo / other / none, 1 Xbox, 2 PlayStation.
+// Controller family for the button prompts (runtime/nvn/texpatch.c) and our menus' layout: 0 Nintendo / none, 1 Xbox
+// (and every other pad SDL labels like one: generic / third-party pads with A on the bottom), 2 PlayStation.
 // LARECOMP_PAD_TYPE=xbox|playstation|nintendo pretends one is attached (tests).
+// By SDL's own face-button labels for the type: the bottom button reads B on Nintendo pads, A on Xbox-style ones,
+// Cross on PlayStation ones.
+int input_family_of_type(int type) {
+    switch (SDL_GetGamepadButtonLabelForType((SDL_GamepadType)type, SDL_GAMEPAD_BUTTON_SOUTH)) {
+    case SDL_GAMEPAD_BUTTON_LABEL_B: return 0;
+    case SDL_GAMEPAD_BUTTON_LABEL_CROSS: return 2;
+    default: return 1;
+    }
+}
 static _Atomic int pad_family;
 static void note_family(void) {
-    int f = 0;
-    if (pad) switch (SDL_GetGamepadType(pad)) {
-        case SDL_GAMEPAD_TYPE_XBOX360: case SDL_GAMEPAD_TYPE_XBOXONE: f = 1; break;
-        case SDL_GAMEPAD_TYPE_PS3: case SDL_GAMEPAD_TYPE_PS4: case SDL_GAMEPAD_TYPE_PS5: f = 2; break;
-        default: break;
-    }
-    if (f != pad_family) LOG("[input] button prompts: %s controller\n", f == 1 ? "Xbox" : f == 2 ? "PlayStation" : "Nintendo / other");
+    int f = pad ? input_family_of_type(SDL_GetGamepadType(pad)) : 0;
+    if (f != pad_family) LOG("[input] button prompts: %s controller\n", f == 1 ? "Xbox" : f == 2 ? "PlayStation" : "Nintendo");
     pad_family = f;
 }
 int input_pad_family(void) {
@@ -229,6 +302,23 @@ int input_pad_family(void) {
         env = !e ? -1 : !strcmp(e, "xbox") ? 1 : !strcmp(e, "playstation") || !strcmp(e, "ps") ? 2 : 0;
     }
     return env >= 0 ? env : pad_family;
+}
+
+// Our menus' face buttons: the family whose button names they show, and (Confirm button = Controller convention, #172)
+// whose layout they use - Nintendo (0): the right button confirms, the bottom one goes back; Xbox / PlayStation
+// (1 / 2): the bottom one confirms, the right one goes back (runtime/ui/pad_nav.mm). "Button icons"
+// forced to a style wins (icons and menus agree); Auto: the controller `which` that pressed (0, or not a connected
+// gamepad - a test's pushed press: the game's controller / the first connected one, else Nintendo).
+int input_menu_family(SDL_JoystickID which) {
+    switch (g_settings.prompts) {
+    case PROMPTS_NINTENDO: return 0;
+    case PROMPTS_XBOX: return 1;
+    case PROMPTS_PLAYSTATION: return 2;
+    default: break;
+    }
+    if (getenv("LARECOMP_PAD_TYPE")) return input_pad_family();
+    if (which && SDL_IsGamepad(which)) return input_family_of_type(SDL_GetGamepadTypeForID(which));
+    return bind_label_family();
 }
 
 void input_handle_event(const SDL_Event *e) {
@@ -253,6 +343,7 @@ void input_handle_event(const SDL_Event *e) {
         if (pad && SDL_GetGamepadID(pad) == e->gdevice.which) {
             SDL_RumbleGamepad(pad, 0, 0, 0);
             SDL_CloseGamepad(pad); pad = NULL; note_family();
+            led_forget();  // (gone: it shows its own colour when it comes back)
             rumble_clear(); rumble_last_lo = rumble_last_hi = 0; rumble_warned = false;
         }
         recompute_pad();
@@ -489,6 +580,10 @@ static void fill_state(Cpu *c) {
       chamber_game_tick(c, renderer_present_count());
       extern void digs_game_tick(Cpu *c, uint64_t frame);
       digs_game_tick(c, renderer_present_count());
+      extern void pot_bush_game_tick(Cpu *c, uint64_t frame);
+      pot_bush_game_tick(c, renderer_present_count());
+      extern void shell_spots_tick(Cpu *c, uint64_t frame);
+      shell_spots_tick(c, renderer_present_count());
       extern void qol_tick(void);
       qol_tick();
       extern void pets_game_tick(Cpu *c);

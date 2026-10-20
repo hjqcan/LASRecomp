@@ -17,8 +17,10 @@ How it works in the game:
   stealing  the good carries a dummy item (Items.gsheet LARShop<n>, itemID 230+): the shopkeeper's steal code adds
             it, runtime/hle/shopsanity.c turns that into the check's flags, PlayerStart's ExitOutShop gives the real
             item (animation) after the vanilla "you stole it" scene. The steal consequences stay vanilla (THIEF,
-            the shopkeeper's punishment): fast-stealing is off with shopsanity.
+            the shopkeeper's punishment): fast-stealing is off with shopsanity. Whether stealing works at all is LAS's
+            'stealing' setting (ASM/Patches/shop.asm, the shopkeeper's sword check): never / normal (the sword) / always.
 Logic: every check = can-shop (LAS: can-farm-rupees | sword), whatever the price - as LAS does for its shop checks.
+            Buying alone is enough for that (stealing is never needed), so it holds for every stealing setting.
 Prices: 'vanilla' (the slot's vanilla price; the chamber stone's 1280 is over the wallet's 999 -> 999) or 'random'.
 """
 import os

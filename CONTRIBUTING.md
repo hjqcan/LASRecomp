@@ -95,6 +95,18 @@ with both revisions, then run `python tools/test_game_addresses.py --compare-gen
 The comparison checks every generated C file byte-for-byte. This table records the existing, verified 1.0.0
 sites; it does not yet discover addresses automatically from code patterns.
 
+## Tests
+
+`python tools/test_save.py` exercises the production save handlers against temporary files, without game data.
+
+Build-cache regression tests use synthetic inputs and the production scheduler:
+`python tools/test_build_cache.py` and `python tools/test_gamebuild_resume.py`.
+On Windows, also run `python tools/test_windows_processes.py` to check independent
+helper process trees, descendant cleanup and crash exit codes. `CC` / `CXX` select
+the native compiler (defaults: `clang` / `clang++`). For a release smoke test,
+cancel a real game-code build after some objects finish, resume it, inspect the
+reused/compiled counts in the log, and launch the resulting game library.
+
 ## Code style
 
 - Match the surrounding code: its naming, structure and comment density. Comments explain *why* (what the game does,

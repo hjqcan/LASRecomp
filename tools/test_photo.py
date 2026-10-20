@@ -67,8 +67,11 @@ with tempfile.TemporaryDirectory() as temporary:
     subprocess.run(shlex.split(os.environ.get('CC','clang'))+['-std=c11','-I'+str(ROOT/'runtime'),
                    '-c',str(prompt_source),'-o',str(prompt_obj)],check=True)
     subprocess.run(shlex.split(os.environ.get('CXX','clang++'))+
-                   ['-std=c++17','-x','c++','-I'+str(ROOT/'runtime'),'-I'+str(imgui),
+                   ['-std=c++17','-pthread','-x','c++','-I'+str(ROOT/'runtime'),'-I'+str(imgui),
                     str(ROOT/'tools/test_photo_ui.cpp'),str(ROOT/'runtime/photo.c'),
                     *[str(imgui/name) for name in ('imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp')],
                     '-x','none',str(prompt_obj),'-o',str(ui_exe)],check=True)
     subprocess.run([str(ui_exe),str(root/'photos with spaces & punctuation')],check=True)
+    env = {k: v for k, v in os.environ.items() if not k.startswith('LARECOMP_PHOTO_')}
+    env.update(LARECOMP_PHOTO_AT='1', LARECOMP_PHOTO_SHOT_AT='4,5', LARECOMP_PHOTO_EXIT_AT='6')
+    subprocess.run([str(ui_exe),str(root/'queued presentations'),'--repeated-present'],env=env,check=True,timeout=15)

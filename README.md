@@ -39,13 +39,7 @@ This is a beta release. That means bugs are likely, crashes could occur, randomi
 
 ### Known issues
 
-- The Mysterious Woods look wrong when viewed from outside the woods.
-- Some lighting effects show horizontal or vertical lines in dungeons, caves and houses.
-- Controller doesn’t work on the start screen.
-- Shadow bugs in big dungeon rooms at ultrawide
-- Black boxes sometimes appear in dungeon rooms.
-- Checking the dresser in BowWow's mom's room causes the game to crash.
-- Clicking Title Screen in LAS Recomp's custom settings crashes.
+Known issues and their status are on the [GitHub issues page](https://github.com/peiikai/LASRecomp/issues).
 
 ## Features
 
@@ -102,6 +96,8 @@ This is a beta release. That means bugs are likely, crashes could occur, randomi
   - Switch companions from the pause menu, or send yours away.
 - Boss souls - a boss doesn't appear, can't be beaten and its reward stays locked until you find its soul.
 - Mini-boss souls - the same for dungeon mini-bosses (a separate option).
+- Triforce hunt - collect Triforce pieces (3, 12, 24 or any number up to 50, optionally with extra pieces hidden) instead
+  of waking the Wind Fish; the last one needed rolls the credits.
 - Entrance Randomizer - shuffles dungeon entrances, houses and caves, and connector caves. Includes a decoupled option.
 - Dungeon Room Shuffler - shuffles all dungeon rooms, creating unique custom dungeons every seed. Three modes:
   - Coherent: dungeon rooms are shuffled but connecting rooms are lined up. To keep this workable in logic, dungeons
@@ -175,6 +171,22 @@ Where files live (game files, saves, seeds, settings, caches, imported fonts):
   runs are kept as `lasrecomp-backup-*.log`. For a bug report attach `lasrecomp.log`, or if the problem was in an
   earlier run, that run's backup (by date modified).
 
+### Resuming game-code builds
+
+The game-code build keeps completed pieces in the game folder's `.gamebuild/`
+directory. **Cancel (B / Esc)** stops the compiler helpers; **Resume game code**
+appears after cancellation or interruption and continues from verified completed
+pieces. An interrupted build also resumes when LAS Recomp starts again. Generated
+source and object contents are checked before reuse. After success, only objects
+and their cache records are kept; generated C, logs, link files and compiler caches
+are removed. A generator update recompiles only changed pieces. Moving the app
+keeps reusable objects; changed compiler contents or flags require a full rebuild.
+
+**Game Files → Clear build cache** removes cached objects and temporary files,
+including the older `.zigcache` folder, while keeping the installed game library,
+game files and saves. Legacy build caches are upgraded automatically. Failed or
+cancelled builds keep the previous installed library until a replacement is ready.
+
 ## Credits
 
 **Contributors** - thank you to everyone who has sent code (GitHub handles, in order of first contribution):
@@ -191,9 +203,10 @@ Where files live (game files, saves, seeds, settings, caches, imported fonts):
   about 9 GB less memory committed (#107); the Vulkan fence fix for reused submission slots (#108); x86 rounding
   without x87 state changes (#115); movie memory freed on close, source change and reboot (#112); Vulkan stopping
   cleanly on GPU timeouts (#127); a strict Vulkan validation mode for automated tests (#128); Windows session logs:
-  `lasrecomp.log` always the latest run, with five backups (#114)
+  `lasrecomp.log` always the latest run, with five backups (#114); resumable game-code builds: a cancelled or interrupted setup picks up where it stopped (#56); randomizer check flags kept with committed saves (#170); save write fixes that keep a failed save from losing data (#169, merged in #182)
 - **[@gitarre1234rr5](https://github.com/gitarre1234rr5)** - controller rumble: the game's vibration on your controller
   (#104), and a regression test for the kernel's timed condition-variable wait (#88)
+- **[@rkammoun](https://github.com/rkammoun)** - diagnosed and patched the Metal 16-sampler limit behind the black walls in the Ukuku Prairie cave (#215, fixed in #216)
 
 Thanks also to everyone who reports issues and tests builds; your logs and screenshots find most of the bugs.
 

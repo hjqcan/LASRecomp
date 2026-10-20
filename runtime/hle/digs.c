@@ -191,6 +191,8 @@ static void drop(Cpu *c, uint64_t *slot) {
 // shovel dig commit, right after the hole's spawn: [sp+0x10] the hole (actor, control block), x21 its transform
 // (+0 position, +0x30 ground point on the tile centre), x20 +0xb0 the zone id
 void rt_dig_hole(Cpu *c) {
+    extern void shell_spots_dig(Cpu *c);  // a buried Secret Seashell spot's item (runtime/hle/shell_spots.c)
+    shell_spots_dig(c);
     if (!enabled() || !on_field()) return;
     const float *t = (const float *)(uintptr_t)c->x[21];
     int g = tile_at(t[12], t[14]);
@@ -250,7 +252,7 @@ static int pool_index(Cpu *c, const char *str) {
 // so one spawned into Link's room on another screen would go when Link's screen unloads. The holders sit in a pool of
 // 0x260-byte entries (+0x50 the entry itself, +0x240 1 while loaded, +0x1a8 -> +0x74 the screen's file, "Field_11A.").
 // false when the scene isn't up or the screen isn't loaded
-static bool screen_room(Cpu *c, uint64_t pair, int screen, uint64_t *sctrl) {
+static bool room_named(Cpu *c, uint64_t pair, const char *want, uint64_t *sctrl) {
     uint64_t mgr = LD64(GA_GAME_MGR);
     *sctrl = 0;
     if (!mgr) return false;
@@ -260,20 +262,32 @@ static bool screen_room(Cpu *c, uint64_t pair, int screen, uint64_t *sctrl) {
     uint64_t scene = LD64(pair + 0x10), holder = scene ? LD64(scene + 0x228) : 0;
     *sctrl = LD64(pair + 0x18);
     if (!holder) return false;
-    char want[16];
-    snprintf(want, sizeof want, "Field_%02d%c", screen / 16 + 1, 'A' + screen % 16);
+    size_t wn = strlen(want);
     for (int k = 0; k < 64; k++) {  // (the current holder first, then outwards)
         uint64_t e = holder + (int64_t)((k & 1) ? -(k + 1) / 2 : k / 2) * 0x260;
-        if (e < HEAP_BASE || e + 0x260 > HEAP_BASE + HEAP_MAX || LD64(e + 0x50) != e || LD32(e + 0x240) != 1) continue;
+        // (+0x240 isn't 1 in a one-room level's holder - DogHouse: the current one, which the shovel uses, counts)
+        if (e < HEAP_BASE || e + 0x260 > HEAP_BASE + HEAP_MAX || LD64(e + 0x50) != e || (k && LD32(e + 0x240) != 1)) continue;
         uint64_t info = LD64(e + 0x1a8), room = LD64(e + 0x1b8);
         if (!room || info < HEAP_BASE || info >= HEAP_BASE + HEAP_MAX) continue;
-        if (strncmp((const char *)(uintptr_t)(info + 0x74), want, 9)) continue;  // ("Field_11A.leb")
+        const char *file = (const char *)(uintptr_t)(info + 0x74);  // ("Field_11A.leb"; a path's end elsewhere:
+        const char *end = memchr(file, 0, 0x40);                        //  "...se/DogHouse_01A.leb")
+        if (!end || end - file < (long)wn + 4 || strcmp(end - 4, ".leb") || strncmp(end - 4 - wn, want, wn) ||
+            (end - 4 - wn > file && end[-5 - (long)wn] != '/')) continue;
         ST64(pair, room);  // room (ptr, control block): borrowed, as the shovel does
         ST64(pair + 8, LD64(e + 0x1c0));
         return true;
     }
     return false;
 }
+
+static bool screen_room(Cpu *c, uint64_t pair, int screen, uint64_t *sctrl) {
+    char want[16];
+    snprintf(want, sizeof want, "Field_%02d%c", screen / 16 + 1, 'A' + screen % 16);
+    return room_named(c, pair, want, sctrl);
+}
+
+// (bushsanity: a cut bush's item is spawned into its screen's room too - runtime/hle/pot_glow.c)
+bool digs_screen_room(Cpu *c, uint64_t pair, int screen, uint64_t *sctrl) { return screen_room(c, pair, screen, sctrl); }
 
 static uint64_t scratch(void) {
     if (!g_scratch) g_scratch = (uint64_t)(uintptr_t)hle_alloc(0x400);
@@ -316,38 +330,59 @@ static bool spawn_hole(Cpu *c, int g) {
 // the tile's item as a SinkingSword item actor, the way a level spawns one (spawn info: +0 key, +8 type, +0xc zone,
 // +0x10 eight {u32 value, u8 type} parameters, +0x180 position / rotation (quaternion) / scale; the rest zero).
 // false: the tile's screen isn't loaded
-static bool spawn_item(Cpu *c, int g) {
-    const Tile *t = &g_tiles[g];
-    const char *strs[8] = {t->model, t->mname, t->entry, "LARDigItem", t->shell ? "true" : "false", "", "", ""};
+// (also the buried Secret Seashell spots' items: runtime/hle/shell_spots.c) `strs`: model path, model name, flow entry,
+// flag, seashell; *slot: the item actor's control block (weak ref held). false: the room isn't loaded
+bool digs_spawn_item(Cpu *c, const char *room, uint64_t key, uint32_t zone, const float pos[3], float scale, float turn,
+                     const char *const strs[5], uint64_t *slot, bool *spawned) {
     int idx[8];
+    *spawned = false;
     for (int k = 0; k < 8; k++)
-        if ((idx[k] = pool_index(c, strs[k])) < 0) { LOG("[digs] string pool full\n"); return true; }
+        if ((idx[k] = pool_index(c, k < 5 ? strs[k] : "")) < 0) { LOG("[digs] string pool full\n"); return true; }
     uint64_t s = scratch(), info = s + 0x40, sctrl;
-    bool loaded = screen_room(c, s + 0x10, g / 80, &sctrl);
+    bool loaded = room_named(c, s + 0x10, room, &sctrl);
     if (loaded) {
-        ST64(info, 0x7c00000000000000ull | (uint64_t)g);  // (actor key: a tag of ours + the tile)
+        ST64(info, key);
         ST16(info + 8, T_SINKING_SWORD);
-        ST32(info + 0xc, g_zone);
+        ST32(info + 0xc, zone);
         for (int k = 0; k < 8; k++) { ST32(info + 0x10 + 8 * k, (uint32_t)idx[k]); ST8(info + 0x14 + 8 * k, 5); }
-        float x, z, *tp = (float *)(uintptr_t)(info + 0x180), a = t->turn * (float)M_PI / 360.0f;
-        tile_xz(g, &x, &z);
-        tp[0] = x, tp[1] = t->y, tp[2] = z;
+        float *tp = (float *)(uintptr_t)(info + 0x180), a = turn * (float)M_PI / 360.0f;
+        tp[0] = pos[0], tp[1] = pos[1], tp[2] = pos[2];
         tp[5] = sinf(a), tp[7] = cosf(a);
-        tp[8] = tp[9] = tp[10] = t->scale > 0 ? t->scale : 1.0f;
+        tp[8] = tp[9] = tp[10] = scale > 0 ? scale : 1.0f;
         c->x[0] = s;
         c->x[1] = s + 0x10;
         c->x[2] = info;
         guest_call(c, GA_CREATE_ACTOR);
         uint64_t ictrl = LD64(s + 8);
+        *spawned = LD64(s) != 0;
         if (LD64(s) && ictrl) {
-            hold_weak(&g_item[g], ictrl);
+            hold_weak(slot, ictrl);
             c->x[0] = ictrl;
             guest_call(c, GA_SP_RELEASE);
         }
-        LOG("[digs] item %s on %02d%c tile %d (%s)\n", t->name, g / 80 / 16 + 1, 'A' + g / 80 % 16, g % 80,
-            LD64(s) ? "up" : "failed");
     }
     if (sctrl) { c->x[0] = sctrl; guest_call(c, GA_SP_RELEASE); }
+    return loaded;
+}
+
+bool digs_actor_alive(uint64_t ctrl) { return alive(ctrl); }
+void digs_drop_ref(Cpu *c, uint64_t *slot) { drop(c, slot); }
+int digs_pool_index(Cpu *c, const char *str) { return pool_index(c, str); }
+
+static bool spawn_item(Cpu *c, int g) {
+    const Tile *t = &g_tiles[g];
+    const char *strs[5] = {t->model, t->mname, t->entry, "LARDigItem", t->shell ? "true" : "false"};
+    char room[16];
+    float pos[3];
+    bool up;
+    snprintf(room, sizeof room, "Field_%02d%c", g / 80 / 16 + 1, 'A' + g / 80 % 16);
+    tile_xz(g, &pos[0], &pos[2]);
+    pos[1] = t->y;
+    bool loaded = digs_spawn_item(c, room, 0x7c00000000000000ull | (uint64_t)g,  // (actor key: a tag of ours + the tile)
+                                  g_zone, pos, t->scale, t->turn, strs, &g_item[g], &up);
+    if (loaded)
+        LOG("[digs] item %s on %02d%c tile %d (%s)\n", t->name, g / 80 / 16 + 1, 'A' + g / 80 % 16, g % 80,
+            up ? "up" : "failed");
     return loaded;
 }
 

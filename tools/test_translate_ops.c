@@ -39,6 +39,12 @@ static uint64_t hsetp2(int pa, int pb, int a, int b, int cmp, int p, bool pneg, 
            (uint64_t)cmp << 35 | (uint64_t)p << 39 | (uint64_t)pneg << 42 | (uint64_t)bop << 45 | (uint64_t)hand << 49;
 }
 
+// LDC Rd, c[idx][Ra + off]; size 4 is 32-bit, 5 is .64 (Rd, Rd+1)
+static uint64_t ldc(int d, int a, int idx, uint32_t off, int size) {
+    return 0xef90000000000000ull | PT_GUARD | (uint64_t)d | (uint64_t)a << 8 | (uint64_t)(off & 0xFFFF) << 20 |
+           (uint64_t)idx << 36 | (uint64_t)size << 48;
+}
+
 typedef struct {
     const char *name;
     uint64_t insn[6];  // 0-terminated
@@ -86,6 +92,13 @@ static const Case *cases(int *n) {
     CASE("HSETP2.GT.H_AND.OR PT (first)", "p0", 1, mov32i(1, 0x00003C00u), mov32i(2, 0), hsetp2(0, 1, 1, 2, GT, 7, false, OR, true));
     CASE("HSETP2.GT.H_AND.OR PT (second)", "p1", 0, mov32i(1, 0x00003C00u), mov32i(2, 0), hsetp2(0, 1, 1, 2, GT, 7, false, OR, true));
     CASE("HSETP2.LT.AND PT (per half)", "p1", 1, mov32i(1, 0xBC000000u), mov32i(2, 0), hsetp2(0, 1, 1, 2, LT, 7, false, AND, false));
+    // LDC.64 with the address register among the destinations: both words come from the original address (the
+    // test's constant buffer 3 holds 0x1000 + word index at every word)
+    CASE("LDC.64 R4, c[3][R4+4] (low)", "r4", 0x1003u, mov32i(4, 8), ldc(4, 4, 3, 4, 5));
+    CASE("LDC.64 R4, c[3][R4+4] (high)", "r5", 0x1004u, mov32i(4, 8), ldc(4, 4, 3, 4, 5));
+    CASE("LDC.64 R4, c[3][R5+4] (low)", "r4", 0x1003u, mov32i(5, 8), ldc(4, 5, 3, 4, 5));
+    CASE("LDC.64 R4, c[3][R5+4] (high)", "r5", 0x1004u, mov32i(5, 8), ldc(4, 5, 3, 4, 5));
+    CASE("LDC R4, c[3][R4+4]", "r4", 0x1003u, mov32i(4, 8), ldc(4, 4, 3, 4, 4));
 #undef CASE
     *n = k;
     return c;
@@ -105,6 +118,9 @@ static const char prelude[] =
     "static float2 hx(uint v, uint swz) { if (swz == 1u) { float f = as_type<float>(v); return {f, f}; }"
     " float2 h = {h2f(v & 0xFFFFu), h2f(v >> 16)}; return swz == 2u ? float2{h.x, h.x} : swz == 3u ? float2{h.y, h.y} : h; }\n"
     "static float2 operator-(float2 a) { return {-a.x, -a.y}; }\n"
+    "struct cbuf { uint at(uint off) const { return 0x1000u + (off >> 2); } };\n"
+    "static const cbuf cb3 = {};\n"
+    "static uint cbr(const cbuf &cb, uint off) { return cb.at(off); }\n"
     "static int fails;\n"
     "static void check(const char *name, uint got, uint want) {\n"
     "    if (got != want) { printf(\"FAIL %s: got 0x%08x, want 0x%08x\\n\", name, got, want); fails++; }\n"

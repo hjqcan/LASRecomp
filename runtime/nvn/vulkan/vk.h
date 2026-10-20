@@ -29,12 +29,21 @@ typedef struct {
     VkDevice dev;
     VkQueue queue;
     uint32_t qfam;
+    uint32_t ts_bits;          // the queue's timestampValidBits (0: no timestamps)
     VmaAllocator vma;
     VkPhysicalDeviceProperties props;
     VkPipelineCache pcache;
     VkSemaphore timeline;      // value = last completed submission number
     VkCommandPool pool;        // render thread only
     bool custom_border, divisor, host_import, dmabuf;
+    bool ssbo_chunks;  // stores and atomics from fragment and vertex shaders (exec.c: the heap in chunks counts misses)
+    bool lazy_heap, bda;  // the heap imported chunk by chunk (device.c lazy_heap_predicted), buffer device addresses enabled for it
+    bool heap_probe;      // one import tried at the start, lazy chunks if it runs out of memory (exec.c whole_import_probe_oom)
+    // on by default on integrated GPUs only (device.c; LARECOMP_VK_LEAN_USAGE / LARECOMP_VK_SMAA_STENCIL /
+    // LARECOMP_NO_FRAME_CLEAR =0 / =1 override):
+    bool lean_usage;      // colour images list their view formats instead of a bare MUTABLE_FORMAT (textures.c create_image)
+    bool smaa_stencil;    // SMAA's weights pass only where the edge pass found edges (exec.c post_process)
+    bool no_frame_clear;  // scene targets not cleared at their first use in each frame (textures.c renderer_texture_frame_fresh)
     // window
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
@@ -57,6 +66,13 @@ void vk_wait_seq(uint64_t seq);
 void vk_full_barrier(VkCommandBuffer cb);
 void vk_end_pass(void);
 void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra);  // submit + one more cb (present)
+// GPU timer (exec.c gpu_timer_add): the window image's submission starts its counted work here (after its acquire wait)
+void vk_gpu_timer_window_start(void);
+bool vk_gpu_split_ns(uint64_t out[4]);  // cumulative: game GPU ns, window GPU ns, frame spans' ns, frames; false: no timer
+uint64_t vk_cum_wait_ns(void);          // cumulative vk_wait_seq time
+// (device.c) CPU time blocked presenting, cumulative ns: [0] frame slot's fence, [1] window image acquire, [2] present;
+// [3]: frames presented
+extern uint64_t g_vk_frame_waits[4];
 
 // Transient GPU-visible memory that lives until the submission it was allocated for completes.
 typedef struct { VkBuffer buf; uint64_t off; void *ptr; } VkSpan;
@@ -79,7 +95,8 @@ typedef struct TexBackend {
     bool scalable, presented;
     uint64_t touched_frame, frame_cleared;
     uint32_t level_gen;
-    float sx, sy;
+    float sx, sy;        // the scale the contents were drawn at (scalable textures)
+    float ax, ay;        // the allocation scale (the image's size; Dynamic: the contents use a part of it)
     void *pending_rgba;  // host-produced pixels (video) waiting to be uploaded on the render thread
     uint32_t pending_w, pending_h, pending_stride;
     bool pending_nv12;        // pending_rgba holds NV12 (Y, then UV at pending_uv_off): converted on the GPU
@@ -89,6 +106,9 @@ typedef struct TexBackend {
     int tp;              // runtime/nvn/texpatch.c: 0 not checked yet, -1 none, else known UI texture + 1
     uint32_t tp_gen;     // texpatch_generation() it was last uploaded with
     int reg;  // slot in textures.c's live list + 1 (a reboot destroys them all)
+    // (g_vk.lean_usage) the only formats views of this image may have: nview_fmt 0 = any compatible one
+    VkFormat view_fmt[2];
+    uint8_t nview_fmt;
 } TexBackend;
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)
@@ -101,13 +121,16 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
 VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uint32_t lv0, uint32_t nlv, uint32_t ly0,
                           uint32_t nly, VkComponentMapping sw, VkImageAspectFlags aspect);
 VkImageView vk_dummy_view(int textype);
+VkFormat vk_view_format(TexBackend *b, VkFormat want);  // want, or the image's own format where want isn't allowed
 void vk_convert_nv12(TexBackend *b, const void *nv12, uint32_t w, uint32_t h, uint32_t stride, uint32_t uv_off);  // exec.c
+VkImageView vk_dummy_color_view(uint32_t w, uint32_t h, uint32_t samples);
 VkSampler vk_sampler(NvnSamplerDesc *d);
 VkSampler vk_default_sampler(bool linear);
 void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect);
 // Destruction once every submission that may use the object has completed.
 void vk_defer_image(VkImage img, VmaAllocation mem);
 void vk_defer_view(VkImageView v);
+void vk_defer_buffer(VkBuffer b, VkDeviceMemory m);  // raw memory (an import); destroyed once the pending submission is done
 void vk_views_forget(TexBackend *b);  // drop (deferred) the cached views of an image being replaced
 uint64_t vk_frame_counter(void);
 

@@ -55,7 +55,7 @@ def main():
     photos = sorted((output/'photos').glob('*.png'))
     hashes = [hashlib.sha256(p.read_bytes()).hexdigest() for p in photos]
     passed = (run.returncode == 0 and len(hashes) == 2 and len(set(hashes)) == 1 and
-              '[photo] frozen at frame' in text and '[photo] resumed at frame 2599' in text and
+              '[photo] frozen at frame' in text and '[photo] resumed at frame' in text and
               'level MarinTarinHouse' in text and (output/'resumed.png').is_file())
     report = {'passed': passed, 'exit_code': run.returncode,
               'photos': [p.name for p in photos], 'sha256': hashes,

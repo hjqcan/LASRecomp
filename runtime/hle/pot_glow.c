@@ -246,6 +246,110 @@ void pot_reveal_tick(uint64_t frame) {
     LOG("[pots] %d cut bush item(s) around Link: %d shown full size (%.1f ms)\n", nw, done, (plat_now_ns() - t0) / 1e6);
 }
 
+// A bush's item only exists once the bush is cut. It used to stand hidden inside the bush, shrunk - but shrinking
+// doesn't shrink what Link touches to pick it up: pressed against the bush (from below, cutting the one next to it)
+// he took the item through the leaves. The gold bush then went green for an item that seemed to come out of another
+// bush, and that other bush stayed gold, its own item never taken (user reports, beta 5). Now the level's spawn of
+// the item is skipped while the bush stands (rt_bush_item_skip, from the actor factory hook in runtime/hle/souls.c)
+// and its spawn info kept; once the bush's cut flag is set the item is spawned into the bush's screen with it, full
+// size (pot_bush_game_tick). A bush cut when its room loads lets the item come with the room, full size.
+#define T_SINKING_SWORD 0x194
+#define BUSH_KEY_TAG 0x7Bu  // (tools/rando/bushes.py key_tag: the items' actor keys)
+#define SPAWN_INFO_SIZE 0x1c0  // spawn info: +0 key, +8 type, +0xc zone, +0x10 parameters, +0x180 position / rotation / scale
+static uint8_t **g_info;  // per spot: the skipped spawn of its item (bush not cut yet)
+static uint64_t *g_item;  // per spot: weak ref (control block) of the item we spawned
+static uint64_t g_spawn_scratch;
+RT_ON_RESET(pot_bush_reset) {  // (the infos and refs were the old boot's)
+    if (g_info)
+        for (int i = 0; i < g_npots; i++) free(g_info[i]);
+    free(g_info), free(g_item);
+    g_info = NULL, g_item = NULL;
+    g_spawn_scratch = 0;
+}
+
+bool rt_bush_item_skip(uint32_t type, uint64_t info) {
+    if (type != T_SINKING_SWORD || (LD64(info) >> 56) != BUSH_KEY_TAG) return false;
+    if (g_npots < 0) load();
+    if (g_npots <= 0) return false;
+    const float *pos = (const float *)(uintptr_t)(info + 0x180);
+    const char *lv = current_level();
+    for (int i = 0; i < g_npots; i++) {
+        Pot *p = &g_pots[i];
+        if (p->cut < 0 || p->x != pos[0] || p->y != pos[1] || p->z != pos[2] || strcmp(p->level, lv)) continue;
+        if (!g_info) g_info = calloc((size_t)g_npots, sizeof *g_info), g_item = calloc((size_t)g_npots, sizeof *g_item);
+        float *scale = (float *)(uintptr_t)(info + 0x180 + 0x20);
+        if (flags_ext_get(p->cut) || !unchecked(p)) {  // cut already (or taken): as the room has it, full size
+            if (unchecked(p)) scale[0] = scale[1] = scale[2] = p->full;
+            free(g_info[i]);
+            g_info[i] = NULL;
+            return false;
+        }
+        if (!g_info[i]) g_info[i] = malloc(SPAWN_INFO_SIZE);
+        memcpy(g_info[i], (const void *)(uintptr_t)info, SPAWN_INFO_SIZE);
+        scale = (float *)(g_info[i] + 0x180 + 0x20);
+        scale[0] = scale[1] = scale[2] = p->full;
+        return true;
+    }
+    return false;
+}
+
+static bool weak_alive(uint64_t ctrl) { return ctrl && (int64_t)LD64(ctrl + 8) >= 0; }
+
+static void weak_drop(Cpu *c, uint64_t *slot) {
+    if (!*slot) return;
+    c->x[0] = *slot;
+    *slot = 0;
+    guest_call(c, GA_WEAK_RELEASE);
+}
+
+static bool spawn_bush_item(Cpu *c, int i) {
+    bool digs_screen_room(Cpu *c, uint64_t pair, int screen, uint64_t *sctrl);  // runtime/hle/digs.c
+    const Pot *p = &g_pots[i];
+    int row = 0;
+    char col = 0;
+    if (sscanf(p->room, "Field_%2d%c", &row, &col) != 2 || row < 1 || row > 16 || col < 'A' || col > 'P') return true;
+    if (!g_spawn_scratch) g_spawn_scratch = (uint64_t)(uintptr_t)hle_alloc(0x400);
+    uint64_t s = g_spawn_scratch, info = s + 0x40, sctrl;
+    memset((void *)(uintptr_t)s, 0, 0x400);
+    memcpy((void *)(uintptr_t)info, g_info[i], SPAWN_INFO_SIZE);
+    bool loaded = digs_screen_room(c, s + 0x10, (row - 1) * 16 + (col - 'A'), &sctrl);
+    if (loaded) {
+        c->x[0] = s;
+        c->x[1] = s + 0x10;
+        c->x[2] = info;
+        guest_call(c, GA_CREATE_ACTOR);
+        uint64_t ictrl = LD64(s + 8);
+        if (LD64(s) && ictrl) {
+            __atomic_fetch_add((int64_t *)(uintptr_t)(ictrl + 0x10), 1, __ATOMIC_ACQ_REL);  // (our weak ref)
+            g_item[i] = ictrl;
+            c->x[0] = ictrl;
+            guest_call(c, GA_SP_RELEASE);
+        }
+        LOG("[pots] bush %s cut: its item (flag %d) %s\n", p->room, p->flag, LD64(s) ? "spawned" : "failed to spawn");
+    }
+    if (sctrl) { c->x[0] = sctrl; guest_call(c, GA_SP_RELEASE); }
+    return loaded;
+}
+
+// game thread, once per frame (runtime/hle/input.c)
+void pot_bush_game_tick(Cpu *c, uint64_t frame) {
+    if (!g_info || frame % 4) return;
+    extern int game_in_play(void);
+    if (!game_in_play()) return;
+    uint64_t saved[31], sp = c->sp, pc = c->pc;
+    memcpy(saved, c->x, sizeof saved);
+    const char *lv = current_level();
+    for (int i = 0; i < g_npots; i++) {
+        if (g_item[i] && !weak_alive(g_item[i])) weak_drop(c, &g_item[i]);  // (picked up, or its room unloaded)
+        if (!g_info[i] || strcmp(g_pots[i].level, lv) || !flags_ext_get(g_pots[i].cut) || !unchecked(&g_pots[i])) continue;
+        if (g_item[i]) continue;
+        if (spawn_bush_item(c, i)) free(g_info[i]), g_info[i] = NULL;  // (once: a reload of the room keeps its own)
+    }
+    memcpy(c->x, saved, sizeof saved);
+    c->sp = sp;
+    c->pc = pc;
+}
+
 // The item that was out already when its bush was cut keeps the scale it spawned with: until the room is loaded again
 // its draws are scaled up here instead (m: the draw's model matrix, vertex UBO 2, 3x4 row-major, in guest memory -
 // scaled in place, so only a matrix still at the hidden scale is touched: a second pass over the same UBO, e.g. the

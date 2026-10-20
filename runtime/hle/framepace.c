@@ -6,7 +6,8 @@
 // the last frame, so the world advances by the time that passed. The game's own waiting is unaffected (it reads
 // the interval nowhere else). Shared by the macOS and Windows builds.
 // FINDING (2026-10-09): forcing 2 steps did NOT change Link's walking speed - gameplay is a true fixed step per
-// frame; this timer feeds something else. Kept for research, off by default.
+// frame; this timer feeds something else. Kept for research, off by default. (2026-10-18: the read is the game's
+// dynamic resolution's frame budget - tools/patches.py GAME_DYNRES_SITE, now off, so it no longer runs at all.)
 //   LARECOMP_FRAMEPACE=1     hand the timer the vsyncs elapsed (default: the game's own value)
 //   LARECOMP_FRAME_STEPS_MAX maximum steps per frame (default 4: after a long stall the game doesn't jump ahead)
 //   LARECOMP_FORCE_STEPS=<n> (test) always n

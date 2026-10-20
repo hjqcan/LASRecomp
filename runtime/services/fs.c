@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #ifdef _WIN32
+#include <io.h>
 #include <windows.h>
 #undef IN   // (windows.h's empty parameter markers; ipc.h defines its own)
 #undef OUT
@@ -485,9 +486,37 @@ static Service *open_romfs_storage(void) {
 // file - so a crash or power loss mid-save leaves the last committed save, never a half-written one (the save
 // backups PR #55 was closed in favour of this). Reads see the pending copy, as the Switch's do before a commit. A
 // copy left by a crash is dropped at the next mount (uncommitted, as on the Switch). The SD card mount writes in place.
+// A save that can't be written (save folder not writable, disk full, ...) is dropped whole and the committed save
+// stays as it was, but the game is never told: its SDK aborts on any failed OpenFile / Write / Flush / Commit (the
+// crash dialog), and it has no "could not save" path anyway. The player gets one warning (save_failed) instead.
 #define PENDING_MAX 16
-typedef struct { char root[1024]; bool journaled; int npending; char pending[PENDING_MAX][1100]; } HostFs;
-typedef struct { int fd; char path[1100]; } HostFile;
+typedef struct {
+    char root[1024];
+    bool journaled;
+    int npending;
+    char pending[PENDING_MAX][1100];
+    bool failed[PENDING_MAX];  // a write to this working copy failed: dropped at the Commit, never published
+} HostFs;
+typedef struct {
+    int fd;
+    char path[1100];
+    HostFs *fs;    // a save file opened for writing (journaled mount), else NULL
+    int slot;      // its working copy in fs->pending (-1: a scratch copy)
+    bool scratch;  // staging failed: the writes go to a temporary file outside the save folder, never committed
+} HostFile;
+
+// Saving failed: say so loudly in the log, and once per run in a dialog (the game itself still says "Game saved").
+static void save_failed(HostFs *fs, const char *what, const char *path, int error) {
+    LOG("[save] SAVE FAILED: %s %s (%s) - not saved, the last committed save is kept\n", what, path,
+        error ? strerror(error) : "earlier error");
+    static bool told;
+    if (told) return;
+    told = true;
+    char text[1400];
+    snprintf(text, sizeof text, "Your game could not be saved (the game may still say it was). Your previous save "
+             "is unchanged.\n\nMake sure this folder can be written to and the disk has free space:\n%s", fs->root);
+    plat_notice(text);
+}
 
 static void sync_dir_of(const char *path) {
     char d[1100];
@@ -505,51 +534,161 @@ static void sync_dir_of(const char *path) {
 // code page the A function takes our paths as they are)
 static int replace_file(const char *from, const char *to) {
 #ifdef _WIN32
-    return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
+    if (MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return 0;
+    LOG("[save] replace %s failed (Windows error %lu)\n", to, (unsigned long)GetLastError());
+    errno = EIO;
+    return -1;
 #else
     return rename(from, to);
 #endif
 }
 
+// in -> out from the start (errno set on failure)
+static bool copy_fd(int in, int out) {
+    char buf[65536];
+    ssize_t n;
+    while ((n = read(in, buf, sizeof buf)) > 0)
+        for (ssize_t done = 0; done < n;) {
+            ssize_t w = write(out, buf + done, (size_t)(n - done));
+            if (w < 0 && errno == EINTR) continue;
+            if (w <= 0) { if (!w) errno = EIO; return false; }
+            done += w;
+        }
+    return n == 0;
+}
+
 static bool copy_file(const char *from, const char *to) {
     int in = open(from, O_RDONLY);
+    if (in < 0) return false;
     int out = open(to, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    bool ok = out >= 0;
-    char buf[65536];
-    ssize_t n = 0;
-    while (ok && in >= 0 && (n = read(in, buf, sizeof buf)) > 0) ok = write(out, buf, (size_t)n) == n;
-    if (in >= 0) close(in);
-    if (out >= 0) close(out);
-    return ok && n >= 0;
+    bool ok = out >= 0 && copy_fd(in, out);
+    int error = errno;
+    close(in);
+    if (out >= 0 && close(out)) { error = errno; ok = false; }
+    errno = error;
+    return ok;
 }
 
-// the working copy of a save file (made on its first open for writing; "" for the SD card mount)
-static bool pending_of(HostFs *fs, const char *p, bool create, char *out, size_t n) {
-    if (!fs->journaled) return false;
+// A copy of the save file outside the save folder, deleted when closed: what the game writes when its working copy
+// can't be made. Writing over the committed file instead would put the only copy at risk (a crash, a full disk or a
+// failed write mid-save leaves it half-written, and a rando slot's flags sidecar would no longer match it).
+static int scratch_copy(const char *from) {
+    int in = open(from, O_RDONLY);
+    if (in < 0) return -1;
+#ifdef _WIN32
+    char dir[MAX_PATH], name[MAX_PATH];
+    int fd = -1;
+    if (GetTempPathA(sizeof dir, dir) && GetTempFileNameA(dir, "las", 0, name))
+        fd = _open(name, _O_RDWR | _O_BINARY | _O_TEMPORARY);
+#else
+    char name[1100];
+    const char *dir = getenv("TMPDIR");
+    snprintf(name, sizeof name, "%s/lasrecomp-save-XXXXXX", dir && *dir ? dir : "/tmp");
+    int fd = mkstemp(name);
+    if (fd >= 0) unlink(name);
+#endif
+    if (fd >= 0 && !copy_fd(in, fd)) { close(fd); fd = -1; }
+    close(in);
+    return fd;
+}
+
+// the working copy of a save file (made on its first open for writing): its index in fs->pending; -1 for the SD
+// card mount, a file not being saved, or (errno set) when the copy can't be made
+static int pending_of(HostFs *fs, const char *p, bool create, char *out, size_t n) {
+    if (!fs->journaled) return -1;
     snprintf(out, n, "%s.pending", p);
-    for (int i = 0; i < fs->npending; i++) if (!strcmp(fs->pending[i], p)) return true;
-    if (!create || fs->npending == PENDING_MAX) return false;
-    if (!copy_file(p, out)) { unlink(out); return false; }
-    snprintf(fs->pending[fs->npending++], sizeof fs->pending[0], "%s", p);
+    for (int i = 0; i < fs->npending; i++) if (!strcmp(fs->pending[i], p)) return i;
+    if (!create) return -1;
+    if (fs->npending == PENDING_MAX) { errno = ENOSPC; return -1; }
+    if (strlen(p) >= sizeof fs->pending[0]) { errno = ENAMETOOLONG; return -1; }
+    if (!copy_file(p, out)) { int error = errno; unlink(out); errno = error; return -1; }
+    fs->failed[fs->npending] = false;
+    snprintf(fs->pending[fs->npending], sizeof fs->pending[0], "%s", p);
+    return fs->npending++;
+}
+
+static bool sync_save_file(const char *path) {
+    int fd = open(path, O_RDWR);
+    if (fd < 0) return false;
+    bool ok = fsync(fd) == 0;
+    int error = errno;
+    if (close(fd)) return false;
+    if (!ok) errno = error;
+    return ok;
+}
+static bool commit_slot(const char *path) {
+    char pending[1200], flags[1200], flags_pending[1200];
+    snprintf(pending, sizeof pending, "%s.pending", path);
+    snprintf(flags, sizeof flags, "%s.flagsx", path);
+    snprintf(flags_pending, sizeof flags_pending, "%s.flagsx.pending", path);
+    struct stat st;
+    bool has_flags = stat(flags_pending, &st) == 0;
+    if (!has_flags && errno != ENOENT) return false;
+    if (has_flags && !sync_save_file(flags_pending)) return false;
+    if (!stat(pending, &st)) {
+        if (!sync_save_file(pending) || replace_file(pending, path)) return false;
+        sync_dir_of(path);
+    } else if (errno != ENOENT || !has_flags) return false;
+    // A missing working copy with pending flags means the data rename already succeeded. Finish that pair
+    // on retry; never discard its flags or let a fresh mount read the new data with the old flags.
+    if (has_flags) {
+        if (replace_file(flags_pending, flags)) return false;
+        sync_dir_of(flags);
+    }
     return true;
 }
-
+// a save that won't be committed: its working copies go (the committed file and sidecar stay as they are)
+static void drop_slot(const char *path) {
+    char pending[1200], flags_pending[1250];
+    snprintf(pending, sizeof pending, "%s.pending", path);
+    snprintf(flags_pending, sizeof flags_pending, "%s.flagsx.pending", path);
+    unlink(pending);
+    unlink(flags_pending);
+}
+// Commit always succeeds for the game (see save_failed). A save that failed is dropped whole. If only the sidecar's
+// rename failed (the data is already replaced), its working copy stays for the next mount to finish the pair.
 static void commit(HostFs *fs) {
     for (int i = 0; i < fs->npending; i++) {
-        char tmp[1100];
-        snprintf(tmp, sizeof tmp, "%s.pending", fs->pending[i]);
-        int fd = open(tmp, O_RDWR);
-        if (fd >= 0) { fsync(fd); close(fd); }
-        if (replace_file(tmp, fs->pending[i])) {
-#ifdef _WIN32
-            LOG("[save] commit %s failed (Windows error %lu)\n", fs->pending[i], (unsigned long)GetLastError());
-#else
-            LOG("[save] commit %s failed (%d)\n", fs->pending[i], errno);
-#endif
-        }
-        else { LOG("[save] committed %s\n", fs->pending[i]); sync_dir_of(fs->pending[i]); }
+        const char *path = fs->pending[i];
+        if (fs->failed[i]) {
+            drop_slot(path);
+            save_failed(fs, "dropped the failed save", path, 0);
+        } else if (!commit_slot(path)) {
+            int error = errno;
+            char pending[1200];
+            struct stat st;
+            snprintf(pending, sizeof pending, "%s.pending", path);
+            if (!stat(pending, &st)) {
+                drop_slot(path);
+                save_failed(fs, "could not commit", path, error);
+            } else LOG("[save] committed %s, but not its flags sidecar yet (%s): the next mount finishes it\n", path,
+                       strerror(error));
+        } else LOG("[save] committed %s\n", path);
     }
     fs->npending = 0;
+}
+// Recover pairs before dropping abandoned working copies: deleting the data copy first would make an
+// uncommitted sidecar look committed. No format change: existing .flagsx files still contain just flag bytes.
+static bool recover_save_flags(const char *root) {
+    DIR *d = opendir(root);
+    if (!d) return false;
+    struct dirent *e;
+    int error = 0;
+    while ((e = readdir(d))) {
+        size_t n = strlen(e->d_name);
+        if (n <= 15 || strcmp(e->d_name + n - 15, ".flagsx.pending")) continue;
+        char path[1200], pending[1250], flags_pending[1250];
+        snprintf(path, sizeof path, "%s/%.*s", root, (int)(n - 15), e->d_name);
+        snprintf(pending, sizeof pending, "%s.pending", path);
+        snprintf(flags_pending, sizeof flags_pending, "%s.flagsx.pending", path);
+        struct stat st;
+        if (!stat(pending, &st)) {
+            if (unlink(flags_pending)) { error = errno; break; }
+        } else if (errno != ENOENT || !commit_slot(path)) { error = errno; break; }
+    }
+    closedir(d);
+    if (error) errno = error;
+    return !error;
 }
 typedef struct { DIR *d; char path[1024]; int mode; } HostDir;
 
@@ -582,15 +721,23 @@ static uint32_t errno_result(void) {
     return MAKE_RESULT(2, 4000);
 }
 
+// a save file's write / flush / resize failed: that save is dropped at the Commit (the game is told it worked)
+static void file_failed(HostFile *f, const char *what, int error) {
+    if (f->slot >= 0) f->fs->failed[f->slot] = true;
+    save_failed(f->fs, what, f->path, error);
+}
+
 static void file(Service *s, IpcReq *req, IpcResp *resp) {
     HostFile *f = s->state;
     switch (req->cmd) {
     case 0: {  // Read(option, offset, size) -> B
         int64_t off = IN(int64_t, 8), size = IN(int64_t, 16);
         IpcBuf *b = out_buf(req, 0);
+        if (!b || off < 0 || size < 0) { resp->result = MAKE_RESULT(2, 6001); break; }
         if ((uint64_t)size > b->size) size = (int64_t)b->size;
         ssize_t n = pread(f->fd, (void *)(uintptr_t)b->addr, (size_t)size, off);
-        if (strstr(f->path, "savedata")) {
+        if (n < 0) resp->result = errno_result();
+        if (n > 0 && !f->scratch && strstr(f->path, "savedata")) {
             LOG("[save] read %s off %lld size %lld -> guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)b->addr);
             extern void save_editor_file_read(const char *path, uint64_t addr, int64_t off, int64_t size);
             save_editor_file_read(f->path, b->addr, off, n);
@@ -606,15 +753,30 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         IpcBuf *a = in_buf(req, 0);
         if (strstr(f->path, "savedata"))
             LOG("[save] write %s off %lld size %lld <- guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)a->addr);
-        if (pwrite(f->fd, (void *)(uintptr_t)a->addr, (size_t)size, off) < 0) resp->result = errno_result();
-        else if (strstr(f->path, "savedata")) {
-            extern void flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size);
-            flags_ext_save_written(f->path, a->addr, off, size);
+        int error = 0;
+        for (int64_t done = 0; done < size;) {  // (a short write goes on from where it stopped)
+            ssize_t n = pwrite(f->fd, (void *)(uintptr_t)(a->addr + done), (size_t)(size - done), off + done);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) { error = n ? errno : EIO; break; }
+            done += n;
         }
+        if (!error && !f->scratch && strstr(f->path, "savedata")) {
+            extern bool flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size);
+            errno = 0;
+            if (!flags_ext_save_written(f->path, a->addr, off, size)) error = errno ? errno : EIO;
+        }
+        if (error && f->fs) file_failed(f, "write", error);
+        else if (error) { errno = error; resp->result = errno_result(); }
         break;
     }
-    case 2: fsync(f->fd); break;
-    case 3: if (ftruncate(f->fd, IN(int64_t, 0))) resp->result = errno_result(); break;
+    case 2:  // Flush
+        if (fsync(f->fd) && f->fs) file_failed(f, "flush", errno);
+        break;
+    case 3:  // SetSize
+        if (!ftruncate(f->fd, IN(int64_t, 0))) break;
+        if (f->fs) file_failed(f, "resize", errno);
+        else resp->result = errno_result();
+        break;
     case 4: {
         struct stat sb;
         fstat(f->fd, &sb);
@@ -719,14 +881,27 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     }
     case 8: {  // OpenFile(mode)
         uint32_t mode = IN(uint32_t, 0);
+        bool save = fs->journaled && (mode & 2);
         char work[2100];
         struct stat sb;
-        if (!stat(p, &sb) && pending_of(fs, p, (mode & 2) != 0, work, sizeof work)) snprintf(p, sizeof p, "%s", work);
-        int fd = open(p, (mode & 2) ? O_RDWR : O_RDONLY);
+        int slot = -1, fd = -1;
+        bool scratch = false;
+        bool exists = !stat(p, &sb);
+        if (exists) slot = pending_of(fs, p, save, work, sizeof work);
+        if (slot >= 0) {
+            snprintf(p, sizeof p, "%s", work);
+        } else if (save && exists) {  // (its working copy can't be made)
+            save_failed(fs, "could not stage", p, errno);
+            fd = scratch_copy(p);
+            scratch = true;
+            if (fd < 0) fd = open(p, O_RDONLY);  // (no scratch copy either: the writes fail and are dropped)
+        }
+        if (fd < 0 && !scratch) fd = open(p, (mode & 2) ? O_RDWR : O_RDONLY);
         if (fd < 0) { resp->result = errno_result(); break; }
         HostFile *f = calloc(1, sizeof *f);
         f->fd = fd;
-        strlcpy(f->path, p, sizeof f->path);
+        snprintf(f->path, sizeof f->path, "%s%s", p, scratch ? " (scratch copy)" : "");
+        if (save) { f->fs = fs; f->slot = scratch ? -1 : slot; f->scratch = scratch; }
         Service *fsvc = service_new("IFile", file, f);
         fsvc->on_close = file_close;
         ipc_return_object(resp, fsvc);
@@ -744,7 +919,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         ipc_return_object(resp, dsvc);
         break;
     }
-    case 10: commit(fs); break;  // Commit
+    case 10: commit(fs); break;  // Commit (always succeeds for the game: see save_failed)
     case 11: case 12: OUT(int64_t, 0) = 0x40000000; resp_size(resp, 8); break;
     case 13: rm_rf(p, true); break;
     case 14: memset(resp->data, 0, 0x20); resp_size(resp, 0x20); break;
@@ -768,6 +943,7 @@ static Service *open_host_fs(const char *sub) {
     mkdir(cmd, 0755);
     fs->journaled = strcmp(sub, "sdcard") != 0;
     if (fs->journaled) {  // (a working copy left by a crash: never committed - dropped, as on the Switch)
+        if (!recover_save_flags(fs->root)) { int error = errno; free(fs); errno = error; return NULL; }
         DIR *d = opendir(fs->root);
         struct dirent *e;
         while (d && (e = readdir(d))) {
@@ -796,7 +972,9 @@ SERVICE("fsp-srv", fsp_srv) {
         uint8_t type = IN(uint8_t, 0x8 + 0x18);  // attribute.type
         char sub[64];
         snprintf(sub, sizeof sub, "save_%u", type);
-        ipc_return_object(resp, open_host_fs(sub));
+        Service *mount = open_host_fs(sub);
+        if (mount) ipc_return_object(resp, mount);
+        else resp->result = errno_result();
         break;
     }
     case 200: ipc_return_object(resp, open_romfs_storage()); break;  // OpenDataStorageByCurrentProcess

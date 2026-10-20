@@ -71,6 +71,8 @@ static bool active(void) {
     return on;
 }
 
+bool escape_bottle_on(void) { return active(); }
+
 static const char *cur_level(void) {
     uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     return ps ? (const char *)(uintptr_t)ps : "";
@@ -161,7 +163,14 @@ static void bomb_bag_tint(float tint[8]) {
 }
 
 void escape_bottle_tint(int kind, const float *ui, uint32_t ui_size, float tint[8]) {
+    extern bool hint_sheet_tint(int kind, const float *ui, uint32_t ui_size, float tint[8]);
+    if (hint_sheet_tint(kind, ui, ui_size, tint) || kind == 5) return;  // (the Hint Sheet: runtime/hle/hint_sheet.c)
     if (kind == 4) { bomb_bag_tint(tint); return; }  // (the Magic Powder sack's map)
+    if (kind == 6) {  // (the Piece of Power's model map: Triforce pieces, runtime/hle/triforce.c)
+        extern void triforce_model_tint(const float *m, uint32_t m_size, float tint[8]);
+        triforce_model_tint(ui, ui_size, tint);
+        return;
+    }
     if (kind == 3) {  // (the fairy's model map: boss / mini-boss souls, runtime/hle/souls.c)
         extern void souls_fairy_tint(const float *m, uint32_t m_size, float tint[8]);
         souls_fairy_tint(ui, ui_size, tint);

@@ -207,10 +207,18 @@ NVN(nvnCommandBufferSetRenderTargets) {
     const uint64_t *colors = (const uint64_t *)(uintptr_t)s.x[2], *views = (const uint64_t *)(uintptr_t)s.x[3];
     for (int i = 0; i < n; i++) {
         rt.tex[i] = colors && colors[i] ? (uint64_t)(uintptr_t)HOST(NvnTexture, colors[i]) : 0;
-        if (views && views[i]) { rt.has_view[i] = 1; memcpy(&rt.views[i], (void *)(uintptr_t)views[i], sizeof(NvnTextureView)); }
+        if (views && views[i]) {
+            rt.has_view[i] = 1;
+            memcpy(&rt.views[i], (void *)(uintptr_t)views[i], sizeof(NvnTextureView));
+            nvn_texture_note_view((NvnTexture *)(uintptr_t)rt.tex[i], &rt.views[i]);
+        }
     }
     rt.depth = s.x[4] ? (uint64_t)(uintptr_t)HOST(NvnTexture, s.x[4]) : 0;
-    if (s.x[5]) { rt.has_dview = 1; memcpy(&rt.dview, (void *)(uintptr_t)s.x[5], sizeof(NvnTextureView)); }
+    if (s.x[5]) {
+        rt.has_dview = 1;
+        memcpy(&rt.dview, (void *)(uintptr_t)s.x[5], sizeof(NvnTextureView));
+        nvn_texture_note_view((NvnTexture *)(uintptr_t)rt.depth, &rt.dview);
+    }
     CmdRec *r = record(c, CMD_SET_RENDER_TARGETS, sizeof rt, &s);
     r->x[0] = (uint64_t)n;
     memcpy(r->extra, &rt, sizeof rt);
@@ -300,7 +308,7 @@ static void clear_texture(Cpu *c, int kind) {
     Snap s = snap(c);
     ClearTexRec ct = {0};
     ct.tex = (uint64_t)(uintptr_t)HOST(NvnTexture, s.x[1]);
-    if (s.x[2]) { ct.has_view = 1; memcpy(&ct.view, (void *)(uintptr_t)s.x[2], sizeof ct.view); }
+    if (s.x[2]) { ct.has_view = 1; memcpy(&ct.view, (void *)(uintptr_t)s.x[2], sizeof ct.view); nvn_texture_note_view((NvnTexture *)(uintptr_t)ct.tex, &ct.view); }
     if (s.x[3]) memcpy(ct.region, (void *)(uintptr_t)s.x[3], sizeof ct.region);
     if (s.x[4]) memcpy(ct.color, (void *)(uintptr_t)s.x[4], 16);
     CmdRec *r = record(c, CMD_CLEAR_TEXTURE, sizeof ct, &s);
@@ -378,7 +386,7 @@ NVN(nvnCommandBufferResumeTransformFeedback) { (void)c; }
 typedef struct { uint64_t tex; NvnTextureView view; uint8_t has_view; int32_t region[6]; } TexRef;
 static void tex_ref(TexRef *t, uint64_t tex, uint64_t view, uint64_t region) {
     t->tex = tex ? (uint64_t)(uintptr_t)HOST(NvnTexture, tex) : 0;
-    if (view) { t->has_view = 1; memcpy(&t->view, (void *)(uintptr_t)view, sizeof t->view); }
+    if (view) { t->has_view = 1; memcpy(&t->view, (void *)(uintptr_t)view, sizeof t->view); nvn_texture_note_view((NvnTexture *)(uintptr_t)t->tex, &t->view); }
     if (region) memcpy(t->region, (void *)(uintptr_t)region, sizeof t->region);
 }
 NVN(nvnCommandBufferCopyBufferToTexture) {  // (cmd, src, dst, dstView, dstRegion, flags)

@@ -15,11 +15,12 @@ void rt_mb_seen(uint64_t o);  // miniboss.c
 int rt_shadow_link_appear(uint64_t o);
 int rt_gohma_free(void);
 uint32_t rt_gohma_heading(uint64_t gohma, uint32_t track);
-int rt_crashout_skip(void);
+int rt_crashout_skip(uint64_t o);
 void rt_dig_hole(Cpu *c);  // digs.c
 uint64_t rt_hole_cap(void);
 void rt_frame_job_kickoff(uint64_t owner);  // delegate_null.c
 void rt_frame_job_finish(uint64_t job);
+void rt_owner_call_notify(Cpu *c, uint64_t obj);
 
 int rt_hook(Cpu *c, uint64_t site) {
     switch (site) {
@@ -28,8 +29,8 @@ int rt_hook(Cpu *c, uint64_t site) {
         return 0;
     case GA_SHADOW_LINK_APPEAR_SITE:  // SHADOW_LINK_APPEAR_SITE - ldr x9, [x0, #0x230]: his Appear event, none on the Field
         return rt_shadow_link_appear(c->x[0]) ? 2 : 0;
-    case GA_CRASHOUT_SITE:  // CRASHOUT_SITE - str wzr, [x0, #0xb8]: Blaino's knock-out, no crash-out on the Field
-        if (!rt_crashout_skip()) return 0;
+    case GA_CRASHOUT_SITE:  // CRASHOUT_SITE - str wzr, [x0, #0xb8]: Blaino's knock-out, no crash-out for copies
+        if (!rt_crashout_skip(c->x[0])) return 0;
         ST32(c->x[0] + 0xb8, 0);
         return 2;
     case GA_GOHMA_HEADING_SITES_0:  // GOHMA_HEADING_SITES - str w8, [x19, #0x15ec]: heading at Link on the Field
@@ -68,6 +69,12 @@ int rt_hook(Cpu *c, uint64_t site) {
         if (c->x[0]) return 0;
         LOG("[event] empty handler skipped (issue #41)\n");
         return 2;  // (the dispatcher's catch: returns 0)
+    case GA_CHOICE_COUNT_SITE: {  // CHOICE_COUNT_SITE - str w8, [x19, #0x1cc4]: a question's answer count (issue #183)
+        int32_t n = (int32_t)c->x[8];
+        if (n >= 2 && n <= 4) return 0;
+        FATAL("a question's answer count is %d: the game's text doesn't fit its language (issue #183)\n", n);
+        return 0;
+    }
     case GA_FRAME_JOB_KICKOFF_SITES_0:  // FRAME_JOB_KICKOFF_SITES - a frame job's rebuild waits for its last finish (#19)
     case GA_FRAME_JOB_KICKOFF_SITES_1:
     case GA_FRAME_JOB_KICKOFF_SITES_2:
@@ -75,6 +82,9 @@ int rt_hook(Cpu *c, uint64_t site) {
         return 0;
     case GA_FRAME_JOB_KICKOFF_SITES_3:
         rt_frame_job_kickoff(c->x[21]);
+        return 0;
+    case GA_OWNER_CALL_NOTIFY_SITE:  // OWNER_CALL_NOTIFY_SITE - add x0, x21, #0x38: notify only once the caller waits
+        rt_owner_call_notify(c, c->x[21]);
         return 0;
     case GA_FRAME_JOB_FINISH_SITE:  // FRAME_JOB_FINISH_SITE - ldr x8, [x0]: a frame job's finish (debug delay)
         rt_frame_job_finish(c->x[0]);

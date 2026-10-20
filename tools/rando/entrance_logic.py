@@ -33,7 +33,8 @@ def load(path=os.path.join(HERE, 'entrance_data.yml')):
 def pool(ed, closed=()):
     """closed: outer regions whose doors stay vanilla. Decoupled exits with the desert shut (open-desert off: Marin in
     the pool, the Walrus asleep) must not drop Link behind the Walrus - he couldn't walk back out, and the Marin gate
-    would be skipped - so the desert's two doors (Lanmola cave stairs, Animal Village cave wall) aren't shuffled then."""
+    would be skipped - so the desert's door (the Lanmola cave stairs) isn't shuffled then. (The Animal Village cave's
+    bombable wall is on the village side of the cliff, not behind the Walrus: an animal-village door, always pooled.)"""
     out = []
     for d in ed['doors']:
         if d['type'] != 'single' or d['id'] in KEEP or d.get('outer_region') in closed:

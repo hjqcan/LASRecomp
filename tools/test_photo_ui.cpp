@@ -2,6 +2,7 @@
 #include <cassert>
 #include <fstream>
 #include <vector>
+#include <thread>
 #include "settings.h"
 #include "ui/photo_mode.mm"
 
@@ -20,6 +21,7 @@ extern "C" const char *rt_data_root(void) { return data_root.c_str(); }
 extern "C" int game_in_play(void) { return playable; }
 extern "C" void input_reset(void) {}
 extern "C" uint64_t renderer_present_count(void) { return test_frame; }
+extern "C" uint64_t renderer_exec_frame(void) { return test_frame; }
 extern "C" PlatProc plat_spawn(const char *const args[], const char *, bool) {
     launched.clear();
     for (int i = 0; args[i]; ++i) launched.push_back(args[i]);
@@ -109,7 +111,38 @@ static void check_prompts(void) {
     g_bind_pad[BIND_A] = 1; g_bind_pad[BIND_B] = 0;
 }
 int main(int argc, char **argv) {
-    assert(argc == 2); data_root = argv[1];
+    assert(argc == 2 || argc == 3); data_root = argv[1];
+    if (argc == 3) {
+        // The producer sees only atomic flags; all mutable photo state stays on the render worker.
+        playable = true;
+        std::atomic<int> phase{0}, advance{0};
+        std::thread worker([&] {
+            photo_mode_frame(100); photo_mode_presented(101);
+            phase = 1; while (advance.load() < 1) std::this_thread::yield();
+            photo_mode_frame(101); photo_mode_presented(102);
+            phase = 2; while (advance.load() < 2) std::this_thread::yield();
+            int captures = 0;
+            for (int repeat = 0; repeat < 3; ++repeat) {
+                photo_mode_frame(102); // repeats must not advance the game's frame counter
+                if (const char *path = photo_mode_capture_path()) {
+                    ++captures; std::ofstream(path) << "synthetic capture"; photo_mode_capture_done();
+                    assert(message.find("Photo saved:") == 0 && message.find(data_root) == std::string::npos);
+                }
+                photo_mode_presented(103);
+            }
+            assert(captures == 2);
+            photo_mode_frame(102); photo_mode_presented(103);
+            phase = 3;
+        });
+        while (phase.load() < 1) std::this_thread::yield();
+        assert(photo_mode_active() && !photo_mode_hold()); advance = 1;
+        while (phase.load() < 2) std::this_thread::yield();
+        assert(photo_mode_hold()); advance = 2;
+        while (phase.load() < 3) std::this_thread::yield();
+        assert(!photo_mode_hold() && !photo_mode_active()); worker.join();
+        puts("Render-worker hold publication, repeated-frame captures and resume passed");
+        return 0;
+    }
     check_prompts();
     ImGui::CreateContext();
     auto &io = ImGui::GetIO();

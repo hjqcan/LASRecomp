@@ -13,15 +13,19 @@ appear, so it can't be beaten and what it guards can't be had:
             Link can always leave. Side-view arenas already open their way on by flag (Angler's Tunnel 04B north door
             via 846 <- 842; Eagle's Tower 03G via 939 <- 949); the Eagle's roof stairs back down to 03G (shown only
             after the fight) are made always there, or Link would be stuck on the empty roof.
-  walls     mini-boss rooms (any doorway can be the way in): souls.c keeps Link inside, off every wall but the one
-            toward the cell he came from, until the defeat flag is set or the soul is found (invisible wall).
+  walls     mini-boss rooms (any doorway can be the way in): souls.c keeps Link inside, off every wall but the doorway
+            he came in by, until the defeat flag is set or the soul is found (invisible wall). The room's shutters
+            (souls.tsv 'door' lines) become the game's fight-room doors (hold_shutters: shut behind Link as he comes
+            in, open on a door flag of their own): souls.c sets that flag with the defeat flag (the vanilla fight) or,
+            while the enemy is held back, for the doorway he came in by - the way on stays visibly shut.
   item      an Items.gsheet row per soul (the Secret Medicine's row with the fairy's model, drawn red; gettingFlag = flag), an Item.bfevfl entry
             showing the get message, System.msbt "You got Moldorm's Soul!" (English in every language folder). The
             item-get chains set the flag themselves (LAS item_get / chests, patched for 'BossSoul' / 'MinibossSoul').
   logic     the LAS kill condition (kill-moldorm, kill-hinox...) needs the soul, so every check that names it does too,
             also after tools/rando/room_logic.py rewrites dungeon checks (it keeps non-room atoms). Mini-boss rooms LAS
-            has no node for: leaving such a room (other than back) needs its soul - room_logic.EXIT_REQ for shuffled
-            dungeons, and for vanilla layouts the same room graph decides which checks lie behind (vanilla_gate).
+            has no node for: leaving such a room needs its kill condition (soul + what the fight takes; the soul alone
+            for Smasher / Grim Creeper) - room_logic.EXIT_REQ for shuffled dungeons, and for vanilla layouts the same
+            room graph decides which checks lie behind (vanilla_gate). Mini-boss rooms never move in room shuffle.
             The Color Dungeon's fairy rewards get kill-evil-orb (LAS never asked for the boss there).
 Overworld mini-bosses ("Mini-bosses among overworld enemies") are never held back: souls only apply in dungeons.
 """
@@ -142,8 +146,9 @@ def add_to_logic(logic_defs, item_defs, kinds, cat=None):
 
 
 def exit_req(cat):
-    """{catalog room: frozenset(soul atoms)} for every cell of a room unit holding a mini-boss."""
-    by_type = {t: las_name(m) for m, t, _, _ in MINIBOSSES}
+    """{catalog room: frozenset(atoms)} for every cell of a room unit holding a mini-boss: its kill condition (the soul
+    and what the fight needs: kill-hinox...), the soul alone for a kind LAS never names the fight of."""
+    by_type = {t: kill or las_name(m) for m, t, kill, _ in MINIBOSSES}
     out = {}
     for room, v in cat.items():
         atoms = {by_type[t] for u in v.get('unit') or [room] for t in cat.get(u, {}).get('types', ()) if t in by_type}
@@ -167,9 +172,10 @@ def vanilla_gate(cat, romfs, logic_defs, levels, extra_locations=None):
         edges, _ = room_logic.level_graph(cat, romfs, lv, layout, [], dungeon_gen.openings)
         start = dungeon_gen.ENTRANCES[lv].rsplit('_', 1)[1]
         terms = room_logic.reach_terms(edges, start, room_logic.LEVELS[lv][1])
+        gates = set().union(*room_logic.EXIT_REQ.values()) if room_logic.EXIT_REQ else set()
         need = {}
         for cell, ts in terms.items():
-            souls_in = [{a for a in t if a.startswith('soul-')} for t in ts]
+            souls_in = [{a for a in t if a in gates} for t in ts]
             if souls_in:
                 common = set.intersection(*souls_in)
                 if common:
@@ -246,9 +252,90 @@ def barriers(out_romfs, romfs, leb, cat, kinds):
                     c0, r0 = ord(room[-1]) - 65, int(room[-3:-1]) - 1
                     cells |= {(col + c - c0, row + rw - r0) for (c, rw), i in room_id.items() if i == a.roomID}
                 row_ = (level, types[a.type][0], a.switches[0][1], tuple(sorted(cells)))
-                if row_ not in out:
-                    out.append(row_)
+                if row_ not in [o[:4] for o in out]:
+                    out.append(row_ + (_shutters(rooms, cells),))
     return out
+
+
+def _shutters(rooms, cells):
+    """The room's shutters (ObjClosedDoor on an edge toward a cell outside the room): [(key, (col, row), side)]."""
+    out = []
+    for r in rooms.values():
+        for a in r.actors:
+            if a.type != 0xef or abs(a.posZ) < 0.01:
+                continue
+            c, rw = int(a.posX // 15), int(a.posZ // 12)
+            dx, dz = a.posX - c * 15, a.posZ - rw * 12
+            side = 'N' if dz < 1.5 else 'S' if dz > 10.5 else 'W' if dx < 1.5 else 'E' if dx > 13.5 else None
+            if (c, rw) not in cells or side is None:
+                continue
+            step = {'N': (0, -1), 'S': (0, 1), 'W': (-1, 0), 'E': (1, 0)}[side]
+            if (c + step[0], rw + step[1]) not in cells and (a.key, (c, rw), side) not in out:
+                out.append((a.key, (c, rw), side))
+    return out
+
+
+EVENT_BOX = ('Lv01TailCave', 'Lv01TailCave_07C', 0x191)  # the AreaEventBox of a fight room: room flag set as Link comes in
+
+
+def hold_shutters(out_romfs, romfs, leb, walls, door_flags):
+    """The walled rooms' shutters become the game's fight-room doors (as Tail Cave 07C's: switch 1 a room flag that an
+    AreaEventBox over the room sets as Link comes in - the doors shut behind him; switch 0 an event flag that opens
+    them) instead of following the enemy. Switch 0 is a door flag of their own that runtime/hle/souls.c keeps as the
+    room's defeat flag (the vanilla fight), and sets for the doorway Link came in by while the enemy is held back.
+    Each walled room gets such a box per cell, on a room flag no actor of the level uses. Returns the shutters changed."""
+    import collections
+    import copy
+    with open(_level_files(out_romfs, romfs, EVENT_BOX[0])[EVENT_BOX[1] + '.leb'], 'rb') as fh:
+        box0 = next(a for a in leb.Room(fh.read()).actors if a.type == EVENT_BOX[2])
+    n = 0
+    for level in sorted({w[0] for w in walls}):
+        files = _level_files(out_romfs, romfs, level)
+        rooms = {}
+        for fname, f in sorted(files.items()):
+            with open(f, 'rb') as fh:
+                rooms[fname] = leb.Room(fh.read())
+        used_local = {i for r in rooms.values() for a in r.actors for t, i in a.switches if t == 0}
+        keys = {a.key for r in rooms.values() for a in r.actors}
+        local = iter(i for i in range(200, 255) if i not in used_local)
+        changed = set()
+        for lv, _, _, cells, shutters in walls:
+            if lv != level or not shutters:
+                continue
+            flag = next(local)
+            want = {key: door_flags[key] for key, _, _ in shutters}
+            for fname, r in rooms.items():
+                for a in r.actors:
+                    if a.type == 0xef and a.key in want:
+                        a.switches = [(1, want[a.key]), (0, flag), (4, 0), (4, 0)]
+                        a.parameters = [0] + [b''] * (len(a.parameters) - 1)
+                        a.relationships.section_3 = []
+                        a.relationships.y = 0
+                        changed.add(fname)
+                        n += 1
+            # the boxes: in the room file of each cell (its room id), over the cell's middle
+            for c, rw in cells:
+                fname = f'{level}_{rw + 1:02d}{chr(65 + c)}.leb'
+                r = rooms.get(fname)
+                if r is None or not r.actors:
+                    continue
+                box = copy.deepcopy(box0)
+                box.key = (0x5E << 56) | (r.actors[0].key & 0x00FFFFFFFFFFFFFF)
+                while box.key in keys:
+                    box.key = (0x5E << 56) | ((box.key + (1 << 32)) & 0x00FFFFFFFFFFFFFF)
+                keys.add(box.key)
+                box.name = b'AreaEventBox-%016X' % box.key
+                box.roomID = collections.Counter(a.roomID for a in r.actors).most_common(1)[0][0]
+                box.posX, box.posY, box.posZ = c * 15 + 7.5, 0.0, rw * 12 + 6.0
+                box.switches = [(0, flag), (4, 0), (4, 0), (4, 0)]
+                r.actors.append(box)
+                changed.add(fname)
+        for fname in changed:
+            p = os.path.join(out_romfs, 'region_common', 'level', level, fname)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, 'wb') as fh:
+                fh.write(rooms[fname].repack())
+    return n
 
 
 def boss_doors(out_romfs, romfs, leb, cat):
@@ -308,19 +395,30 @@ def apply(out_dir, romfs, leb, oead_tools, event_tools, msbt, kinds, cat):
         return p
 
     all_souls = souls(kinds)
-    # event flags, after LAS's own (before potsanity's 1240+)
+    walls = barriers(out_romfs, romfs, leb, cat, kinds)
+    # event flags, after LAS's own (before potsanity's 1240+); then a door flag per shutter of the walled rooms
+    # (souls.c sets it: the defeat flag's state, or open while it's Link's way back out of the empty room)
     rel = 'region_common/datasheets/GlobalFlags.gsheet'
     sheet = oead_tools.readSheet(src(rel))
     nxt = max(int(v['index']) for v in sheet['values'] if int(v['index']) < 1240) + 1
     flags = {}
-    for kind, name, _, _, _ in all_souls:
+    door_flags = {}
+    for kind, name in [(k, n) for k, n, _, _, _ in all_souls] + [('door', d[0]) for w in walls for d in w[4]]:
         if nxt >= 1240:  # (no room left below: after every flag the seed has - shopsanity's are 1240+ already)
             nxt = max(int(v['index']) for v in sheet['values'] if int(v['index']) < 2048) + 1
             assert nxt < 2048, nxt
-        flags[name] = nxt
-        sheet['values'].append({'symbol': item_key(name, kind), 'index': nxt})
+        if kind == 'door':
+            door_flags[name] = nxt
+            sheet['values'].append({'symbol': f'SoulRoomDoor{len(door_flags)}', 'index': nxt})
+        else:
+            flags[name] = nxt
+            sheet['values'].append({'symbol': item_key(name, kind), 'index': nxt})
         nxt += 1
     oead_tools.writeSheet(dst(rel), sheet)
+    held = hold_shutters(out_romfs, romfs, leb, walls, door_flags)
+    if door_flags:  # (souls.c sets / clears them: only once the flag bitfield is the runtime's)
+        with open(os.path.join(out_dir, 'flags_ext'), 'a') as f:
+            f.write('mini-boss souls: walled rooms\' door flags (runtime/hle/souls.c)\n')
 
     # item rows: the Secret Medicine's, renamed (the get sequence looks items up by key)
     rel = 'region_common/datasheets/Items.gsheet'
@@ -360,18 +458,21 @@ def apply(out_dir, romfs, leb, oead_tools, event_tools, msbt, kinds, cat):
     # cells c,r;c,r...)
     rewards = _reward_keys(out_romfs, romfs, leb) if 'boss' in kinds else {}
     doors = boss_doors(out_romfs, romfs, leb, cat) if 'boss' in kinds else []
-    walls = barriers(out_romfs, romfs, leb, cat, kinds)
     with open(os.path.join(out_dir, 'souls.tsv'), 'w') as f:
         for kind, name, typ, _, n in all_souls:
             if kind == 'boss':
                 f.write(f'{n}\t{typ:#x}\t{flags[name]}\t{name}\t{rewards.get(n, 0):#x}\n')
             else:
                 f.write(f'mini\t{typ:#x}\t{flags[name]}\t{name}\n')
-        for level, name, defeat, cells in walls:
+        for level, name, defeat, cells, shutters in walls:
             f.write(f'room\t{level}\t{flags[name]}\t{defeat}\t' + ';'.join(f'{c},{r}' for c, r in cells) + '\n')
+            # its shutters (right after their room): actor key, the cell it stands in, its side, its door flag
+            for key, (c, r), side in shutters:
+                f.write(f'door\t{key:#x}\t{c},{r}\t{side}\t{door_flags[key]}\n')
     return (f'{len(all_souls)} souls (flags {min(flags.values())}-{max(flags.values())}), {len(rewards)} rewards held '
             f'back, onward doors shut until the boss is beaten: {", ".join(f"{r[-3:]} {d}" for r, d in doors)}; '
-            f'{len(walls)} rooms walled while their enemy is missing, {n_msg} message files')
+            f'{len(walls)} rooms walled while their enemy is missing ({held} shutters on door flags), '
+            f'{n_msg} message files')
 
 
 def write_spots(out_dir, leb, placements):

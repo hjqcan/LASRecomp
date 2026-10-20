@@ -681,11 +681,13 @@ void give_item_tick(Cpu *c, uint64_t frame) {
     actor_scan_tick(frame);
     { extern void miniboss_tick(Cpu *, uint64_t); miniboss_tick(c, frame); }
     { extern void escape_tick(Cpu *, uint64_t); escape_tick(c, frame); }
+    { extern void hint_sheet_tick(Cpu *, uint64_t); hint_sheet_tick(c, frame); }  // (runtime/hle/hint_sheet.c)
     { extern void rescue_tick(uint64_t); rescue_tick(frame); }  // (softlock rescues: runtime/hle/rescue.c)
     pane_scan_tick(frame);
     { extern void doorjump_tick(uint64_t frame); doorjump_tick(frame); }
     { extern void pot_reveal_tick(uint64_t frame); pot_reveal_tick(frame); }  // (after doorjump: Link found)
     { extern void souls_tick(uint64_t frame); souls_tick(frame); }  // (boss / mini-boss souls: runtime/hle/souls.c)
+    { extern void triforce_tick(void); triforce_tick(); }  // (Triforce hunt: the get message's flags, triforce.c)
     { extern void hookshot_tour_tick(uint64_t frame); hookshot_tour_tick(frame); }
     { extern void flags_ext_tick(void); flags_ext_tick(); }  // (game thread: flag gets / sets happen here too)
     ptrscan_tick(frame);
@@ -777,6 +779,21 @@ HLE_FUNC("_ZNKSt3__120__vector_base_commonILb1EE20__throw_out_of_rangeEv", rt_ve
         (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[8], (unsigned long long)c->x[9],
         (unsigned long long)c->x[19], (unsigned long long)c->x[20], (unsigned long long)c->x[21]);
     FATAL("vector::at out of range (see [oor] lines)\n");
+}
+
+// Any C++ exception the game throws ends the game here: recompiled code can't unwind to a catch, so a throw always
+// ended in std::terminate - "no function at <heap address> (lr=... get_terminate+20)", which says nothing about what
+// was thrown or where (issues #41, #60, #155: an empty event handler, caught by the game on the Switch; hooks.c skips
+// that call now). Name the exception (its type_info, x1) and the game code that threw it, then stop as before.
+HLE_FUNC("__cxa_throw", rt_cxa_throw) {
+    uint64_t ti = c->x[1], nm = ti >= GUEST_LO && ti < GUEST_HI ? LD64(ti + 8) : 0;  // (type_info: vtable, name)
+    nm &= ~(1ull << 63);  // (libc++ marks non-unique type names in bit 63)
+    const char *type = nm >= GUEST_LO && nm < GUEST_HI ? (const char *)(uintptr_t)nm : "?";
+    LOG("[throw] uncaught C++ exception %.80s thrown at %llx\n", type, (unsigned long long)c->x[30]);
+    uint64_t fp = c->x[29];
+    for (int i = 0; i < 12 && fp >= GUEST_LO && fp < GUEST_HI; i++, fp = LD64(fp))
+        LOG("[throw]   frame %d ret %llx\n", i, (unsigned long long)LD64(fp + 8));
+    FATAL("uncaught C++ exception %.80s thrown at %llx (see [throw] lines)\n", type, (unsigned long long)c->x[30]);
 }
 
 void rt_log_resname(uint64_t p) {

@@ -40,8 +40,14 @@ def cell_box(name):
     return x0, z0, x0 + 15.0, z0 + 12.0
 
 
+GRID_Y = (-3.1, 6.0)  # height range of a top-down cell (vanilla node boxes)
+
+
 def _bvh(items):
-    """items: [(name, x0, z0, x1, z1)] -> (ordered names, nodes [(aabb6, count, first, left, right)])"""
+    """items: [(name, x0, z0, x1, z1[, y0, y1])] -> (ordered names, nodes [(aabb6, count, first, left, right)]).
+    Node boxes span their areas' heights: side-view passages reach y 13 (ladders up to the rooms above end at
+    y ~12). A node capped at the grid's y 6 (as before 2026-10-18) left Link outside every room near a ladder's
+    top - the game never saw him reach the AreaUpstairs there and he was stuck on the ladder (Tail Cave 01F/01G)."""
     order, nodes = [], []
 
     def rec(its):
@@ -49,17 +55,19 @@ def _bvh(items):
         nodes.append(None)
         x0 = min(t[1] for t in its); z0 = min(t[2] for t in its)
         x1 = max(t[3] for t in its); z1 = max(t[4] for t in its)
+        y0 = min((t[5] if len(t) > 5 else GRID_Y[0]) for t in its)
+        y1 = max((t[6] if len(t) > 5 else GRID_Y[1]) for t in its)
         first = len(order)
         if len(its) <= LEAF:
             order.extend(t[0] for t in its)
-            nodes[i] = ((x0, -3.1, z0, x1, 6.0, z1), len(its), first, -1, -1)
+            nodes[i] = ((x0, y0, z0, x1, y1, z1), len(its), first, -1, -1)
             return i
         axis = 1 if (x1 - x0) >= (z1 - z0) else 2
         its = sorted(its, key=lambda t: (t[axis] + t[axis + 2]) / 2)
         h = len(its) // 2
         left = rec(its[:h])
         right = rec(its[h:])
-        nodes[i] = ((x0, -3.1, z0, x1, 6.0, z1), len(its), first, left, right)
+        nodes[i] = ((x0, y0, z0, x1, y1, z1), len(its), first, left, right)
         return i
     rec(items)
     return order, nodes
@@ -79,8 +87,13 @@ def build(base, rooms, starts=None, static=True, keep_tree=False):
             x0, _, z0, x1, _, z1 = struct.unpack_from('<6f', r['area_data'], 0)
             return x0, z0, x1, z1
         return cell_box(r['name'])
+    def ybox(r):  # height range: side-view rooms their own area box's, grid cells the usual one
+        if r.get('fixed'):
+            _, y0, _, _, y1, _ = struct.unpack_from('<6f', r['area_data'], 0)
+            return min(y0, GRID_Y[0]), max(y1, GRID_Y[1])
+        return GRID_Y
     by_name = {r['name']: r for r in rooms}
-    items = [(r['name'],) + box(r) for r in rooms]
+    items = [(r['name'],) + box(r) + ybox(r) for r in rooms]
     order, nodes = _bvh(items)
     if keep_tree:  # (debug) the base level's own tree and area order
         order = [e.name.decode() for e in area_e.entries]

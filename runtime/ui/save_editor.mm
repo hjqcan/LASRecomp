@@ -339,13 +339,16 @@ extern "C" void save_editor_frame(uint64_t frame) {
         LOG("[save] poked %s\n", ENV("LARECOMP_POKE_SAVE"));
     }
     if (loaded()) {  // LARECOMP_LOG_FLAGS: log event-flag bit changes; LARECOMP_SET_FLAGS=i,j,..: force those bits on
+                     // (i@F: from frame F on)
         static uint8_t prev[256];
         static bool have_prev;
         uint8_t *fl = (uint8_t *)(uintptr_t)(GA_LIVE_SAVE + 0x5DC0);
         if (const char *sf = ENV("LARECOMP_SET_FLAGS")) {
             for (const char *p = sf; *p;) {
                 int i = atoi(p);
-                if (i >= 0 && i < 2048 && !(fl[i >> 3] & (1 << (i & 7)))) {
+                const char *at = strchr(p, '@'), *comma = strchr(p, ',');
+                bool due = !at || (comma && at > comma) || frame >= (uint64_t)atoll(at + 1);
+                if (due && i >= 0 && i < 2048 && !(fl[i >> 3] & (1 << (i & 7)))) {
                     fl[i >> 3] |= (uint8_t)(1 << (i & 7));
                     LOG("[flags] forced %d on\n", i);
                 }

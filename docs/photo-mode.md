@@ -12,6 +12,8 @@ The saved message shows only the file name. The adjacent **Show in Finder** / **
 
 The presentation and color paths are implemented for Vulkan and Metal.
 
+With the render queue enabled, photo state follows the frame actually being rendered. The game thread waits for that present during photo mode and reads an atomic hold flag; repeated presentations keep the controls responsive without advancing the game's frame counter. Outside photo mode, the normal rendering overlap is preserved. The photo test hooks count presentations, including repeats.
+
 ## Validation
 
 Run `python tools/test_photo.py` for asset-free state/crop/composite and real ImGui input/focus checks using `CC` / `CXX` (Clang by default). The prompt checks cover Auto, explicit styles and remapped buttons/triggers, including their actual framing actions. For gameplay testing, enter a scene, press F2, drag/zoom with the mouse and keyboard, exercise controller framing and return, adjust each remaining control, save twice without changing the scene, and verify matching images with no overlay. Check that the saved message contains no account path and the folder button selects the saved file where supported. Press F2 on a screen where photo mode is unavailable and verify the overlay and any game binding still work. Resume and verify movement. Check window resizing, UI visibility and a scene without a recognized final composite. A frozen presentation does not constitute a save state or a complete simulation pause.

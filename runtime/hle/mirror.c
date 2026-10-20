@@ -13,13 +13,29 @@ uint64_t renderer_present_count(void);
 
 static uint64_t g_world_frame = ~0ull;  // the mirrored scene was drawn
 
-// Could an image of sw x sh be the scene, composited into a w x h window image? The game's dynamic resolution renders
-// busy scenes smaller (1536x864, 1280x720 into a 1920x1080 window image: the outdoors, D8), so any size from half the
+// Could an image of sw x sh be the scene, composited into a w x h window image? The game's dynamic resolution rendered
+// busy scenes smaller (1536x864, 1280x720 into a 1920x1080 window image: the outdoors, D8; off now - tools/patches.py
+// GAME_DYNRES_SITE - but LARECOMP_GAME_DYNRES=1 brings it back), so any size from half the
 // window's width up, at its aspect ratio; the scratch draws into the window images sample a quarter of it or less.
 // (Requiring the window's own size left those frames unmirrored: the world flipped back and forth, issue #66.)
 bool mirror_scene_size(uint32_t sw, uint32_t sh, uint32_t w, uint32_t h) {
     uint64_t a = (uint64_t)sw * h, b = (uint64_t)sh * w;
     return sw * 2 >= w && sw <= w && sh <= h && (a > b ? a - b : b - a) * 100 <= (uint64_t)w * h;
+}
+
+// LARECOMP_LOG_SCENE=<n>: every n presented frames, log the size of the scene image the game composited into the window
+// image (guest sizes, as the game allocated them: its main pass resolution) - checks the game's dynamic resolution.
+#include <stdlib.h>
+#include "../rt.h"
+void scene_size_log(bool composite, uint32_t sw, uint32_t sh, uint32_t w, uint32_t h) {
+    static long every = -1;
+    static uint64_t last = ~0ull;
+    if (every < 0) every = getenv("LARECOMP_LOG_SCENE") ? atol(getenv("LARECOMP_LOG_SCENE")) : 0;
+    if (every <= 0 || !composite) return;
+    uint64_t f = renderer_present_count();
+    if (f / every == last) return;
+    last = f / every;
+    LOG("[scene] frame %llu scene %ux%u window image %ux%u\n", (unsigned long long)f, sw, sh, w, h);
 }
 
 // The renderer found the scene composite (composite): mirror it?

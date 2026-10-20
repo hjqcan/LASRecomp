@@ -23,7 +23,12 @@ static uint64_t g_lo, g_hi;
 static bool lazy_commit(uint64_t a) {
     if (a < g_lo || a >= g_hi) return false;
     MEMORY_BASIC_INFORMATION mi;
-    if (!VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) || mi.State != MEM_RESERVE) return false;
+    if (!VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi)) return false;
+    // Two threads touching the same uncommitted chunk: the second faulted before the first committed it and now finds
+    // it committed - retry the access. (A page protected on purpose, plat_protect / LARECOMP_WATCH, isn't plain
+    // read-write and still goes on to the fault watch.) Fix from letsgo-recomp.
+    if (mi.State == MEM_COMMIT) return (mi.Protect & 0xFF) == PAGE_READWRITE && !(mi.Protect & PAGE_GUARD);
+    if (mi.State != MEM_RESERVE) return false;
     uint64_t base = a & ~(COMMIT_CHUNK - 1);
     return VirtualAlloc((void *)(uintptr_t)base, COMMIT_CHUNK, MEM_COMMIT, PAGE_READWRITE) != NULL;
 }
@@ -34,7 +39,8 @@ static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *ep) {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
     if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
     uint64_t fa = er->ExceptionInformation[1];
-    if (lazy_commit(fa)) return EXCEPTION_CONTINUE_EXECUTION;
+    // (not for an execute fault: on a read-write page, retrying it would fault again forever)
+    if (er->ExceptionInformation[0] != EXCEPTION_EXECUTE_FAULT && lazy_commit(fa)) return EXCEPTION_CONTINUE_EXECUTION;
     if (g_report_crashes && rt_fault_watch(fa, ep->ContextRecord->Rip)) return EXCEPTION_CONTINUE_EXECUTION;
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -93,6 +99,35 @@ uint64_t plat_now_ns(void) {
     return (uint64_t)((unsigned __int128)t.QuadPart * 1000000000u / (uint64_t)qpf.QuadPart);
 }
 
+// The calling thread's CPU time. GetThreadTimes only advances in whole scheduler ticks (15.6 ms): per frame that reads
+// 0 or 15.6. QueryThreadCycleTime counts the thread's cycles exactly, in TSC ticks on x64 (invariant TSC), so
+// those are converted with the TSC rate measured once against the performance counter (20 ms, at the first call).
+// Elsewhere (or if the cycle count fails): GetThreadTimes, kernel + user.
+#if defined(__x86_64__) || defined(_M_X64)
+#include <intrin.h>
+static double tsc_per_ns;
+static INIT_ONCE tsc_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK tsc_calibrate(PINIT_ONCE o, PVOID p, PVOID *c) {
+    (void)o, (void)p, (void)c;
+    uint64_t q0 = plat_now_ns(), t0 = __rdtsc();
+    Sleep(20);
+    uint64_t q1 = plat_now_ns(), t1 = __rdtsc();
+    if (q1 > q0 && t1 > t0) tsc_per_ns = (double)(t1 - t0) / (double)(q1 - q0);
+    return TRUE;
+}
+#endif
+uint64_t plat_thread_cpu_ns(void) {
+#if defined(__x86_64__) || defined(_M_X64)
+    InitOnceExecuteOnce(&tsc_once, tsc_calibrate, NULL, NULL);
+    ULONG64 cyc;
+    if (tsc_per_ns > 0 && QueryThreadCycleTime(GetCurrentThread(), &cyc)) return (uint64_t)((double)cyc / tsc_per_ns);
+#endif
+    FILETIME c, e, k, u;
+    if (!GetThreadTimes(GetCurrentThread(), &c, &e, &k, &u)) return 0;
+    uint64_t kt = ((uint64_t)k.dwHighDateTime << 32) | k.dwLowDateTime, ut = ((uint64_t)u.dwHighDateTime << 32) | u.dwLowDateTime;
+    return (kt + ut) * 100;  // (100 ns units)
+}
+
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x2
 #endif
@@ -114,7 +149,108 @@ void plat_sleep_until_ns(uint64_t t) {
     }
 }
 
+int plat_cpu_count(void) {
+    DWORD_PTR proc = 0, sys = 0;
+    return GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) ? __builtin_popcountll((unsigned long long)proc) : 0;
+}
+
 void plat_thread_guest(int prio) { (void)prio; }  // (the OS's default scheduling serves the game here)
+
+// ---- performance cores (hybrid CPUs: P-cores + E-cores)
+// Windows may run the game, render and vsync threads on efficiency cores, where they run far slower (another Switch
+// recomp measured 40%). Each of those threads opts out of power throttling (EcoQoS) and, on a hybrid CPU, selects the
+// CPU sets of the faster cores (EfficiencyClass above the lowest). Selected CPU sets are a soft preference, never a
+// hard pin, and they are only the cores the process affinity allows: when the affinity already excludes the E-cores
+// (or the P-cores), nothing is selected, so an affinity-limited run (e.g. 0xF) schedules exactly as before.
+// Not hybrid: no CPU sets. LARECOMP_PCORE=0: none of this (the process-wide opt-out in plat_init stays).
+static INIT_ONCE pcore_once = INIT_ONCE_STATIC_INIT;
+static bool pcore_off;
+static ULONG *pcore_ids;  // the selected CPU set ids (NULL: no selection)
+static ULONG pcore_n;
+static const char *pcore_how = "";
+
+static BOOL CALLBACK pcore_init(PINIT_ONCE o, PVOID p, PVOID *c) {
+    (void)o, (void)p, (void)c;
+    const char *e = getenv("LARECOMP_PCORE");
+    if (e && *e && atoi(e) == 0) {
+        pcore_off = true;
+        fprintf(stderr, "[pcore] off (LARECOMP_PCORE=0): default scheduling, thread power throttling unchanged\n");
+        return TRUE;
+    }
+    ULONG len = 0;
+    GetSystemCpuSetInformation(NULL, 0, &len, GetCurrentProcess(), 0);
+    uint8_t *buf = len ? malloc(len) : NULL;
+    if (!buf || !GetSystemCpuSetInformation((PSYSTEM_CPU_SET_INFORMATION)buf, len, &len, GetCurrentProcess(), 0)) {
+        free(buf);
+        pcore_how = " (CPU sets unavailable)";
+        fprintf(stderr, "[pcore] CPU set information unavailable (error %lu): power throttling off only\n", GetLastError());
+        return TRUE;
+    }
+    // The process affinity mask covers its primary group only: filter by it when the system has a single group.
+    DWORD_PTR proc = 0, sys = 0;
+    bool filter = GetActiveProcessorGroupCount() == 1 && GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) && proc;
+    int lo = 255, hi = -1, all_p = 0, all_e = 0, ok_p = 0, ok_e = 0, n = 0;
+    for (ULONG off = 0; off < len;) {  // pass 1: the efficiency classes
+        SYSTEM_CPU_SET_INFORMATION *i = (SYSTEM_CPU_SET_INFORMATION *)(buf + off);
+        if (!i->Size) break;
+        if (i->Type == CpuSetInformation) {
+            int ec = i->CpuSet.EfficiencyClass;
+            if (ec < lo) lo = ec;
+            if (ec > hi) hi = ec;
+            n++;
+        }
+        off += i->Size;
+    }
+    bool hybrid = n && hi > lo;
+    if (hybrid) pcore_ids = calloc((size_t)n, sizeof *pcore_ids);
+    for (ULONG off = 0; off < len;) {  // pass 2: count, and the P-cores the affinity allows
+        SYSTEM_CPU_SET_INFORMATION *i = (SYSTEM_CPU_SET_INFORMATION *)(buf + off);
+        if (!i->Size) break;
+        if (i->Type == CpuSetInformation) {
+            bool perf = i->CpuSet.EfficiencyClass > lo;
+            bool allowed = !filter || (i->CpuSet.Group == 0 && i->CpuSet.LogicalProcessorIndex < 64 &&
+                                       (proc >> i->CpuSet.LogicalProcessorIndex) & 1);
+            perf ? all_p++ : all_e++;
+            if (allowed) perf ? ok_p++ : ok_e++;
+            if (allowed && perf && pcore_ids) pcore_ids[pcore_n++] = i->CpuSet.Id;
+        }
+        off += i->Size;
+    }
+    free(buf);
+    if (!hybrid) {
+        pcore_how = " (not hybrid: no CPU sets)";
+        fprintf(stderr, "[pcore] CPU not hybrid (%d logical processors, one efficiency class): power throttling off, "
+                        "no CPU sets\n", n);
+    } else if (!ok_p || !ok_e) {
+        free(pcore_ids), pcore_ids = NULL, pcore_n = 0;
+        pcore_how = " (affinity decides: no CPU sets)";
+        fprintf(stderr, "[pcore] hybrid CPU: %d performance + %d efficiency logical processors; the process affinity "
+                        "allows %d + %d: no CPU sets (the affinity decides), power throttling off\n", all_p, all_e, ok_p, ok_e);
+    } else {
+        pcore_how = " (performance-core CPU sets)";
+        fprintf(stderr, "[pcore] hybrid CPU: %d performance + %d efficiency logical processors%s; game/render/vsync "
+                        "threads prefer the %d performance ones, power throttling off\n", all_p, all_e,
+                filter && (ok_p != all_p || ok_e != all_e) ? " (affinity-limited)" : "", ok_p);
+    }
+    return TRUE;
+}
+
+void plat_thread_perf_core(int role) {
+    InitOnceExecuteOnce(&pcore_once, pcore_init, NULL, NULL);
+    if (pcore_off) return;
+    THREAD_POWER_THROTTLING_STATE tp = {
+        .Version = THREAD_POWER_THROTTLING_CURRENT_VERSION,
+        .ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED,
+        .StateMask = 0,  // (controlled, and off: never EcoQoS)
+    };
+    bool thr = SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &tp, sizeof tp) != 0;
+    bool sets = !pcore_ids || SetThreadSelectedCpuSets(GetCurrentThread(), pcore_ids, pcore_n) != 0;
+    static volatile LONG logged;  // (once per role: a reboot's new game thread applies the same, quietly)
+    static const char *const names[] = {"game", "render", "vsync"};
+    if (role < 0 || role > 2 || (InterlockedOr(&logged, 1 << role) & (1 << role))) return;
+    fprintf(stderr, "[pcore] %s thread: power throttling %s%s%s\n", names[role], thr ? "off" : "unchanged (refused)",
+            pcore_how, sets ? "" : " (CPU sets refused)");
+}
 
 void plat_thread_realtime(uint64_t period_ns) {
     (void)period_ns;
@@ -331,6 +467,19 @@ void plat_fatal_notice(void) {
     MessageBoxA(NULL, text, "LAS Recomp", MB_ICONERROR | MB_OK);
 }
 
+static DWORD WINAPI notice_thread(LPVOID text) {
+    MessageBoxA(NULL, text, "LAS Recomp", MB_ICONWARNING | MB_OK);
+    free(text);
+    return 0;
+}
+void plat_notice(const char *text) {
+    if (!g_log_path[0]) return;
+    char *copy = _strdup(text);
+    HANDLE t = copy ? CreateThread(NULL, 0, notice_thread, copy, 0, NULL) : NULL;
+    if (t) CloseHandle(t);
+    else free(copy);
+}
+
 bool plat_module_name(uint64_t pc, char *out, size_t n) {
     HMODULE m;
     if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -488,6 +637,8 @@ ssize_t pread(int fd, void *buf, size_t n, off_t off) { return prw(fd, buf, n, o
 ssize_t pwrite(int fd, const void *buf, size_t n, off_t off) { return prw(fd, (void *)buf, n, off, true); }
 
 // ---- child processes
+typedef struct { HANDLE process, job; } WinProcess;
+
 PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_log) {
     static __thread char cmd[32768];
     cmd[0] = 0;
@@ -512,33 +663,50 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     if (!ok) fprintf(stderr, "[plat] could not start %s (error %lu)\n", argv[0], GetLastError());
     CloseHandle(log);
     if (!ok) return 0;
-    // every child in one job that ends with this process (a compiler's own children too: no leftovers on quit)
-    static HANDLE job;
-    if (!job && (job = CreateJobObjectW(NULL, NULL))) {
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {0};
-        li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li);
+    // A separate job per helper: cancelling one compiler also stops its children immediately,
+    // without killing the other compilation jobs. Handles close on app exit as well.
+    WinProcess *child = calloc(1, sizeof *child);
+    if (!child) {
+        TerminateProcess(pi.hProcess, 255);
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        return 0;
     }
-    if (job) AssignProcessToJobObject(job, pi.hProcess);
+    HANDLE job = CreateJobObjectW(NULL, NULL);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {0};
+    li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li) ||
+        !AssignProcessToJobObject(job, pi.hProcess)) {
+        // A restricted parent job can prevent assignment. Still run the helper, as before jobs were added;
+        // cancellation can stop this process only in that case, not its descendants.
+        fprintf(stderr, "[plat] could not supervise %s (error %lu); starting without a job\n", argv[0], GetLastError());
+        if (job) CloseHandle(job);
+        job = NULL;
+    }
+    child->process = pi.hProcess, child->job = job;
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
-    return (PlatProc)pi.hProcess;
+    return (PlatProc)child;
 }
 
-void plat_proc_kill(PlatProc p) {  // (what it started ends with this process: the job above)
-    TerminateProcess((HANDLE)p, 255);
-    WaitForSingleObject((HANDLE)p, INFINITE);
-    CloseHandle((HANDLE)p);
+void plat_proc_kill(PlatProc p) {
+    WinProcess *child = (WinProcess *)p;
+    if (child->job) TerminateJobObject(child->job, 255);
+    else TerminateProcess(child->process, 255);
+    WaitForSingleObject(child->process, INFINITE);
+    CloseHandle(child->process);
+    if (child->job) CloseHandle(child->job);
+    free(child);
 }
 
 int plat_proc_wait(PlatProc p, bool block) {
-    HANDLE h = (HANDLE)p;
-    DWORD w = WaitForSingleObject(h, block ? INFINITE : 0);
+    WinProcess *child = (WinProcess *)p;
+    DWORD w = WaitForSingleObject(child->process, block ? INFINITE : 0);
     if (w == WAIT_TIMEOUT) return -1;
-    if (w != WAIT_OBJECT_0) return 255;  // (not a process we can wait for: ended as far as the caller is concerned)
     DWORD code = 255;
-    GetExitCodeProcess(h, &code);
-    CloseHandle(h);
+    if (w == WAIT_OBJECT_0) GetExitCodeProcess(child->process, &code);
+    CloseHandle(child->process);
+    if (child->job) CloseHandle(child->job);
+    free(child);
     return code > 255 ? 255 : (int)code;  // (a crash's NTSTATUS, e.g. 0xC0000409, is not "still running" (-1))
 }
 

@@ -340,6 +340,7 @@ Actors:
   #   enemy: False
 
   # EnemySoldierIronBall: # Would not spawn if player had GoldenLead[4], but now it should work. Just annoying though
+  #   (LARecomp: in the pool with Include mini-bosses - below, after EnemyShadowLink)
   #   id: 0x55
   #   type: land
   #   enemy: False
@@ -372,7 +373,7 @@ Actors:
   # EnemyTurtleRock:
   #    id: 0x5E
   #    type: miniboss
-  # EnemyMightPunch:
+  # EnemyMightPunch:  (LARecomp: in the pool with Include mini-bosses - below)
   #    id: 0x5F
   #    type: miniboss
   # EnemyStoneHinox:
@@ -430,6 +431,21 @@ Actors:
     id: 0xB7
     type: land
     enemy: True
+  EnemyShadowLink:  # LARecomp: Dampe's chamber mini-boss, also a plain land enemy - only with Include mini-bosses on
+    id: 0x21E
+    type: land
+    enemy: True
+    minibosses-only: True
+  EnemySoldierIronBall:  # LARecomp: Kanalet's ball-and-chain trooper (also Dampe's chamber), a land enemy - only with
+    id: 0x55             # Include mini-bosses on (as Shadow Link: one per room, not in 2D rooms - enemies.py)
+    type: land
+    enemy: True
+    minibosses-only: True
+  EnemyMightPunch:  # LARecomp: Blaino (Turtle Rock's mini-boss), a land enemy - only with Include mini-bosses on (the
+    id: 0x5F        # runtime wakes copies and skips his knock-out's crash-out; copies die without his arena's event)
+    type: land
+    enemy: True
+    minibosses-only: True
   # EnemyPotDemonPot:
   #   id: 0xB9
   #   type: boss
