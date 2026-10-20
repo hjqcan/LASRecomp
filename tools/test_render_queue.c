@@ -13,7 +13,9 @@ static uint64_t published_guest, published_item;
 uint64_t plat_now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (uint64_t)t.tv_sec*1000000000+t.tv_nsec; }
 uint64_t plat_thread_cpu_ns(void) { return plat_now_ns(); }
 void plat_thread_guest(int priority) { (void)priority; }
+#ifdef _WIN32
 void plat_thread_perf_core(int role) { (void)role; }
+#endif
 uint64_t kernel_current_thread_id(void) { return 1; }
 void kernel_hang_hooks(bool (*check)(uint64_t,char *,size_t),void (*dump)(const char *)) { (void)check; (void)dump; }
 void nvn_sync_set_seq(uint64_t guest,uint64_t seq) { published_guest=guest; published_item=seq; }
