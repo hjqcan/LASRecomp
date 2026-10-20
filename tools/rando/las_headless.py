@@ -101,6 +101,7 @@ def default_settings(seed):
         'enemy-mode': 'seeded',  # seeded (fixed in the level files) / random (re-rolled at every load: enemy_random.py)
         'bushes': False, 'boss-souls': False, 'miniboss-souls': False,
         'digs': False,  # digsanity: every diggable overworld tile is a check (tools/rando/digs.py)
+        'shellsanity': False,  # every Secret Seashell spot is a check (tools/rando/seashell_spots.py); off: vanilla
         'hookshot-anything': False,  # the hookshot latches onto anything (tools/rando/hookshot_logic.py)
         'dungeon-room-shuffle': 'off',  # off / coherent / chaos / madness (tools/rando/dungeon_gen.py)
         'pet-rooster': False, 'pet-ghost': False, 'open-desert': True,  # pets (tools/rando/pets.py)
@@ -673,9 +674,12 @@ def main():
     print('underwater:', ', '.join(underwater.apply(mods, out_dir, romfs, _uw_leb, _uw_ev, _ot, _uw_get, _uw_data)),
           flush=True)
     import seashell_spots  # buried / hidden / bomb-hole Secret Seashell spots: the seed's item there (runtime: shell_spots.c)
+    # (the spots no bush / pot / dig check took over; Shellsanity off: vanilla shells, tracked once found)
     print('seashell spots:', ', '.join(seashell_spots.apply(seashell_spots.locations(logic_defs), mods, out_dir, romfs,
                                                             _uw_leb, _uw_ev, _ot, _uw_get, _uw_data,
-                                                            digs_mod.SHELLS if dig_locs else ())), flush=True)
+                                                            digs_mod.SHELLS if dig_locs else (),
+                                                            vanilla=not settings.get('shellsanity'))) or '(vanilla)',
+          flush=True)
     import keysanity_text  # (after every flow edit, digs / underwater too) a dungeon item outside its dungeon names it
     keysanity_text.apply(out_dir, romfs, result['placements'])
     if settings.get('enemy-minibosses'):  # the Field's walls for roaming mini-bosses (tools/rando/roam.py)
@@ -688,7 +692,10 @@ def main():
         from RandomizerCore.randomizer_data import ENEMY_DATA as _ed
         from RandomizerCore.Randomizers import enemies as _en
         print('enemy random:', enemy_random.write(out_dir, mods.enemy_random, _ed, _en,
-                                                   settings.get('randomize-enemy-sizes', False), _uw_leb), flush=True)
+                                                   settings.get('randomize-enemy-sizes', False), _uw_leb,
+                                                   bool(settings.get('enemy-minibosses')),
+                                                   (settings['miniboss-marker-flag'], miniboss_guard.ANYWHERE)
+                                                   if 'miniboss-marker-flag' in settings else None), flush=True)
     if pot_locs or bush_locs or dig_locs:  # (after every flow edit) refills at real checks are refills, not the item
         import refill_gets
         print('refill gets:', refill_gets.apply(out_dir, romfs, settings), flush=True)
@@ -696,6 +703,12 @@ def main():
     print('bomb bag text:', bomb_bag_text.apply(out_dir, romfs, settings), flush=True)
     import powder_bag_text  # (same) found powder: "You found your Powder Bag!"
     print('powder bag text:', powder_bag_text.apply(out_dir, romfs, settings), flush=True)
+    import room_links  # (every room edit done: actors' links within each room must still be sound)
+    problems = room_links.check(out_dir, _uw_leb, romfs)
+    if problems:
+        for pr in problems[:20]:
+            print('room links:', pr, file=sys.stderr)
+        sys.exit(f'room links broken in {len(problems)} place(s) - the game would crash loading them; first: {problems[0]}')
     with open(os.path.join(out_dir, 'settings.json'), 'w') as f:
         s = dict(settings)
         s['excluded-locations'] = sorted(s['excluded-locations'])

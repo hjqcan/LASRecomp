@@ -19,6 +19,10 @@ source = r'''
 static TitleProfile profile;
 static pthread_mutex_t g_pool_lock = PTHREAD_MUTEX_INITIALIZER;
 static NvnDescPool *g_texture_pools[64];
+static unsigned format_notes;
+void backend_texture_view_format(NvnTexture *t,uint32_t format) {
+    assert(t && format==0x12345678);format_notes++;
+}
 const TitleProfile *title_profile_current(void) { return &profile; }
 void nvn_sync_arm(uint64_t guest) { (void)guest; }
 void guest_call(Cpu *c,uint64_t address) { (void)c;(void)address;abort(); }
@@ -95,6 +99,7 @@ int main(void) {
         const TexRef *copy=(const TexRef *)find(handle,CMD_COPY_TEXTURE_TO_TEXTURE)->extra;
         assert(copy[0].has_view && copy[1].has_view && !memcmp(&copy[0].view,&expanded,sizeof expanded));
         assert(!memcmp(&copy[1].view,&expanded,sizeof expanded) && !memcmp(&entry.view,&expanded,sizeof expanded));
+        assert(format_notes==6*(major==53 ? 1u : 2u));
         guards(storage,size);
         nvn_command_handle_destroy(handle);c.x[0]=(uintptr_t)&cmd;hle_nvnCommandBufferFinalize(&c);
         c.x[0]=(uintptr_t)view;c.x[1]=(uintptr_t)(other+8);hle_nvnTextureViewCompare(&c);assert(!c.x[0]);

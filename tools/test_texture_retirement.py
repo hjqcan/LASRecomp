@@ -28,7 +28,7 @@ harness = r'''
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-typedef uint64_t VkImage,VmaAllocation,VkImageView;
+typedef uint64_t VkImage,VmaAllocation,VkImageView,VkBuffer,VkDeviceMemory;
 typedef struct TexBackend TexBackend;
 static struct { int dev,vma; } g_vk;
 static uint64_t completed,pending;
@@ -41,14 +41,20 @@ static void vkDestroyImageView(int dev,VkImageView view,void *allocator) {
 static void vmaDestroyImage(int vma,VkImage image,VmaAllocation memory) {
     (void)vma;assert(image<64 && memory==image+10000 && !seen[image]++);order[released++]=(unsigned)image;
 }
+static void vkDestroyBuffer(int dev,VkBuffer buffer,void *allocator) {
+    (void)dev;(void)allocator;assert(buffer<64 && !seen[buffer]++);order[released++]=(unsigned)buffer;
+}
+static void vkFreeMemory(int dev,VkDeviceMemory memory,void *allocator) {
+    (void)dev;(void)allocator;assert(memory>=10000 && memory-10000<64 && seen[memory-10000]==1);
+}
 static void *race_realloc(void *,size_t);
 #define realloc race_realloc
 #define FATAL(...) abort()
 '''
-start = source.index('typedef struct { VkImage img; VmaAllocation mem; VkImageView view; uint64_t seq; } Dead;')
-end = source.index('static void create_image(', start)
+start = source.index('typedef struct { VkImage img; VmaAllocation mem; VkImageView view;')
+end = source.index('// The sRGB / UNORM counterpart', start)
 harness += source[start:end]
-for signature in ('static void defer(', 'void vk_defer_image(', 'void vk_defer_view('):
+for signature in ('static void defer(', 'void vk_defer_image(', 'void vk_defer_view(', 'void vk_defer_buffer('):
     harness += function(signature)
 harness += r'''
 #undef realloc
@@ -84,8 +90,8 @@ static void *second_writer(void *unused) {
 }
 int main(void) {
     pending=7;completed=6;
-    vk_defer_view(1);vk_defer_image(2,10002);vk_collect_dead();assert(!released && ndead==2);
-    completed=7;vk_collect_dead();assert(released==2 && !ndead && order[0]==1 && order[1]==2);
+    vk_defer_view(1);vk_defer_image(2,10002);vk_defer_buffer(5,10005);vk_collect_dead();assert(!released && ndead==3);
+    completed=7;vk_collect_dead();assert(released==3 && !ndead && order[0]==1 && order[1]==2 && order[2]==5);
     free(dead);dead=NULL;cap_dead=ndead=0;
     // A skipped future entry survives compaction and is destroyed exactly once.
     pending=10;vk_defer_image(3,10003);pending=8;vk_defer_image(4,10004);
@@ -103,7 +109,7 @@ int main(void) {
     assert(ndead==3 && cap_dead>=ndead);
     vk_collect_dead();assert(ndead==3 && !seen[10] && !seen[20] && !seen[30]);
     completed=11;vk_collect_dead();assert(!ndead && seen[10]==1 && seen[20]==1 && seen[30]==1);
-    vk_collect_dead();assert(released==7);
+    vk_collect_dead();assert(released==8);
     puts("PASS: concurrent texture retirement during growth, completed-sequence gating, ordered view/image release and exactly-once collection");
 }
 '''

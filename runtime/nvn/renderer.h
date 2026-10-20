@@ -22,6 +22,8 @@ void renderer_mark_gpu_owned(NvnTexture *t);
 void input_handle_event(const SDL_Event *e);
 void input_rumble_poll(void);
 void input_rumble_stop(void);
+void input_led_poll(void);  // controller light: UI thread, after input_rumble_poll
+void input_led_stop(void);
 bool input_user_blocked(const SDL_Event *e);
 // g_settings.bg_input -> SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS (before SDL_Init, and again when the setting
 // changes: SDL reads the hint live)

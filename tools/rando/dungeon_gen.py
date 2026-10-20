@@ -593,6 +593,41 @@ def _jumps(cat, level, layout):
     return out
 
 
+# ---- Same-side doorways (user 2026-10-18): the doorways on one side of a single-screen room - two doorways in the
+# same wall, differing only in position or floor height - lead to the same place. Coherent already gives such a side
+# one neighbour (same doorway count, _openings_match); Chaos / Madness pair one of its free doorways and the others
+# follow it (chaos_pairs). Multi-cell rooms are left alone: their cells' doorways are separate doorways into separate
+# rooms, as players expect there (user: Tail Cave 06C S grouped with 06E S was wrong).
+
+def walls_off(cat, room, side, other):
+    """`other` (across `room`'s side) has no open tile in front of `room`'s doorways there - Link stops in them and
+    the jump takes him (an open tile: he walks on into `other`)."""
+    def tiles_of(sl):
+        return {sl // 2 - 1, sl // 2} if sl % 2 == 0 else {sl // 2}
+    across = set(cat[other]['tiles'][rooms.OPP[side]])
+    return not any(tiles_of(x[0]) & across for x in openings(cat, room)[side] if not isinstance(x[0], str))
+
+
+def _side_target(level, rows, cell, side):
+    """Where a cell side's first jump row leads: (pos, target cell, side, centre), None without one."""
+    short = cell.rsplit('_', 1)[1]
+    for row in rows:
+        if row[0] == level and row[1] == short and row[2] == side and len(row) > 6:
+            t = f'{level}_{row[5]}'
+            return cell_pos(t), t, row[6], int(row[4])
+    return None
+
+
+def _follow_row(cat, level, layout, romfs, x, tgt, lead):
+    """door_jumps row: follower doorway x (pos, cell, side, slot) -> the target doorway (as _side_target). The lead
+    (cell, side) leading back into itself (Chaos' odd one out: a wall): so does the follower."""
+    if (tgt[1], tgt[2]) == lead:
+        tgt = x
+    if romfs is None:  # (logic checks only: no landing spot needed)
+        return (level, x[1].rsplit('_', 1)[1], x[2], x[3], tgt[3], tgt[1].rsplit('_', 1)[1], tgt[2], 2.2, 0.0)
+    return _jump_row(cat, level, layout, romfs, x, tgt)
+
+
 WARP_PADS = {0xF3}  # ObjDungeonWarp: paired warp tiles naming '<room>_Warp' starts of their own dungeon
 
 
@@ -658,25 +693,34 @@ _box_cache = {}
 
 def _model_boxes(romfs, f):
     """{model name: (x0, x1, z0, z1)} of a roof file's models, cell-centred (from each shape's bounding box): a
-    room-specific lid / fade reaches 4.5 past its cell on the sides the original dungeon left empty."""
+    room-specific lid / fade reaches 4.5 past its cell on the sides the original dungeon left empty.
+    Shapes are read from each model's (FMDL) own shape array and filed under the model's name: shape names don't
+    always start with it (Tail Cave's DungeonFade1_05D / 06D hold 'DungeonFade_Lv1_DungeonFade1_05D', some Key
+    Cavern, Angler's and Turtle Rock roofs alike). Looked up by shape name those models were 'unknown' -> assumed
+    to reach over every neighbour -> swapped for the generic fade, which rims all four sides of the cell: a dark
+    seam across a kept big room where its cells meet (Tail Cave 06D|06E, beta_5)."""
     if f not in _box_cache:
         out = {}
         try:
             d = open(os.path.join(romfs, 'region_common', f), 'rb').read()
         except OSError:
             d = b''
-        for m in re.finditer(b'FSHP', d):
+        for m in re.finditer(b'FMDL', d):
             o = m.start()
-            try:
+            try:  # FMDL: +0x08 name, +0x28 shape array (FSHP records 0x60 apart), +0x6A shape count
                 no = struct.unpack_from('<Q', d, o + 8)[0]
-                n = struct.unpack_from('<H', d, no)[0]
-                name = d[no + 2:no + 2 + n].decode().split('__')[0]
-                cx, _, cz, ex, _, ez = struct.unpack_from('<6f', d, struct.unpack_from('<Q', d, o + 0x38)[0])
+                name = d[no + 2:no + 2 + struct.unpack_from('<H', d, no)[0]].decode()
+                shapes = struct.unpack_from('<Q', d, o + 0x28)[0]
+                for i in range(struct.unpack_from('<H', d, o + 0x6A)[0]):
+                    s = shapes + i * 0x60
+                    if d[s:s + 4] != b'FSHP':
+                        break
+                    cx, _, cz, ex, _, ez = struct.unpack_from('<6f', d, struct.unpack_from('<Q', d, s + 0x38)[0])
+                    b = (cx - ex, cx + ex, cz - ez, cz + ez)
+                    a = out.get(name, b)
+                    out[name] = (min(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), max(a[3], b[3]))
             except (struct.error, UnicodeDecodeError):
                 continue
-            b = (cx - ex, cx + ex, cz - ez, cz + ez)
-            a = out.get(name, b)
-            out[name] = (min(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), max(a[3], b[3]))
         _box_cache[f] = out
     return _box_cache[f]
 
@@ -859,8 +903,8 @@ _grid_cache = {}
 def landing_depth(romfs, room, side, slot, min_tile):
     """(depth, floor height): how far past the edge Link lands at a doorway (Chaos jumps) and the floor there - the
     centre of the first tile inward from the edge,
-    along the doorway's line, that is floor - no collision, no deep water / lava / pit (Turtle Rock 07D: lava right
-    inside its west doorway) - starting at `min_tile` (1 = past a door of the room's own)."""
+    along the doorway's line, that is floor - no collision, no deep water / lava / pit / crumbling floor (Turtle Rock
+    07D: lava right inside its west doorway) - starting at `min_tile` (1 = past a door of the room's own)."""
     import struct
     from RandomizerCore.Tools import leb
     if room not in _grid_cache:
@@ -876,7 +920,10 @@ def landing_depth(romfs, room, side, slot, min_tile):
         row, col = {'N': (i, along), 'S': (7 - i, along), 'W': (min(along, 7), i), 'E': (min(along, 7), 9 - i)}[side]
         t, h = tile(min(row, 7), min(col, 9))
         solid = bool(t[0] & 2) and not t[2] & 8
-        hazard = (t[2] & 4 and h < -0.3) or h < -1.0
+        # bit 0: a hole under the tile - a pit, or a floor that crumbles once stood on (Turtle Rock 03G's tiles,
+        # ObjDungeonCollapse...: Link landed on one inside its west doorway, it gave way and he fell - seed
+        # 52YTE-YT280-5000H-4MG2E-G1000-0001V Tail Cave 07F E -> 06F W)
+        hazard = (t[2] & 4 and h < -0.3) or h < -1.0 or t[0] & 1
         return not solid and not hazard, h
     # never on the doorway tile itself (the game walks a Link who stands there on through the doorway - straight
     # back into the jump: DevChaos1 Color Dungeon 07H -> 08H), and only where he can walk on inward
@@ -926,6 +973,7 @@ def chaos_pairs(cat, level, layout, entrance, rng, romfs_for_tiles=None, madness
     stairs = {cell_pos(c) for c, r in layout.items() if c == r and
               any(t in a for a in cat[r]['actors'] for t in ('Downstairs', 'Upstairs'))}
     parent = {p: p for p in pos}
+    follow = {}  # one cell side's other free doorways: they go where its first one goes
 
     def find(p):
         while parent[p] != p:
@@ -953,9 +1001,11 @@ def chaos_pairs(cat, level, layout, entrance, rng, romfs_for_tiles=None, madness
                 if home or (theirs and [x[0] for x in mine] == [x[0] for x in theirs] and _openings_match(mine, theirs)):
                     parent[find((c, r))] = find((c + dc, r + dr))  # a real connection
                     continue
-            for x in mine:
-                if chaos_free(cat, room, s, x[0]):
-                    stubs.append(((c, r), cell, s, x[0]))
+            free = [x[0] for x in mine if chaos_free(cat, room, s, x[0])]
+            if free:  # (same side, same place: one of them is paired, the rest follow it)
+                rng.shuffle(free)
+                stubs.append(((c, r), cell, s, free[0]))
+                follow[(cell, s)] = [((c, r), cell, s, x) for x in free[1:]]
     comps = {}
     for p in pos:
         if any(openings(cat, layout[pos[p]]).values()):
@@ -972,7 +1022,8 @@ def chaos_pairs(cat, level, layout, entrance, rng, romfs_for_tiles=None, madness
     if any(k not in by_comp for k in order) and len(order) > 1:
         return None  # a piece without a free doorway can't be reached
     if madness:
-        return _madness_rows(level, layout, order, by_comp, rng, romfs_for_tiles, cat)
+        return _with_followers(cat, level, layout, romfs_for_tiles, follow,
+                               _madness_rows(level, layout, order, by_comp, rng, romfs_for_tiles, cat))
     # spanning tree: each next piece links to the linked piece with the most free doorways left
     linked = [order[0]] if order else []
     for k in order[1:]:
@@ -1005,6 +1056,17 @@ def chaos_pairs(cat, level, layout, entrance, rng, romfs_for_tiles=None, madness
     for a, b in pairs:
         for x, y in ((a, b), (b, a)) if a != b else ((a, b),):
             out.append(_jump_row(cat, level, layout, romfs_for_tiles, x, y))
+    return _with_followers(cat, level, layout, romfs_for_tiles, follow, out)
+
+
+def _with_followers(cat, level, layout, romfs, follow, rows):
+    """rows + the rows of a cell side's other free doorways, to where its paired one goes (after the pairs: the
+    map's letters label the pairs first, runtime/ui/chaos_overlay.mm)."""
+    out = list(rows)
+    for (cell, s), xs in sorted(follow.items()):
+        tgt = _side_target(level, rows, cell, s) if xs else None
+        for x in xs if tgt else ():
+            out.append(_follow_row(cat, level, layout, romfs, x, tgt, (cell, s)))
     return out
 
 
@@ -1115,6 +1177,12 @@ def plan_all_chaos(cat, seed, romfs, levels=None, rounds=None, madness=False, se
                             mine = openings(cat, room)[s]
                             if theirs and mine and [x[0] for x in mine] == [x[0] for x in theirs]:
                                 ok = False  # would join physically: keep it simple, not next to a matching doorway
+                            # a leftover never joins its neighbours: a wall across every doorway either way (an open
+                            # tile there, even another doorway's, and Link could walk on into the other room - plan()
+                            # checks this for the rooms it places: wall_behind)
+                            if (mine and not walls_off(cat, room, s, L[cell_name(lv, *n)])) or \
+                                    (theirs and not walls_off(cat, L[cell_name(lv, *n)], rooms.OPP[s], room)):
+                                ok = False
                             if theirs and not all(chaos_free(cat, L[cell_name(lv, *n)], rooms.OPP[s], x[0]) for x in theirs):
                                 ok = False
                     if ok:

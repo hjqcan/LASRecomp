@@ -133,6 +133,8 @@ def main():
         for st, ld in cases:
             shader = subprocess.check_output([str(gen), str(st), str(ld), '1', '0'], text=True)
             body = shader[shader.index('void main()'):].replace('void main()', 'void shader_main()', 1)
+            body = '\n'.join(line for line in shader.splitlines()
+                             if line.startswith(('#define GMR(', '#define GMW(', '#define GMAND(', '#define GMOR('))) + '\n' + body
             cpp = temp/'execute.cpp'
             cpp.write_text(EXECUTOR.replace('SHADER_BODY', body).replace('STORE_SIZE', str(st)).replace('LOAD_SIZE', str(ld)))
             exe = temp/('execute.exe' if os.name == 'nt' else 'execute')

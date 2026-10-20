@@ -78,6 +78,10 @@ jobs:
           python3 tools/test_enemy_random.py
       - name: Dynamic resolution controller (simulated GPU)
         run: python3 tools/test_dynres.py
+      - name: Controller light colours
+        run: |
+          clang -std=gnu11 -O1 tools/test_led.c -lm -o build/test-led
+          build/test-led
       - name: Vulkan fence sequence regression
         run: python3 tools/test_fence_sequence.py
       - name: Audio effect impulse and routing regressions
@@ -95,6 +99,8 @@ jobs:
           python3 tools/test_shader_jobs.py
           python3 tools/test_shader_snapshot.py
           python3 tools/test_prepared_shader_lifetime.py
+      - name: Guest heap import on low-memory machines
+        run: python3 tools/test_gmem_lowmem.py
       - name: Vulkan validation failure regression
         run: python3 tools/test_vulkan_validation.py
       - name: SIMD rounding and host-state regression
@@ -192,6 +198,10 @@ jobs:
         run: python3 tools/test_save_commit.py
       - name: Dynamic resolution controller (simulated GPU)
         run: python3 tools/test_dynres.py
+      - name: Controller light colours
+        run: |
+          clang -std=gnu11 -O1 tools/test_led.c -lm -o build/test-led
+          build/test-led
       - name: Game address table tests
         run: |
           python3 tools/test_game_addresses.py
@@ -247,6 +257,8 @@ jobs:
           build/test-condvar.exe
       - name: Vulkan fence sequence regression
         run: python tools/test_fence_sequence.py
+      - name: Guest heap import on low-memory machines
+        run: python tools/test_gmem_lowmem.py
       - name: Vulkan validation failure regression
         run: python tools/test_vulkan_validation.py
       - name: Native runtime regressions (UCRT64 and FFmpeg headers)
@@ -273,6 +285,11 @@ jobs:
           clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe
           build/test-thread-stack.exe
           sh tools/test_vk_texture_scale.sh
+      - name: Windows lazy guest-memory commit race regression
+        run: |
+          clang -std=gnu11 -O1 -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -DWIN32_LEAN_AND_MEAN -DNOMINMAX \
+            tools/test_windows_lazy_commit.c -lwinmm -lole32 -lshell32 -o build/test-lazy-commit.exe
+          build/test-lazy-commit.exe
       - name: Windows session log regression
         run: python tools/test_windows_logs.py
       - name: Recompiled guest nonlocal returns
@@ -303,5 +320,12 @@ jobs:
       # just satisfies it. The GLSL half - every fuzzed translation compiles and validates - is the check)
       - name: Shader translator fuzz (GLSL)
         run: REF=HEAD tools/test_translate.sh 4000 "$(nproc)" glsl
+      # (the heap in chunks: lazily imported on AMD APUs and Intel, windows where that isn't possible - shader.h maxwell_gmem_chunk_shift)
+      - name: Shader translator fuzz (GLSL, guest heap in chunks)
+        run: TT_GMEM_CHUNK_SHIFT=24 REF=HEAD tools/test_translate.sh 2000 "$(nproc)" glsl
+      - name: Shader translator fuzz (GLSL, guest heap in lazy chunks)
+        run: TT_GMEM_CHUNK_SHIFT=24 TT_GMEM_LAZY=1 REF=HEAD tools/test_translate.sh 2000 "$(nproc)" glsl
+      - name: Shader translator fuzz (GLSL, guest heap in lazy chunks, misses counted in every fragment shader)
+        run: TT_GMEM_CHUNK_SHIFT=24 TT_GMEM_LAZY=1 TT_GMEM_FS_MISS=1 REF=HEAD tools/test_translate.sh 500 "$(nproc)" glsl
       - name: Vulkan synchronization failure regression
         run: python tools/test_vulkan_sync_errors.py

@@ -16,7 +16,7 @@ void rt_mb_seen(uint64_t o);  // miniboss.c
 int rt_shadow_link_appear(uint64_t o);
 int rt_gohma_free(void);
 uint32_t rt_gohma_heading(uint64_t gohma, uint32_t track);
-int rt_crashout_skip(void);
+int rt_crashout_skip(uint64_t o);
 void rt_dig_hole(Cpu *c);  // digs.c
 uint64_t rt_hole_cap(void);
 void rt_frame_job_kickoff(uint64_t owner);  // delegate_null.c
@@ -30,8 +30,8 @@ int rt_hook(Cpu *c, uint64_t site) {
         return 0;
     case GA_SHADOW_LINK_APPEAR_SITE:  // SHADOW_LINK_APPEAR_SITE - ldr x9, [x0, #0x230]: his Appear event, none on the Field
         return rt_shadow_link_appear(c->x[0]) ? 2 : 0;
-    case GA_CRASHOUT_SITE:  // CRASHOUT_SITE - str wzr, [x0, #0xb8]: Blaino's knock-out, no crash-out on the Field
-        if (!rt_crashout_skip()) return 0;
+    case GA_CRASHOUT_SITE:  // CRASHOUT_SITE - str wzr, [x0, #0xb8]: Blaino's knock-out, no crash-out for copies
+        if (!rt_crashout_skip(c->x[0])) return 0;
         ST32(c->x[0] + 0xb8, 0);
         return 2;
     case GA_GOHMA_HEADING_SITES_0:  // GOHMA_HEADING_SITES - str w8, [x19, #0x15ec]: heading at Link on the Field

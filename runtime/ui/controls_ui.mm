@@ -292,6 +292,7 @@ extern "C" void controls_tab_draw(float scale) {
             g_settings.rumble_strength = (i + 1) * 25;
         opt_indent(-1);
     }
+    opt_toggle("Controller light", &g_settings.controller_light, true, "The light bar shows Link's health.");
     {
         static const char *const fam[] = {"Nintendo", "Xbox", "PlayStation"};
         char autol[64];

@@ -84,7 +84,10 @@ void rt_frame_job_kickoff(uint64_t owner) {
         return;  // (the usual case: no run of J is still finishing)
     uint64_t t0 = plat_now_ns(), waited = 0;
     bool finished;
-    while (!(finished = rd64(job) != GA_DELEGATE_JOB_VTABLE_LIVE) && (waited = plat_now_ns() - t0) < 1000000000ull)
+    // The finish (slot +0x00) is two stores: the base vtable, then [J+0x10] = 0. Wait for both - a worker preempted
+    // between them would otherwise clear the delegate of the J being rebuilt (the kick-off sets it non-zero).
+    while (!(finished = rd64(job) != GA_DELEGATE_JOB_VTABLE_LIVE && !rd64(job + 0x10)) &&
+           (waited = plat_now_ns() - t0) < 1000000000ull)
         plat_sleep_until_ns(plat_now_ns() + 20000);
     static int logged;
     if (logged++ < 16)

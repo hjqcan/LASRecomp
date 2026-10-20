@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "../../paths.h"
+#include "../../rt.h"  // (HEAP_MAX: lazy_heap_predicted)
 #include "../../settings.h"
 #include "../../ui/menu.h"
 #include "../rqueue.h"
@@ -24,6 +25,91 @@
 
 VkG g_vk;
 static SDL_Window *window;
+
+// The system memory heap a whole-heap import (exec.c host_import) lands in and what it can hold: the largest heap with
+// a host-visible memory type that isn't device-local (all of them device-local: the largest host-visible one), the
+// smaller of its size and its budget (budget 0: unknown). -1: no host-visible heap. Plain types, so
+// tools/test_gmem_lowmem.py builds it without Vulkan headers.
+typedef struct { uint64_t size, budget; bool device_local, host_visible; } ImportHeap;
+static int import_heap_room(const ImportHeap *h, uint32_t n, uint64_t *room) {
+    int best = -1;
+    for (int pass = 0; pass < 2 && best < 0; pass++)
+        for (uint32_t i = 0; i < n; i++)
+            if (h[i].host_visible && (pass || !h[i].device_local) && (best < 0 || h[i].size > h[best].size)) best = (int)i;
+    if (best >= 0) *room = h[best].budget && h[best].budget < h[best].size ? h[best].budget : h[best].size;
+    return best;
+}
+// What the heap must hold beyond the import: the transient ring's chunks once they spill to system memory (64 MB
+// each), readback, the driver's own. Issue #205 (8 GB laptop, Ryzen 5 5500U, AMD's Windows driver): system heap
+// 2738 MB, budget 2601 - the 3220 MB import was accepted, then the first submission failed with out of device memory.
+// An 8 GB desktop with a GPU of its own (system heap ~3950 MB, budget ~3840) stays on one import.
+#define IMPORT_MARGIN (256ull << 20)
+// Under this much room one import should fit but might not (a driver's own limits, other programs): the import is
+// tried once at the start (exec.c whole_import_probe_oom), with buffer device addresses enabled so lazy chunks can take
+// over. Machines with more (an RTX with 16 GB or more of RAM) skip the probe and keep the device as before.
+#define IMPORT_PROBE_BELOW (2 * HEAP_MAX)
+
+// Whether one import of the whole heap fits its system memory heap (import_heap_room), from the physical device;
+// *probe: it fits, but not by much (IMPORT_PROBE_BELOW), or LARECOMP_VK_SIM_HEAP_OOM=1 (the probe then fails).
+static bool whole_import_fits(bool budget_ext, bool *probe) {
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT bp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 mp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+                                             .pNext = budget_ext ? &bp : NULL};
+    vkGetPhysicalDeviceMemoryProperties2(g_vk.phys, &mp2);
+    const VkPhysicalDeviceMemoryProperties *mp = &mp2.memoryProperties;
+    ImportHeap h[VK_MAX_MEMORY_HEAPS] = {{0}};
+    for (uint32_t i = 0; i < mp->memoryHeapCount; i++) {
+        h[i].size = mp->memoryHeaps[i].size;
+        h[i].budget = budget_ext ? bp.heapBudget[i] : 0;
+        h[i].device_local = (mp->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+    }
+    for (uint32_t i = 0; i < mp->memoryTypeCount; i++)
+        if (mp->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) h[mp->memoryTypes[i].heapIndex].host_visible = true;
+    uint64_t room = 0;
+    int heap = import_heap_room(h, mp->memoryHeapCount, &room);
+    const char *sim = getenv("LARECOMP_VK_SIM_HEAP_OOM");
+    if (heap < 0 || room >= HEAP_MAX + IMPORT_MARGIN) {
+        *probe = (heap >= 0 && room < IMPORT_PROBE_BELOW) || (sim && atoi(sim));
+        return true;
+    }
+    LOG("[vk] guest heap: memory heap %d holds %llu MB (size %llu, budget %llu), one import needs %llu MB: "
+        "imported in chunks as the game binds them\n", heap, (unsigned long long)(room >> 20),
+        (unsigned long long)(h[heap].size >> 20), (unsigned long long)(h[heap].budget >> 20),
+        (unsigned long long)((HEAP_MAX + IMPORT_MARGIN) >> 20));
+    return false;
+}
+
+// Whether the guest heap will be imported chunk by chunk (exec.c gmem_lazy): on a GPU whose storage buffers can't
+// span the heap (maxStorageBufferRange < HEAP_MAX: Intel, 1 GB); where the system memory heap or its budget can't hold
+// one import of the whole heap (whole_import_fits: 8 GB laptops, issue #205); and on RADV when the dma-buf heap
+// (exec.c guest_heap_dmabuf) has no cached host-visible memory type that holds it - the same test, which needs only
+// the physical device - or LARECOMP_VK_GMEM_LAZY=1 (=0: never; a GPU with a short range then gets windows of one
+// import, exec.c gmem_chunk_shift). Decided before the device exists because the lazy import needs buffer device
+// addresses, and on RADV enabling them puts every allocation on the driver's global BO list (amdgpu checks all of
+// them each submission): a device that imports the heap another way shouldn't pay for that.
+// *probe: one import is to be tried first (whole_import_fits), lazy chunks if it runs out of memory.
+static bool lazy_heap_predicted(bool budget_ext, bool *probe) {
+    *probe = false;
+    const char *e = getenv("LARECOMP_VK_GMEM_LAZY");
+    if (e) return atoi(e) != 0;
+    if (getenv("LARECOMP_VK_NO_GMEM")) return false;
+    uint64_t lim = g_vk.props.limits.maxStorageBufferRange;
+    if (lim && lim < HEAP_MAX) return true;  // (UHD 770 main pass: lazy 8.4 ms, 512 MB windows 8.5)
+    if (!whole_import_fits(budget_ext, probe)) return true;
+    if (!strstr(g_vk.props.deviceName, "RADV")) return false;
+    *probe = false;  // (RADV: as before - the dma-buf heap or lazy chunks, no probe)
+#ifdef __linux__
+    const char *d = getenv("LARECOMP_VK_HEAP_DMABUF");
+    if ((d ? atoi(d) != 0 : true) && g_vk.dmabuf) {
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+        const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        for (uint32_t i = 0; i < mp.memoryTypeCount; i++)
+            if ((mp.memoryTypes[i].propertyFlags & want) == want && mp.memoryHeaps[mp.memoryTypes[i].heapIndex].size >= HEAP_MAX) return false;
+    }
+#endif
+    return true;
+}
 static atomic_bool ui_ready;
 static VkDebugUtilsMessengerEXT messenger;
 
@@ -137,6 +223,18 @@ static void pick_device(void) {
     if (g_vk.qfam == UINT32_MAX) FATAL("no graphics+present queue\n");
     LOG("[vk] using %s\n", g_vk.props.deviceName);
     settings_resolve_defaults(g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);
+    // On by default on integrated GPUs only: lean usage and the SMAA stencil measured faster on an Intel UHD 770 and
+    // slightly slower on an RTX 3080 Ti; skipping the per-frame target clears saved 3.7 ms on the UHD 770 (2x) with
+    // identical images. LARECOMP_VK_LEAN_USAGE / LARECOMP_VK_SMAA_STENCIL / LARECOMP_NO_FRAME_CLEAR =0 / =1 override.
+    bool igpu = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+    const char *e = getenv("LARECOMP_VK_LEAN_USAGE");
+    g_vk.lean_usage = e && *e ? atoi(e) != 0 : igpu;
+    e = getenv("LARECOMP_VK_SMAA_STENCIL");
+    g_vk.smaa_stencil = e && *e ? atoi(e) != 0 : igpu;
+    e = getenv("LARECOMP_NO_FRAME_CLEAR");
+    g_vk.no_frame_clear = e && *e ? atoi(e) != 0 : igpu;
+    LOG("[vk] lean usage %s, SMAA stencil %s, per-frame target clears %s (%s GPU)\n", g_vk.lean_usage ? "on" : "off",
+        g_vk.smaa_stencil ? "on" : "off", g_vk.no_frame_clear ? "off" : "on", igpu ? "integrated" : "not an integrated");
 }
 
 static bool g_fault_ext;
@@ -253,8 +351,13 @@ static void create_device(void) {
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
-    VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    VkPhysicalDeviceVulkan12Features have12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &have12};
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &have);
+    bool probe;
+    g_vk.lazy_heap = lazy_heap_predicted(budget, &probe);
+    g_vk.heap_probe = !g_vk.lazy_heap && probe && g_vk.host_import && have12.bufferDeviceAddress;
+    g_vk.bda = (g_vk.lazy_heap || g_vk.heap_probe) && have12.bufferDeviceAddress;
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT div = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT,
         .vertexAttributeInstanceRateDivisor = VK_TRUE, .vertexAttributeInstanceRateZeroDivisor = VK_FALSE};
@@ -269,7 +372,7 @@ static void create_device(void) {
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                             .timelineSemaphore = VK_TRUE, .shaderInt8 = VK_TRUE, .samplerMirrorClampToEdge = VK_TRUE,
                                             .uniformAndStorageBuffer8BitAccess = VK_TRUE, .storageBuffer8BitAccess = VK_TRUE,
-                                            .scalarBlockLayout = VK_TRUE, .pNext = &f13};
+                                            .scalarBlockLayout = VK_TRUE, .bufferDeviceAddress = g_vk.bda, .pNext = &f13};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .storageBuffer16BitAccess = VK_TRUE, .pNext = &f12};
     VkPhysicalDeviceFaultFeaturesEXT ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .deviceFault = VK_TRUE,
@@ -291,6 +394,7 @@ static void create_device(void) {
     b->fragmentStoresAndAtomics = h->fragmentStoresAndAtomics;
     b->vertexPipelineStoresAndAtomics = h->vertexPipelineStoresAndAtomics;
     b->robustBufferAccess = h->robustBufferAccess;  // guest shaders index cbufs freely: keep OOB reads harmless
+    g_vk.ssbo_chunks = h->fragmentStoresAndAtomics && h->vertexPipelineStoresAndAtomics && h->robustBufferAccess;
     b->shaderClipDistance = h->shaderClipDistance;
     if (!h->shaderInt64) LOG("[vk] warning: no shaderInt64 (64-bit address math in shaders)\n");
     float prio = 1.0f;
@@ -933,6 +1037,7 @@ int ui_run(void) {
             input_rumble_poll();
             if (e.type == SDL_EVENT_QUIT) {
                 input_rumble_stop();
+                input_led_stop();
                 LOG("window closed\n");
                 // The exit handler waits on the device and saves its cache.
                 // Finish guest submissions and host pipeline jobs first; device
@@ -948,5 +1053,6 @@ int ui_run(void) {
         }
         menu_apply_window_requests(window);
         input_rumble_poll();
+        input_led_poll();
     }
 }

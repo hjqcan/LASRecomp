@@ -93,6 +93,18 @@ static void wt_init(uint64_t lo, uint64_t hi) {
     g_wt_page = pg;
 }
 
+// Tracking off after all (the Vulkan backend at boot, before any query protected a page: nothing is protected yet), with
+// the reason logged; LARECOMP_WRITE_TRACKING=1 keeps it on. Closing the userfaultfd unregisters the window.
+void plat_write_tracking_off(const char *why) {
+    if (g_uffd < 0 && g_pagemap < 0) return;
+    const char *e = getenv("LARECOMP_WRITE_TRACKING");
+    if (e && atoi(e)) { fprintf(stderr, "[plat] page write tracking kept on (LARECOMP_WRITE_TRACKING=1): %s\n", why); return; }
+    fprintf(stderr, "[plat] page write tracking off: %s\n", why);
+    if (g_pagemap >= 0) close(g_pagemap);
+    if (g_uffd >= 0) close(g_uffd);
+    g_pagemap = g_uffd = -1;
+}
+
 // ---- guest address space
 static uint64_t g_guest_lo, g_guest_hi;
 // Everything readable/writable from the start, like macOS: the guest maps at 4K granularity, and untouched pages
@@ -409,7 +421,7 @@ int plat_proc_wait(PlatProc p, bool block) {
     pid_t r = waitpid((pid_t)p, &st, block ? 0 : WNOHANG);
     if (r == 0) return -1;
     if (r < 0) return 255;
-    return WIFEXITED(st) ? WEXITSTATUS(st) : 255;
+    return WIFEXITED(st) ? WEXITSTATUS(st) : WIFSIGNALED(st) ? PLAT_PROC_SIGNALED + WTERMSIG(st) : 255;
 }
 
 static int rm_entry(const char *path, const struct stat *sb, int flag, struct FTW *ftw) {

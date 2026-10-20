@@ -7,6 +7,7 @@
 typedef struct { uint32_t set, binding; VkDescriptorType type; } VkBindingInfo;
 typedef struct {
     VkShaderModule module;
+    VkShaderModule module_late; // fragment variant without early tests, owned by the same cache entry
     VkBindingInfo binds[128];
     int nbinds;
 } VkPreparedShader;

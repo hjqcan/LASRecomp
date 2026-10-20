@@ -26,7 +26,7 @@ harness = r'''
 typedef uintptr_t VkPipeline;
 typedef struct { unsigned marker; } ShaderInfo;
 typedef struct {
-    uintptr_t layout, set_layout[2]; void *snapshot[2]; ShaderInfo *vi, *fi;
+    uintptr_t layout, set_layout[3]; int owned_sets; void *snapshot[2]; ShaderInfo *vi, *fi;
     bool prepared; ShaderJob job;
 } Prog;
 typedef struct { VkPipeline pipe; bool prepared; ShaderJob job; } Pipe;
@@ -64,7 +64,7 @@ reset = function('void vk_exec_reset(void) {')
 harness += reset[:reset.index('    ss_forget();')] + '}\n'
 harness += r'''
 static void init_program(Prog *p, bool prepared) {
-    p->prepared = prepared; p->layout = handle(); p->set_layout[0] = handle();
+    p->prepared = prepared; p->layout = handle(); p->set_layout[0] = handle(); p->owned_sets = 2;
     p->vi = malloc(sizeof *p->vi); p->vi->marker = 42;
 }
 static void compile(void *arg) { Prog *p = arg; p->set_layout[1] = handle(); }
@@ -84,6 +84,10 @@ static void cycle(bool sync) {
     prog_tab[0].prog = prog_tab[1].prog = prepared; prog_tab[2].prog = ordinary; prog_count = 3;
     CsProg *cs = calloc(1, sizeof *cs), *normal_cs = calloc(1, sizeof *normal_cs);
     init_program(&cs->p, true); init_program(&normal_cs->p, false);
+    uintptr_t heap_layout = handle();
+    cs->p.owned_sets = normal_cs->p.owned_sets = 1;
+    cs->p.set_layout[1] = normal_cs->p.set_layout[1] = heap_layout;
+    prepared->set_layout[2] = ordinary->set_layout[2] = heap_layout;
     cs->pipe = handle(); normal_cs->pipe = handle(); prep_own(cs, PREP_COMPUTE);
     PREP_PUT(prep_cs, 2, cs); g_cs_tab[0].cp = g_cs_tab[1].cp = cs; g_cs_tab[2].cp = normal_cs; g_cs_n = 3;
     prep_job(&prepared->job, compile, prepared);
@@ -100,6 +104,8 @@ static void cycle(bool sync) {
     assert(freed_shaders == before + 4 && !prep_owned && !prep_pending);
     assert(!prog_count && !pipe_count && !g_cs_n);
     assert(!prep_progs && !prep_pipes && !prep_cs && !PREP_GET(prep_progs, 1));
+    assert(!destroyed[heap_layout]); // the device owns this shared layout through reboot
+    destroy(heap_layout);
     for (unsigned i = 1; i <= next_handle; i++) assert(destroyed[i] == 1);
     vk_exec_reset(); // empty reboot is also valid
 }

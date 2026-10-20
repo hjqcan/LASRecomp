@@ -698,6 +698,7 @@ static void register_texture(Cpu *c) {
     e->dead_format = 0;
     e->has_view = A(3) != 0;
     if (e->has_view) e->view = nvn_texture_view_read(AP(3));
+    if (e->has_view) nvn_texture_note_view(e->tex, &e->view);
     pthread_mutex_unlock(&g_pool_lock);
 }
 

@@ -27,3 +27,6 @@ typedef struct {
     bool win_counted;  // the window's GPU time is in what dynamic resolution goes by
 } DynSplit;
 void output_scale_note_split(const DynSplit *s);
+// (Metal) the frame's command buffers' GPU spans summed, overlaps and all (what dynamic resolution went by before it
+// counted their union): shown in LARECOMP_LOG_DYNRES's [dynres] line
+void output_scale_note_sum(double ms);

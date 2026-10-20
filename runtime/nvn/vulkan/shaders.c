@@ -159,6 +159,24 @@ VkShaderModule vk_module(const uint32_t *spv, size_t nwords) {
     return vkCreateShaderModule(g_vk.dev, &ci, NULL, &m) == VK_SUCCESS ? m : VK_NULL_HANDLE;
 }
 
+// A fragment shader the translator gave early fragment tests (lazy chunks, translate.c glsl_early_tests): removes the
+// OpExecutionMode EarlyFragmentTests (in place; true if there was one). Alpha to coverage drops samples after the
+// shader, and with early tests their depth / stencil would already be written: those pipelines take this module.
+static bool spirv_strip_early_tests(uint32_t *w, size_t *nwords) {
+    for (size_t i = 5; i < *nwords;) {
+        uint32_t n = w[i] >> 16, op = w[i] & 0xFFFF;
+        if (!n || i + n > *nwords) return false;
+        if (op == 54) return false;  // OpFunction: past the execution modes
+        if (op == 16 && n == 3 && w[i + 2] == 9) {  // OpExecutionMode %main EarlyFragmentTests
+            memmove(w + i, w + i + n, (*nwords - i - n) * sizeof *w);
+            *nwords -= n;
+            return true;
+        }
+        i += n;
+    }
+    return false;
+}
+
 typedef struct ShaderEntry {
     uint64_t hash;
     int stage;
@@ -192,6 +210,8 @@ const VkPreparedShader *vk_prepare_shader(const char *src, int stage) {
     if (spv) {
         entry->shader.nbinds = vk_reflect(spv, n, entry->shader.binds, 128);
         entry->shader.module = vk_module(spv, n);
+        if (stage == STAGE_FRAGMENT && spirv_strip_early_tests(spv, &n))
+            entry->shader.module_late = vk_module(spv, n);
         free(spv);
     }
     pthread_mutex_lock(&stage_lock);
@@ -207,6 +227,7 @@ void vk_shader_cache_reset(void) {
         while (e) {
             ShaderEntry *next = e->next;
             if (e->shader.module) vkDestroyShaderModule(g_vk.dev, e->shader.module, NULL);
+            if (e->shader.module_late) vkDestroyShaderModule(g_vk.dev, e->shader.module_late, NULL);
             free(e->source); free(e); e = next;
         }
         stage_cache[i] = NULL;

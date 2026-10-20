@@ -225,12 +225,13 @@ void vk_level_change_check(void) {
 }
 
 bool renderer_texture_frame_fresh(NvnTexture *t) {
-    static int on = -1;
-    if (on < 0) on = getenv("LARECOMP_NO_FRAME_CLEAR") == NULL;
     TexBackend *b = t ? (TexBackend *)t->backend : NULL;
     extern uint64_t renderer_exec_frame(void);
     uint64_t total_frames = renderer_exec_frame();  // (the frame being translated)
-    if (!on || !b || !b->scalable || !(t->flags & 8) || b->frame_cleared == total_frames + 1) return false;
+    if (!b || !b->scalable || !(t->flags & 8) || b->frame_cleared == total_frames + 1) return false;
+    // LARECOMP_NO_FRAME_CLEAR skips the clear only while the contents cover the whole target: below 1x a frame draws
+    // into part of it, and the rest would show what an earlier frame left there (issue #205: the upper part flickered)
+    if (g_vk.no_frame_clear && b->sx >= 1.0f && b->sy >= 1.0f) return false;
     b->frame_cleared = total_frames + 1;
     return true;
 }
@@ -275,7 +276,7 @@ void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags as
 }
 
 // Images destroyed by the guest are kept until the submissions that may use them have completed.
-typedef struct { VkImage img; VmaAllocation mem; VkImageView view; uint64_t seq; } Dead;
+typedef struct { VkImage img; VmaAllocation mem; VkImageView view; VkBuffer buf; VkDeviceMemory bmem; uint64_t seq; } Dead;
 static Dead *dead;
 static int ndead, cap_dead;
 // Finalizers can run on guest worker threads while the render thread collects.
@@ -290,10 +291,41 @@ void vk_collect_dead(void) {
     for (int i = 0; i < ndead; i++) {
         if (dead[i].seq > done) { dead[k++] = dead[i]; continue; }
         if (dead[i].view) vkDestroyImageView(g_vk.dev, dead[i].view, NULL);
+        else if (dead[i].buf) { vkDestroyBuffer(g_vk.dev, dead[i].buf, NULL); vkFreeMemory(g_vk.dev, dead[i].bmem, NULL); }
         else vmaDestroyImage(g_vk.vma, dead[i].img, dead[i].mem);
     }
     ndead = k;
     pthread_mutex_unlock(&dead_lock);
+}
+
+// The sRGB / UNORM counterpart of a colour format (VK_FORMAT_UNDEFINED: none). (g_vk.lean_usage format lists)
+static VkFormat srgb_twin(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_SRGB;
+    case VK_FORMAT_R8G8B8A8_SRGB: return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_SRGB;
+    case VK_FORMAT_B8G8R8A8_SRGB: return VK_FORMAT_B8G8R8A8_UNORM;
+    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+    case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+    case VK_FORMAT_BC2_UNORM_BLOCK: return VK_FORMAT_BC2_SRGB_BLOCK;
+    case VK_FORMAT_BC2_SRGB_BLOCK: return VK_FORMAT_BC2_UNORM_BLOCK;
+    case VK_FORMAT_BC3_UNORM_BLOCK: return VK_FORMAT_BC3_SRGB_BLOCK;
+    case VK_FORMAT_BC3_SRGB_BLOCK: return VK_FORMAT_BC3_UNORM_BLOCK;
+    case VK_FORMAT_BC7_UNORM_BLOCK: return VK_FORMAT_BC7_SRGB_BLOCK;
+    case VK_FORMAT_BC7_SRGB_BLOCK: return VK_FORMAT_BC7_UNORM_BLOCK;
+    default:
+        if (f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK)  // (UNORM, SRGB alternate)
+            return (f - VK_FORMAT_ASTC_4x4_UNORM_BLOCK) & 1 ? f - 1 : f + 1;
+        return VK_FORMAT_UNDEFINED;
+    }
+}
+
+VkFormat vk_view_format(TexBackend *b, VkFormat want) {
+    if (!b || !b->nview_fmt || want == b->format) return want;
+    for (int i = 0; i < b->nview_fmt; i++) if (b->view_fmt[i] == want) return want;
+    static int nlog;
+    if (nlog++ < 10) LOG("[vk] lean usage: view format %d of an image of format %d refused (its own instead)\n", want, b->format);
+    return b->format;
 }
 
 static void create_image(NvnTexture *t, TexBackend *b) {
@@ -353,7 +385,22 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     if (type == VK_IMAGE_TYPE_3D) flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
     if (!depthfmt) flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;  // format views (NVN texture views, raw sRGB views)
     if (type == VK_IMAGE_TYPE_2D && layers >= 6 && tw == th && samples == 1) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = type, .format = vf,
+    // g_vk.lean_usage (integrated GPUs): colour images may only be viewed as their own format and its sRGB / UNORM
+    // twin, listed in a VkImageFormatListCreateInfo (no twin: not mutable at all). Mesa's AMD / Intel drivers keep
+    // DCC / CCS compression for such images; with MUTABLE_FORMAT and no list they turn it off. Views in any other
+    // format fall back to the image's own (vk_view_format, logged).
+    VkImageFormatListCreateInfo fl = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
+    b->nview_fmt = 0;
+    if (!depthfmt && g_vk.lean_usage) {
+        VkFormat twin = srgb_twin(vf);
+        b->view_fmt[0] = vf;
+        b->view_fmt[1] = twin;
+        b->nview_fmt = twin != VK_FORMAT_UNDEFINED ? 2 : 1;
+        if (b->nview_fmt == 1) flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        else fl.viewFormatCount = 2, fl.pViewFormats = b->view_fmt;
+    }
+    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .pNext = fl.viewFormatCount ? &fl : NULL,
+                            .flags = flags, .imageType = type, .format = vf,
                             .extent = {tw, th, depth}, .mipLevels = levels, .arrayLayers = layers,
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
@@ -367,6 +414,9 @@ static void create_image(NvnTexture *t, TexBackend *b) {
             ci.usage, ci.flags, ci.mipLevels, ci.arrayLayers, (unsigned)ci.samples);
         vk_log_memory("image creation failed");
         ci.format = vf = VK_FORMAT_R8G8B8A8_UNORM;
+        ci.pNext = NULL;  // (g_vk.lean_usage: the fallback image is mutable as before, no format list)
+        ci.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        b->nview_fmt = 0;
         ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         ci.flags &= ~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
@@ -426,6 +476,7 @@ static void defer(Dead d) {
 
 void vk_defer_image(VkImage img, VmaAllocation mem) { defer((Dead){.img = img, .mem = mem}); }
 void vk_defer_view(VkImageView v) { defer((Dead){.view = v}); }
+void vk_defer_buffer(VkBuffer b, VkDeviceMemory m) { defer((Dead){.buf = b, .bmem = m}); }  // (raw memory, not VMA)
 
 void vk_dl_note_upload(void *img, uint32_t w, uint32_t h, uint32_t lv);  // (exec.c: LARECOMP_VK_DEVLOST_TRACE)
 
@@ -793,6 +844,7 @@ static void views_forget(TexBackend *b) {
 
 VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uint32_t lv0, uint32_t nlv, uint32_t ly0,
                           uint32_t nly, VkComponentMapping sw, VkImageAspectFlags aspect) {
+    fmt = vk_view_format(b, fmt);  // (g_vk.lean_usage: only the listed formats)
     uint64_t k1 = (uint64_t)type | (uint64_t)fmt << 8 | (uint64_t)lv0 << 40 | (uint64_t)nlv << 48 | (uint64_t)aspect << 56;
     uint64_t k2 = (uint64_t)ly0 | (uint64_t)nly << 16 | (uint64_t)sw.r << 32 | (uint64_t)sw.g << 40 | (uint64_t)sw.b << 48 | (uint64_t)sw.a << 56;
     uint64_t h = ((uint64_t)(uintptr_t)b * 0x9E3779B97F4A7C15ull) ^ (k1 * 0xC2B2AE3D27D4EB4Full) ^ (k2 * 0x165667B19E3779F9ull);
@@ -989,6 +1041,39 @@ VkImageView vk_dummy_view(int textype) {
     return views[textype];
 }
 
+// Throwaway color attachment for passes that have none (exec.c begin_pass, Intel only): R8, at least w x h (the pass's
+// render area: the attachments' level extent, which Dynamic resolution's sub-rect lies inside), never sampled; its
+// contents are don't-care. One image per sample count, grown to the largest render area seen (the outgrown one is
+// destroyed once the submissions that may use it are done), so changing render scales don't pile up images. Only the
+// image is kept: its view comes from the view table on each use, like a game target's (a cached handle could be
+// evicted from that table and destroyed under us). Called by the translating thread only (the render thread, or the
+// game's GPU thread with LARECOMP_RENDER_THREAD=0), as vk_dummy_view and the view table are.
+VkImageView vk_dummy_color_view(uint32_t w, uint32_t h, uint32_t samples) {
+    static TexBackend imgs[5];  // samples 1, 2, 4, 8, 16
+    int k = 0;
+    while (k < 4 && (1u << k) < samples) k++;
+    TexBackend *b = &imgs[k];
+    if (!b->image || b->width < w || b->height < h || b->samples != samples) {
+        if (b->width > w) w = b->width;
+        if (b->height > h) h = b->height;
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_R8_UNORM, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
+                                .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VkImage img;
+        VmaAllocation mem;
+        if (vmaCreateImage(g_vk.vma, &ci, &ai, &img, &mem, NULL) != VK_SUCCESS) return VK_NULL_HANDLE;
+        if (b->image) { views_forget(b); defer((Dead){.img = b->image, .mem = b->mem}); }
+        vk_image_init_layout(vk_upload_cmd(), img, VK_IMAGE_ASPECT_COLOR_BIT);
+        *b = (TexBackend){.image = img, .mem = mem, .format = VK_FORMAT_R8_UNORM, .base_type = VK_IMAGE_VIEW_TYPE_2D,
+                          .width = w, .height = h, .depth = 1, .layers = 1, .levels = 1, .samples = samples,
+                          .aspect = VK_IMAGE_ASPECT_COLOR_BIT, .gpu_owned = true};
+        LOG("[vk] placeholder color attachment %ux%u (samples %u) for passes without one\n", w, h, samples);
+    }
+    return vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, b->format, 0, 1, 0, 1, IDENTITY, VK_IMAGE_ASPECT_COLOR_BIT);
+}
+
 // ================================================================== samplers
 static VkCompareOp compare_op(uint32_t f) {
     switch (f) {
@@ -1070,3 +1155,5 @@ VkSampler vk_default_sampler(bool linear) {
     }
     return s[linear];
 }
+
+void backend_texture_view_format(NvnTexture *t, uint32_t format) { (void)t; (void)format; }  // (images are made mutable-format)

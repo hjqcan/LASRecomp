@@ -32,6 +32,7 @@ struct KThread {
     int preferred_core;
     uint64_t core_mask;
     bool cancel, in_sync_wait;
+    bool is_main;  // the process's main thread (kernel_create_main_thread)
     // wait state (protected by g_klock)
     WaitKind wait_kind;
     uint64_t wait_addr, wait_mutex;

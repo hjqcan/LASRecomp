@@ -900,7 +900,9 @@ class ModsProcess(QtCore.QThread):
         ### Lanmola Cave: Remove the AnglerKey actor
         if self.thread_active:
             room_data = self.readFile('LanmolaCave_02A.leb')
-            room_data.actors.pop(5)
+            # (LARecomp: by its type, not position 5, and with the room's links renumbered - enemies.remove_actors)
+            from RandomizerCore.Randomizers import enemies
+            enemies.remove_actors(room_data, [i for i, a in enumerate(room_data.actors) if a.type == 0x8B])
             self.writeFile('LanmolaCave_02A.leb', room_data)
         
         ### Classic D2: Turn the rock in front of Dungeon 2 into a swamp flower
@@ -1831,6 +1833,8 @@ class ModsProcess(QtCore.QThread):
         hole_ids = []
 
         for value in ENEMY_DATA['Actors'].values():
+            if value.get('minibosses-only') and not self.settings.get('enemy-minibosses', False):
+                continue  # (LARecomp: Shadow Link joins the pool only with Include mini-bosses)
             if value['type'] == 'land':
                 land_ids.append(value['id'])
             elif value['type'] == 'air':
@@ -2063,11 +2067,9 @@ class ModsProcess(QtCore.QThread):
 
             room_data = self.readFile(f'{room}.leb')
 
-            for element_key in elements_to_remove:
-                for index, actor in enumerate(room_data.actors):
-                    if actor.key == element_key:
-                        room_data.actors.pop(index)
-                        break
+            # (LARecomp: with their kit actors and the room's links renumbered - enemies.remove_actors)
+            from RandomizerCore.Randomizers import enemies
+            enemies.remove_actors(room_data, [i for i, a in enumerate(room_data.actors) if a.key in elements_to_remove])
 
             self.writeFile(f'{room}.leb', room_data)
 

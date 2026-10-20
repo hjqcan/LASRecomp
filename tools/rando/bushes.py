@@ -3,7 +3,8 @@
 shrubs, model parts GrassBase / GrassTop; 381 on the Field) hides an item, like the pots (pots.py does the writing: a
 scaled-down SinkingSword item actor inside the bush, cutting it reveals the item). Tall grass (ObjLawn 0xb5, 916 on
 the Field - the names are misleading; checked by tinting each kind gold in game 2026-10-09) is NOT randomized, nor
-are the 73 bushes over a hole / staircase (scan(): the item fell in) - 308 checks.
+are the 73 bushes over a hole / staircase (scan(): the item fell in) - 308 checks. The 5 bushes hiding a Secret
+Seashell are their seashell spot's check (seashell_spots.absorb), whatever the Shellsanity setting.
 Unchecked bushes are drawn gold (runtime/hle/pot_glow.c reads bushes.tsv; bushes are drawn instanced, the renderer
 splits those draws).
 
@@ -81,9 +82,10 @@ def scan(romfs, leb, pits=False, open_mabe=False):
             pit = (int((a.posX - ox) // 1.5), int((a.posZ - oz) // 1.5)) in holes or \
                 any(abs(x - a.posX) < 0.1 and abs(z - a.posZ) < 0.1 for x, z in tips)
             gone = open_mabe and a.key in OPEN_MABE_REMOVED
-            gone = gone or seashell_spots.holds_shell(a)  # (its Secret Seashell is the check: seashell_spots.py)
             if len(out) < limit and (not only or room_name in only.split(',')) and (pits or not pit) and not gone:
-                out.append({'level': 'Field', 'room': room_name, 'key': a.key, 'n': n, 'tile': _tile(room_name, a)})
+                # (shell: the Secret Seashell spot it hides - add_to_logic makes the spot this bush's check)
+                out.append({'level': 'Field', 'room': room_name, 'key': a.key, 'n': n, 'tile': _tile(room_name, a),
+                            'shell': seashell_spots.shell_index(a)})
             n += 1
     return out
 
@@ -198,25 +200,30 @@ def location_name(b):
 
 
 def add_to_logic(bushes, logic_defs, item_defs, traps='none', rng=None):
-    """A location per bush in LAS's logic + matching filler in the pool. Returns {location: bush}."""
+    """A location per bush in LAS's logic + matching filler in the pool. Returns {location: bush}. A bush hiding a
+    Secret Seashell is that spot's check (seashell_spots.absorb: the spot's LAS location goes, its seashell fills
+    this check - no filler for it)."""
     regions = screen_regions()
     spoiler_of = {}
     for k, v in logic_defs.items():
         if v.get('type') == 'item' and v.get('region') and v.get('spoiler-region'):
             spoiler_of.setdefault(v['region'], v['spoiler-region'])
-    locs = {}
+    locs, absorbed = {}, 0
     for b in bushes:
         regs = sorted(r for r in regions.get(b['room'], ()) if r in logic_defs)
         if not regs:
             continue
         name = location_name(b)
         cond = pots._and(*regs[1:], pocket_condition(b['room'], b.get('tile')), 'break-bush')
-        logic_defs[name] = {'type': 'item', 'subtype': 'standing', 'content': 'rupee-5', 'region': regs[0],
-                            'spoiler-region': spoiler_of.get(regs[0], 'mabe-village'), 'condition-basic': cond}
+        loc = {'type': 'item', 'subtype': 'standing', 'content': 'rupee-5', 'region': regs[0],
+               'spoiler-region': spoiler_of.get(regs[0], 'mabe-village'), 'condition-basic': cond}
+        if b.get('shell') is not None and seashell_spots.absorb(logic_defs, b['shell'], loc):
+            absorbed += 1
+        logic_defs[name] = loc
         locs[name] = b
     for k, d in pots.FILLER_DEFS.items():
         item_defs.setdefault(k, dict(d, type='junk', quantity=0, **{'chest-type': 'junk'}))
-    n = len(locs)
+    n = len(locs) - absorbed
     trap_kinds = [k for k in item_defs if k.endswith('-trap') and not k.startswith('zol')]
     n_traps = int(round(n * BUSH_TRAPS.get(traps, 0.0))) if trap_kinds else 0
     if n_traps:

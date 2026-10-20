@@ -30,6 +30,8 @@ static Uint32 duration;
 Uint64 SDL_GetTicks(void) { return ticks; }
 SDL_Window *SDL_GetKeyboardFocus(void) { return focus ? (SDL_Window *)1 : NULL; }
 bool menu_is_open(void) { return menu; }
+int game_in_play(void) { return 0; } // rumble fixture has no live game or health state
+int cheats_link_health(int *max) { (void)max;abort(); }
 Settings g_settings = {.rumble = true, .rumble_strength = 100};  // (the Rumble settings: on, full, as by default)
 bool coop_active(void) { abort(); }  // unrelated second-player event entry point
 int bind_label_family(void) { abort(); }  // unrelated menu-layout entry point

@@ -26,8 +26,11 @@ x y z - trees / hole: a bomb hole, lands at x y z / shell: a Secret Seashell the
 model name, flow entry, flag symbol, flag index, seashell (1/0), scale, turn (, a bomb hole's actor key: the runtime
 switches its Seashell Sensor beacon off).
 
-Bushsanity / potsanity leave the bushes and the pot holding a Secret Seashell out (their check is this one), and
-digsanity the buried shells' tiles: one check per spot.
+Who owns a spot (one check per spot, never two): bushsanity the bushes hiding a shell, potsanity the Ghost House
+pot, digsanity the shells buried on the Field - each such spot is that -sanity's own check (gold bush / pot, dig
+tile), its LAS location taken out of the logic (absorb(): its seashell stays in the pool, its conditions ANDed in).
+Shellsanity (setting 'shellsanity') makes every spot no -sanity took a check here; off, they stay vanilla shells
+(apply(vanilla=True): only their 'shell' rows, so the tracker ticks them once their shell is found).
 
     apply(locations(logic_defs), mods, out_dir, romfs, leb, event_tools, oead_tools, item_get, data) -> spoiler lines
 """
@@ -126,8 +129,46 @@ def scan(romfs, leb):
 
 
 def holds_shell(actor):
-    """A bush / pot whose drop is a Secret Seashell (bushes.py / pots.py leave it out: its check is this one)."""
-    return any(isinstance(p, bytes) and DROP_KEY.match(p) for p in actor.parameters[:2])
+    """A bush / pot whose drop is a Secret Seashell."""
+    return shell_index(actor) is not None
+
+
+def shell_index(actor):
+    """The seashell index a bush / pot / rock / tree drops (its ItemDrop key Seashell<n>), None: no shell."""
+    for p in actor.parameters[:2]:
+        m = isinstance(p, bytes) and DROP_KEY.match(p)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def clear_drop(actor):
+    """A host taken over by a -sanity check: no Secret Seashell drop any more (ItemDrop 'None')."""
+    for k, p in enumerate(actor.parameters[:2]):
+        if isinstance(p, bytes) and DROP_KEY.match(p):
+            actor.parameters[k] = b'None'
+
+
+def _and(*conds):
+    parts = [c for c in conds if c]
+    return ' & '.join(f'({c})' for c in parts) if parts else None
+
+
+def absorb(logic_defs, index, loc):
+    """A -sanity check (bush / pot / dig tile, its new logic entry `loc`) standing on the Secret Seashell spot with
+    seashell index `index`: that spot's LAS location leaves the logic - its seashell stays in the item pool and fills
+    the check's place, so the caller adds no filler for it - and its conditions (and region) are ANDed into `loc`'s.
+    Returns the LAS location taken, None: no such spot (already gone)."""
+    las = next((n for n, i in locations(logic_defs).items() if i == index), None)
+    if las is None:
+        return None
+    v = logic_defs.pop(las)
+    base = _and(loc.get('condition-basic'), v['region'] if v.get('region') != loc.get('region') else None)
+    loc['condition-basic'] = _and(base, v.get('condition-basic'))
+    for k, c in v.items():
+        if k.startswith('condition-') and k != 'condition-basic':
+            loc[k] = _and(base, c)
+    return las
 
 
 def _tag_drop(oead_tools, sheet, key, index):
@@ -141,12 +182,13 @@ def _tag_drop(oead_tools, sheet, key, index):
         sheet['values'].append(oead_tools.dictToStruct(entry))
 
 
-def apply(locs, mods, out_dir, romfs, leb, event_tools, oead_tools, item_get, data, shells=()):
-    """locs: locations(logic_defs). A Secret Seashell placed at a spot stays the game's own shell there, with its
-    seashell index (the Seashell Sensor rings for it until it is found, as for any shell); any other item: its own
-    flow entry, the shell taken out (buried) / the drop retagged (ItemDrop LARShellSpot<n>). shells: more spots
-    holding a Secret Seashell [(location, seashell index, found flag)] (digsanity tiles: digs.py) - shell_spots.tsv
-    rows the runtime sets the flag of once that shell is found (the tracker)."""
+def apply(locs, mods, out_dir, romfs, leb, event_tools, oead_tools, item_get, data, shells=(), vanilla=False):
+    """locs: locations(logic_defs) (the spots no -sanity absorbed). A Secret Seashell placed at a spot stays the game's
+    own shell there, with its seashell index (the Seashell Sensor rings for it until it is found, as for any shell);
+    any other item: its own flow entry, the shell taken out (buried) / the drop retagged (ItemDrop LARShellSpot<n>).
+    vanilla (Shellsanity off): the spots keep their own shells, untouched - only their 'shell' rows (tracker).
+    shells: more spots holding a Secret Seashell [(location, seashell index, found flag)] (digsanity tiles: digs.py) -
+    shell_spots.tsv rows the runtime sets the flag of once that shell is found (the tracker)."""
     common_out = os.path.join(out_dir, 'romfs', 'region_common')
     common_in = os.path.join(romfs, 'region_common')
 
@@ -181,19 +223,22 @@ def apply(locs, mods, out_dir, romfs, leb, event_tools, oead_tools, item_get, da
     checks, spoiler = [], []
     # a bomb hole holding something else keeps its index (it drops ItemDrop Seashell<index>, retagged here; with any
     # other index it drops nothing) - a shell placed at the other hole whose index is that one is given like an item
-    holes = {i for n, i in locs.items() if spots[i][0] == 'hole' and n in mods.placements
-             and mods.placements[n] != 'seashell'}
+    holes = set() if vanilla else {i for n, i in locs.items() if spots[i][0] == 'hole' and n in mods.placements
+                                   and mods.placements[n] != 'seashell'}
     for name, index in sorted(locs.items(), key=lambda kv: kv[1]):
-        if name not in mods.placements:
+        if not vanilla and name not in mods.placements:
             continue
         flag = f'LARShellSpot{index}'
         if flag not in names:
             names[flag] = seed_tables.next_flag(sheet, out_dir)
             sheet['values'].append({'symbol': flag, 'index': names[flag]})
-        item_key, item_index, model_path, model_name = mods.getItemInfo(name, mods.trap_models)
         kind, level, room, x, y, z, key, k = spots[index]
-        host = next(a for a in room_of(level, room).actors if a.key == key)
         checks.append(f'{name}\t{names[flag]}\n')
+        if vanilla:  # (its own shell, its own index: nothing to edit)
+            rows.append(f'{name}\t{index}\tshell\t{level}\t{room}\t-\t-\t-\t-\t-\t-\t{flag}\t{names[flag]}\t1\t1\t0\n')
+            continue
+        item_key, item_index, model_path, model_name = mods.getItemInfo(name, mods.trap_models)
+        host = next(a for a in room_of(level, room).actors if a.key == key)
         spoiler.append(f'{name}: {mods.placements[name]}')
         hole = kind == 'hole'
         if mods.placements[name] == 'seashell' and not (hole and item_index in holes):
@@ -211,7 +256,9 @@ def apply(locs, mods, out_dir, romfs, leb, event_tools, oead_tools, item_get, da
                         f'\t1\t1\t0\n')
             continue
         if kind == 'dig':  # (no buried shell: the runtime brings the item up when the spot is dug)
-            room_of(level, room).actors.remove(host)
+            r = room_of(level, room)  # (with the room's links renumbered: actors refer to each other by index)
+            from RandomizerCore.Randomizers import enemies
+            enemies.remove_actors(r, [r.actors.index(host)])
         elif hole:  # (its index stays: its ItemDrop entry is retagged; the runtime keeps its sensor beacon off)
             host.parameters[k] = index
             e = next(v for v in drops['values'] if v['mKey'] == f'Seashell{index}')

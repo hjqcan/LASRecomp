@@ -133,11 +133,12 @@ struct GenOpts {
     bool no_buffs = false;    // no-buff-drops: enemies never drop Guardian Acorns / Pieces of Power
     bool bushes = false;      // bushsanity: every overworld bush hides an item (tools/rando/bushes.py)
     bool digs = false;        // digsanity: every diggable overworld tile is a check (tools/rando/digs.py)
+    bool shellsanity = false; // every Secret Seashell spot is a check (tools/rando/seashell_spots.py); off: vanilla
     int room_shuffle = 0;     // dungeon-room-shuffle: off / coherent / chaos / madness (tools/rando/dungeon_gen.py)
     bool pet_rooster = false, pet_ghost = false;  // pets in the pool (tools/rando/pets.py)
     bool pet_marin = false;   // Marin in the pool, the desert closed until she wakes the Walrus (open-desert off)
     int shopsanity = 0;       // off / vanilla prices / random prices (tools/rando/shopsanity.py)
-    int miniboss_freq = 0;    // miniboss-frequency: overworld mini-boss chance 1x / 2x / 3x / every room (enemies.py)
+    int miniboss_freq = 0;    // miniboss-frequency: overworld mini-boss chance 1x / 2x / 3x / every enemy that fits (enemies.py)
     int enemy_mode = 0;       // enemy-mode: seeded (fixed in the seed) / random (re-rolled at every load: enemy_random.c)
     bool trendsanity = false; // every Trendy Game prize is a check (tools/rando/trendsanity.py)
     bool boss_souls = false;  // boss-souls: a boss only appears once its soul is found (tools/rando/souls.py)
@@ -202,7 +203,7 @@ static bool *opt_flags(GenOpts &o, int i) {  // the yes/no options, in ID order 
                  &o.boss_cutscenes, &o.spoiler, &o.decoupled, &o.pots, &o.no_buffs, &o.bushes,
                  &o.pet_rooster, &o.pet_ghost, &o.pet_marin, &o.trendsanity, &o.boss_souls, &o.hookshot_any,
                  &o.digs, &o.miniboss_souls, &o.no_start_sword, &o.no_start_shield, &o.no_start_ocarina,
-                 &o.tunic_upgrades};
+                 &o.tunic_upgrades, &o.shellsanity};
     return i < (int)(sizeof f / sizeof *f) ? f[i] : NULL;
 }
 
@@ -374,7 +375,8 @@ static void start_generation(void) {
     }
     fprintf(f, " \"pots\": %s, \"no-buff-drops\": %s, \"bushes\": %s, \"digs\": %s,\n", g_opts.pots ? "true" : "false",
             g_opts.no_buffs ? "true" : "false", g_opts.bushes ? "true" : "false", g_opts.digs ? "true" : "false");
-    fprintf(f, " \"tunic-upgrades\": %s,\n", g_opts.tunic_upgrades ? "true" : "false");
+    fprintf(f, " \"tunic-upgrades\": %s, \"shellsanity\": %s,\n", g_opts.tunic_upgrades ? "true" : "false",
+            g_opts.shellsanity ? "true" : "false");
     fprintf(f, " \"include-fishing\": %s, \"include-rapids\": %s, \"include-dampe\": %s, \"include-trade-gifts\": %s,"
                " \"include-blue-rupees\": %s,\n", g_opts.inc_fishing ? "true" : "false", g_opts.inc_rapids ? "true" : "false",
             g_opts.inc_dampe ? "true" : "false", g_opts.inc_trade ? "true" : "false", g_opts.inc_blue ? "true" : "false");
@@ -763,6 +765,7 @@ extern "C" void rando_tab_draw(float scale) {
                "INSANE: every diggable tile on the overworld is a check - about 5,000 more, and most important items end "
                "up buried. The first dig of a tile brings its item up; grass and bushes have to be cut first. Holes stay "
                "dug, so you can see where you've been.");
+    opt_toggle("Shellsanity", &g_opts.shellsanity, false, "Every hidden Secret Seashell spot holds an item from the pool.");
     static const char *ksn[] = {"Off", "Small keys", "Small + Nightmare", "All dungeon items"};
     opt_choice("Keysanity", &g_opts.keysanity, ksn, 4, 0,
                "Dungeon keys (and with the last choice every dungeon item) can be anywhere in the world, with logic. A "
@@ -879,13 +882,13 @@ extern "C" void rando_tab_draw(float scale) {
     opt_toggle("Include mini-bosses", &g_opts.enemy_minibosses, false,
                "Some overworld enemies become mini-bosses: Hinox, Armos Knight, Dodongo Snake, Giant Buzz Blob, Smasher, "
                "Avalaunch, Rolling Bones, Cue Ball, Blaino, Master Stalfos, Moblin Chief, Lanmola, the Ball-and-Chain "
-               "Soldier or Shadow Link.");
+               "Soldier or Shadow Link. Shadow Link, Blaino and the Soldier also appear in dungeons and caves.");
     {
         opt_indent(1);
         if (!g_opts.randomize_enemies || !g_opts.enemy_minibosses) opt_disable_next();
         static const char *const freq[] = {"Normal", "2x", "3x", "All"};
         opt_choice("Mini-boss frequency", &g_opts.miniboss_freq, freq, 4, 0,
-                   "How often overworld enemies become mini-bosses. All: one in every screen with enemies.");
+                   "How often overworld enemies become mini-bosses. All: every one with room for one.");
         opt_indent(-1);
     }
     opt_indent(-1);

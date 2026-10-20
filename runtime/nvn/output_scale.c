@@ -11,7 +11,8 @@
 //                  their top-left part at (sx, sy): no reallocation at a step, so no hitch (each step reallocated
 //                  every screen-sized texture before: ~325 ms on an M3 Max, seconds at 4K on Vulkan, issue #100).
 // Test overrides: LARECOMP_SCALE=<f> (render height = 1080 x f), LARECOMP_WIDE_TEST=<f> (forced shape),
-// LARECOMP_DYN_TEST=<f> (Dynamic pinned at factor f of the allocation: shots at a fixed part).
+// LARECOMP_DYN_TEST=<f> (Dynamic pinned at factor f of the allocation: shots at a fixed part), LARECOMP_DYN_START=<f>
+// (Dynamic starts at factor f).
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,6 +100,13 @@ void output_scale_note_split(const DynSplit *d) {
     g_split_n++;
 }
 
+static double g_sum_ms;  // (Metal) spans summed since the last decision
+static int g_sum_n;
+void output_scale_note_sum(double ms) {
+    if (g_sum_n >= 600) g_sum_ms = 0, g_sum_n = 0;
+    g_sum_ms += ms, g_sum_n++;
+}
+
 static int cmp_double(const void *a, const void *b) {
     double x = *(const double *)a, y = *(const double *)b;
     return x < y ? -1 : x > y;
@@ -109,6 +117,11 @@ static void dyn_update(double now, double game_ms, double win_ms) {
     static int no_gpu = -1;
     if (no_gpu < 0) no_gpu = getenv("LARECOMP_DYN_NO_GPU") && atoi(getenv("LARECOMP_DYN_NO_GPU"));
     if (no_gpu) game_ms = -1;
+    static int start = -1;  // LARECOMP_DYN_START=<f>: Dynamic starts at factor f (tests: climbing back from the floor)
+    if (start < 0) {
+        start = 0;
+        if (getenv("LARECOMP_DYN_START")) g_dyn = dyn_grid(fmin(1.0, atof(getenv("LARECOMP_DYN_START"))));
+    }
     double dt = g_last_t > 0 ? (now - g_last_t) * 1000.0 : 16.7;
     g_last_t = now;
     if (dt > 250) return;  // (loading, menus, a stall: not the GPU's steady state)
@@ -128,6 +141,8 @@ static void dyn_update(double now, double game_ms, double win_ms) {
     int spikes = DYN_N - nkept;
     g_dyn_gpu_sum = g_dyn_win_sum = 0;
     g_dyn_n = g_dyn_gpu_n = 0;
+    double sum_ms = g_sum_n ? g_sum_ms / g_sum_n : -1;
+    g_sum_ms = 0, g_sum_n = 0;
     if (now < g_dyn_cool_until) return;
     double prev = g_dyn;
     static int log = -1;  // LARECOMP_LOG_DYNRES=1: every decision, not only the steps
@@ -260,6 +275,7 @@ static void dyn_update(double now, double game_ms, double win_ms) {
                      g_split.span / nf, g_split.span / nf - (g_split.game + g_split.win) / n, g_split.w_slot / n, g_split.w_acquire / n,
                      g_split.w_present / n, g_split.w_other / n);
         }
+        if (sum_ms >= 0) snprintf(split, sizeof split, "; spans summed %.1f ms", sum_ms);
         char hold[48] = "";
         if (g_hold_dt > 0) snprintf(hold, sizeof hold, ", holding %.0f fps", 1000 / g_hold_dt);
         LOG("[dynres] %.2f -> %.2f (frame %.1f ms, median %.1f, %d spike%s left out, gpu %.1f ms = game %.1f + window %.1f, "

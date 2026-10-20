@@ -72,6 +72,7 @@
 #define GA_TAILOR_PLAY                     UINT64_C(0x70010d4340)
 #define GA_STRING_OTHER                    UINT64_C(0x70016dc7b9)
 #define GA_STRING_SIGN                     UINT64_C(0x70016e6ef9)
+#define GA_ENEMY_LIFE_VTABLE               UINT64_C(0x7001b5be00)
 
 #define GA_MAIN_CODE_SIZE                  UINT64_C(0x16a0000)
 #define GA_DELEGATE_JOB_VTABLE_LIVE         UINT64_C(0x7001c51308)

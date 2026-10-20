@@ -18,6 +18,7 @@
 #include "../input_bind.h"
 #include "../coop.h"
 #include "../rumble.h"
+#include "../led.h"
 #include "../ui/menu.h"
 
 enum {
@@ -117,6 +118,64 @@ void input_rumble_stop(void) {  // UI thread: also called before normal app exit
 RT_ON_RESET(input_rumble_reset) {
     input_rumble_stop();
     input_rumble_permit(true);
+}
+
+// Controller light (runtime/led.h): the light bar of the game's controller shows Link's health. UI thread only.
+// While the option is off (or nothing is in play) SDL_SetGamepadLED is never called: the one call that hands the
+// light back is made when we stop owning it.
+int game_in_play(void);                // hle/warp.c
+int cheats_link_health(int *max);      // ui/cheats.mm
+static SDL_JoystickID led_pad_id;      // the pad the state below is about
+static bool led_capable, led_lit;      // it has an RGB light / we set its colour
+static LedColor led_last;
+static uint64_t led_last_ms, led_log_ms, led_hurt_ms;
+static int led_prev_hp = -1, led_prev_max;
+
+static void led_forget(void) { led_lit = false, led_prev_hp = -1, led_pad_id = 0; }
+static void led_restore(const char *why) {
+    if (led_lit && pad) {
+        LedColor c = led_default_color(SDL_GetGamepadType(pad) == SDL_GAMEPAD_TYPE_PS4, SDL_GetGamepadPlayerIndex(pad));
+        SDL_SetGamepadLED(pad, c.r, c.g, c.b);
+        LOG("[led] %s: controller colour restored\n", why);
+    }
+    led_lit = false, led_prev_hp = -1;
+}
+void input_led_stop(void) { led_restore("quit"); }  // before exit / teardown
+static void led_atexit(void) { led_restore("exit"); }
+RT_ON_RESET(input_led_reset) { led_restore("reset"); }
+
+void input_led_poll(void) {
+    if (!pad || host_test) { led_forget(); return; }
+    SDL_JoystickID id = SDL_GetGamepadID(pad);
+    if (id != led_pad_id) {
+        led_forget();
+        led_pad_id = id;
+        led_capable = SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, false);
+        if (led_capable) LOG("[led] %s has a light\n", SDL_GetGamepadName(pad));
+    }
+    if (!led_capable) return;
+    if (!g_settings.controller_light) { led_restore("off"); return; }
+    int max = 0, hp = game_in_play() ? cheats_link_health(&max) : -1;
+    if (hp < 0 || max <= 0) { led_restore("not in play"); return; }
+    uint64_t now = SDL_GetTicks();
+    if (led_prev_hp >= 0 && hp < led_prev_hp && max == led_prev_max) led_hurt_ms = now;
+    if (led_prev_hp < 0) led_hurt_ms = 0;  // (entering play: no flash)
+    led_prev_hp = hp, led_prev_max = max;
+    LedColor c = led_health_color(hp, max, now, led_hurt_ms ? now - led_hurt_ms : UINT64_MAX);
+    if (led_lit && (led_equal(c, led_last) || now - led_last_ms < LED_MIN_INTERVAL_MS)) return;
+    if (!SDL_SetGamepadLED(pad, c.r, c.g, c.b)) {
+        LOG("[led] unavailable: %s\n", SDL_GetError());
+        led_capable = false;
+        return;
+    }
+    static bool registered;
+    if (!registered) registered = true, atexit(led_atexit);
+    if (!led_lit || now - led_log_ms >= 1000) {  // (the pulse changes it all the time: one line a second at most)
+        LOG("[led] %d,%d,%d (health %d/%d quarter-hearts%s)\n", c.r, c.g, c.b, hp, max,
+            led_hurt_ms && now - led_hurt_ms < LED_FLASH_MS ? ", hurt" : "");
+        led_log_ms = now;
+    }
+    led_lit = true, led_last = c, led_last_ms = now;
 }
 
 // Host keys / buttons held by a test script (LARECOMP_HOST_INPUT, input_frame): they go through the bindings
@@ -339,6 +398,7 @@ void input_handle_event(const SDL_Event *e) {
         if (pad && SDL_GetGamepadID(pad) == e->gdevice.which) {
             SDL_RumbleGamepad(pad, 0, 0, 0);
             SDL_CloseGamepad(pad); pad = NULL; note_family();
+            led_forget();  // (gone: it shows its own colour when it comes back)
             rumble_clear(); rumble_last_lo = rumble_last_hi = 0; rumble_warned = false;
         }
         if (pad2 && SDL_GetGamepadID(pad2) == e->gdevice.which) { SDL_CloseGamepad(pad2); pad2=NULL; }

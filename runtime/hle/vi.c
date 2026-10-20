@@ -16,6 +16,7 @@ static void *vsync_thread(void *arg) {
     (void)arg;
     uint64_t period = research_vsync_period();
     plat_thread_realtime(period);
+    plat_thread_perf_core(PLAT_PERF_VSYNC);
     uint64_t next = plat_now_ns();
     for (;;) {
         uint64_t wanted=research_vsync_period();

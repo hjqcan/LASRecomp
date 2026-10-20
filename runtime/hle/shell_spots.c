@@ -16,7 +16,8 @@
 //         pool) parameters. (kind 'land': the shell falls out of a tree's crown / jumps out of a bomb hole - the
 //         item, which doesn't, is put on the ground beside it)
 // Picking it up runs its entry in SinkingSword.bfevfl (LAS's item-get: held up, the game's message box) and sets the
-// spot's own flag; a spot whose flag is set gives nothing again. A 'shell' row (a Secret Seashell there, also on a
+// spot's own flag; a spot whose flag is set gives nothing again, and one whose item already dropped gives no second
+// one (a second bonk of the tree, say) until Link has left its screen. A 'shell' row (a Secret Seashell there, also on a
 // digsanity tile) only has its found flag set here once that seashell is owned (the tracker).
 //
 // shell_spots.tsv: location, seashell index (vanilla; a 'shell' row: the placed shell's), kind (dig / drop / land /
@@ -32,7 +33,7 @@
 #include "../hle.h"
 #include "../rando.h"
 
-#define MAXSPOTS 64
+#define MAXSPOTS 128  // (31 spots + a "shell" row per digsanity tile holding a Secret Seashell: up to 81)
 #define T_SHELL 0x87
 #define T_SINKING_SWORD 0x194
 #define T_HEART_PIECE 0xb0
@@ -56,6 +57,7 @@ typedef struct {
     int pool[5];          // the strings' string pool indices (-1: not yet)
     uint64_t item;        // dug-up item actor (control block, weak ref held)
     bool dug;             // dug this visit (the hole lasts until the scene goes)
+    bool dropped;         // its item dropped this visit: a second bonk / lift / bomb gives no second one
     bool queued;
 } Spot;
 static Spot g_spots[MAXSPOTS];
@@ -119,6 +121,7 @@ static int load_locked(void) {
         s->key = nc > 16 ? strtoull(col[16], NULL, 16) : 0;
         for (int k = 0; k < 5; k++) s->pool[k] = -1;
     }
+    if (n == MAXSPOTS && fgets(line, sizeof line, f)) LOG("[shells] warning: more than %d rows, the rest ignored\n", MAXSPOTS);
     fclose(f);
     LOG("[shells] %d Secret Seashell spots hold the seed's items (%s)\n", n, path);
     __atomic_store_n(&g_n, n, __ATOMIC_RELEASE);
@@ -146,10 +149,12 @@ static Spot *spot_of(uint64_t info) {
 void rt_shell_swap(uint64_t info) {
     Spot *s = info ? spot_of(info) : NULL;
     if (!s) return;
-    if (flags_ext_get(s->flag_idx) || !g_pool_ready) {
-        LOG("[shells] %s: %s\n", s->name, g_pool_ready ? "already found (nothing)" : "not ready (nothing)");
+    if (flags_ext_get(s->flag_idx) || !g_pool_ready || s->dropped) {
+        LOG("[shells] %s: %s\n", s->name, !g_pool_ready ? "not ready (nothing)" : s->dropped ? "already dropped here (nothing)"
+                                                                                    : "already found (nothing)");
         return;  // (rt_shell_skip: no actor)
     }
+    s->dropped = true;  // (until the scene goes: the item lies there until picked up)
     ST16(info + 8, T_SINKING_SWORD);
     for (int k = 0; k < 8; k++) {
         ST32(info + 0x10 + 8 * k, (uint32_t)(k < 5 ? s->pool[k] : g_empty));
@@ -167,7 +172,7 @@ void rt_shell_swap(uint64_t info) {
 bool rt_shell_skip(uint32_t type, uint64_t info) {
     if (type != T_HEART_PIECE && type != T_SHELL) return false;
     Spot *s = spot_of(info);
-    return s && (flags_ext_get(s->flag_idx) || !g_pool_ready);
+    return s && (flags_ext_get(s->flag_idx) || !g_pool_ready || s->dropped);
 }
 
 static int field_tile(const Spot *s) {  // a Field spot's digsanity tile id (digs.c), -1 elsewhere
@@ -257,6 +262,7 @@ void shell_spots_tick(Cpu *c, uint64_t frame) {
         g_scene_was = scene;
         for (int i = 0; i < g_n; i++) {
             g_spots[i].dug = false;
+            g_spots[i].dropped = false;
             if (g_spots[i].item && !digs_actor_alive(g_spots[i].item)) digs_drop_ref(c, &g_spots[i].item);
         }
     }
@@ -270,6 +276,17 @@ void shell_spots_tick(Cpu *c, uint64_t frame) {
         }
     const char *lv = level_name();
     if (frame % 8 == 0) hole_beacons(lv);
+    if (frame % 8 == 0) {  // a dropped item not picked up: once Link has left its screen (or level) it may drop again
+        uint64_t pc0 = doorjump_player(frame);
+        const float *p = pc0 ? (const float *)(uintptr_t)(pc0 + 0x80) : NULL;
+        for (int i = 0; i < g_n; i++) {
+            Spot *s = &g_spots[i];
+            if (s->dropped && (strcmp(lv, s->level) ||
+                               (!strcmp(s->level, "Field") && p && (floorf(p[0] / 15.0f) != floorf(s->x / 15.0f) ||
+                                                                    floorf(p[2] / 12.0f) != floorf(s->z / 12.0f)))))
+                s->dropped = false;
+        }
+    }
     for (int i = 0; i < g_n; i++) {
         Spot *s = &g_spots[i];
         if (!s->dig || strcmp(lv, s->level)) continue;

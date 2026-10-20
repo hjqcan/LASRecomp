@@ -57,6 +57,11 @@ int main(void) {
     for (uintptr_t i=0;i<16;i++) pthread_create(&threads[i],NULL,prepare,(void *)i);
     for (int i=0;i<16;i++) pthread_join(threads[i],NULL);
     for (int i=0;i<16;i++) assert(prepared[i]==prepared[0] && prepared[i]->module);
+    const char *early_source = "#version 450\nlayout(early_fragment_tests) in;\n"
+        "layout(location=0) out vec4 color; void main() { color=vec4(1.0); }\n";
+    const VkPreparedShader *early = vk_prepare_shader(early_source, STAGE_FRAGMENT);
+    assert(early->module && early->module_late && early->module != early->module_late);
+    assert(vk_prepare_shader(early_source, STAGE_FRAGMENT) == early);
     Init init={0}; shader_job_submit(&init.job,build,&init);
     shader_job_wait(&init.job); assert(init.pipeline);
 
@@ -99,7 +104,8 @@ int main(void) {
     assert(*value==0x12345678u);
     shader_jobs_drain(); vk_shader_cache_reset();
     // A reset must permit rebuilding the same source, not retain destroyed modules.
-    assert(vk_prepare_shader(source,STAGE_COMPUTE)->module); vk_shader_cache_reset();
+    assert(vk_prepare_shader(source,STAGE_COMPUTE)->module);
+    assert(vk_prepare_shader(early_source,STAGE_FRAGMENT)->module_late); vk_shader_cache_reset();
     source="#version 450\ninvalid shader;\n";
     for (uintptr_t i=0;i<16;i++) pthread_create(&threads[i],NULL,prepare,(void *)i);
     for (int i=0;i<16;i++) pthread_join(threads[i],NULL);
@@ -110,5 +116,5 @@ int main(void) {
     vkDestroyCommandPool(g_vk.dev,g_vk.pool,NULL); vkUnmapMemory(g_vk.dev,memory);
     vkDestroyBuffer(g_vk.dev,buffer,NULL); vkFreeMemory(g_vk.dev,memory,NULL);
     vkDestroyDevice(g_vk.dev,NULL); vkDestroyInstance(g_vk.inst,NULL);
-    puts("PASS: concurrent stage reuse, one-shot GPU initialization, cache reset and failed compilation wakeup");
+    puts("PASS: concurrent stage reuse, early/late fragment variants, one-shot GPU initialization, cache reset and failed compilation wakeup");
 }

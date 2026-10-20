@@ -48,8 +48,10 @@ class ItemShuffler(QtCore.QThread):
         self.vanilla_locations = {k for k, v in self.logic_defs.items()
                             if v['type'] == 'item'
                             and v['subtype'] not in ('chest', 'boss', 'enemy', 'drop', 'npc', 'standing', 'overworld-statue', 'dungeon-statue',
-                                                     'underwater',  # (LARecomp: tools/rando/underwater.py)
-                                                     'dig', 'hidden', 'bomb-hole')}  # (LARecomp: tools/rando/seashell_spots.py)
+                                                     'underwater')  # (LARecomp: tools/rando/underwater.py)
+                            # (LARecomp: Shellsanity - tools/rando/seashell_spots.py; spots a bush / pot / dig check
+                            # took over are no LAS locations any more)
+                            and not (self.settings.get('shellsanity') and v['subtype'] in ('dig', 'hidden', 'bomb-hole'))}
         if not self.settings.get('trendsanity'):  # LAS Recomp: tools/rando/trendsanity.py shuffles them
             self.vanilla_locations.add('trendy-prize-1') # yoshi doll stays until trendy is properly shuffled
             self.vanilla_locations.add('trendy-prize-2')

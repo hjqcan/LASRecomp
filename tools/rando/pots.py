@@ -101,8 +101,8 @@ def scan(romfs, leb):
         for i, a in enumerate(room.actors):
             if a.type not in POT_TYPES:
                 continue
-            if not seashell_spots.holds_shell(a):  # (its Secret Seashell is the check: seashell_spots.py)
-                pots.append({'level': level, 'room': room_name, 'key': a.key, 'n': n})
+            # (shell: the Secret Seashell spot it hides - add_to_logic makes the spot this pot's check)
+            pots.append({'level': level, 'room': room_name, 'key': a.key, 'n': n, 'shell': seashell_spots.shell_index(a)})
             n += 1
     return pots
 
@@ -125,7 +125,8 @@ def _door_logic(entrance_data):
 
 def add_to_logic(pots, logic_defs, item_defs, entrance_data, traps='none', rng=None):
     """Adds a location per pot to LAS's logic and matching filler to the pool (JUNK_MIX, traps by the seed's
-    trap setting). Returns {location: pot}."""
+    trap setting). Returns {location: pot}. A pot holding a Secret Seashell (the Ghost House's) is that spot's check
+    (seashell_spots.absorb: the spot's LAS location goes, its seashell fills this check - no filler for it)."""
     doors = _door_logic(entrance_data)
     spoiler_of = {}
     for k, v in logic_defs.items():
@@ -136,7 +137,7 @@ def add_to_logic(pots, logic_defs, item_defs, entrance_data, traps='none', rng=N
         conds = [v.get('condition-basic') for k, v in logic_defs.items()
                  if v.get('type') == 'item' and k.startswith(prefix + '-') and v.get('condition-basic')]
         dungeon_cond[level] = _and(*sorted(set(conds)))
-    locs = {}
+    locs, absorbed = {}, 0
     skipped = set()
     for p in pots:
         lv = p['level']
@@ -153,12 +154,15 @@ def add_to_logic(pots, logic_defs, item_defs, entrance_data, traps='none', rng=N
             skipped.add(lv)
             continue
         name = location_name(p)
-        logic_defs[name] = {'type': 'item', 'subtype': 'standing', 'content': 'rupee-5', 'region': region,
-                            'spoiler-region': spoiler or 'mabe-village', 'condition-basic': cond}
+        loc = {'type': 'item', 'subtype': 'standing', 'content': 'rupee-5', 'region': region,
+               'spoiler-region': spoiler or 'mabe-village', 'condition-basic': cond}
+        if p.get('shell') is not None and seashell_spots.absorb(logic_defs, p['shell'], loc):
+            absorbed += 1
+        logic_defs[name] = loc
         locs[name] = p
     for k, d in FILLER_DEFS.items():
         item_defs.setdefault(k, dict(d, type='junk', quantity=0, **{'chest-type': 'junk'}))
-    n = len(locs)
+    n = len(locs) - absorbed
     trap_kinds = [k for k in item_defs if k.endswith('-trap') and not k.startswith('zol')]
     n_traps = int(round(n * POT_TRAPS.get(traps, 0.0))) if trap_kinds else 0
     if n_traps:
@@ -239,6 +243,7 @@ def apply(locs, mods, out_dir, romfs, leb, event_tools, oead_tools, item_get, da
             pot = by_key.get(p['key'])
             if pot is None:  # (its item would be lost: LAS's open-mabe once took two bushes away - bushes.scan)
                 raise RuntimeError(f'{name}: no {flag_prefix} actor {p["key"]:#x} in {room_name}')
+            seashell_spots.clear_drop(pot)  # (a Secret Seashell spot this check took over: no shell drop besides)
             if next_flag >= flag_limit:
                 raise RuntimeError(f'out of GlobalFlags indices for {flag_prefix}')
             flag = f'{flag_prefix}{next_flag}'

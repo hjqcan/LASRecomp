@@ -9,8 +9,11 @@ the logic thinks is open too early - the circular dig-spot gates of #81 / #144. 
 runtime/ui/rando_tab.mm (seed_id_encode, request.json in start_generation): keep the two in step.
 
 usage: seed_sweep.py <romfs> [-n seeds] [-j jobs] [--id SEED-ID ...] [--keep dir] [--stealing M] [--shopsanity N]
-                     [--souls] [--rooms N ...] [--triforce N]
+                     [--souls] [--rooms N ...] [--triforce N] [--miniboss-freq F] [--full]
        (default: the fixed seed IDs below + 40 random option mixes with digsanity on, every logic level)
+--miniboss-freq F: every random mix randomizes enemies with mini-boss frequency F (0 - 3: Normal, 2x, 3x, All), enemy
+mode Seeded or Random; --full: each seed is also generated in full (game files, enemies and all) and must finish -
+including its room-link check (room_links.py: every actor link within each room sound, else the game crashes there).
 Exit status 1 if any seed fails either check. Run it with the LAS venv's Python (third_party/LAS-Randomizer/venv).
 """
 import argparse
@@ -39,7 +42,7 @@ FLAGS = ['bomb_bag', 'powder_bag', 'environments', 'pets_in_dungeons', 'skip_sto
          'randomize_enemies', 'randomize_music', 'open_mabe', 'fast_songs', 'boss_cutscenes', 'spoiler', 'decoupled',
          'pots', 'no_buffs', 'bushes', 'pet_rooster', 'pet_ghost', 'pet_marin', 'trendsanity', 'boss_souls',
          'hookshot_any', 'digs', 'miniboss_souls', 'no_start_sword', 'no_start_shield', 'no_start_ocarina',
-         'tunic_upgrades']
+         'tunic_upgrades', 'shellsanity']
 BITS = 150  # (v5: 30 characters; v4 IDs had 125 - decode reads both)
 TIMEOUT = 900  # (seconds per seed)
 
@@ -116,6 +119,7 @@ def request(sid, o, logic='basic'):
         'boss-cutscenes': o['boss_cutscenes'], 'create-spoiler': o['spoiler'], 'starting-rupees': o['start_rupees'],
         'blur-removal': False, 'starting-items': start, 'pots': o['pots'], 'no-buff-drops': o['no_buffs'],
         'bushes': o['bushes'], 'digs': o['digs'], 'tunic-upgrades': o['tunic_upgrades'],
+        'shellsanity': o['shellsanity'],
         'include-fishing': o['inc_fishing'], 'include-rapids': o['inc_rapids'], 'include-dampe': o['inc_dampe'],
         'include-trade-gifts': o['inc_trade'], 'include-blue-rupees': o['inc_blue'],
         'shuffle-bombs': o['bomb_bag'], 'unlocked-bombs': not o['bomb_bag'], 'shuffle-powder': o['powder_bag'],
@@ -150,7 +154,7 @@ def random_options(rng):
     for k in ('bomb_bag', 'powder_bag', 'bushes', 'pots', 'open_mabe', 'decoupled', 'pet_rooster', 'pet_ghost',
               'pet_marin', 'trendsanity', 'boss_souls', 'miniboss_souls', 'hookshot_any', 'no_start_sword',
               'no_start_shield', 'no_start_ocarina', 'shuffle_instruments', 'shuffle_dungeons', 'inc_trade',
-              'inc_dampe', 'inc_rapids'):
+              'inc_dampe', 'inc_rapids', 'shellsanity'):
         o[k] = rng.random() < 0.4
     return o
 
@@ -216,7 +220,7 @@ def check_seed(out_dir, level, walk, needed=0):
 
 
 def run_one(job):
-    sid, o, level, romfs, keep, walk = job
+    sid, o, level, romfs, keep, walk, full = job
     tmp = tempfile.mkdtemp(prefix='sweep-', dir=keep)
     req = os.path.join(tmp, 'request.json')
     with open(req, 'w') as f:
@@ -231,6 +235,24 @@ def run_one(job):
         tail = (r.stderr.strip().splitlines() or ['?'])[-1]
         return sid, level, f'generator exit {r.returncode}: {tail}', None
     own, strict, lost = check_seed(os.path.join(tmp, 'out'), level, walk, o.get('triforce_needed', 0))
+    if full and not own and not strict:  # (the whole seed: enemies, mini-bosses, every room edit)
+        env = dict(os.environ, PYTHONHASHSEED='0')
+        env.pop('LARECOMP_CHECK_ONLY', None)
+        try:
+            r = subprocess.run([sys.executable, os.path.join(HERE, 'las_headless.py'), romfs, os.path.join(tmp, 'full'),
+                                req], env=env, capture_output=True, text=True, timeout=TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return sid, level, f'full generation timeout ({TIMEOUT} s)', lost
+        if r.returncode == 0:  # (room links: also checked here, should the generator's own check ever be skipped)
+            sys.path.insert(0, os.path.join(HERE, '..', '..', 'third_party', 'LAS-Randomizer'))
+            from RandomizerCore.Tools import leb
+            import room_links
+            problems = room_links.check(os.path.join(tmp, 'full'), leb, romfs)
+            if problems:
+                return sid, level, f'room links broken in {len(problems)} place(s), first: {problems[0]}', lost
+        if r.returncode != 0:
+            tail = (r.stderr.strip().splitlines() or ['?'])[-1]
+            return sid, level, f'full generation exit {r.returncode}: {tail}', lost
     if not keep:
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
@@ -263,6 +285,9 @@ def main():
     ap.add_argument('--stealing', choices=['never', 'normal', 'always'], help='every random mix with this stealing rule')
     ap.add_argument('--shopsanity', type=int, choices=[0, 1, 2], help='every random mix with this shopsanity (off / '
                     'vanilla / random prices)')
+    ap.add_argument('--miniboss-freq', type=int, choices=[0, 1, 2, 3], help='every random mix with enemies randomized, '
+                    'mini-bosses at this frequency (Normal / 2x / 3x / All)')
+    ap.add_argument('--full', action='store_true', help='also generate each seed in full (game files)')
     ap.add_argument('--souls', action='store_true', help='every random mix with boss and mini-boss souls on')
     ap.add_argument('--triforce', type=int, metavar='N', help='every random mix a Triforce hunt for N pieces '
                     '(extra pieces cycled: none / +25%% / +50%%)')
@@ -280,6 +305,9 @@ def main():
         o = random_options(rng)
         if args.shopsanity is not None:
             o['shopsanity'] = args.shopsanity
+        if args.miniboss_freq is not None:
+            o.update(randomize_enemies=True, enemy_minibosses=True, miniboss_freq=args.miniboss_freq,
+                     enemy_mode=int(rng.random() < 0.5))
         if args.souls:
             o['boss_souls'] = o['miniboss_souls'] = True
         if args.triforce:
@@ -293,7 +321,7 @@ def main():
         jobs.append((encode(o), o, levels[i % len(levels)]))
     bad = 0
     with concurrent.futures.ProcessPoolExecutor(args.j) as ex:
-        for sid, level, res, lost in ex.map(run_one, [j + (romfs, args.keep, walk) for j in jobs]):
+        for sid, level, res, lost in ex.map(run_one, [j + (romfs, args.keep, walk, args.full) for j in jobs]):
             d = decode(sid)
             print(f"{sid} {level:9} shop {['off', 'vanilla', 'random'][d['shopsanity']]:7} steal {stealing(d):6} {res}",
                   flush=True)

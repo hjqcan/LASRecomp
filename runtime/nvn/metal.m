@@ -174,6 +174,7 @@ typedef struct {
     int reg;             // slot in g_reg (live textures, for the "largest textures" dump) + 1
     int tp;              // runtime/nvn/texpatch.c: 0 not checked yet, -1 none, else known UI texture + 1
     uint32_t tp_gen;     // texpatch_generation() it was last uploaded with
+    bool format_views;   // allocated with MTLTextureUsagePixelFormatView (NvnTexture.format_views)
 } TexBackend;
 
 // Live textures (diagnostics: the overworld slowdown at 32:9 - the same textures used 870 MB and 4x the GPU time
@@ -326,6 +327,7 @@ static MTLTextureType mtl_tex_type(uint32_t target, uint32_t samples) {
 
 static void create_backend_texture(NvnTexture *t, TexBackend *b);
 static void release_backend_texture(NvnTexture *t, TexBackend *b);
+static void texture_allow_format_views(NvnTexture *t, TexBackend *b);
 int g_tex_live;              // (stats: Metal textures alive and their size)
 uint64_t g_tex_live_bytes;
 void renderer_texture_gone(void *nvn_tex, void *mtl_tex);  // renderer.m
@@ -337,6 +339,7 @@ static TexBackend *tex_backend(NvnTexture *t) {
             release_backend_texture(t, b);
             create_backend_texture(t, b);
         }
+        if (t->format_views && !b->format_views) texture_allow_format_views(t, b);
         return b;
     }
     TexBackend *b = calloc(1, sizeof *b);
@@ -384,11 +387,14 @@ static void create_backend_texture(NvnTexture *t, TexBackend *b) {
         if (d.mipmapLevelCount > m) d.mipmapLevelCount = m;
     }
     if (t->samples > 1) { d.sampleCount = t->samples; d.mipmapLevelCount = 1; }
-    d.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView | MTLTextureUsageRenderTarget |
-              MTLTextureUsageShaderWrite;
+    // No ShaderWrite (images are never bound on Metal) and PixelFormatView only for a texture the game views in another
+    // format (backend_texture_view_format): either flag keeps Apple GPUs from compressing the texture losslessly, which
+    // cost 6-11% of the GPU time at 5120x1440 (2026-10-18).
+    d.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget | (t->format_views ? MTLTextureUsagePixelFormatView : 0);
+    b->format_views = t->format_views;
     d.storageMode = MTLStorageModePrivate;
-    // Shaders sample depth through ordinary texture2d bindings (Maxwell has no separate depth type);
-    // keep depth uncompressed so those reads see the stored values.
+    // Depth stays uncompressed: compressed, the ambient occlusion around walls, trees and furniture disappeared (every
+    // lit scene, 2026-10-18), although depth sampled in isolation reads the same values either way.
     if (renderer_format_is_depth(t->format)) d.allowGPUOptimizedContents = NO;
     if (mf.force_alpha_one)
         d.swizzle = MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed, MTLTextureSwizzleGreen,
@@ -405,6 +411,38 @@ static void create_backend_texture(NvnTexture *t, TexBackend *b) {
     CFBridgingRetain(tex);
     g_tex_live++;
     g_tex_live_bytes += tex.allocatedSize;
+}
+
+bool renderer_view_needs_format_flag(MTLPixelFormat base, MTLPixelFormat view);  // renderer.m
+void backend_texture_view_format(NvnTexture *t, uint32_t format) {
+    if (!t->format_views && renderer_view_needs_format_flag(mtl_format(t->format).pf, mtl_format(format).pf))
+        t->format_views = true;  // (tex_backend: an allocation without the flag is replaced)
+}
+
+// A texture first viewed in another format after it was allocated without PixelFormatView (not seen in the game: the
+// views come with the pool registration, before the first use): reallocated with the flag. Guest-backed contents are
+// uploaded again; GPU-written ones are copied over in a command buffer of their own (it sees the work submitted so
+// far, not writes still being recorded).
+static void texture_allow_format_views(NvnTexture *t, TexBackend *b) {
+    static int nlog;
+    if (nlog++ < 10)
+        LOG("[metal] texture %ux%u fmt %#x: a view in another format after its first use, reallocated with format views\n",
+            t->width, t->height, t->format);
+    id<MTLTexture> old = b->tex;  // (a strong reference: alive for the copy)
+    release_backend_texture(t, b);
+    create_backend_texture(t, b);
+    b->uploaded = false;
+    if (b->gpu_owned && old.width == b->tex.width && old.height == b->tex.height && old.pixelFormat == b->tex.pixelFormat &&
+        old.mipmapLevelCount == b->tex.mipmapLevelCount && old.arrayLength == b->tex.arrayLength &&
+        old.sampleCount == b->tex.sampleCount) {
+        @autoreleasepool {
+            id<MTLCommandBuffer> cb = [queue commandBuffer];
+            id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+            [blit copyFromTexture:old toTexture:b->tex];
+            [blit endEncoding];
+            [cb commit];
+        }
+    }
 }
 
 static void release_backend_texture(NvnTexture *t, TexBackend *b) {  // (also drops the renderer's views of it)
@@ -936,10 +974,12 @@ static id<MTLTexture> smaa_target(id<MTLTexture> old, NSUInteger w, NSUInteger h
     return [dev newTextureWithDescriptor:td];
 }
 
+static NSUInteger smaa_area_w, smaa_area_h;  // the part of the image the passes cover (0: all of it)
 static void smaa_pass(id<MTLCommandBuffer> cb, id<MTLRenderPipelineState> p, id<MTLTexture> dst, bool clear,
                       id<MTLTexture> t0, id<MTLTexture> t1, id<MTLTexture> t2) {
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
     rp.colorAttachments[0].texture = dst;
+    if (smaa_area_w) rp.renderTargetWidth = smaa_area_w, rp.renderTargetHeight = smaa_area_h;
     rp.colorAttachments[0].loadAction = clear ? MTLLoadActionClear : MTLLoadActionDontCare;
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -952,7 +992,8 @@ static void smaa_pass(id<MTLCommandBuffer> cb, id<MTLRenderPipelineState> p, id<
     [e endEncoding];
 }
 
-static id<MTLTexture> smaa_encode(id<MTLCommandBuffer> cb, id<MTLTexture> in) {
+// fx, fy: the part of `in` its contents occupy (Dynamic resolution: the top-left part)
+static id<MTLTexture> smaa_encode(id<MTLCommandBuffer> cb, id<MTLTexture> in, float fx, float fy) {
     static bool failed;  // (shader / pipeline error: logged once, SMAA stays off)
     static NSUInteger lw, lh;
     static MTLPixelFormat lf;
@@ -990,9 +1031,14 @@ static id<MTLTexture> smaa_encode(id<MTLCommandBuffer> cb, id<MTLTexture> in) {
     edges = smaa_target(edges, in.width, in.height, MTLPixelFormatRGBA8Unorm);
     weights = smaa_target(weights, in.width, in.height, MTLPixelFormatRGBA8Unorm);
     out = smaa_target(out, in.width, in.height, in.pixelFormat);
+    // Dynamic resolution: only the contents' part, and 64 pixels past it (the edge searches reach 2 x 16 pixels, so
+    // the contents' pixels never read past it) - the window step's cost then scales with the factor like the game's
+    NSUInteger aw = MIN(in.width, (NSUInteger)ceilf(in.width * fx) + 64), ah = MIN(in.height, (NSUInteger)ceilf(in.height * fy) + 64);
+    smaa_area_w = aw < in.width || ah < in.height ? aw : 0, smaa_area_h = ah;
     smaa_pass(cb, pe, edges, true, in, nil, nil);
     smaa_pass(cb, pw, weights, true, edges, area, search);
     smaa_pass(cb, pb, out, false, in, weights, nil);
+    smaa_area_w = smaa_area_h = 0;
     return out;
 }
 
@@ -1171,18 +1217,20 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         extern void widescreen_set_factor(float f);
         extern bool widescreen_allowed(void);
         // render scale + placement in the window: runtime/nvn/output_scale.c (Video tab "Internal resolution")
-        extern uint64_t g_gpu_total_ns;
-        static uint64_t gpu_prev;
-        // the game's command buffers and the window image's (LARECOMP_DYNRES_COUNT_PRESENT=0: the game's only, as before)
-        static _Atomic uint64_t present_ns;
+        // GPU busy time since the last frame (renderer.m renderer_gpu_busy: the union of the command buffers' spans): the
+        // game's command buffers and the window image's (LARECOMP_DYNRES_COUNT_PRESENT=0: the game's only, as before)
+        extern uint64_t g_gpu_total_ns, g_gpu_win_ns, g_gpu_sum_ns;
+        extern uint64_t renderer_gpu_busy(id<MTLCommandBuffer> done, bool win);
+        static uint64_t gpu_prev, win_prev, sum_prev;
         static int count_present = -1;
         if (count_present < 0) count_present = !getenv("LARECOMP_DYNRES_COUNT_PRESENT") || atoi(getenv("LARECOMP_DYNRES_COUNT_PRESENT"));
-        static uint64_t win_prev;
-        uint64_t gpu_now = __atomic_load_n(&g_gpu_total_ns, __ATOMIC_RELAXED), win_now = present_ns;
+        uint64_t gpu_now = __atomic_load_n(&g_gpu_total_ns, __ATOMIC_RELAXED), win_now = __atomic_load_n(&g_gpu_win_ns, __ATOMIC_RELAXED);
+        uint64_t sum_now = __atomic_load_n(&g_gpu_sum_ns, __ATOMIC_RELAXED);
         double game_ms = gpu_prev ? (gpu_now - gpu_prev) / 1e6 : -1, win_ms = count_present ? (win_now - win_prev) / 1e6 : -1;
-        gpu_prev = gpu_now, win_prev = win_now;
+        if (gpu_prev) output_scale_note_sum((sum_now - sum_prev) / 1e6);  // (the [dynres] line: the spans' plain sum too)
+        gpu_prev = gpu_now, win_prev = win_now, sum_prev = sum_now;
         [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {  // (the upscale / scaling draw and the menu)
-            present_ns += (uint64_t)((done.GPUEndTime - done.GPUStartTime) * 1e9);
+            renderer_gpu_busy(done, true);
         }];
         OutScale os;
         output_scale(dw, dh, widescreen_allowed(), SDL_GetTicksNS() / 1e9, game_ms, win_ms, &os);
@@ -1207,7 +1255,7 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
             // SMAA (Video tab "Anti-aliasing"): first, at the game image's size (MetalFX then upscales its result)
             if (g_settings.antialias == AA_SMAA) {
                 [enc endEncoding];
-                src = smaa_encode(cb, src);
+                src = smaa_encode(cb, src, fx, fy);
                 MTLRenderPassDescriptor *rp2 = [MTLRenderPassDescriptor renderPassDescriptor];
                 rp2.colorAttachments[0].texture = drawable.texture;
                 rp2.colorAttachments[0].loadAction = MTLLoadActionLoad;
@@ -1262,7 +1310,22 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
             [bl copyFromTexture:drawable.texture toTexture:shot_tex];
             [bl endEncoding];
         }
-        [cb presentDrawable:drawable];
+        // The GPU clock and the game's 30 fps mode (macOS). The system runs the GPU at the lowest clock that meets the
+        // presentation deadline it can infer. A plain present carries none, so once a 5120x1440 frame misses 60 and
+        // the game takes its 30 fps mode (presents every 33 ms), the clock settles on its floor (338 MHz on an M3 Max,
+        // powermetrics 2026-10-18), where the same frame takes 20 ms instead of 7: the game's counters keep reading a
+        // slow frame and the 30 mode never ends, at 15 ms of GPU time per frame and 60% utilisation. Presenting with
+        // an explicit time one 60 Hz frame ahead gives the system the deadline the game actually has, in both modes:
+        // the clock follows it (mid-range at 60 fps, measured 0.4-0.6 ms on a 0.3-1.8 ms calibration pass), the frame
+        // fits again and the game returns to 60. presentDrawable:afterMinimumDuration: and showing the image a second
+        // time at 60 Hz in the 30 mode did not move the clock. LARECOMP_PRESENT_DEADLINE=0: a plain present (as before).
+        static int deadline = -1;
+        if (deadline < 0) {
+            deadline = !getenv("LARECOMP_PRESENT_DEADLINE") || atoi(getenv("LARECOMP_PRESENT_DEADLINE"));
+            LOG("[metal] presents %s\n", deadline ? "carry a one-frame deadline (GPU clock)" : "without a deadline");
+        }
+        if (deadline) [cb presentDrawable:drawable atTime:CACurrentMediaTime() + 1.0 / 60.0];
+        else [cb presentDrawable:drawable];
         [cb commit];
         if (shot_tex) {
             [cb waitUntilCompleted];
@@ -1423,13 +1486,14 @@ int ui_run(void) {
         SDL_Event e;
         while (SDL_WaitEventTimeout(&e, 16)) {
             input_rumble_poll();
-            if (e.type == SDL_EVENT_QUIT) { input_rumble_stop(); LOG("window closed\n"); plat_exit(0); }
+            if (e.type == SDL_EVENT_QUIT) { input_rumble_stop(); input_led_stop(); LOG("window closed\n"); plat_exit(0); }
             if (input_user_blocked(&e)) continue;  // scripted test runs: the real keyboard / mouse / pads do nothing
             if (menu_handle_event(&e)) continue;
             input_handle_event(&e);
         }
         menu_apply_window_requests(window);
         input_rumble_poll();
+        input_led_poll();
         int w, h;
         SDL_GetWindowSizeInPixels(window, &w, &h);
         layer.drawableSize = CGSizeMake(w, h);

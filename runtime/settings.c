@@ -25,6 +25,7 @@ Settings g_settings = {
     .movie_audio = true,
     .rumble = true,
     .rumble_strength = 100,
+    .controller_light = true,
     .show_fps = false,
     .inv_keys = true,
     .tracker = true,
@@ -166,6 +167,7 @@ void settings_load(void) {
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_move = atoi(val) != 0;
         else if (!strcmp(key, "rumble")) g_settings.rumble = atoi(val) != 0;
         else if (!strcmp(key, "rumble_strength")) g_settings.rumble_strength = atoi(val);
+        else if (!strcmp(key, "controller_light")) g_settings.controller_light = atoi(val) != 0;
         else if (!strcmp(key, "background_input")) g_settings.bg_input = atoi(val) != 0;
         else if (!strcmp(key, "move_360")) g_settings.move_360 = atoi(val) != 0;
         else if (!strcmp(key, "blur_removal")) g_settings.blur_removal = atoi(val) != 0;
@@ -227,6 +229,7 @@ void settings_save(void) {
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
     fprintf(f, "rumble = %d\n", g_settings.rumble);
     fprintf(f, "rumble_strength = %d\n", g_settings.rumble_strength);
+    fprintf(f, "controller_light = %d\n", g_settings.controller_light);
     fprintf(f, "background_input = %d\n", g_settings.bg_input);
     fprintf(f, "move_360 = %d\nblur_removal = %d\nhide_hero_icon = %d\n", g_settings.move_360, g_settings.blur_removal,
             g_settings.hide_hero_icon);
