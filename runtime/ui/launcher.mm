@@ -928,9 +928,9 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
     return clicked;
 }
 
-// Controllers, as in the in-game menu (runtime/ui/menu.mm): read straight from SDL, the controller's own layout
-// (pad_nav.h: confirm on the bottom button for Xbox / PlayStation pads, the right one for Nintendo pads); d-pad / left
-// stick move. (ImGui's own SDL gamepad handling is switched off: per the user, it didn't work on the start screen.)
+// Controllers, as in the in-game menu (runtime/ui/menu.mm): read straight from SDL, confirm / back as the Confirm
+// button setting says (pad_nav.h: the game's layout, or the controller's convention); d-pad / left stick move.
+// (ImGui's own SDL gamepad handling is switched off: per the user, it didn't work on the start screen.)
 
 static void launcher_pad_open_all(void) {
     int n = 0;

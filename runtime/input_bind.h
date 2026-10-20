@@ -1,7 +1,7 @@
 // Control remapping (runtime/hle/bindings.c): which controller button / key drives each Switch input. Edited from
 // the in-game menu's Controls tab and the start screen (runtime/ui/controls_ui.mm), saved in larecomp.ini.
 // Menus (the overlay, the start screen) never use these, so no binding can lock the player out: they follow the
-// controller's own layout instead (input_menu_family; runtime/ui/pad_nav.h).
+// game's layout, or the controller's own (Confirm button; runtime/ui/pad_nav.h).
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>

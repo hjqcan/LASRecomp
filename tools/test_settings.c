@@ -10,6 +10,12 @@ bool bind_settings_load(const char *key, const char *val) { (void)key; (void)val
 void bind_settings_save(FILE *file) { (void)file; }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && (!strcmp(argv[1], "confirm-game") || !strcmp(argv[1], "confirm-controller"))) {
+        settings_load();
+        assert(g_settings.menu_confirm == (!strcmp(argv[1], "confirm-controller") ? MENU_CONFIRM_CONTROLLER : MENU_CONFIRM_GAME));
+        settings_save();
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "upscaler-auto")) {  // "upscaler = auto" / no upscaler line: the GPU's default
         settings_load();
         assert(g_settings.upscaler_auto);

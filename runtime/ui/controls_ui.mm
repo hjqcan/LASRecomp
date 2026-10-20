@@ -299,8 +299,12 @@ extern "C" void controls_tab_draw(float scale) {
         snprintf(autol, sizeof autol, ui_tr("Auto (%s)"), fam[input_pad_family() % 3]);
         const char *names[] = {autol, "Nintendo", "Xbox", "PlayStation"};
         opt_choice("Button icons", &g_settings.prompts, names, 4, PROMPTS_AUTO,
-                   "The button icons the game shows, and which button confirms in these menus. Auto: the "
-                   "connected controller's.");
+                   "The button icons the game shows. Auto: the connected controller's.");
+    }
+    {
+        static const char *const names[] = {"Game layout", "Controller convention"};
+        opt_choice("Confirm button", &g_settings.menu_confirm, names, 2, MENU_CONFIRM_GAME,
+                   "Which button confirms in Multi's menus.");
     }
 
     opt_end();

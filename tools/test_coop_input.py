@@ -29,6 +29,8 @@ int bind_label_family(void){return input_pad_family();}
 bool bind_capture_event(const SDL_Event *e){return false;} void bind_capture_begin(int d,int s){} void bind_reset(int d){}
 bool menu_input_captured(void){return false;}
 bool menu_is_open(void){return false;}
+int game_in_play(void){return 0;}
+int cheats_link_health(int *max){(void)max;abort();}
 Settings g_settings={.rumble=true,.rumble_strength=100};
 bool title_is_las(void){return true;}
 uint64_t g_test_buttons,g_test_buttons_until;char g_window_shot_request[256];

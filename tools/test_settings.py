@@ -64,4 +64,10 @@ with tempfile.TemporaryDirectory() as directory:
         subprocess.run([str(exe), mode], env=env, check=True, capture_output=True)
         assert f'resolution = {saved}\n' in ini.read_text(), (lines, ini.read_text())
         count += 1
-    print(f'{count} parser, locale, upscaler / resolution default and roundtrip cases passed (LF/CRLF, empty/nonempty seeds)')
+    for value, expected in [(None, 'game'), ('game', 'game'), ('controller', 'controller'), ('invalid', 'game')]:
+        ini = directory / 'test.ini'
+        ini.write_text('' if value is None else f'menu_confirm = {value}\n')
+        subprocess.run([str(exe), 'confirm-' + expected], env=dict(os.environ, LARECOMP_SETTINGS=str(ini)), check=True)
+        assert f'menu_confirm = {expected}\n' in ini.read_text()
+        count += 1
+    print(f'{count} parser, locale, menu confirm, upscaler / resolution default and roundtrip cases passed')

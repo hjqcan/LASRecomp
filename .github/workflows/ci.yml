@@ -120,6 +120,7 @@ jobs:
             LD_LIBRARY_PATH="$HOME/sdl3/lib:$HOME/sdl3/lib64" python3 tools/test_coop_input.py
           PKG_CONFIG_PATH="$HOME/sdl3/lib/pkgconfig:$HOME/sdl3/lib64/pkgconfig" \
             LD_LIBRARY_PATH="$HOME/sdl3/lib:$HOME/sdl3/lib64" python3 tools/test_rumble.py
+          PKG_CONFIG_PATH="$HOME/sdl3/lib/pkgconfig:$HOME/sdl3/lib64/pkgconfig" python3 tools/test_pad_nav.py
       - name: Vulkan synchronization failure regression
         run: python3 tools/test_vulkan_sync_errors.py
       - name: Shader translator instruction semantics
@@ -180,6 +181,7 @@ jobs:
         run: |
           python3 tools/test_render_queue.py
           python3 tools/test_rumble.py
+          python3 tools/test_pad_nav.py
           python3 tools/test_prepared_shader_lifetime.py
       - name: Exclusive pairs and native contention
         run: |
@@ -313,6 +315,7 @@ jobs:
           build/jump-test-env/Scripts/python.exe tools/test_prepared_shader_lifetime.py
           build/jump-test-env/Scripts/python.exe tools/test_render_queue.py
           SDL_FLAGS="$(pkg-config --cflags --libs sdl3)" build/jump-test-env/Scripts/python.exe tools/test_rumble.py
+          SDL_FLAGS="$(pkg-config --cflags --libs sdl3)" build/jump-test-env/Scripts/python.exe tools/test_pad_nav.py
           clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -o build/test-simd-rounding.exe
           build/test-simd-rounding.exe
           build/jump-test-env/Scripts/python.exe tools/test_simd.py --encodings 4000 --cases 8 --jobs 4 --no-validity
