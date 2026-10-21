@@ -19,6 +19,7 @@
 #include "pace.h"
 #include "shader_prep.h"
 #include "../title_profile.h"
+#include "recolour.h"
 
 static id<MTLDevice> dev;
 static id<MTLCommandBuffer> cmdbuf;
@@ -175,6 +176,7 @@ static uint32_t tex_wh[2][64][2];       // per bound texture slot: guest size
 static int draw_bottle;                 // a fragment texture is the bottle's item icon (1) / model map (2): Escape Bottle
 static int draw_heart;                  // ... a HUD / file select heart's: heart colour (Cosmetics tab)
 static bool draw_item_cursor;           // a fragment texture is the Items page's cursor brackets
+static int draw_recolour;               // ... a Cosmetics recolour texture: its class (runtime/nvn/recolour.c)
 #define RSCALE_BUFFER_INDEX 18
 
 static int debug_pass_no;
@@ -1800,7 +1802,7 @@ static int sampler_slots(int n, __strong id<MTLSamplerState> *smp, NvnSamplerDes
 }
 
 static void bind_textures(int stage, ShaderInfo *si) {
-    if (stage == 1) draw_bottle = draw_heart = 0, draw_item_cursor = false;
+    if (stage == 1) draw_bottle = draw_heart = draw_recolour = 0, draw_item_cursor = false;
     bool mapped = si->ntex > MSL_MAX_SAMPLERS;  // (fragment only: the translator refuses such vertex shaders)
     __strong id<MTLSamplerState> msmp[64];
     NvnSamplerDesc *mdesc[64];
@@ -1835,6 +1837,7 @@ static void bind_textures(int stage, ShaderInfo *si) {
                     }
                 }
                 if (!draw_heart) draw_heart = texpatch_heart_kind(id);
+                draw_recolour = recolour_pick(draw_recolour, recolour_class_of(id));
                 draw_item_cursor |= texpatch_is_item_cursor(id);
             }
             if (e->tex && i < 64) {
@@ -2759,7 +2762,9 @@ static void draw(CmdRec *r, bool indexed) {
         // Full-screen overlays without textures (fades, flashes) cover the whole window too.
         bool fullscreen_quad = r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
                                st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height;
-        bool fullscreen_fill = pr->fi->ntex == 0 && fullscreen_quad;
+        extern bool widescreen_ui_pane_partial(const float *u, uint64_t size);  // (a smaller layout pane: boxed UI)
+        bool fullscreen_fill = pr->fi->ntex == 0 && fullscreen_quad &&
+                               !widescreen_ui_pane_partial((const float *)(uintptr_t)st.ubuf[0][0].addr, st.ubuf[0][0].size);
         // A full-screen quad sampling a reshaped (screen-shaped) texture is a scene background too, even a
         // downscaled one: the blurred scene behind the pause menu reads a 192x108 copy.
         // (single-texture draws only: the menu's frosted panels sample the same blurred copy but are UI pieces)
@@ -2864,6 +2869,7 @@ static void draw(CmdRec *r, bool indexed) {
     }
     if (pr->fi->uses_tint) {  // per-draw highlight tint (golden unchecked pots, runtime/hle/pot_glow.c)
         float tint[8] = {0};
+        if (draw_recolour) recolour_tint(draw_recolour, tint);  // (Cosmetics; the highlights below win)
         extern bool pot_tint(const float *m, float tint[8], uint64_t mesh);
         extern bool pot_glow_active(void);
         if (model_ubo && st.ubuf[0][2].addr && st.ubuf[0][2].size >= 48 && pot_glow_active())
@@ -2918,6 +2924,7 @@ static void draw(CmdRec *r, bool indexed) {
         float tint[8] = {0};
         extern void pot_gold_tint(float tint[8]);
         if (run_gold[ri]) pot_gold_tint(tint);
+        else if (draw_recolour) recolour_tint(draw_recolour, tint);
         [enc setFragmentBytes:tint length:sizeof tint atIndex:19];
     }
     // draw

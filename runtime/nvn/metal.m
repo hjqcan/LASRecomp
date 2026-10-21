@@ -20,6 +20,7 @@
 #include "renderer.h"
 #include "pace.h"
 #include "texpatch.h"
+#include "screen_filter.h"
 
 static id<MTLDevice> dev;
 static id<MTLCommandQueue> queue;
@@ -359,6 +360,54 @@ int renderer_texpatch_of(NvnTexture *t) {
     return b && b->tp > 0 ? b->tp - 1 : -1;
 }
 
+// A scalable render target starts cleared in full (Vulkan: textures.c create_image). Dynamic resolution draws into its
+// top-left part only, and the game's blurs (bloom, depth of field) sample a few texels past that part's edges, where a
+// new texture holds whatever its memory held before - bit patterns that read as NaN / infinity in a float target
+// among them. Pulled into the bloom chain they spread and stayed: a pure green band down the right edge (red and blue
+// NaN), in some runs from the start and in most after a window resize, which reallocates every scalable target
+// (issue #205: switching fullscreen / windowed). Match display and the fixed resolutions draw the whole target, so
+// nothing past it is read. Its own command buffer, committed before the frame's that use the texture.
+// LARECOMP_NEW_TARGET_FILL=<r>,<g>,<b>,<a> (test): that colour instead (depth 1, stencil 0xff); nan,0,nan,0 shows
+// the band every time without this clear's zeros.
+static void clear_new_target(id<MTLTexture> tex) {
+    static int fill = -1;
+    static float fc[4];
+    if (fill < 0)
+        fill = getenv("LARECOMP_NEW_TARGET_FILL") &&
+               sscanf(getenv("LARECOMP_NEW_TARGET_FILL"), "%f,%f,%f,%f", &fc[0], &fc[1], &fc[2], &fc[3]) == 4;
+    MTLPixelFormat pf = tex.pixelFormat;
+    // (the depth / stencil formats mtl_format gives)
+    bool depth = pf == MTLPixelFormatDepth16Unorm || pf == MTLPixelFormatDepth32Float ||
+                 pf == MTLPixelFormatDepth32Float_Stencil8;
+    bool stencil = pf == MTLPixelFormatStencil8 || pf == MTLPixelFormatDepth32Float_Stencil8;
+    @autoreleasepool {
+        id<MTLCommandBuffer> cb = [queue commandBuffer];
+        for (NSUInteger lv = 0; lv < tex.mipmapLevelCount; lv++) {
+            MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+            if (depth || stencil) {
+                if (depth) {
+                    rp.depthAttachment.texture = tex, rp.depthAttachment.level = lv;
+                    rp.depthAttachment.loadAction = MTLLoadActionClear, rp.depthAttachment.clearDepth = fill ? 1 : 0;
+                    rp.depthAttachment.storeAction = MTLStoreActionStore;
+                }
+                if (stencil) {
+                    rp.stencilAttachment.texture = tex, rp.stencilAttachment.level = lv;
+                    rp.stencilAttachment.loadAction = MTLLoadActionClear, rp.stencilAttachment.clearStencil = fill ? 0xff : 0;
+                    rp.stencilAttachment.storeAction = MTLStoreActionStore;
+                }
+            } else {
+                rp.colorAttachments[0].texture = tex, rp.colorAttachments[0].level = lv;
+                rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+                rp.colorAttachments[0].clearColor = fill ? MTLClearColorMake(fc[0], fc[1], fc[2], fc[3])
+                                                         : MTLClearColorMake(0, 0, 0, 0);
+                rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+            }
+            [[cb renderCommandEncoderWithDescriptor:rp] endEncoding];
+        }
+        [cb commit];
+    }
+}
+
 static void create_backend_texture(NvnTexture *t, TexBackend *b) {
     MtlFormat mf = mtl_format(t->format);
     MTLTextureDescriptor *d = [MTLTextureDescriptor new];
@@ -408,6 +457,7 @@ static void create_backend_texture(NvnTexture *t, TexBackend *b) {
     }
     tex.label = [NSString stringWithFormat:@"%s fmt%#x", t->label[0] ? t->label : "tex", t->format];
     b->tex = tex;
+    if (b->scalable) clear_new_target(tex);
     CFBridgingRetain(tex);
     g_tex_live++;
     g_tex_live_bytes += tex.allocatedSize;
@@ -512,7 +562,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b, id<MTLBlitCommandEncode
     bool full = b->dynamic || !b->uploaded || always_full;
     if (!full && g_frame_counter - b->full_frame >= 120 && full_hash_budget >= total) { full = true; full_hash_budget -= total; }
     if (!b->tp) b->tp = texpatch_identify(t) + 1;  // (button prompts / Hero Mode icon: re-uploaded when their look changes)
-    bool restyle = b->tp > 0 && b->uploaded && b->tp_gen != texpatch_generation();
+    bool restyle = b->tp > 0 && b->tp <= TEXPATCH_RECOLOUR_BASE && b->uploaded && b->tp_gen != texpatch_generation();
     if (!full && !restyle) {
         uint64_t sh = fnv_sample(mem, total);
         if (sh == b->sample_hash) return;
@@ -751,7 +801,9 @@ static const char *present_src =
     "  V o; o.pos = float4(p * 2.0 - 1.0, 0, 1);\n"
     "  float2 uv = float2(p.x, pv[0].x > 0.5 ? p.y : 1.0 - p.y); o.uv = pv[1].xy + uv * pv[1].zw; return o; }\n"
     "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4 *pv [[buffer(0)]]) {\n"
-    "  float3 c = t.sample(s, in.uv).rgb; float y = dot(c, float3(0.2126,0.7152,0.0722));\n"
+    "  float3 c = t.sample(s, in.uv).rgb; float4 pf = pv[3];\n"
+    SCREEN_FILTER_SRC("float3")
+    "  float y = dot(c, float3(0.2126,0.7152,0.0722));\n"
     "  c = mix(float3(y), c, pv[2].y) * pv[2].x; c += (c-0.5) * pv[2].z;\n"
     "  float2 q = (in.uv-pv[1].xy)/pv[1].zw * 2.0-1.0;\n"
     "  c *= 1.0-pv[2].w * smoothstep(0.2,1.5,dot(q,q));\n"
@@ -1134,8 +1186,9 @@ void renderer_save_texture(id<MTLTexture> tex, const char *path) {
     float flip = renderer_origin_lower_left() ? 1.0f : 0.0f;
     [e setRenderPipelineState:pipe];
     if (g_save_upright || strstr(path, "window")) flip = 0;  // the window image is already upright
-    float pv[12] = {flip, 0, 0, 0, shot_crop[0], shot_crop[1], shot_crop[2], shot_crop[3], 1, 1, 0, 0};
+    float pv[16] = {flip, 0, 0, 0, shot_crop[0], shot_crop[1], shot_crop[2], shot_crop[3], 1, 1, 0, 0};
     [e setVertexBytes:pv length:sizeof pv atIndex:0];
+    if (strstr(path, "frame_")) screen_filter_params(pv + 12);
     [e setFragmentBytes:pv length:sizeof pv atIndex:0];
     [e setFragmentTexture:raw_view(tex) atIndex:0];
     [e setFragmentSamplerState:present_sampler atIndex:0];
@@ -1282,9 +1335,10 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
             float flip = renderer_origin_lower_left() ? 1.0f : 0.0f;
             [enc setViewport:(MTLViewport){vx, vy, vw, vh, 0, 1}];
             [enc setRenderPipelineState:present_pipe];
-            float pv[12] = {flip, 0, 0, 0, crop[0], crop[1], crop[2], crop[3], 1, 1, 0, 0};
+            float pv[16] = {flip, 0, 0, 0, crop[0], crop[1], crop[2], crop[3], 1, 1, 0, 0};
             photo_mode_color(pv + 8);
             [enc setVertexBytes:pv length:sizeof pv atIndex:0];
+    screen_filter_params(pv + 12);
             [enc setFragmentBytes:pv length:sizeof pv atIndex:0];
             [enc setFragmentTexture:src atIndex:0];
             [enc setFragmentSamplerState:present_sampler atIndex:0];
@@ -1374,6 +1428,10 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
     static double fps_iv = -1, prev_present, max_gap;  // LARECOMP_FPS_INTERVAL=<s>: fps line period (default 2)
     if (fps_iv < 0) fps_iv = getenv("LARECOMP_FPS_INTERVAL") ? atof(getenv("LARECOMP_FPS_INTERVAL")) : 2.0;
     if (prev_present > 0 && now - prev_present > max_gap) max_gap = now - prev_present;
+    static double hitch_ms = -1;  // LARECOMP_LOG_HITCH_MS=<ms>: every present gap over that (tests: hitches per run)
+    if (hitch_ms < 0) hitch_ms = getenv("LARECOMP_LOG_HITCH_MS") ? atof(getenv("LARECOMP_LOG_HITCH_MS")) : 0;
+    if (hitch_ms > 0 && prev_present > 0 && (now - prev_present) * 1000 > hitch_ms)
+        LOG("[hitch] t=%.2f frame %llu gap %.0f ms\n", now, (unsigned long long)frame, (now - prev_present) * 1000);
     prev_present = now;
     if (now - last_fps_time >= fps_iv) {
         extern const char *game_level_name(void);
@@ -1402,7 +1460,9 @@ static void present_hooks(void) {
     input_frame(total_frames);
     static long slow_ms = -1;  // LARECOMP_SLOW_FRAME_MS=<ms>: sleep per presented frame (simulate a slow machine)
     if (slow_ms < 0) slow_ms = getenv("LARECOMP_SLOW_FRAME_MS") ? atol(getenv("LARECOMP_SLOW_FRAME_MS")) : 0;
-    if (slow_ms > 0 && total_frames > 2600) usleep((useconds_t)slow_ms * 1000);
+    static long slow_until = -1;  // LARECOMP_SLOW_FRAME_UNTIL=<frame>: the stall ends there (frame pacing recovery tests)
+    if (slow_until < 0) slow_until = getenv("LARECOMP_SLOW_FRAME_UNTIL") ? atol(getenv("LARECOMP_SLOW_FRAME_UNTIL")) : 0;
+    if (slow_ms > 0 && total_frames > 2600 && (!slow_until || (long)total_frames < slow_until)) usleep((useconds_t)slow_ms * 1000);
     extern void fnprof_frame(uint64_t frame);
     fnprof_frame(total_frames);
     extern void warp_frame(uint64_t frame);

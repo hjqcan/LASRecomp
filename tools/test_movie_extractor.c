@@ -41,6 +41,8 @@ bool rando_romfs_override(const char *p, char *o, size_t n) { (void)p; (void)o; 
 bool mods_romfs_override(const char *p, char *o, size_t n) { (void)p; (void)o; (void)n; return false; }
 uint64_t guest_sym(const char *name) { return 0; }
 void guest_call(Cpu *c, uint64_t address) { assert(!"No decoder events in the fixture"); }
+void run_timer_ending_movie(void) {}
+void run_timer_title(void) {}  // (runtime/hle/run_timer.c: the run timer's end)
 
 static void decoder_cleanup(bool reboot) {
     Decoder d = {0};

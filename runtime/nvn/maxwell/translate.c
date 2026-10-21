@@ -55,6 +55,31 @@ static void sp(Str *s, const char *fmt, ...) {
     s->len += n;
 }
 
+// The per-draw tint's recolour mode (ltint[0].w < 0; runtime/nvn/recolour.c, Cosmetics tab): an HSV change of the
+// output colour, in its gamma encoding: for colours whose hue is within ltint[1].y of ltint[1].x (>= 0.5: any) and
+// saturation >= ltint[1].z, the hue goes to ltint[1].x + ltint[0].x + (its distance from ltint[1].x) * ltint[1].w
+// (turns: .w = 1 a plain shift, < 1 also pulls the hues together), saturation * .y, value * .z (kept <= 1 unless it
+// was above). The shading stays: only the colour moves. `c` is the colour target's expression
+// ("c0" / "o.c0"), v3 / v4 the vector types ("vec3" / "float3").
+static void emit_recolour(Str *s, const char *c, const char *v3, const char *v4) {
+    sp(s, "  else if (ltint[0].w < 0.0f) {\n");
+    sp(s, "    %s rc_g = pow(max(%s.rgb, %s(0.0f)), %s(1.0f / 2.2f));\n", v3, c, v3, v3);
+    sp(s, "    %s rc_K = %s(0.0f, -1.0f / 3.0f, 2.0f / 3.0f, -1.0f);\n", v4, v4);
+    sp(s, "    %s rc_p = mix(%s(rc_g.b, rc_g.g, rc_K.w, rc_K.z), %s(rc_g.g, rc_g.b, rc_K.x, rc_K.y), %s(step(rc_g.b, rc_g.g)));\n", v4, v4, v4, v4);
+    sp(s, "    %s rc_q = mix(%s(rc_p.x, rc_p.y, rc_p.w, rc_g.r), %s(rc_g.r, rc_p.y, rc_p.z, rc_p.x), %s(step(rc_p.x, rc_g.r)));\n", v4, v4, v4, v4);
+    sp(s, "    float rc_d = rc_q.x - min(rc_q.w, rc_q.y);\n");
+    sp(s, "    float rc_hh = abs(rc_q.z + (rc_q.w - rc_q.y) / (6.0f * rc_d + 1e-6f)), rc_ss = rc_d / (rc_q.x + 1e-6f), rc_vv = rc_q.x;\n");
+    sp(s, "    float rc_sd = fract(rc_hh - ltint[1].x + 0.5f) - 0.5f, rc_dh = abs(rc_sd);\n");
+    sp(s, "    float rc_m = (ltint[1].y >= 0.5f ? 1.0f : 1.0f - smoothstep(ltint[1].y * 0.6f, ltint[1].y, rc_dh)) *\n"
+          "              smoothstep(ltint[1].z * 0.5f, ltint[1].z + 1e-4f, rc_ss);\n");
+    sp(s, "    rc_hh = fract(ltint[1].x + ltint[0].x + rc_sd * ltint[1].w); rc_ss = clamp(rc_ss * ltint[0].y, 0.0f, 1.0f);\n");
+    sp(s, "    rc_vv = min(rc_vv * ltint[0].z, max(rc_vv, 1.0f));\n");
+    sp(s, "    %s rc_k = clamp(abs(fract(%s(rc_hh) + %s(1.0f, 2.0f / 3.0f, 1.0f / 3.0f)) * 6.0f - %s(3.0f)) - %s(1.0f), "
+          "%s(0.0f), %s(1.0f));\n", v3, v3, v3, v3, v3, v3, v3);
+    sp(s, "    %s rc_r = rc_vv * mix(%s(1.0f), rc_k, %s(rc_ss));\n", v3, v3, v3);
+    sp(s, "    %s.rgb = mix(%s.rgb, pow(rc_r, %s(2.2f)), %s(rc_m));\n  }\n", c, c, v3, v3);
+}
+
 typedef struct {
     const uint8_t *code;   // first instruction group
     size_t ninsts;         // number of 8-byte words to scan
@@ -2298,6 +2323,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if (tint)
             sp(&s, "  if (ltint[0].w > 0.0f) { vec3 g = c0.rgb; float l = dot(g, vec3(0.299f, 0.587f, 0.114f));\n"
                    "    c0.rgb = mix(g, ltint[0].rgb * pow(l, ltint[1].w) + ltint[1].rgb * l, ltint[0].w); }\n");
+        if (tint) emit_recolour(&s, "c0", "vec3", "vec4");
         if (c->omap_depth) {
             if (c->reg_used[r + 1]) sp(&s, "  gl_FragDepth = as_f(r%d);\n", r + 1);
             else sp(&s, "  gl_FragDepth = gl_FragCoord.z;\n");
@@ -2326,6 +2352,57 @@ size_t maxwell_code_size(const uint8_t *blob, size_t max_size, int stage) {
         end = i + 1;
     }
     return header + end * 8;
+}
+
+// BRX (indirect branch, Vulkan / GLSL only): label just the targets its jump table can name. A BRX used to make every
+// instruction a case of the dispatcher switch (any one may be a target): hundreds of cases falling into each other
+// inside the dispatcher loop. Suspected of what AMD's Windows driver never finishes building (issue #237: the dialogue
+// body text's vertex shader stayed "building", its draws skipped - Tarin's name showed, the message stayed blank).
+// The compiler puts the table in the program's own constants (cb1, after the code: blob + const_offset), loaded into
+// the BRX register by an LDC c[0x1][Rx + table] shortly before: BRX Ra, imm goes to pc + 8 + table[k] + imm. Entries
+// are read until one isn't an instruction of this shader (the end of the table; a word past it that still looks like
+// one only adds a harmless case). False: not that shape (the register set some other way, no constants, nothing
+// valid) - the caller labels every instruction as before. LARECOMP_BRX_ALL_LABELS=1: always every instruction.
+static bool brx_table_labels(const uint8_t *code, size_t i, size_t end, const uint8_t *blob, size_t const_offset, uint8_t *label) {
+    static int all = -1;
+    if (all < 0) { const char *e = getenv("LARECOMP_BRX_ALL_LABELS"); all = e && atoi(e) != 0; }
+    if (all || const_offset >= 0x10000 || const_offset < 0x80) return false;  // (0x10000: no constants known)
+    uint64_t brx = ((const uint64_t *)code)[i];
+    int ra = (int)bits(brx, 8, 8);
+    int64_t imm = sbits(brx, 20, 24);
+    if (ra == RZ) return false;
+    // the instruction that set ra: an LDC from cb1 within the few before, nothing else writing ra (or a branch) between
+    int64_t table = -1;
+    for (size_t k = i, seen = 0; k-- > 0 && seen < 32;) {
+        if (k % 4 == 0) continue;  // (scheduling words)
+        seen++;
+        uint64_t w = ((const uint64_t *)code)[k];
+        if ((w & 0xfff0000000000000ull) >= 0xe200000000000000ull && (w & 0xfff0000000000000ull) <= 0xe350000000000000ull)
+            return false;  // flow control between: not straight-line
+        if ((w & 0xfff8000000000000ull) == 0xef90000000000000ull && (int)bits(w, 0, 8) == ra) {  // LDC ra, c[idx][Rx + off]
+            if (bits(w, 36, 5) != 1 || bits(w, 48, 3) != 4) return false;  // (cb1, 32-bit)
+            table = (int64_t)bits(w, 20, 16);
+            break;
+        }
+        if ((int)bits(w, 0, 8) == ra) return false;  // (something else may write ra: unknown)
+    }
+    if (table < 0) return false;
+    const uint8_t *tab = blob + const_offset + table;
+    uint8_t *mark = calloc(end + 4, 1);
+    int n = 0;
+    for (int k = 0; k < 256; k++) {
+        int32_t v;
+        memcpy(&v, tab + 4 * k, 4);
+        int64_t t = (int64_t)i * 8 + 8 + v + imm;
+        if (t < 8 || (t & 7) || (size_t)(t / 8) >= end) break;
+        t = norm_target(t);  // (as the BRX itself does at run time)
+        if ((size_t)(t / 8) >= end) break;
+        mark[t / 8] = 1;
+        n++;
+    }
+    if (n) for (size_t k = 0; k < end; k++) label[k] |= mark[k];
+    free(mark);
+    return n > 0;
 }
 
 ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, const ShaderKey *key) {
@@ -2370,9 +2447,9 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
             if (t >= 0 && (size_t)(t / 8) < end) label[t / 8] = 1;
             any_branch = true;
         }
-        if ((w & 0xfff0000000000000ull) == 0xe250000000000000ull) {  // BRX: any instruction may be a target
+        if ((w & 0xfff0000000000000ull) == 0xe250000000000000ull) {  // BRX: its jump table's targets, else any instruction
             any_branch = true;
-            memset(label, 1, end);
+            if (!c->glsl || !brx_table_labels(code, i, end, blob, max_size, label)) memset(label, 1, end);
         }
         if ((w & 0xfff8000000000000ull) == 0xf0f8000000000000ull || (w & 0xfff0000000000000ull) == 0xe340000000000000ull ||
             (w & 0xfff0000000000000ull) == 0xe350000000000000ull)
@@ -2471,7 +2548,8 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         info->uses_rscale = true;
     }
     // Runtime highlight (e.g. golden unchecked pots): fragment shaders writing a float color target 0 get a
-    // per-draw tint, float4 [0] = colour.rgb + strength, [1] = added glow.rgb (strength 0 = untouched).
+    // per-draw tint, float4 [0] = colour.rgb + strength, [1] = added glow.rgb (strength 0 = untouched; < 0: the
+    // Cosmetics recolour, emit_recolour).
     bool tint = stage == STAGE_FRAGMENT && !dbg && (c->omap_target & 0x7) == 0x7 && (!key || key->rt_kind[0] == 0);
     if (tint) {
         sp(&args, ", constant float4 *ltint [[buffer(19)]]");
@@ -2553,6 +2631,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         if (tint)
             sp(&s, "  if (ltint[0].w > 0.0f) { float3 g = o.c0.rgb; float l = dot(g, float3(0.299f, 0.587f, 0.114f));\n"
                    "    o.c0.rgb = mix(g, ltint[0].rgb * pow(l, ltint[1].w) + ltint[1].rgb * l, ltint[0].w); }\n");
+        if (tint) emit_recolour(&s, "o.c0", "float3", "float4");
         if (c->omap_depth) {
             if (c->reg_used[r + 1]) sp(&s, "  o.depth = as_type<float>(r%d);\n", r + 1);
             else sp(&s, "  o.depth = in.pos.z;\n");

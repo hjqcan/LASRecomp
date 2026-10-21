@@ -225,6 +225,14 @@
     "7000db8168": {
       "word": "f94006c8",
       "sha256": "fc67f70b2ee7c1aa8cd1cd546e8733f113f237be7ddaca64373d28d09ade3cab"
+    },
+    "7000e78868": {
+      "word": "910243ff",
+      "sha256": "7cc15e7554de13b7fc9c4c0c2ea34cda5ae84be565a34ee187eae9051796bcc4"
+    },
+    "7000e93b80": {
+      "word": "910203ff",
+      "sha256": "fc088625ca90de138051512cbbb57924e810c88c665eb91087050ea7af9984e5"
     }
   },
   "hooks_sha256": "2dad6de86022a744917575baa97ed6672d4583f86e9b6456ba96863c2a74fbf4"

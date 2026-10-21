@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "../hle.h"
+#include "../platform.h"
 #include "../rando.h"
 
 // GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
@@ -92,6 +93,8 @@ static uint64_t g_player;          // find_player: the PlayerCollision component
 static uint64_t g_player_scan;     // frame of the last heap scan
 static char g_player_level[64];    // level it was found in
 static int g_player_rescan;        // (a warp within the same level: the old player can't be told apart either)
+static int g_player_misses;        // scans in this level that found nothing (find_player)
+static uint64_t g_player_actor;    // Link's actor those misses were with
 extern uint64_t g_stick_freeze_until;  // (below)
 static uint64_t g_hold_until;      // place_tick: Link held at a far jump's landing spot until this frame
 
@@ -104,6 +107,8 @@ RT_ON_RESET(doorjump_reset) {
     g_player = g_player_scan = 0;
     g_player_level[0] = 0;
     g_player_rescan = 0;
+    g_player_misses = 0;
+    g_player_actor = 0;
     g_hold_until = 0;
     g_stick_freeze_until = 0;
 }
@@ -116,7 +121,20 @@ static int is_player_collision(uint64_t p) {
 // The component lives on the heap (16-byte aligned); scan for it after each level change (the previous level's
 // player can stay in freed memory looking valid) and when the cached pointer goes stale. Several candidates:
 // log them all (LARECOMP_DOORJUMP_LOG) and take the last one found (newest allocation is the live one - checked).
+// The scan reads the whole guest heap (~3 GB): ~180 ms on a desktop PC's memory (#257). Never outside play (intro
+// movie, title, file select: PlayerStatus still names a level there, but there is no Link, and a scan every 30
+// frames held them at ~45 fps with a stall every half second), further apart after each miss in a level, and no
+// more after 3 misses with the same Link (an in-play level whose Link has no PlayerCollision, e.g. around the ending:
+// nothing to find until the level or Link changes).
 static uint64_t find_player(uint64_t frame) {
+    extern int game_in_play(void);  // hle/warp.c
+    if (!game_in_play()) {  // (entering play counts as a new level: rescan once settled)
+        g_player = 0;
+        g_player_level[0] = 0;
+        return 0;
+    }
+    uint64_t gm = LD64(GA_GAME_MGR), actor = gm ? LD64(gm + 0x4b8) : 0;  // Link's actor (game_in_play: non-zero)
+    if (actor != g_player_actor) g_player_actor = actor, g_player_misses = 0;
     uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
     const char *lv = ps ? (const char *)(uintptr_t)ps : "";
     if (strncmp(g_player_level, lv, sizeof g_player_level - 1) || g_player_rescan) {  // new level: rescan once settled
@@ -124,12 +142,15 @@ static uint64_t find_player(uint64_t frame) {
         strlcpy(g_player_level, lv, sizeof g_player_level);
         g_player = 0;
         g_player_scan = frame;
+        g_player_misses = 0;
         return 0;
     }
     if (g_player && is_player_collision(g_player)) return g_player;
     g_player = 0;
-    if (frame - g_player_scan < 30) return 0;
+    if (g_player_misses >= 3) return 0;
+    if (frame - g_player_scan < 30 * (uint64_t)(1 + g_player_misses)) return 0;  // 30, 60, 90 frames
     g_player_scan = frame;
+    uint64_t t0 = plat_now_ns();
     extern int kernel_data_regions(uint64_t *addr, uint64_t *size, int max);
     uint64_t ra[64], rs[64];
     int nr = kernel_data_regions(ra, rs, 64), n = 0;
@@ -143,8 +164,9 @@ static uint64_t find_player(uint64_t frame) {
                 g_player = ra[r] + k;
                 n++;
             }
-    LOG("[doorjump] %s: PlayerCollision %s %llx (%d candidates)\n", lv, g_player ? "at" : "not found",
-        (unsigned long long)g_player, n);
+    g_player_misses = g_player ? 0 : g_player_misses + 1;
+    LOG("[doorjump] %s: PlayerCollision %s %llx (%d candidates, %.0f ms)\n", lv, g_player ? "at" : "not found",
+        (unsigned long long)g_player, n, (plat_now_ns() - t0) / 1e6);
     return g_player;
 }
 

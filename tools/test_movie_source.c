@@ -11,6 +11,8 @@
 const char *g_romfs_dir;
 Settings g_settings = {.movie_audio=true};
 volatile int g_inject_plus;
+void run_timer_ending_movie(void) {}
+void run_timer_title(void) {}
 uint64_t input_buttons_now(void) { return 0; }
 bool rando_romfs_override(const char *p, char *o, size_t n) { (void)p; (void)o; (void)n; return false; }
 bool mods_romfs_override(const char *p, char *o, size_t n) { (void)p; (void)o; (void)n; return false; }

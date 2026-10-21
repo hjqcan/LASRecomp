@@ -6,8 +6,6 @@
 #include "settings.h"
 
 // Unrelated cosmetics/input settings are not part of these fixtures.
-const char *const g_tunic_colours[N_TUNIC_COLOURS] = {"Default"};
-const char *const g_heart_colours[N_HEART_COLOURS] = {"Default"};
 bool bind_settings_load(const char *key, const char *val) { (void)key; (void)val; return false; }
 void bind_settings_save(FILE *file) { (void)file; }
 

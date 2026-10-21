@@ -26,8 +26,28 @@ static bool is_link(const char *p) {  // symlink or junction
     DWORD a = GetFileAttributesA(p);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_REPARSE_POINT);
 }
-static bool resolve(const char *p, char *out, size_t n) { return _fullpath(out, p, n) != NULL; }
+// The final path, junctions and symlinks followed (GetFinalPathNameByHandle); _fullpath (lexical, as before) only
+// where the file system can't say
+static bool resolve(const char *p, char *out, size_t n) {
+    wchar_t w[1100], f[1100];
+    if (MultiByteToWideChar(CP_UTF8, 0, p, -1, w, 1100) > 0) {
+        HANDLE h = CreateFileW(w, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                               FILE_FLAG_BACKUP_SEMANTICS, NULL);  // (BACKUP_SEMANTICS: folders too)
+        if (h != INVALID_HANDLE_VALUE) {
+            DWORD k = GetFinalPathNameByHandleW(h, f, 1100, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+            CloseHandle(h);
+            if (k && k < 1100) {
+                const wchar_t *s = f;
+                if (!wcsncmp(f, L"\\\\?\\UNC\\", 8)) s = f + 6, f[6] = L'\\';  // \\?\UNC\srv\share -> \\srv\share
+                else if (!wcsncmp(f, L"\\\\?\\", 4)) s = f + 4;                    // \\?\C:\... -> C:\...
+                return WideCharToMultiByte(CP_UTF8, 0, s, -1, out, (int)n, NULL, NULL) > 0;
+            }
+        }
+    }
+    return _fullpath(out, p, n) != NULL;
+}
 #define path_eq(a, b) (_stricmp(a, b) == 0)
+#define path_prefix(a, b, n) (_strnicmp(a, b, n) == 0)
 #else
 #define SEP "/"
 static bool is_link(const char *p) {
@@ -41,6 +61,7 @@ static bool resolve(const char *p, char *out, size_t n) {
     return true;
 }
 #define path_eq(a, b) (strcmp(a, b) == 0)
+#define path_prefix(a, b, n) (strncmp(a, b, n) == 0)
 #endif
 
 static bool is_dir(const char *p) {
@@ -146,6 +167,7 @@ static const char *const GAME_FILES[] = {"exefs", "romfs", "romfs.bin", GAMELIB_
 
 // Only fixed installation slots under the data root; symlinked/junction paths are refused.
 static bool game_dir_ok(const char *game_dir) {
+    if (is_link(game_dir)) return false;
     return g_root[0] && game_profile_index(game_dir, g_root) >= 0;
 }
 
@@ -161,6 +183,14 @@ bool rt_remove_game_file(const char *game_dir, const char *name) {
     if (!exists(p) && !is_link(p)) return true;
     if (is_link(p)) {
         fprintf(stderr, "[paths] refusing to delete %s (a link)\n", p);
+        return false;
+    }
+    // The entry must resolve inside the already-validated managed installation.
+    char want[1100], got[1100];
+    size_t wl = resolve(game_dir, want, sizeof want) ? strlen(want) : 0;
+    if (!wl || !resolve(p, got, sizeof got) || strlen(got) <= wl || !path_prefix(got, want, wl) ||
+        (got[wl] != '/' && got[wl] != '\\')) {
+        fprintf(stderr, "[paths] refusing to delete %s (resolves outside %s)\n", p, wl ? want : "the data folder");
         return false;
     }
     return is_dir(p) ? plat_remove_tree(p) : remove(p) == 0;  // (plat_remove_tree doesn't follow links inside)

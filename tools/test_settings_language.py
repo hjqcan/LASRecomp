@@ -15,8 +15,8 @@ with tempfile.TemporaryDirectory() as directory:
     directory = Path(directory)
     exe = directory / ('settings-test.exe' if os.name == 'nt' else 'settings-test')
     cc = shlex.split(os.environ.get('CC', 'clang'))
-    subprocess.run(cc + ['-std=gnu11', '-Iruntime', 'runtime/settings.c', 'tools/test_settings_language.c',
-                         '-o', str(exe)], cwd=root, check=True)
+    subprocess.run(cc + ['-std=gnu11', '-Iruntime', 'runtime/settings.c', 'runtime/cosmetic_colour.c', 'tools/test_settings_language.c',
+                         '-lm', '-o', str(exe)], cwd=root, check=True)
     cases = [('zh-CN', '', 'zh-Hans', 'Chinese (Simplified)'),
              ('zh-TW', '', 'zh-Hant', 'Chinese (Traditional)'),
              ('zh-Hans', '', 'zh-Hans', 'Chinese (Simplified)'),

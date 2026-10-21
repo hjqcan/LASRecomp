@@ -328,46 +328,72 @@ static bool spawn_hole(Cpu *c, int g) {
     return loaded;
 }
 
+uint64_t digs_last_actor;  // the last item actor digs_spawn_item made (0: none; valid while its ref is alive)
+
 // the tile's item as a SinkingSword item actor, the way a level spawns one (spawn info: +0 key, +8 type, +0xc zone,
 // +0x10 eight {u32 value, u8 type} parameters, +0x180 position / rotation (quaternion) / scale; the rest zero).
 // false: the tile's screen isn't loaded
 // (also the buried Secret Seashell spots' items: runtime/hle/shell_spots.c) `strs`: model path, model name, flow entry,
 // flag, seashell; *slot: the item actor's control block (weak ref held). false: the room isn't loaded
+// spawn into the room `room` (control block `rctrl`: a weak ref the caller holds - it must still be alive) instead of
+// a screen's by name (shell_spots.c: a tree's / bomb hole's item goes into the drop's own room)
+static bool spawn_into(Cpu *c, uint64_t s, uint64_t key, uint32_t zone, const float pos[3], float scale, float turn,
+                       const int idx[8], uint64_t *slot, bool *spawned) {
+    uint64_t info = s + 0x40;
+    ST64(info, key);
+    ST16(info + 8, T_SINKING_SWORD);
+    ST32(info + 0xc, zone);
+    for (int k = 0; k < 8; k++) { ST32(info + 0x10 + 8 * k, (uint32_t)idx[k]); ST8(info + 0x14 + 8 * k, 5); }
+    float *tp = (float *)(uintptr_t)(info + 0x180), a = turn * (float)M_PI / 360.0f;
+    tp[0] = pos[0], tp[1] = pos[1], tp[2] = pos[2];
+    tp[5] = sinf(a), tp[7] = cosf(a);
+    tp[8] = tp[9] = tp[10] = scale > 0 ? scale : 1.0f;
+    c->x[0] = s;
+    c->x[1] = s + 0x10;
+    c->x[2] = info;
+    guest_call(c, GA_CREATE_ACTOR);
+    uint64_t ictrl = LD64(s + 8);
+    *spawned = LD64(s) != 0;
+    digs_last_actor = LD64(s);
+    if (LD64(s) && ictrl) {
+        hold_weak(slot, ictrl);
+        c->x[0] = ictrl;
+        guest_call(c, GA_SP_RELEASE);
+    }
+    return true;
+}
+
 bool digs_spawn_item(Cpu *c, const char *room, uint64_t key, uint32_t zone, const float pos[3], float scale, float turn,
                      const char *const strs[5], uint64_t *slot, bool *spawned) {
     int idx[8];
     *spawned = false;
+    digs_last_actor = 0;
     for (int k = 0; k < 8; k++)
         if ((idx[k] = pool_index(c, k < 5 ? strs[k] : "")) < 0) { LOG("[digs] string pool full\n"); return true; }
-    uint64_t s = scratch(), info = s + 0x40, sctrl;
+    uint64_t s = scratch(), sctrl;
     bool loaded = room_named(c, s + 0x10, room, &sctrl);
-    if (loaded) {
-        ST64(info, key);
-        ST16(info + 8, T_SINKING_SWORD);
-        ST32(info + 0xc, zone);
-        for (int k = 0; k < 8; k++) { ST32(info + 0x10 + 8 * k, (uint32_t)idx[k]); ST8(info + 0x14 + 8 * k, 5); }
-        float *tp = (float *)(uintptr_t)(info + 0x180), a = turn * (float)M_PI / 360.0f;
-        tp[0] = pos[0], tp[1] = pos[1], tp[2] = pos[2];
-        tp[5] = sinf(a), tp[7] = cosf(a);
-        tp[8] = tp[9] = tp[10] = scale > 0 ? scale : 1.0f;
-        c->x[0] = s;
-        c->x[1] = s + 0x10;
-        c->x[2] = info;
-        guest_call(c, GA_CREATE_ACTOR);
-        uint64_t ictrl = LD64(s + 8);
-        *spawned = LD64(s) != 0;
-        if (LD64(s) && ictrl) {
-            hold_weak(slot, ictrl);
-            c->x[0] = ictrl;
-            guest_call(c, GA_SP_RELEASE);
-        }
-    }
+    if (loaded) spawn_into(c, s, key, zone, pos, scale, turn, idx, slot, spawned);
     if (sctrl) { c->x[0] = sctrl; guest_call(c, GA_SP_RELEASE); }
     return loaded;
 }
 
+bool digs_spawn_item_into(Cpu *c, uint64_t room, uint64_t rctrl, uint64_t key, uint32_t zone, const float pos[3],
+                          float scale, float turn, const char *const strs[5], uint64_t *slot, bool *spawned) {
+    int idx[8];
+    *spawned = false;
+    digs_last_actor = 0;
+    if (!room || !alive(rctrl)) return false;
+    for (int k = 0; k < 8; k++)
+        if ((idx[k] = pool_index(c, k < 5 ? strs[k] : "")) < 0) { LOG("[digs] string pool full\n"); return true; }
+    uint64_t s = scratch();
+    ST64(s + 0x10, room);  // (borrowed, as room_named does)
+    ST64(s + 0x18, rctrl);
+    return spawn_into(c, s, key, zone, pos, scale, turn, idx, slot, spawned);
+}
+
 bool digs_actor_alive(uint64_t ctrl) { return alive(ctrl); }
 void digs_drop_ref(Cpu *c, uint64_t *slot) { drop(c, slot); }
+void digs_hold_weak(uint64_t *slot, uint64_t ctrl) { hold_weak(slot, ctrl); }
 int digs_pool_index(Cpu *c, const char *str) { return pool_index(c, str); }
 
 static bool spawn_item(Cpu *c, int g) {

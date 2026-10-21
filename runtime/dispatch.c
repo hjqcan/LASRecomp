@@ -152,7 +152,7 @@ GuestFn dispatch_lookup(uint64_t addr) {
 #define DCACHE 4096
 static __thread struct { uint64_t addr; GuestFn fn; } dcache[DCACHE];
 
-static GuestFn dispatch_slow(Cpu *c) {
+__attribute__((noinline)) static GuestFn dispatch_slow(Cpu *c) {
     uint64_t pc = c->pc;
     if (debug_jpeg_entry && pc == debug_jpeg_entry && debug_jpeg_count++ < 4) {
         LOG("[jpeg] encode output capacity %llu work capacity %llu exif %llx\n",
@@ -187,12 +187,23 @@ static GuestFn dispatch_slow(Cpu *c) {
     return f;
 }
 
+// A cache miss / an HLE call: looked up, then tail-called. Kept out of rt_dispatch so the cached path needs no stack
+// frame: with the lookup inlined, every guest indirect call saved and restored registers on the way through (it was
+// 17% of the game thread's samples in Mabe on an M-series Mac, with the macOS TLS call).
+__attribute__((noinline)) static void dispatch_miss(Cpu *c) {
+    GuestFn f = dispatch_slow(c);
+    __attribute__((musttail)) return f(c);
+}
+
 // Always tail-calls, so chains of indirect jumps don't grow the host stack.
 void rt_dispatch(Cpu *c) {
     if (__builtin_expect(rt_guest_jump_head != NULL, 0)) rt_guest_jump_resume(c);
     unsigned h = (unsigned)(c->pc >> 2) & (DCACHE - 1);
-    GuestFn f = dcache[h].addr == c->pc ? dcache[h].fn : dispatch_slow(c);
-    __attribute__((musttail)) return f(c);
+    if (__builtin_expect(dcache[h].addr == c->pc, 1)) {
+        GuestFn f = dcache[h].fn;
+        __attribute__((musttail)) return f(c);
+    }
+    __attribute__((musttail)) return dispatch_miss(c);
 }
 
 void guest_call(Cpu *c, uint64_t addr) {

@@ -20,6 +20,10 @@ echo $$ > "$L/pid"
 until [ "$(game_free_gb)" -ge "$GAME_MIN_FREE_GB" ]; do sleep 5; done
 ( sleep 20; rm -rf "$L" ) >/dev/null 2>&1 &
 GAME_SLOT=  # (nothing to release at exit)
+# test runs boot straight into the game, never the start screen (it can delete game files, and a worktree's extracted/
+# is a link to the main checkout's): where it would come up the app exits instead (runtime/main.c). Only a start
+# screen test with its own scratch LARECOMP_DATA_ROOT may pass LARECOMP_NO_LAUNCHER=0.
+export LARECOMP_NO_LAUNCHER=${LARECOMP_NO_LAUNCHER:-1}
 # test runs never write the player's larecomp.ini: a scratch copy unless the caller gave LARECOMP_SETTINGS
 if [ -z "$LARECOMP_SETTINGS" ]; then
     mkdir -p build/test_ini

@@ -73,8 +73,10 @@ The gameplay and randomizer options below apply to Link's Awakening. Other games
   [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB)) in `gamecontrollerdb.txt` in the data
   folder (see "Where files live" below); the log names it once it works: `[input] gamepad: ...`.
 - Optional 360-degree movement, blur removal and a hidden Hero Mode icon.
+- Optional run timer in the corner: real time from the start of gameplay to the ending (set it before starting a
+  save), and LiveSplit support through its Server component: auto-start, a split for each instrument and the ending.
 - Apple MetalFX upscaler on macOS (the default there).
-- Internal resolution adjustments: raise or lower the resolution in steps, match the display, or use dynamic resolution. Combined with the MetalFX upscaler, even a MacBook Air should handle this easily with the right settings. Bilinear upscaling is the only option on Windows currently.
+- Internal resolution adjustments: raise or lower the resolution in steps, match the display, or use dynamic resolution. Combined with the MetalFX upscaler, even a MacBook Air should handle this easily with the right settings. On Windows and Linux the AMD FSR 1 upscaler is available.
 
 **Randomizer**
 - In-game seed generator.
@@ -125,6 +127,8 @@ The gameplay and randomizer options below apply to Link's Awakening. Other games
 - The inventory screen tracks keys, dungeon items, trade items and souls for each dungeon, so you can see at a glance
   what you have keys for and which trade items you still hold.
 - Built-in check tracker on the overworld map (optional).
+- Race mode - the spoiler log stays locked until the credits, and the title / file select screen shows a seed hash of
+  five item icons so racers can check they have the same seed.
 
 ## Building from source
 

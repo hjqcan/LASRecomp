@@ -18,6 +18,7 @@ extern "C" {
 int game_in_play(void);
 int rt_hookshot_seed_forced(void);  // hle/hookshot.c
 int rt_no_buff_seed_forced(void);   // hle/qol.c
+#include "../livesplit.h"
 }
 
 
@@ -117,5 +118,42 @@ extern "C" void difficulty_draw(float scale) {
     }
     if (opt_toggle("One-hit KO", &g_settings.diff_ohko, false, "Any hit defeats Link, whatever his hearts."))
         settings_save();
+
+    // run timer / LiveSplit (runtime/hle/run_timer.c, runtime/livesplit.c, runtime/ui/race_overlay.mm)
+    opt_section("Speedrun");
+    // (set before a save is loaded: free on the start screen, the title and the file select; locked while a file is
+    // in play - game_in_play: Link exists in a level - and free again back at the title)
+    bool locked = game_in_play();
+    if (locked) opt_disable_next();
+    if (opt_toggle("Timer", &g_settings.timer, false,
+                   locked ? "Set before starting a save."
+                          : "A run timer in the corner: real time from the start of gameplay to the ending."))
+        settings_save();
+    opt_indent(1);
+    {  // (any time, also mid-session)
+        static const char *const pos[] = {"Bottom left", "Bottom right"};
+        if (!g_settings.timer) opt_disable_next();
+        if (opt_choice("Timer position", &g_settings.timer_pos, pos, 2, TIMER_POS_LEFT, "Which corner the timer sits in."))
+            settings_save();
+    }
+    opt_indent(-1);
+    if (opt_toggle("LiveSplit", &g_settings.livesplit, false,
+                   "Drives LiveSplit through its Server component: the start, a split for each instrument and the "
+                   "ending, and game time without loading.")) {
+        settings_save();
+        livesplit_poke();
+    }
+    opt_indent(1);
+    {
+        char d[160];
+        snprintf(d, sizeof d, ui_tr("Where LiveSplit's Server listens: host:port.%s"),
+                 ui_tr(!g_settings.livesplit ? "" : livesplit_connected() ? "\n\nConnected." : "\n\nNot connected."));
+        if (!g_settings.livesplit) opt_disable_next();
+        if (opt_text("Server", g_settings.livesplit_host, sizeof g_settings.livesplit_host, "localhost:16834", d)) {
+            if (!g_settings.livesplit_host[0]) snprintf(g_settings.livesplit_host, sizeof g_settings.livesplit_host, "localhost:16834");
+            settings_save();
+        }
+    }
+    opt_indent(-1);
     opt_end();
 }

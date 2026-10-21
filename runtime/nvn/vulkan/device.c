@@ -100,7 +100,7 @@ static bool lazy_heap_predicted(bool budget_ext, bool *probe) {
     *probe = false;  // (RADV: as before - the dma-buf heap or lazy chunks, no probe)
 #ifdef __linux__
     const char *d = getenv("LARECOMP_VK_HEAP_DMABUF");
-    if ((d ? atoi(d) != 0 : true) && g_vk.dmabuf) {
+    if ((d ? atoi(d) != 0 : true) && (g_vk.dmabuf || g_vk.map_placed)) {
         VkPhysicalDeviceMemoryProperties mp;
         vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
         const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
@@ -325,7 +325,7 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[12];
+    const char *ext[16];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
@@ -347,13 +347,31 @@ static void create_device(void) {
         ext[n_ext++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
         ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
     }
+    // ... mapped there by the driver itself (its own DRM file, as every vkMapMemory), not through the dma-buf (issue #92)
+    // (older Vulkan headers, e.g. a distro's, lack it: then the dma-buf mapping only)
+#ifdef VK_EXT_map_memory_placed
+    bool placed_ext = has_ext(ep, ne, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
+#endif
 #endif
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
     VkPhysicalDeviceVulkan12Features have12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &have12};
+#if defined(__linux__) && defined(VK_EXT_map_memory_placed)
+    VkPhysicalDeviceMapMemoryPlacedFeaturesEXT have_placed = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_FEATURES_EXT};
+    if (placed_ext) have12.pNext = &have_placed;
+#endif
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &have);
+#if defined(__linux__) && defined(VK_EXT_map_memory_placed)
+    have12.pNext = NULL;
+    g_vk.map_placed = placed_ext && have_placed.memoryMapPlaced;
+    g_vk.unmap_reserve = g_vk.map_placed && have_placed.memoryUnmapReserve;
+    if (g_vk.map_placed) {
+        ext[n_ext++] = VK_KHR_MAP_MEMORY_2_EXTENSION_NAME;
+        ext[n_ext++] = VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME;
+    }
+#endif
     bool probe;
     g_vk.lazy_heap = lazy_heap_predicted(budget, &probe);
     g_vk.heap_probe = !g_vk.lazy_heap && probe && g_vk.host_import && have12.bufferDeviceAddress;
@@ -378,6 +396,12 @@ static void create_device(void) {
     VkPhysicalDeviceFaultFeaturesEXT ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .deviceFault = VK_TRUE,
                                            .pNext = &f11};
     VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = fault ? (void *)&ff : (void *)&f11};
+#if defined(__linux__) && defined(VK_EXT_map_memory_placed)
+    VkPhysicalDeviceMapMemoryPlacedFeaturesEXT placed = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_FEATURES_EXT,
+                                                         .memoryMapPlaced = VK_TRUE, .memoryUnmapReserve = g_vk.unmap_reserve,
+                                                         .pNext = f.pNext};
+    if (g_vk.map_placed) f.pNext = &placed;
+#endif
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
     b->dualSrcBlend = h->dualSrcBlend;
@@ -880,6 +904,10 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
     static double fps_iv = -1, prev_present, max_gap;
     if (fps_iv < 0) fps_iv = getenv("LARECOMP_FPS_INTERVAL") ? atof(getenv("LARECOMP_FPS_INTERVAL")) : 2.0;
     if (prev_present > 0 && now - prev_present > max_gap) max_gap = now - prev_present;
+    static double hitch_ms = -1;  // LARECOMP_LOG_HITCH_MS=<ms>: every present gap over that (tests: hitches per run)
+    if (hitch_ms < 0) hitch_ms = getenv("LARECOMP_LOG_HITCH_MS") ? atof(getenv("LARECOMP_LOG_HITCH_MS")) : 0;
+    if (hitch_ms > 0 && prev_present > 0 && (now - prev_present) * 1000 > hitch_ms)
+        LOG("[hitch] t=%.2f frame %llu gap %.0f ms\n", now, (unsigned long long)frame, (now - prev_present) * 1000);
     prev_present = now;
     if (now - last_fps_time >= fps_iv) {
         extern const char *game_level_name(void);

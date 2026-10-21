@@ -271,6 +271,8 @@ static void ex_set_data_source(Cpu *c) {
     // the opening at launch can always be skipped, vanilla and randomizer (with no save yet the game forces it)
     e->skippable = rel && strstr(rel, "movie/opening.webm");
     if (e->skippable) g_skip_pressed_at = 0;  // (a press that ended the title's attract replay isn't for this one)
+    if (rel && strstr(rel, "movie/ending.webm")) { extern void run_timer_ending_movie(void); run_timer_ending_movie(); }  // (the run's end)
+    if (rel && strstr(rel, "movie/title.webm")) { extern void run_timer_title(void); run_timer_title(); }  // (a new attempt next)
     for (unsigned i = 0; i < e->fmt->nb_streams && e->ntracks < 16; i++)
         if (e->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO ||
             (e->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && g_settings.movie_audio && !getenv("LARECOMP_NO_MOVIE_AUDIO")))

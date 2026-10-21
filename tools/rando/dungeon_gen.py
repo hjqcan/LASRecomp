@@ -1251,6 +1251,12 @@ def write_all(romfs, out, layouts, jumps=None):
         for lv, L in layouts.items():
             for cell in sorted(L):
                 f.write('%s\t%s\t%g\t%g\n' % (lv, cell.rsplit('_', 1)[1], *map_shift(romfs, lv, cell)))
+    # each cell's room (level, cell, room): the check tracker places a moved room's checks in the dungeon and cell it
+    # sits in now (tools/rando/tracker.py)
+    with open(os.path.join(os.path.dirname(os.path.abspath(out)), 'dungeon_rooms.tsv'), 'w') as f:
+        for lv, L in layouts.items():
+            for cell in sorted(L):
+                f.write('%s\t%s\t%s\n' % (lv, cell.rsplit('_', 1)[1], L[cell]))
     if shared.next_g > start:  # the flags taken go into the seed's GlobalFlags sheet: later allocators (underwater.py,
         # miniboss_guard.py: the highest index + 1) start after them
         from RandomizerCore.Tools import oead_tools

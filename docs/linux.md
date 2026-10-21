@@ -1,13 +1,13 @@
 # Multi on Linux (x86-64, aarch64)
 
-Status: branch `linux-beta2`. Builds and runs the game on Vulkan (with your own game files) on x86-64, checked before
+Status: builds and runs the game on Vulkan (with your own game files) on x86-64, checked before
 each release by `make smoketest`. aarch64 is **experimental**: cross-compiled, its start screen checked under emulation,
 the game itself untested on real hardware - community reports decide (see the end). `make appimage` / `make appimages`
 package the release AppImages.
 
 ## Running the AppImage
-    chmod +x Multi-beta_4-linux-x86_64.AppImage
-    ./Multi-beta_4-linux-x86_64.AppImage
+    chmod +x Multi-<version>-linux-x86_64.AppImage
+    ./Multi-<version>-linux-x86_64.AppImage
 
 Needs: a distribution with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, Arch, ...), a Vulkan 1.3 driver
 (Mesa RADV / ANV / NVK / Turnip / Asahi Honeykrisp, or NVIDIA's), and on x86-64 a CPU with AVX2 (2013 or newer).
@@ -116,7 +116,7 @@ The aarch64 AppImage is experimental: built on x86-64, only its start screen has
    an earlier run, that run's `lasrecomp-backup-*.log`, by date modified).
 5. **A crash backtrace with gdb** when the log's isn't enough:
 
-       ./Multi-beta_4-linux-aarch64.AppImage --appimage-extract    # -> squashfs-root/
+       ./Multi-<version>-linux-aarch64.AppImage --appimage-extract    # -> squashfs-root/
        cd ~/.local/share/lasrecomp
        gdb -batch -ex 'handle SIGSEGV nostop noprint pass' -ex run -ex 'thread apply all bt 20' \
            --args ~/squashfs-root/usr/bin/lasrecomp > gdb.txt 2>&1

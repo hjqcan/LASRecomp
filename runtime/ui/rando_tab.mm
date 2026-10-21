@@ -17,6 +17,7 @@
 #include "imgui_internal.h"
 #include "osk.h"
 #include "option_rows.h"
+#include "seed_hash.h"
 
 extern "C" {
 #include "../hle.h"
@@ -41,7 +42,8 @@ static void play_seed(const char *name) {
     rt_request_reboot(RT_REBOOT_GAME);
 }
 
-struct Seed { std::string name, logic, spoiler, id; long mtime; };
+struct Seed { std::string name, logic, spoiler, id; long mtime; bool race, race_done; };
+static bool id_is_race(const std::string &id);  // (a seed made in race mode: its ID says so)
 static std::vector<Seed> g_seeds;
 static bool g_scanned;
 static int g_selected = -1;
@@ -94,6 +96,8 @@ static void scan(void) {
         if (stat(s.spoiler.c_str(), &sb)) s.spoiler = dir + "/spoiler_" + s.name + ".txt";  // (older seeds)
         s.id = read_file(dir + "/seed_id.txt");
         while (!s.id.empty() && (s.id.back() == '\n' || s.id.back() == ' ')) s.id.pop_back();
+        s.race = id_is_race(s.id);
+        s.race_done = !stat((dir + "/race_done").c_str(), &sb);  // (the credits were seen: runtime/hle/run_timer.c)
         g_seeds.push_back(s);
     }
     closedir(d);
@@ -146,6 +150,7 @@ struct GenOpts {
     bool miniboss_souls = false;  // miniboss-souls: a dungeon mini-boss only appears once its soul is found (souls.py)
     // starting-items (the game's own start): stored as "not" so seed IDs made before these options (zeros) keep them
     bool no_start_sword = false, no_start_shield = false, no_start_ocarina = false;  // (ocarina: with Manbo's Mambo)
+    bool random_cosmetics = false;  // random-cosmetics: the seed's own cosmetic set (runtime/cosmetics_seed.c)
     bool tunic_upgrades = false;  // tunic-upgrades: the red / blue tunics add up instead of swapping (runtime: qol.c)
     // stealing (LAS 'stealing': never / normal / always), stored so that seed IDs made before these options (zeros)
     // keep their old rule, 'always' (stealing allowed, no sword needed); new seeds default to the vanilla sword rule
@@ -153,6 +158,7 @@ struct GenOpts {
     bool steal_needs_sword = true;  // off = "Steal without sword" ('always'); on = the vanilla rule ('normal')
     // Triforce hunt (tools/rando/triforce.py): pieces needed (0 = off, 1-50), extra pieces 0 none / 1 +25% / 2 +50%
     int tri_needed = 0, tri_extra = 0;
+    bool race = false;        // race mode: the spoiler log stays shut until the credits, a seed hash on the title screen
 };
 static GenOpts g_opts;
 
@@ -203,7 +209,7 @@ static bool *opt_flags(GenOpts &o, int i) {  // the yes/no options, in ID order 
                  &o.boss_cutscenes, &o.spoiler, &o.decoupled, &o.pots, &o.no_buffs, &o.bushes,
                  &o.pet_rooster, &o.pet_ghost, &o.pet_marin, &o.trendsanity, &o.boss_souls, &o.hookshot_any,
                  &o.digs, &o.miniboss_souls, &o.no_start_sword, &o.no_start_shield, &o.no_start_ocarina,
-                 &o.tunic_upgrades, &o.shellsanity};
+                 &o.tunic_upgrades, &o.shellsanity, &o.race, &o.random_cosmetics};
     return i < (int)(sizeof f / sizeof *f) ? f[i] : NULL;
 }
 
@@ -295,6 +301,59 @@ static std::string seed_id_decode(const char *text, GenOpts &o) {
     return "";
 }
 
+// The New seed options are kept across restarts (larecomp.ini rando_options): their seed ID without the random part,
+// which re-rolls for every seed. Not the seed name either. Saved once a change is done (no row being dragged / typed in).
+static void opts_key(const GenOpts &o, char *out, size_t cap) {
+    GenOpts t = o;
+    t.rng = 0;
+    seed_id_encode(t, out, cap);
+}
+
+static void opts_load(void) {
+    if (!g_settings.rando_options[0]) return;  // (never changed: the defaults)
+    GenOpts t = g_opts;
+    std::string err = seed_id_decode(g_settings.rando_options, t);
+    if (!err.empty()) { LOG("[rando] saved options not loaded: %s\n", err.c_str()); return; }
+    t.rng = 0;  // (a fresh random part when shown)
+    strlcpy(t.seed, g_opts.seed, sizeof t.seed);
+    g_opts = t;
+    tri_mode_from_opts();
+}
+
+static void opts_save_if_changed(void) {
+    if (ImGui::IsAnyItemActive()) return;
+    static char defaults[48];
+    if (!defaults[0]) opts_key(GenOpts(), defaults, sizeof defaults);
+    char k[48];
+    opts_key(g_opts, k, sizeof k);
+    const char *saved = g_settings.rando_options[0] ? g_settings.rando_options : defaults;
+    if (!strcmp(k, saved)) return;
+    strlcpy(g_settings.rando_options, k, sizeof g_settings.rando_options);
+    settings_save();
+}
+
+static bool id_is_race(const std::string &id) {
+    GenOpts o;
+    return !id.empty() && seed_id_decode(id.c_str(), o).empty() && o.race;
+}
+
+// race_overlay.mm: seed <name> was made in race mode (id: its seed ID)
+bool rando_seed_race(const char *seed, char *id, size_t idcap) {
+    std::string s = read_file(std::string("rando/") + seed + "/seed_id.txt");
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+    snprintf(id, idcap, "%s", s.c_str());
+    return id_is_race(s);
+}
+
+// the seed hash's icon names, for the seed's description ("Bow, Shovel, ...")
+static std::string hash_names(const std::string &id) {
+    int h[5];
+    seed_hash(id.c_str(), h);
+    std::string r;
+    for (int i = 0; i < 5; i++) r += std::string(i ? ", " : "") + kSeedHashIcons[h[i]].name;
+    return r;
+}
+
 static uint64_t new_rng(void) { return ((uint64_t)arc4random() << 4 ^ arc4random()) & 0xFFFFFFFFFull; }
 
 static const char *ADJ[] = {"Sleepy", "Brave", "Lucky", "Rapid", "Quiet", "Golden", "Wild", "Secret", "Dreamy", "Mighty"};
@@ -375,8 +434,9 @@ static void start_generation(void) {
     }
     fprintf(f, " \"pots\": %s, \"no-buff-drops\": %s, \"bushes\": %s, \"digs\": %s,\n", g_opts.pots ? "true" : "false",
             g_opts.no_buffs ? "true" : "false", g_opts.bushes ? "true" : "false", g_opts.digs ? "true" : "false");
-    fprintf(f, " \"tunic-upgrades\": %s, \"shellsanity\": %s,\n", g_opts.tunic_upgrades ? "true" : "false",
-            g_opts.shellsanity ? "true" : "false");
+    fprintf(f, " \"tunic-upgrades\": %s, \"shellsanity\": %s, \"random-cosmetics\": %s,\n",
+            g_opts.tunic_upgrades ? "true" : "false", g_opts.shellsanity ? "true" : "false",
+            g_opts.random_cosmetics ? "true" : "false");
     fprintf(f, " \"include-fishing\": %s, \"include-rapids\": %s, \"include-dampe\": %s, \"include-trade-gifts\": %s,"
                " \"include-blue-rupees\": %s,\n", g_opts.inc_fishing ? "true" : "false", g_opts.inc_rapids ? "true" : "false",
             g_opts.inc_dampe ? "true" : "false", g_opts.inc_trade ? "true" : "false", g_opts.inc_blue ? "true" : "false");
@@ -399,6 +459,7 @@ static void start_generation(void) {
     fprintf(f, " \"boss-souls\": %s, \"miniboss-souls\": %s,\n", g_opts.boss_souls ? "true" : "false",
             g_opts.miniboss_souls ? "true" : "false");
     fprintf(f, " \"hookshot-anything\": %s,\n", g_opts.hookshot_any ? "true" : "false");
+    fprintf(f, " \"race-mode\": %s,\n", g_opts.race ? "true" : "false");  // (runtime only: spoiler lock, seed hash)
     fprintf(f, " \"triforce-hunt\": %d, \"triforce-extra\": %d,\n", g_opts.tri_needed, g_opts.tri_extra * 25);
     fprintf(f, " \"entrance-tier\": %d, \"entrance-decoupled\": %s,\n", g_opts.entrances, g_opts.entrances >= 2 && g_opts.decoupled ? "true" : "false");
     fprintf(f, " \"pet-rooster\": %s, \"pet-ghost\": %s, \"open-desert\": %s,\n", g_opts.pet_rooster ? "true" : "false",
@@ -536,6 +597,8 @@ extern "C" void rando_tab_draw(float scale) {
         if (!spoiler_view_draw(g_spoiler_seed, scale)) g_spoiler_seed.clear();
         return;
     }
+    static bool opts_once;  // the options the player last set (larecomp.ini)
+    if (!opts_once) { opts_once = true; opts_load(); }
     static bool id_once;  // LARECOMP_RANDO_ID=<seed ID>: the tab starts with that ID's options (test hook)
     if (const char *t = getenv("LARECOMP_RANDO_ID"); !id_once && t) {
         id_once = true;
@@ -576,8 +639,10 @@ extern "C" void rando_tab_draw(float scale) {
     for (const Seed &s : g_seeds) {
         bool is_active = active && s.name == active;
         std::string d = "Seed ID: " + (s.id.empty() ? std::string("-") : s.id) + "\nLogic: " +
-                        (s.logic.empty() ? std::string("-") : s.logic) + "\n\nPlay it, read its spoiler log, copy its "
-                        "ID to share, rename or delete it. Each seed has its own save files.";
+                        (s.logic.empty() ? std::string("-") : s.logic) +
+                        (s.race ? "\nRace mode. Seed hash: " + hash_names(s.id) : std::string()) +
+                        "\n\nPlay it, read its spoiler log, copy its ID to share, rename or delete it. Each seed has its "
+                        "own save files.";
         if (opt_action(s.name.c_str(), is_active ? "Playing" : s.logic.c_str(), d.c_str(), false)) {
             act_seed = s.name;
             ImGui::OpenPopup("##seedact");
@@ -632,7 +697,12 @@ extern "C" void rando_tab_draw(float scale) {
                     if (ImGui::Button(ui_label("Cancel").c_str(), ImVec2(bw, 0))) confirm_delete = false;
                 } else {
                     if (!is_active && ImGui::Button(ui_label("Play").c_str(), ImVec2(bw, 0))) { ImGui::CloseCurrentPopup(); play_seed(s.name.c_str()); }
-                    if (ImGui::Button(ui_label("Spoiler log").c_str(), ImVec2(bw, 0))) { g_spoiler_seed = s.name; close = true; }
+                    ImGui::BeginDisabled(s.race && !s.race_done);  // (race mode: shut until the credits)
+                    if (ImGui::Button(ui_label(s.race && !s.race_done ? "Spoiler log (locked)" : "Spoiler log").c_str(), ImVec2(bw, 0))) {
+                        g_spoiler_seed = s.name;
+                        close = true;
+                    }
+                    ImGui::EndDisabled();
                     ImGui::BeginDisabled(s.id.empty());
                     if (ImGui::Button(ui_label("Copy seed ID").c_str(), ImVec2(bw, 0))) ImGui::SetClipboardText(s.id.c_str());
                     ImGui::EndDisabled();
@@ -701,7 +771,7 @@ extern "C" void rando_tab_draw(float scale) {
                 id_msg = "Loaded: the options are set from this ID.";
             }
         }
-        if (opt_action("Copy seed ID", "", "Copies the seed ID above, to share the seed.")) ImGui::SetClipboardText(idbuf);
+        if (opt_action("Copy new seed's ID", "", "Copies the seed ID above, to share the seed.")) ImGui::SetClipboardText(idbuf);
         if (opt_action("New seed ID", "", "A new random seed with the same options.")) { g_opts.rng = new_rng(); id_msg.clear(); }
     }
 
@@ -921,7 +991,11 @@ extern "C" void rando_tab_draw(float scale) {
     opt_toggle("Fast songs", &g_opts.fast_songs, true, "Learning a song skips its cutscene.");
     opt_toggle("Boss cutscenes", &g_opts.boss_cutscenes, false, "Bosses' intro cutscenes play.");
     opt_toggle("Randomize music", &g_opts.randomize_music, false, "The game's music tracks are shuffled.");
+    opt_toggle("Random cosmetics", &g_opts.random_cosmetics, false,
+               "The seed gets its own colors and season. Your choices in the Cosmetics tab still win.");
     opt_toggle("Spoiler log", &g_opts.spoiler, true, "Writes where every item is, to read from the seed's Spoiler log.");
+    opt_toggle("Race mode", &g_opts.race, false,
+               "The spoiler log stays shut until the credits, and the title screen shows a seed hash to compare.");
 
     ImGui::Dummy(ImVec2(0, 8 * scale));
     if (opt_action("Generate seed", "", "Makes a seed with these options. It shows up under Seeds, ready to play."))
@@ -965,5 +1039,6 @@ extern "C" void rando_tab_draw(float scale) {
         opt_split_end();
     }
     ImGui::EndDisabled();
+    opts_save_if_changed();
     gen_overlay(scale);
 }

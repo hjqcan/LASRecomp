@@ -231,7 +231,8 @@ bool renderer_texture_frame_fresh(NvnTexture *t) {
     if (!b || !b->scalable || !(t->flags & 8) || b->frame_cleared == total_frames + 1) return false;
     // LARECOMP_NO_FRAME_CLEAR skips the clear only while the contents cover the whole target: below 1x a frame draws
     // into part of it, and the rest would show what an earlier frame left there (issue #205: the upper part flickered)
-    if (g_vk.no_frame_clear && b->sx >= 1.0f && b->sy >= 1.0f) return false;
+    // (Dynamic: the contents cover the whole target only at the factor 1 - its render scale is the allocation's)
+    if (g_vk.no_frame_clear && b->sx >= 1.0f && b->sy >= 1.0f && b->sx >= b->ax && b->sy >= b->ay) return false;
     b->frame_cleared = total_frames + 1;
     return true;
 }
@@ -431,23 +432,34 @@ static void create_image(NvnTexture *t, TexBackend *b) {
                  : t->target == 8 ? VK_IMAGE_VIEW_TYPE_CUBE : t->target == 9 ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
                  : layers > 1 || t->target == 4 || t->target == 6 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     vk_image_init_layout(vk_upload_cmd(), b->image, b->aspect);
-    if (depthfmt || (ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
-        // Fresh attachments start zeroed (as fresh memory reads on Apple GPUs). Color effects may
-        // render only part of a target before sampling the rest; undefined VRAM becomes colored
-        // noise on the ACNH airport's floor and glass. Compressed sampled images are uploaded,
-        // not cleared here (vkCmdClearColorImage does not support compressed formats).
-        // The game builds its depth
-        // pyramid with depth-only copies, so the stencil of those images was never written: whatever the memory
-        // held, different per image and per run, then failed or passed the depth-of-field passes' stencil test in
-        // patches (flicker that came and went between runs, every other frame, below 1x internal resolution).
+    // New depth / stencil images start zeroed. The game builds its depth pyramid with depth-only copies, so the stencil
+    // of those images was never written: whatever the memory held, different per image and per run, then failed or
+    // passed the depth-of-field passes' stencil test in patches (flicker that came and went between runs, every other
+    // frame, below 1x internal resolution).
+    // Scalable colour targets too (as Metal's, metal.m clear_new_target): Dynamic resolution draws into their top-left
+    // part only, and the game's blurs sample a few texels past it, where a new image holds whatever its memory held -
+    // NaN / infinity in a float target among it, which the bloom chain spreads and keeps (a pure green band down the
+    // right edge, issue #205; every window resize reallocates these images). Copies into them write only the contents'
+    // part, and with LARECOMP_NO_FRAME_CLEAR the per-frame clear is skipped. LARECOMP_NEW_TARGET_FILL=<r>,<g>,<b>,<a>
+    // (test): that colour instead of zeros.
+    // Clear unscaled attachments too: ACNH samples partially written effect targets.
+    bool clear_color = !depthfmt && (ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    if (depthfmt || clear_color) {
         VkCommandBuffer cb = vk_upload_cmd();
         VkImageSubresourceRange rg = {b->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
         if (depthfmt) {
             VkClearDepthStencilValue zero = {0.0f, 0};
             vkCmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
         } else {
-            VkClearColorValue zero = {0};
-            vkCmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+            static int fill = -1;
+            static VkClearColorValue fc;
+            if (fill < 0) {
+                const char *e = getenv("LARECOMP_NEW_TARGET_FILL");
+                float *c = fc.float32;
+                fill = e && sscanf(e, "%f,%f,%f,%f", &c[0], &c[1], &c[2], &c[3]) == 4;
+            }
+            VkClearColorValue zero = {{0}};
+            vkCmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, fill ? &fc : &zero, 1, &rg);
         }
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -645,7 +657,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     bool periodic = frame - b->full_frame >= 120 && full_hash_budget >= total;  // (safety net: a full hash now and then)
     if (!full && periodic) { full = true; full_hash_budget -= total; }
     if (!b->tp) b->tp = texpatch_identify(t) + 1;  // (button prompts / Hero Mode icon: re-uploaded when their look changes)
-    bool restyle = b->tp > 0 && b->uploaded && b->tp_gen != texpatch_generation();
+    bool restyle = b->tp > 0 && b->tp <= TEXPATCH_RECOLOUR_BASE && b->uploaded && b->tp_gen != texpatch_generation();
     // The OS's page write tracking (exec.c vk_pages_changed, shared with the vertex cache): texture memory the CPU
     // hasn't written since the last check is not hashed at all (dynamic textures were fully hashed every frame,
     // ~2.4 MB a frame in the overworld). The periodic full hash stays as a safety net. LARECOMP_VK_TEX_WATCH=0: off.

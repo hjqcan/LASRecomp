@@ -1,6 +1,12 @@
 #include <assert.h>
 #include <stdio.h>
 #include "../runtime/nvn/pace.h"
+#include "../runtime/game_addresses.h"
+static uint8_t game_manager[0x500];
+static uintptr_t game_manager_ptr = (uintptr_t)game_manager;
+#undef GA_GAME_MGR
+#define GA_GAME_MGR ((uintptr_t)&game_manager_ptr)
+#include "../runtime/nvn/pace.c"
 
 static bool las = true;
 static uint64_t now = 1000000000;
@@ -18,13 +24,14 @@ static void frame(uint64_t busy, uint64_t wait) {
 }
 static unsigned recover(void) {
     unsigned n = 0;
-    while (pace_is_slow() && n < 2000) { frame(10000000, 0); ++n; }
+    while (pace_is_slow() && n < 2000) { frame(12000000, 0); ++n; }
     assert(!pace_is_slow() && n < 2000);
     return n;
 }
 int main(int argc, char **argv) {
     (void)argv;
     uint64_t counters[6] = {0, 100, 0, 150, 0, 200};
+    game_manager[0x4e3] = 1;
     pace_frame();
     for (unsigned i = 0; i < 60; ++i) frame(10000000, 20000000);
     assert(!pace_is_slow() && pace_frames_over() == 0);
@@ -40,11 +47,13 @@ int main(int argc, char **argv) {
     assert(pace_end_counter(counters, counters + 2, 150) == 100 + 12288000);
     assert(pace_end_counter(counters, counters + 4, 200) == 200);
     assert(pace_end_counter(NULL, counters + 2, 150) == 150);
+    assert(game_manager[0x4e2] == 1);
     unsigned first = recover();
+    assert(game_manager[0x4e2] == 0);
     for (unsigned i = 0; i < 13; ++i) frame(20000000, 0);
     assert(pace_is_slow());
     unsigned second = recover();
-    assert(second >= first + 110); // A rapid fallback needs another 120 calm frames.
+    assert(second >= first + 140); // A rapid fallback doubles the 150-frame calm period.
     for (unsigned i = 0; i < 13; ++i) frame(20000000, 0);
     assert(pace_is_slow());
     las = false;

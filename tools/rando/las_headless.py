@@ -715,6 +715,8 @@ def main():
         s['absent-locations'] = sorted(s.get('absent-locations', ()))
         s['junk-locations'] = sorted(s.get('junk-locations', ()))
         s['escape-bottle'] = True  # (runtime/hle/escape.c: older seeds keep three plain bottles)
+        # the overworld door -> the dungeon it leads into (shuffle-dungeons; the tracker puts each dungeon's icon there)
+        s['dungeon-entrances'] = dict(result['placements'].get('dungeon-entrances') or {})
         s['hint-sheet'] = True  # (runtime/hle/hint_sheet.c: older seeds have no Hint Sheet)
         s['ghost-item'] = 'ghost' in pets  # (runtime/hle/pets.c: older seeds' Ghost follows Link)
         s['underwater-items'] = True  # (runtime: the sunken heart-piece actors don't hide for an owned heart piece)

@@ -567,7 +567,7 @@ static void memdump_tick(uint64_t frame) {
 }
 
 // LARECOMP_PANE_SCAN=<frame>:<hex addr>[:<depth>]: log UI panes reachable from an object (addr 0 = LARECOMP_FNPROF_BT's
-// x0, 1 = the dungeon map page) (RE: pane name at +0xB0,
+// x0, 1 = the dungeon map page, 2 = the overworld map page) (RE: pane name at +0xB0,
 // translate +0x30/+0x34, scale +0x48/+0x4C), following pointers up to <depth> levels (default 2)
 static void pane_scan_rec(uint64_t obj, int depth, const char *path, uint64_t *seen, int *nseen) {
     extern int kernel_data_regions(uint64_t *a, uint64_t *s, int max);
@@ -589,8 +589,10 @@ static void pane_scan_rec(uint64_t obj, int depth, const char *path, uint64_t *s
                             (nm[len] >= '0' && nm[len] <= '9') || nm[len] == '_')) len++;
         if (len >= 3 && nm[len] == 0 && nm[1] == '_') {
             const float *f = (const float *)(uintptr_t)p;
-            LOG("[pane] %s+%#x -> %llx '%s' t(%.1f, %.1f) s(%.3f, %.3f) size(%.1f, %.1f)\n", path, off, (unsigned long long)p, nm,
-                f[0x30 / 4], f[0x34 / 4], f[0x48 / 4], f[0x4C / 4], f[0x50 / 4], f[0x54 / 4]);
+            const uint8_t *fl = (const uint8_t *)(uintptr_t)(p + 0x58);
+            LOG("[pane] %s+%#x -> %llx '%s' t(%.1f, %.1f) s(%.3f, %.3f) size(%.1f, %.1f) +58 %02x %02x %02x %02x %02x %02x\n", path, off,
+                (unsigned long long)p, nm, f[0x30 / 4], f[0x34 / 4], f[0x48 / 4], f[0x4C / 4], f[0x50 / 4], f[0x54 / 4], fl[0], fl[1], fl[2],
+                fl[3], fl[4], fl[5]);
         }
         if (depth > 0) {
             char sub[256];
@@ -613,6 +615,7 @@ static void pane_scan_tick(uint64_t frame) {
     extern uint64_t g_bt_first_x0;  // fnprof.c: x0 of the first LARECOMP_FNPROF_BT function hit (addr 0 = use it)
     if (!addr) addr = g_bt_first_x0;
     if (addr == 1) { extern uint64_t chaos_dgnmap_obj(void); addr = chaos_dgnmap_obj(); }  // 1 = the dungeon map page
+    if (addr == 2) { extern uint64_t tracker_map_obj(void); addr = tracker_map_obj(); }  // 2 = the overworld map page
     LOG("[pane] scanning from %llx\n", (unsigned long long)addr);
     if (!addr) return;
     static uint64_t seen[4096];

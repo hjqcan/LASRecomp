@@ -792,15 +792,62 @@ int plat_proc_wait(PlatProc p, bool block) {
     return code > 255 ? 255 : (int)code;  // (a crash's NTSTATUS, e.g. 0xC0000409, is not "still running" (-1))
 }
 
+// rm -rf that never goes through a link: a junction or symlink inside is removed itself (RemoveDirectory /
+// DeleteFile on the reparse point), never what it points to. Cloud placeholders (OneDrive: also reparse points, but
+// not redirects) are ordinary files and folders. w: a \\?\ path in a 32768-wide buffer, len its length; attr and
+// tag: its FindFirstFile attributes and reparse tag.
+static bool cloud_placeholder(DWORD tag) { return (tag & 0xFFFF0FFF) == 0x9000001A; }  // IO_REPARSE_TAG_CLOUD(_1.._F)
+static bool remove_tree_w(wchar_t *w, size_t len, DWORD attr, DWORD tag) {
+    bool dir = attr & FILE_ATTRIBUTE_DIRECTORY;
+    if ((attr & FILE_ATTRIBUTE_REPARSE_POINT) && !cloud_placeholder(tag))  // junction / symlink: the link only
+        return dir ? RemoveDirectoryW(w) != 0 : DeleteFileW(w) != 0;
+    if (attr & FILE_ATTRIBUTE_READONLY) SetFileAttributesW(w, attr & ~FILE_ATTRIBUTE_READONLY);
+    if (!dir) return DeleteFileW(w) != 0;
+    bool ok = true;
+    if (len + 3 >= 32768) return false;
+    wcscpy(w + len, L"\\*");
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileExW(w, FindExInfoBasic, &fd, FindExSearchNameMatch, NULL, 0);
+    w[len] = 0;
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+            size_t k = wcslen(fd.cFileName);
+            if (len + 1 + k >= 32768) { ok = false; continue; }
+            w[len] = L'\\';
+            wcscpy(w + len + 1, fd.cFileName);
+            ok &= remove_tree_w(w, len + 1 + k, fd.dwFileAttributes,
+                                (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? fd.dwReserved0 : 0);
+            w[len] = 0;
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    return RemoveDirectoryW(w) != 0 && ok;
+}
+
 bool plat_remove_tree(const char *dir) {
-    // SHFileOperation wants a double-NUL-terminated path with backslashes
-    static __thread wchar_t w[MAX_PATH + 2];
-    int n = MultiByteToWideChar(CP_UTF8, 0, dir, -1, w, MAX_PATH);
-    if (n <= 1) return false;
-    w[n] = 0;
-    for (wchar_t *p = w; *p; p++) if (*p == L'/') *p = L'\\';
-    SHFILEOPSTRUCTW op = {.wFunc = FO_DELETE, .pFrom = w, .fFlags = FOF_NO_UI};
-    return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
+    static __thread wchar_t rel[MAX_PATH * 4], w[32768];
+    if (MultiByteToWideChar(CP_UTF8, 0, dir, -1, rel, MAX_PATH * 4) <= 1) return false;
+    for (wchar_t *p = rel; *p; p++) if (*p == L'/') *p = L'\\';
+    DWORD n = GetFullPathNameW(rel, 32768 - 8, w + 4, NULL);  // (absolute, then \\?\ for long paths)
+    if (!n || n >= 32768 - 8) return false;
+    size_t len;
+    if (w[4] == L'\\' && w[5] == L'\\') {  // \\server\share -> \\?\UNC\server\share
+        memmove(w + 8, w + 6, (n - 1) * sizeof *w);
+        memcpy(w, L"\\\\?\\UNC\\", 8 * sizeof *w);
+        len = n + 6;
+    } else {
+        memcpy(w, L"\\\\?\\", 4 * sizeof *w);
+        len = n + 4;
+    }
+    while (len > 7 && w[len - 1] == L'\\') len--;  // (no trailing separator: "\\*" is appended)
+    w[len] = 0;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileExW(w, FindExInfoBasic, &fd, FindExSearchNameMatch, NULL, 0);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    FindClose(h);
+    return remove_tree_w(w, len, fd.dwFileAttributes,
+                         (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? fd.dwReserved0 : 0);
 }
 
 // End the process at once, preserving its result and skipping DLL teardown after publishing the log.

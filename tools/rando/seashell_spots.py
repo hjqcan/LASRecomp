@@ -12,19 +12,20 @@ yet owned. So:
   - a Secret Seashell placed at a spot stays the game's own shell there, with the seashell index LAS gave it (buried
     shell / bomb hole: that index; a host: its own ItemDrop entry LARShell<index>): the sensor rings until it is found
   - any other item: the buried shell is taken out (the runtime brings the item up when the spot is dug); a host drops
-    ItemDrop LARShellSpot<n> - a Heart Piece tagged TAG + the spot's vanilla index; a bomb hole keeps its index (with
-    any other it drops nothing) and its ItemDrop Seashell<n> is retagged the same way, its sensor beacon switched off
-    by the runtime. The runtime (runtime/hle/shell_spots.c) turns the tagged drop into the seed's item: a SinkingSword
-    item actor (the actor LAS uses for standing items) with the item's model, where the shell would appear (out of a
-    tree's crown / a bomb hole: on a free tile beside it). Picking it up runs its entry in SinkingSword.bfevfl - LAS's
-    item-get, the game's message box - and sets the spot's own flag.
+    ItemDrop LARShellSpot<n> - a Heart Piece tagged TAG + the spot's vanilla index; a bomb hole is left as it is (it
+    only stays while the shell its index names isn't owned: the runtime keeps it on one that isn't, and takes its
+    shell drop for the item), its sensor beacon switched off by the runtime. The runtime (runtime/hle/shell_spots.c) turns the tagged drop into the seed's item: a
+    SinkingSword item actor (the actor LAS uses for standing items) with the item's model, where the shell would
+    appear (out of a tree's crown / a bomb hole: it flies out on the shell's arc and comes down on a free tile beside
+    it). Picking it up runs its entry in SinkingSword.bfevfl - LAS's item-get, the game's message box - and sets the
+    spot's own flag.
 A spot holding a shell gets its found flag from the runtime once that shell is owned (the tracker); so does a
 digsanity tile holding one (digs.py makes it a buried shell: the shells argument).
 
 rando/<seed>/shell_spots.tsv: location, seashell index (shell: the placed shell's), kind (dig / drop / land: lands at
 x y z - trees / hole: a bomb hole, lands at x y z / shell: a Secret Seashell there), level, room, x, y, z, model path,
 model name, flow entry, flag symbol, flag index, seashell (1/0), scale, turn (, a bomb hole's actor key: the runtime
-switches its Seashell Sensor beacon off).
+switches its Seashell Sensor beacon off and keeps its index on a shell not owned).
 
 Who owns a spot (one check per spot, never two): bushsanity the bushes hiding a shell, potsanity the Ghost House
 pot, digsanity the shells buried on the Field - each such spot is that -sanity's own check (gold bush / pot, dig
@@ -47,6 +48,10 @@ BURIED_LEVELS = ('Field', 'DogHouse')  # (levels whose rooms place a buried Secr
 LAWN = 0xb5  # ObjLawn: tall grass (an item may land in it)
 TREES = (0xbb, 0xbc)  # ObjTree, ObjPalmTree: the shell falls out when Link dashes into one (Pegasus Boots)
 TAG = 200  # a retagged drop: a Heart Piece (or a bomb hole's shell) with index TAG + the spot's vanilla seashell index
+# where a bomb hole's item lands when the tile grid can't tell: the Tal Tal hole (02J) is the pit on top of a pillar
+# below the plateau east of the rope bridge (Cucco House); the shell flies up and toward that plateau's south-west
+# corner, the reachable ledge over the pit (the grid's free tiles beside the pit are the sand below the pillar)
+HOLE_LANDING = {'Field_02J': (151.25, 25.5, 12.25)}
 DROP_KEY = re.compile(rb'Seashell(\d+)$')  # a bush's / rock's / tree's / pot's ItemDrop key
 
 
@@ -68,9 +73,10 @@ def _rooms(romfs, leb, levels=None):
 
 
 def _landing(romfs, leb, room, host, tree):
-    """Where the item of a tree (ObjTree / ObjPalmTree: the shell falls out of its crown) or a bomb hole (the shell pops
-    out of it) lands - the item doesn't fall or jump: the nearest free tile around (a tree stands on the corner of 2 x 2
-    tiles, a hole is one), in front - toward the camera - first, at most 2 units above / below the host. None: none."""
+    """Where the item of a tree (ObjTree / ObjPalmTree: the shell flies out of its crown) or a bomb hole (the shell pops
+    out of it) lands - the runtime flies it there on the shell's arc, not where the shell itself would come down (a
+    wall, water or the tree): the nearest free tile around (a tree stands on the corner of 2 x 2 tiles, a hole is
+    one), in front - toward the camera - first, at most 2 units above / below the host. None: none."""
     with open(os.path.join(romfs, 'region_common', 'level', 'Field', room + '.leb'), 'rb') as fh:
         r = leb.Room(fh.read(), edit_grid=True)
     m = re.match(r'Field_(\d\d)([A-P])$', room)
@@ -111,7 +117,7 @@ def scan(romfs, leb):
             if a.type == T_SHELL and level in BURIED_LEVELS and isinstance(a.parameters[0], int):
                 out[a.parameters[0]] = ('dig', level, room, a.posX, a.posY, a.posZ, a.key, 0)
             elif a.type == T_SHELL_DROP_AREA and isinstance(a.parameters[0], int):
-                spot = _landing(romfs, leb, room, a, False)
+                spot = HOLE_LANDING.get(room) or _landing(romfs, leb, room, a, False)
                 if not spot:
                     raise RuntimeError(f'{room}: no free tile beside the bomb hole {a.name}')
                 out.setdefault(a.parameters[0], ('hole', level, room) + spot + (a.key, 0))
@@ -221,10 +227,9 @@ def apply(locs, mods, out_dir, romfs, leb, event_tools, oead_tools, item_get, da
     rows = ['# location\tindex\tkind\tlevel\troom\tx\ty\tz\tmodel\tname\tentry\tflag\tflag index\tshell\tscale\tturn'
             '  (tools/rando/seashell_spots.py)\n']
     checks, spoiler = [], []
-    # a bomb hole holding something else keeps its index (it drops ItemDrop Seashell<index>, retagged here; with any
-    # other index it drops nothing) - a shell placed at the other hole whose index is that one is given like an item
-    holes = set() if vanilla else {i for n, i in locs.items() if spots[i][0] == 'hole' and n in mods.placements
-                                   and mods.placements[n] != 'seashell'}
+    # a bomb hole holding something else keeps its vanilla index and ItemDrop entries: the hole only stays while the
+    # shell its index names isn't owned (LAS placed that shell somewhere), so the runtime keeps it on an index whose
+    # shell isn't owned and takes the hole's own shell drop for the item (runtime/hle/shell_spots.c hole_of)
     for name, index in sorted(locs.items(), key=lambda kv: kv[1]):
         if not vanilla and name not in mods.placements:
             continue
@@ -241,7 +246,7 @@ def apply(locs, mods, out_dir, romfs, leb, event_tools, oead_tools, item_get, da
         host = next(a for a in room_of(level, room).actors if a.key == key)
         spoiler.append(f'{name}: {mods.placements[name]}')
         hole = kind == 'hole'
-        if mods.placements[name] == 'seashell' and not (hole and item_index in holes):
+        if mods.placements[name] == 'seashell':
             # the game's own shell, with the index LAS gave it (a host's own ItemDrop entry: Seashell<n> may be retagged)
             if isinstance(host.parameters[k], int):
                 host.parameters[k] = item_index
@@ -259,11 +264,8 @@ def apply(locs, mods, out_dir, romfs, leb, event_tools, oead_tools, item_get, da
             r = room_of(level, room)  # (with the room's links renumbered: actors refer to each other by index)
             from RandomizerCore.Randomizers import enemies
             enemies.remove_actors(r, [r.actors.index(host)])
-        elif hole:  # (its index stays: its ItemDrop entry is retagged; the runtime keeps its sensor beacon off)
+        elif hole:  # (the runtime keeps its sensor beacon off and its index on a shell not owned)
             host.parameters[k] = index
-            e = next(v for v in drops['values'] if v['mKey'] == f'Seashell{index}')
-            e['mLotTable'][0]['mType'] = 'HeartPiece'
-            e['mLotTable'][0]['mCookie'] = TAG + index
         else:
             host.parameters[k] = b'LARShellSpot%d' % index
             _tag_drop(oead_tools, drops, f'LARShellSpot{index}', index)

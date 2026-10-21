@@ -288,6 +288,21 @@ def _map_page(gen, a):
 PATCHES[MAP_PAGE_SITE] = _map_page
 
 
+# ... and its epilogue (the page's layout was updated this frame): the check tracker hides the game's own cursor and
+# button bar there (tracker_overlay.mm map_page_takeover), after the update that may have shown them again.
+MAP_PAGE_END_SITE = A.MAP_PAGE_END_SITE
+
+
+def _map_page_end(gen, a):
+    w = patch_word(gen, a)
+    assert w == 0x910203ff, hex(w)  # add sp, sp, #0x80
+    return ('{ extern void rt_map_page_end(Cpu *); rt_map_page_end(c); c->sp += 0x80; }'
+            f'  /* {a:#x}: add sp, sp, #0x80 (map page updated) */')
+
+
+PATCHES[MAP_PAGE_END_SITE] = _map_page_end
+
+
 # Chaos map letters (runtime/ui/chaos_overlay.mm): main+0xe78740 runs once per frame while the DUNGEON map page is
 # shown (fnprof: map open vs closed in Face Shrine); x0 = the dungeon map page.
 DGN_MAP_SITE = A.DGN_MAP_SITE
@@ -301,6 +316,21 @@ def _dgn_map(gen, a):
 
 
 PATCHES[DGN_MAP_SITE] = _dgn_map
+
+
+# ... and its epilogue: the check tracker hides the dungeon map page's own cursor and button bar there
+# (tracker_overlay.mm), after the update that may have shown them again.
+DGN_MAP_END_SITE = A.DGN_MAP_END_SITE
+
+
+def _dgn_map_end(gen, a):
+    w = patch_word(gen, a)
+    assert w == 0x910243ff, hex(w)  # add sp, sp, #0x90
+    return ('{ extern void rt_dgnmap_end(Cpu *); rt_dgnmap_end(c); c->sp += 0x90; }'
+            f'  /* {a:#x}: add sp, sp, #0x90 (dungeon map page updated) */')
+
+
+PATCHES[DGN_MAP_END_SITE] = _dgn_map_end
 
 
 # Debug (LARECOMP_LOG_RESNAME=1): main+0x10def30 builds a resource handle from a name (x2 -> {char *name, ...})

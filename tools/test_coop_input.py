@@ -16,6 +16,8 @@ HARNESS = r'''
 #include "hle/input.c"
 #include <assert.h>
 static bool active;
+static uint64_t presented;
+uint64_t renderer_present_count(void){return presented;}
 static int32_t second_x,second_y;
 static bool second_attack;
 bool coop_active(void){return active;}
@@ -54,6 +56,14 @@ int main(void){
     for(int i=0;i<BIND_PAD_COUNT;++i)g_bind_pad[i]=-1;
     g_bind_key[BIND_RS_RIGHT]=SDL_SCANCODE_KP_6;g_bind_key[BIND_LS_UP]=SDL_SCANCODE_W;
     g_bind_pad[BIND_B]=SDL_GAMEPAD_BUTTON_SOUTH;
+    g_bind_key[BIND_A]=SDL_SCANCODE_K;
+    key(SDL_SCANCODE_K,true);key(SDL_SCANCODE_K,false);
+    assert(input_buttons_now() & (1ull << BIND_A)); // the shared HID/movie path receives short taps too
+    assert(input_buttons_now() & (1ull << BIND_A));
+    ++presented;assert(!(input_buttons_now() & (1ull << BIND_A)));
+    key(SDL_SCANCODE_K,true);assert(input_buttons_now() & (1ull << BIND_A));
+    key(SDL_SCANCODE_K,false);assert(!(input_buttons_now() & (1ull << BIND_A))); // already observed
+    key(SDL_SCANCODE_K,true);key(SDL_SCANCODE_K,false);input_reset();assert(!input_buttons_now());
     key(SDL_SCANCODE_KP_6,true);assert(key_rx==32767&&second_x==0);key(SDL_SCANCODE_KP_6,false);
     active=true;key(SDL_SCANCODE_KP_6,true);key(SDL_SCANCODE_W,true);key(SDL_SCANCODE_KP_0,true);
     assert(key_rx==0&&key_ly==32767&&second_x==32767&&second_attack);
@@ -71,6 +81,13 @@ int main(void){
     assert(pad_ly==17000&&second_x==24000);
     SDL_Event e={0};e.type=SDL_EVENT_GAMEPAD_BUTTON_DOWN;e.gbutton.which=two;
     assert(input_second_event(&e));e.gbutton.which=one;assert(!input_second_event(&e));
+    e.gbutton.button=SDL_GAMEPAD_BUTTON_SOUTH;e.gbutton.down=true;input_handle_event(&e);
+    e.type=SDL_EVENT_GAMEPAD_BUTTON_UP;e.gbutton.down=false;input_handle_event(&e);
+    assert(input_buttons_now() & (1ull << BIND_B));
+    ++presented;assert(!(input_buttons_now() & (1ull << BIND_B)));
+    e.type=SDL_EVENT_GAMEPAD_BUTTON_DOWN;e.gbutton.which=two;e.gbutton.down=true;input_handle_event(&e);
+    e.type=SDL_EVENT_GAMEPAD_BUTTON_UP;e.gbutton.down=false;input_handle_event(&e);
+    assert(!(input_buttons_now() & (1ull << BIND_B))); // P2's tap cannot reach P1
     e.type=SDL_EVENT_KEY_DOWN;e.key.scancode=SDL_SCANCODE_KP_0;assert(input_second_event(&e));
     e.type=SDL_EVENT_TEXT_INPUT;assert(input_second_event(&e)); // no P2 digit in P1's name field
     e.type=SDL_EVENT_KEY_DOWN;e.key.scancode=SDL_SCANCODE_W;assert(!input_second_event(&e));

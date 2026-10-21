@@ -87,6 +87,8 @@ static bool items_page_shown(void) {
     uint64_t f = g_items_frame;
     return f && renderer_present_count() - f <= 2;
 }
+// race_overlay.mm: the pause menu's Items page is up (the run timer hides there)
+extern "C" bool inventory_items_page_shown(void) { return items_page_shown(); }
 // pets.c (game thread): the grid cursor while the Items page is shown, else -1
 extern "C" int inventory_items_cursor(void) {
     if (!items_page_shown() || !g_items_obj) return -1;

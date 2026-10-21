@@ -243,7 +243,12 @@ int main(int argc, char **argv) {
     setvbuf(stderr, NULL, _IOLBF, 0);
 #endif
     const char *root = NULL;  // no explicit CLI path: use the selected installation
-    bool skip_launcher = getenv("LARECOMP_NO_LAUNCHER") || getenv("LARECOMP_INPUT");  // tests boot straight in
+    // LARECOMP_NO_LAUNCHER=1 (tools/game_slot.sh sets it for every test run): never the start screen - it can
+    // delete game files, and a test's extracted/ may be a link to someone else's. Where it would come up (a forced
+    // start screen, "Title screen" in game) the app exits instead. =0: off (start screen tests, scratch data root).
+    const char *nl = getenv("LARECOMP_NO_LAUNCHER");
+    bool no_launcher = nl && *nl && strcmp(nl, "0");
+    bool skip_launcher = no_launcher || getenv("LARECOMP_INPUT");  // tests boot straight in
     if (getenv("LARECOMP_FORCE_LAUNCHER")) skip_launcher = false;  // (test: the start screen, then the scripted input)
     static char arg_root[1024];
     int launch_profile = -1;
@@ -279,6 +284,10 @@ int main(int argc, char **argv) {
     }
     if (skip_launcher && !gamelib_present(root)) skip_launcher = false;
     for (bool title = !skip_launcher;;) {
+        if (title && no_launcher) {
+            fprintf(stderr, "[main] LARECOMP_NO_LAUNCHER is set: not showing the start screen - exiting\n");
+            exit(3);
+        }
         if (title) {  // start screen (runtime/ui/launcher.mm): game files setup, seed choice, settings
             extern const char *launcher_run(const char *root);
             root = launcher_run(root);

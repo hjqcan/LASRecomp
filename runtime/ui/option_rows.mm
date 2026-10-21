@@ -4,10 +4,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "imgui.h"
 #include "imgui_internal.h"  // (SetKeyOwner, NavCursorVisible)
 
+extern "C" {
+#include "../cosmetic_colour.h"
+}
 #include "option_rows.h"
 #include "localization.h"
 #include "osk.h"
@@ -25,6 +30,38 @@ void opt_warn_next(void) { g_next_warn = true; }
 static int g_indent;
 static bool g_focus_req, g_take_first;  // (opt_focus_first: requested / this page's first row takes it)
 void opt_focus_first(bool on) { g_focus_req = on; }
+static int g_focus_row = -1;  // (opt_focus_row: this page's row with that index takes the cursor)
+void opt_focus_row(int i) { g_focus_row = i; }
+bool opt_focus_first_left(void) {
+    bool left = g_focus_req || g_take_first;
+    g_focus_req = g_take_first = false;
+    g_focus_row = -1;
+    return left;
+}
+// this frame's rows in order (focus checks): labels, the first enabled one, the focused one
+static std::vector<std::string> g_rows;
+static std::vector<int> g_row_pane;  // (each row's pane: 0 the left one, 1 opt_split's right one)
+static int g_row_first = -1, g_row_focus = -1, g_pane;
+int opt_row_count(void) { return (int)g_rows.size(); }
+const char *opt_row_label(int i) { return i >= 0 && i < (int)g_rows.size() ? g_rows[i].c_str() : ""; }
+int opt_first_row(void) { return g_row_first; }
+int opt_focused_row(void) { return g_row_focus; }
+void opt_frame_reset(void) { g_rows.clear(), g_row_pane.clear(), g_row_first = g_row_focus = -1; }
+// Up / Down between option rows go by the rows' order, not ImGui's spatial pick: that skipped indented sub-rows
+// (Rumble -> Controller light past Intensity), and past the last row went up to the tab bar
+bool opt_nav_step(int dir) {
+    int from = g_row_focus, n = (int)g_row_pane.size();  // (the frame before's rows)
+    if (from < 0 || from >= n) return false;  // (the cursor isn't on an option row)
+    int to = from + dir;
+    while (to >= 0 && to < n && g_row_pane[to] != g_row_pane[from]) to += dir;  // (the same pane)
+    if (to < 0 || to >= n) {
+        if (dir < 0) return false;  // Up from the top row: out of the page (ImGui: the tab bar / controls above)
+        to = from;                  // Down from the last row: stays
+    }
+    g_focus_row = to;
+    return true;
+}
+static std::unordered_map<ImGuiID, int> g_ids;  // this page's rows so far, by id (two rows with one label)
 static bool g_held;  // the last row's left / right has been held a while (steppers go faster)
 void opt_indent(int step) { g_indent = g_indent + step < 0 ? 0 : g_indent + step; }
 
@@ -47,6 +84,8 @@ void opt_begin(const char *id, float scale) {
     ImGui::BeginChild("##rows", ImVec2(avail.x * 0.48f, avail.y), ImGuiChildFlags_None, ImGuiWindowFlags_NavFlattened);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 4 * scale));  // (rows close)
     g_desc_first.clear();
+    g_ids.clear();
+    g_pane = 0;
 }
 
 void opt_section(const char *title) {
@@ -61,20 +100,37 @@ void opt_section(const char *title) {
 // chevron: a ">" on the right (opt_link)
 static int row(const char *label, const std::string &value, bool changed, const char *desc, bool upper = true,
                bool arrows = false, bool chevron = false) {
+    // a label a row above already has (Save Editor: Bombs, Magic Powder under Equipment and Ammo) gets an id of its
+    // own: two rows with one id share the controller's cursor - ImGui kept the later one's place, so Up / Down from
+    // the first went on from the second (a row far below, or the edge of the view)
+    int dup = g_ids[ImGui::GetID(label)]++;
     ImGui::PushID(label);
+    if (dup) ImGui::PushID(dup);
     if (g_indent) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + g_indent * 28 * g_scale);  // (an option of the row above)
     ImVec2 p = ImGui::GetCursorScreenPos();
     float w = ImGui::GetContentRegionAvail().x, h = ImGui::GetFontSize() * 1.9f;
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));  // (the row's own border shows the selection)
     bool clicked = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     ImGui::PopStyleColor();
-    if (g_take_first) {  // (opt_focus_first)
+    bool off = g_next_disabled;  // (greyed out: still selectable, so its description shows, but it can't change)
+    if (g_take_first && !off) {  // (opt_focus_first: the first row that isn't greyed out)
         g_take_first = false;
         ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
         ImGui::SetNavCursorVisible(true);
-        ImGui::SetScrollHereY(0);
+        // the page from its top when the row is in its first screen (its section title shows), else the row at the top
+        if (ImGui::GetCursorPosY() < ImGui::GetWindowHeight()) ImGui::SetScrollY(0);
+        else ImGui::SetScrollHereY(0);
     }
-    bool off = g_next_disabled;  // (greyed out: still selectable, so its description shows, but it can't change)
+    if (g_focus_row >= 0 && g_focus_row == (int)g_rows.size()) {  // (opt_focus_row / opt_nav_step)
+        g_focus_row = -1;
+        ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+        ImGui::SetNavCursorVisible(true);
+        ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeY);
+    }
+    if (!off && g_row_first < 0) g_row_first = (int)g_rows.size();
+    if (ImGui::IsItemFocused()) g_row_focus = (int)g_rows.size();
+    g_rows.push_back(dup ? std::string(label) + " #" + std::to_string(dup + 1) : std::string(label));
+    g_row_pane.push_back(g_pane);
     bool mark = g_next_mark, warn = g_next_warn;
     g_next_disabled = g_next_mark = g_next_warn = false;
     bool hov = ImGui::IsItemHovered(), foc = ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible;
@@ -137,6 +193,7 @@ static int row(const char *label, const std::string &value, bool changed, const 
         dl->AddText(ImVec2(vx, ty), off ? IM_COL32(110, 110, 102, 255) : warn ? IM_COL32(240, 110, 90, 255)
                                     : changed ? IM_COL32(255, 255, 255, 255) : IM_COL32(205, 205, 195, 255), value.c_str());
     }
+    if (dup) ImGui::PopID();
     ImGui::PopID();
     return step;
 }
@@ -201,6 +258,58 @@ bool opt_radio(const char *label, bool selected, const char *desc) {
 
 bool opt_action(const char *label, const char *value, const char *desc, bool upper, bool changed) {
     return row(label, value ? value : "", changed, desc, upper) == 2;
+}
+
+bool opt_colour(const char *label, CosColour *c, int slot, const char *desc) {
+    int prev = c->pick;
+    const char *names[N_COL];
+    for (int i = 0; i < N_COL; i++) names[i] = g_col_names[i];
+    char seed[48];
+    int sp = col_pick(c, slot);  // (Default: the seed's own colour, shown as such)
+    if (c->pick == COL_DEFAULT && sp != COL_DEFAULT) snprintf(seed, sizeof seed, ui_tr("Seed: %s"), ui_tr(g_col_names[sp])), names[0] = seed;
+    bool changed = opt_choice(label, &c->pick, names, N_COL, COL_DEFAULT, desc);
+    if (changed && c->pick == COL_CUSTOM && prev != COL_CUSTOM)  // (Custom starts from the colour it was on)
+        c->rgb = prev > COL_DEFAULT && prev < COL_RANDOM ? g_col_rgb[prev] : (c->rgb ? c->rgb : 0xF2F0EA);
+    if (c->pick != COL_CUSTOM) return changed;
+    ImGui::PushID(label);
+    char hex[16];
+    snprintf(hex, sizeof hex, "#%06X", (unsigned)(c->rgb & 0xFFFFFF));
+    opt_indent(1);
+    bool open = opt_action("Custom color", hex, "Any color: pick its hue, saturation and brightness.", true, true);
+    opt_indent(-1);
+    ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+    {   // a swatch of it, left of the value
+        float fs = ImGui::GetFontSize(), sw = fs * 1.1f, vw = ImGui::CalcTextSize(hex).x;
+        float x1 = mx.x - 16 * g_scale - vw - fs * 0.5f, y0 = (mn.y + mx.y - sw) * 0.5f;
+        ImU32 col = IM_COL32(c->rgb >> 16 & 255, c->rgb >> 8 & 255, c->rgb & 255, 255);
+        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(x1 - sw, y0), ImVec2(x1, y0 + sw), col, 4 * g_scale);
+        ImGui::GetWindowDrawList()->AddRect(ImVec2(x1 - sw, y0), ImVec2(x1, y0 + sw), IM_COL32(255, 255, 255, 90),
+                                            4 * g_scale);
+    }
+    static int test_open = -1;  // LARECOMP_OPEN_PICKER=1 (test): the first Custom row's picker opens by itself
+    if (test_open < 0) test_open = getenv("LARECOMP_OPEN_PICKER") != NULL;
+    if (test_open) test_open = 0, open = true;
+    if (open) ImGui::OpenPopup("##picker");
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14 * g_scale, 14 * g_scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 9 * g_scale);
+    ImGui::PushStyleColor(ImGuiCol_Border, kGold);
+    ImGui::SetNextWindowPos(ImVec2(mx.x + 12 * g_scale, mn.y), ImGuiCond_Appearing);  // (beside the row, over the description)
+    if (ImGui::BeginPopup("##picker")) {
+        float f[3] = {(c->rgb >> 16 & 255) / 255.0f, (c->rgb >> 8 & 255) / 255.0f, (c->rgb & 255) / 255.0f};
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 11);
+        if (ImGui::ColorPicker3("##colour", f, ImGuiColorEditFlags_PickerHueWheel | ImGuiColorEditFlags_NoSidePreview |
+                                                   ImGuiColorEditFlags_DisplayHex | ImGuiColorEditFlags_NoAlpha)) {
+            c->rgb = (uint32_t)lroundf(f[0] * 255) << 16 | (uint32_t)lroundf(f[1] * 255) << 8 | (uint32_t)lroundf(f[2] * 255);
+            changed = true;
+        }
+        if (ImGui::Button(ui_label("Done").c_str()) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
+    ImGui::PopID();
+    return changed;
 }
 
 bool opt_link(const char *label, const char *desc) { return row(label, "", false, desc, true, false, true) == 2; }
@@ -269,6 +378,7 @@ void opt_end(void) {
 void opt_split(void) {
     left_end();
     right_begin("##right", ImGuiWindowFlags_None);
+    g_pane = 1;
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 4 * g_scale));  // (as the left)
     g_indent = 0;
 }

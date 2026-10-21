@@ -14,7 +14,8 @@ progression (another step's item) or it is needed for the Wind Fish. Order: by t
 progression it opens can be reached, then by how much progression it opens, then playthrough order; steps for the
 Wind Fish alone last. Seashells and Golden Leaves are steps only on demand: the runtime shows them when the next
 real step's place can't be reached without them (hints.tsv `needs`: how many) and the player has fewer. Each step
-gets its own message (System.msbt, every language: our own English text) and a Common.bfevfl entry showing it;
+gets its own message (System.msbt, every language: our own text, loc_text.py - English full sentences, the other
+languages '<item>: <place> (<detail>)' with the game's own item and place names) and a Common.bfevfl entry showing it;
 hints.tsv lists them for the runtime, which shows the first step whose check the player hasn't collected yet (the
 check's event flag from tracker.tsv; for items the save shows directly, owning it counts too), or the closing message
 once all are.
@@ -344,10 +345,18 @@ PLACE = {'tarin': 'with Tarin in Mabe Village', 'marin': 'with Marin in Mabe Vil
 PLURAL = {'boots', 'flippers', 'bomb', 'bananas'}
 
 
+def dungeon_name(dn, lang='en', names=None):
+    """'Tail Cave' / the game's name in `lang`."""
+    import loc_text as lt
+    if lang == 'en':
+        return DUNGEON[dn]
+    return (names.place(lt.dungeon_label(dn)) if names else None) or DUNGEON[dn]
+
+
 def item_phrase(item):
     m = re.match(r'^(key|nightmare-key|compass|map|stone-beak)-(D\d)$', item)
     if m:
-        return f'{DUNGEON_ITEM[m.group(1)]} for {DUNGEON[m.group(2)]}'
+        return f'{DUNGEON_ITEM[m.group(1)]} for {dungeon_name(m.group(2))}'
     if item.startswith('soul-'):
         name = item[5:].replace('-', ' ').title()
         return name + ("' Soul" if name.endswith('s') else "'s Soul")
@@ -434,7 +443,7 @@ def place_phrase(step, dungeon_of, entered_via):
 
     def dungeon(dn, detail=''):
         """'in Tail Cave (detail)', and in shuffled dungeons the way in: another dungeon's entrance"""
-        text = f'in {DUNGEON[dn]}' + (f' ({detail})' if detail else '')
+        text = f'in {dungeon_name(dn)}' + (f' ({detail})' if detail else '')
         key = next((k for k, v in DUNGEON_KEY.items() if v == dn), None)
         via = entered_via.get(key)
         if via and via != key:
@@ -492,6 +501,112 @@ def place_phrase(step, dungeon_of, entered_via):
     if area:
         return f'in {area} ({detail})'
     return f'at {detail}'
+
+
+BOSSES = {'moldorm', 'genie', 'slime-eye', 'angler', 'slime-eel', 'facade', 'eagle', 'hothead'}
+
+
+def place_parts(step, dungeon_of, names, lang):
+    """Other languages: where the check is - (the game's place name or None, our detail or None)."""
+    import loc_text as lt
+    loc, region = step['loc'], step.get('region', '')
+    area = names.place(lt.AREA_LABEL[region]) if region in lt.AREA_LABEL else None
+
+    def det(key, **kw):
+        t = lt.tr(lt.DETAIL[key], lang)
+        return t.format(**kw) if t else None
+    m = re.match(r'^pot-([A-Za-z0-9]+)-(\d\d[A-P])-(\d+)$', loc)
+    if m:
+        lv = m.group(1)
+        if lv in LEVEL_DUNGEON:
+            return dungeon_name(dungeon_of.get(loc, LEVEL_DUNGEON[lv]), lang, names), det('pot')
+        return area, det('pot')
+    if loc.startswith('bush-'):
+        return area, det('bush')
+    if loc.startswith('dig-') or loc.endswith('-dig'):
+        return area, det('buried')
+    for prefix, label in (('shop-', 'ToolShop'), ('trendy-prize', 'GameShop'), ('fishing-', 'FishingPond'),
+                          ('dampe-', 'DanpeiShack')):
+        if loc.startswith(prefix):
+            return names.place(label), None
+    if loc.startswith('rapids-race'):
+        return names.place('RapidsRide'), det('race')
+    m = re.match(r'^(\d+)-seashell-reward$', loc)
+    if m:
+        return names.place('ShellMansion'), det('shells', n=m.group(1))
+    m = re.match(r'^(D\d)-(.*)$', loc)
+    if m and loc not in PLACE:
+        dn, rest = dungeon_of.get(loc, m.group(1)), m.group(2)
+        where = dungeon_name(dn, lang, names)
+        if rest == 'instrument':
+            return where, det('end')
+        if rest in BOSSES:
+            return where, det('boss')
+        if rest.startswith('pot-'):
+            return where, det('pot')
+        return where, None
+    if loc.endswith('-sunken'):
+        return area, det('underwater')
+    if 'bonk-tree' in loc:
+        return area, det('tree')
+    return area, None if area else det('somewhere')
+
+
+def item_name(item, names, lang):
+    """Other languages: the item as the game names it (ours where the game has no name)."""
+    import loc_text as lt
+    m = re.match(r'^(key|nightmare-key|compass|map|stone-beak)-(D\d)$', item)
+    if m:
+        base = names.item(m.group(1)) or DUNGEON_ITEM[m.group(1)].split(' ', 1)[1].encode()
+        dn = dungeon_name(m.group(2), lang, names)
+        return base + b' (' + (dn if isinstance(dn, bytes) else dn.encode()) + b')'
+    if item.startswith('soul-'):
+        return f"{lt.tr(lt.ITEM_OWN['soul'], lang) or 'Soul'} ({item[5:].replace('-', ' ').title()})".encode()
+    own = lt.tr(lt.ITEM_OWN.get(item, {}), lang)
+    if own:
+        return own.encode()
+    got = names.item(item)
+    if got:
+        return got
+    return re.sub(r'^(the|a|an) ', '', item_phrase(item)).encode()
+
+
+def check_dungeon(step, dungeon_of):
+    """'D1'... when the check is in a dungeon (its room, its pots), else None."""
+    loc = step['loc']
+    m = re.match(r'^pot-([A-Za-z0-9]+)-\d\d[A-P]-\d+$', loc)
+    if m and m.group(1) in LEVEL_DUNGEON:
+        return dungeon_of.get(loc, LEVEL_DUNGEON[m.group(1)])
+    m = re.match(r'^(D\d)-', loc)
+    return dungeon_of.get(loc, m.group(1)) if m and loc not in PLACE else None
+
+
+def hint_segments(step, dungeon_of, names, lang, entered_via=None):
+    """Other languages: [(text, red)] of one hint, '<item>: <place> (<detail>)' + the way in when a dungeon entrance
+    shuffle sends it through another dungeon's door: '(<entrance>: <dungeon>)'."""
+    import loc_text as lt
+    place, detail = place_parts(step, dungeon_of, names, lang)
+    colon = lt.T['colon'].get(lang, ': ')
+    it = item_name(step['item'], names, lang)
+    if it[:1].isalpha() or it[:2].decode('utf-8', 'ignore')[:1].isalpha():  # (it opens the line: 'Petite clé')
+        txt = it.decode('utf-8', 'surrogateescape')
+        it = (txt[:1].upper() + txt[1:]).encode('utf-8', 'surrogateescape')
+    seg = [(it, True), (colon, False)]
+    if place and detail:
+        seg += [(place, False), (f' ({detail})' if lang not in ('ja', 'zh_cn', 'zh_tw') else f'（{detail}）', False)]
+    elif place:
+        seg.append((place, False))
+    else:
+        d = detail or lt.tr(lt.DETAIL['somewhere'], lang)
+        seg.append((d[:1].upper() + d[1:], False))
+    dn = check_dungeon(step, dungeon_of)
+    key = next((k for k, v in DUNGEON_KEY.items() if v == dn), None)
+    via = (entered_via or {}).get(key)
+    if via and via != key:
+        cjk = lang in ('ja', 'zh_cn', 'zh_tw')
+        seg += [(('（' if cjk else ' (') + lt.tr(lt.DETAIL['entrance'], lang) + lt.T['colon'].get(lang, ': '), False),
+                (dungeon_name(DUNGEON_KEY[via], lang, names), False), ('）' if cjk else ')', False)]
+    return seg
 
 
 def hint_text(step, dungeon_of, entered_via):
@@ -648,16 +763,27 @@ def apply(out_dir, romfs, settings):
             spot = (m.group(1), int(m.group(2))) if m else bush_tile.get(st['loc'])
             if spot and spot[1] is not None:
                 st['landmark'] = nearest(marks, *tile_xz(*spot))
+    step_names = names[:len(steps_)]
     texts = {n: hint_text(s, dungeon_of, entered_via) for n, s in zip(names, steps_)}
     texts[DONE] = DONE_TEXT
     nfiles = 0
+    import loc_text as lt
     for sysp in sorted(glob.glob(os.path.join(romfs, 'region*', '*', 'message', 'System.msbt'))):
         rel = os.path.relpath(sysp, romfs)
         m = Msbt(_read(out_dir, romfs, rel))
         wait = next((r for k, g, r in reversed(kt._tokens(m.texts.get('GetBottle', b''))) if g == kt.WAIT), b'')
-        m.set(ENTRY, wrap(GET_TEXT, wait))
-        for n, t in texts.items():
-            m.set(n, wrap(t, wait))
+        lang = lt.lang_of(rel)
+        if lang == 'en':
+            m.set(ENTRY, wrap(GET_TEXT, wait))
+            for n, t in texts.items():
+                m.set(n, wrap(t, wait))
+        else:  # (our sentences in that language, the game's own names: loc_text.py)
+            gn = lt.Names(out_dir, romfs, rel)
+            m.set(ENTRY, lt.pages([lt.fill(lt.tr(lt.T['hint-get'], lang), name=(lt.tr(lt.T['hint-name'], lang), True))],
+                                  wait, lang))
+            for n, s in zip(step_names, steps_):
+                m.set(n, lt.pages([hint_segments(s, dungeon_of, gn, lang, entered_via)], wait, lang))
+            m.set(DONE, lt.pages([[(lt.tr(lt.T['hint-done'], lang), False)]], wait, lang))
         out = os.path.join(out_dir, 'romfs', rel)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, 'wb') as f:

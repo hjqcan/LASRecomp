@@ -11,6 +11,7 @@
 // +0x30/+0x34, scale +0x48; 1 at rest, 2 zoomed), found by scanning before/after a right-stick zoom.
 #include "../game_addresses.h"
 #include <math.h>
+#include <mutex>
 #include <stdio.h>
 #include <string.h>
 
@@ -30,13 +31,43 @@ bool doorjump_chaos_twoway(int id);
 // GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
 #define DUNGEON_RECORDS (GA_LIVE_SAVE + 0xE0)  // live save: 0x10-byte records (+1 bit 1 = Map)
 
-static volatile uint64_t g_dm_frame, g_dm_obj;
+// The page and its panes are guest memory the game frees when the page closes (or the pause menu turns to another
+// page), so only the game thread (the page's update) reads them: dgnmap_snapshot copies the view into g_dv, and the
+// layers (these letters, the check tracker) draw from that copy. The page's state byte (+0xfd: 0x01 opening, 0x02
+// shown, 0x0f closing, 0x00 closed; runtime/ui/tracker_overlay.mm) ends them as soon as it starts to close.
+static volatile uint64_t g_dm_frame, g_dm_obj;  // (g_dm_obj: game thread only)
+static volatile bool g_dm_closing;
+namespace {
+struct DgnView { uint64_t frame = 0; bool ok = false; float v[8] = {}; };
+}
+static std::mutex g_dv_mx;
+static DgnView g_dv;
 
-RT_ON_RESET(chaos_overlay_reset) { g_dm_frame = g_dm_obj = 0; }
+RT_ON_RESET(chaos_overlay_reset) {
+    g_dm_frame = g_dm_obj = 0, g_dm_closing = false;
+    std::lock_guard<std::mutex> lk(g_dv_mx);
+    g_dv = DgnView();
+}
 
+static void dgnmap_snapshot(uint64_t obj);
+extern "C" void tracker_dgnmap_takeover(uint64_t obj, bool reopened, bool closing);  // runtime/ui/tracker_overlay.mm
 extern "C" void rt_dgnmap_tick(Cpu *c) {
-    g_dm_frame = renderer_present_count();
+    uint64_t f = renderer_present_count();
+    bool reopened = f - g_dm_frame > 2;
+    uint8_t st = LD8(c->x[0] + 0xfd);
+    g_dm_frame = f;
     g_dm_obj = c->x[0];
+    g_dm_closing = st == 0x0f || st == 0x00;
+    tracker_dgnmap_takeover(g_dm_obj, reopened, g_dm_closing);
+    dgnmap_snapshot(g_dm_obj);
+}
+extern "C" void rt_dgnmap_end(Cpu *c) {  // (DGN_MAP_END_SITE)
+    (void)c;
+    tracker_dgnmap_takeover(g_dm_obj, false, g_dm_closing);
+    dgnmap_snapshot(g_dm_obj);
+}
+extern "C" bool chaos_dgnmap_shown(void) {
+    return g_dm_frame && !g_dm_closing && renderer_present_count() - g_dm_frame <= 2;
 }
 
 extern "C" uint64_t chaos_dgnmap_obj(void) { return g_dm_obj; }  // (LARECOMP_PANE_SCAN)
@@ -61,7 +92,7 @@ static uint64_t pane(uint64_t p, const char *name) {  // the pane at p if it has
 
 extern "C" bool chaos_overlay_wanted(void) {
     if (g_settings.chaos_letters == CHAOS_LETTERS_OFF) return false;
-    if (!rando_seed_dir() || renderer_present_count() - g_dm_frame > 2 || !g_dm_obj) return false;
+    if (!rando_seed_dir() || !chaos_dgnmap_shown()) return false;
     int ids[4];
     return doorjump_chaos_pairs(current_level(), ids, 4) > 0;
 }
@@ -110,24 +141,53 @@ static void label_text(int i, char *out) {  // A..Z, then AA, AB...
     else snprintf(out, 4, "%c%c", 'A' + i / 26 - 1, 'A' + i % 26);
 }
 
-extern "C" void chaos_overlay_draw(ImVec2 display, ImFont *font) {
-    uint64_t p1 = LD64(g_dm_obj + 0x8);
+// the page's view of its room grid (for the letters and the check tracker's room bullets): v = map translate x, y,
+// scale, origin translate x, y, scale, floor shift x, y (layout units, y up); false = the panes aren't there.
+// Game thread: read from the page into g_dv.
+static void dgnmap_snapshot(uint64_t obj) {
+    DgnView d;
+    d.frame = g_dm_frame;
+    float *v = d.v;
+    uint64_t p1 = obj ? LD64(obj + 0x8) : 0;
     uint64_t p2 = p1 ? LD64(p1 + 0x10) : 0;
     uint64_t grid = p2 ? LD64(p2 + 0xf0) : 0;
     uint64_t map = p2 ? pane(LD64(p2 + 0x70), "N_Map_00") : 0;
     uint64_t pos = p2 ? pane(LD64(p2 + 0x7a8), "N_MapPosition_00") : 0;
     uint64_t org = grid ? pane(LD64(grid + 0x6a8), "N_MapOrigin_00") : 0;
-    if (!map || !pos) return;
-    const float *mf = (const float *)(uintptr_t)map, *pf = (const float *)(uintptr_t)pos;
-    float mtx = mf[0x30 / 4], mty = mf[0x34 / 4], msc = mf[0x48 / 4];
-    if (!(msc > 0.1f && msc < 20)) { mtx = mty = 0; msc = 1; }
-    // zoom (right stick) and scroll: N_MapOrigin_00 (t 0,0 s 1 at rest; zoomed 2x it centres the cursor's room)
-    float otx = 0, oty = 0, osc = 1;
-    if (org) {
-        const float *of = (const float *)(uintptr_t)org;
-        if (of[0x48 / 4] > 0.1f && of[0x48 / 4] < 20) otx = of[0x30 / 4], oty = of[0x34 / 4], osc = of[0x48 / 4];
+    if (map && pos) {
+        const float *mf = (const float *)(uintptr_t)map, *pf = (const float *)(uintptr_t)pos;
+        v[0] = mf[0x30 / 4], v[1] = mf[0x34 / 4], v[2] = mf[0x48 / 4];
+        if (!(v[2] > 0.1f && v[2] < 20)) v[0] = v[1] = 0, v[2] = 1;
+        v[3] = v[4] = 0, v[5] = 1;
+        if (org) {
+            const float *of = (const float *)(uintptr_t)org;
+            if (of[0x48 / 4] > 0.1f && of[0x48 / 4] < 20) v[3] = of[0x30 / 4], v[4] = of[0x34 / 4], v[5] = of[0x48 / 4];
+        }
+        v[6] = pf[0x30 / 4], v[7] = pf[0x34 / 4];
+        d.ok = true;
     }
-    float ptx = pf[0x30 / 4], pty = pf[0x34 / 4];
+    std::lock_guard<std::mutex> lk(g_dv_mx);
+    g_dv = d;
+}
+// render thread: the copy, while the page is shown (not closing)
+extern "C" bool chaos_dgnmap_view(float v[8]) {
+    DgnView d;
+    {
+        std::lock_guard<std::mutex> lk(g_dv_mx);
+        d = g_dv;
+    }
+    if (!d.ok || !chaos_dgnmap_shown() || renderer_present_count() - d.frame > 2) return false;
+    memcpy(v, d.v, sizeof d.v);
+    return true;
+}
+extern "C" const char *chaos_current_level(void) { return current_level(); }
+
+extern "C" void chaos_overlay_draw(ImVec2 display, ImFont *font) {
+    // map zoom / scroll (N_Map_00), zoom (right stick) and scroll of N_MapOrigin_00 (t 0,0 s 1 at rest; zoomed 2x it
+    // centres the cursor's room), the floor's shift (N_MapPosition_00): dgnmap_snapshot
+    float v[8];
+    if (!chaos_dgnmap_view(v)) return;
+    float mtx = v[0], mty = v[1], msc = v[2], otx = v[3], oty = v[4], osc = v[5], ptx = v[6], pty = v[7];
     // the game's UI is a centred 16:9 box, laid out at 1280 x 720
     float bw = fminf(display.x, display.y * 16.0f / 9.0f), bh = bw * 9.0f / 16.0f;
     float ox = (display.x - bw) * 0.5f, oy = (display.y - bh) * 0.5f, u = bw / 1280.0f;

@@ -1,5 +1,6 @@
 // User settings (larecomp.ini next to the executable's working directory), edited from the in-game menu.
 #pragma once
+#include "cosmetic_colour.h"
 #include <stdbool.h>
 
 enum { ASPECT_UNLOCKED = 0, ASPECT_ORIGINAL = 1 };
@@ -15,6 +16,7 @@ enum { AA_OFF = 0, AA_SMAA = 1 };
 enum { PROMPTS_AUTO = 0, PROMPTS_NINTENDO = 1, PROMPTS_XBOX = 2, PROMPTS_PLAYSTATION = 3 };
 // Which face button confirms in our own menus (runtime/ui/pad_nav.mm); the game's input is never affected
 enum { MENU_CONFIRM_GAME = 0, MENU_CONFIRM_CONTROLLER = 1 };
+enum { TIMER_POS_LEFT = 0, TIMER_POS_RIGHT = 1 };  // the run timer's corner (bottom left / right)
 enum { CHAOS_LETTERS_OFF = 0, CHAOS_LETTERS_EXPLORED = 1, CHAOS_LETTERS_MAP = 2 /* explored, all with the Map */ };
 // System language served to the game (runtime/services/am.c GetDesiredLanguage, services/hid_set.c GetLanguageCode):
 // the game picks its text language from it, as it would from the Switch's own system setting. LANG_AUTO follows the
@@ -49,6 +51,7 @@ typedef struct {
     int menu_confirm;    // MENU_CONFIRM_*: game layout (right confirms, bottom goes back) or the controller's convention
     bool inv_keys;       // randomizer: show every dungeon's keys on the pause menu's Items page
     bool tracker;        // randomizer: check tracker on the pause menu's Map page
+    int tracker_filters; // its filter bar (runtime/ui/tracker_overlay.mm bits), -1 = the defaults; no menu row
     int chaos_letters;   // CHAOS_LETTERS_*: room-shuffle doorway letters on the dungeon map
     bool aspect_asked;   // the start screen's one-time "authentic 16:9 or unlocked?" question was answered
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
@@ -64,17 +67,30 @@ typedef struct {
     bool walk_speed_dungeons;  // walk speed also indoors: houses, caves, dungeons (Gameplay tab, under Walk speed)
     bool diff_ohko;      // any hit kills
     bool diff_hero;      // Hero Mode flag forced on in the loaded save (2x damage, no recovery hearts)
-    // cosmetics (runtime/ui/cosmetics.mm; applied live by runtime/nvn/texpatch.c), never part of a seed
-    int tunic;           // index into g_tunic_colours (0 = Default: the game's / the seed's own)
-    int hearts;          // index into g_heart_colours (0 = Default red)
+    // cosmetics (Cosmetics tab, runtime/ui/menu.mm), live, never part of a seed: colour rows of the shared palette
+    // (runtime/cosmetic_colour.h; Default = the game's own, for the tunic also the seed's)
+    CosColour tunic, hearts;  // runtime/nvn/texpatch.c (tunic map, heart tints)
+    CosColour hair, shield;   // runtime/nvn/recolour_link.c
+    CosColour skin;           // runtime/nvn/texpatch.c skin_apply
+    CosColour leaves, grass;  // the overworld's foliage, runtime/nvn/recolour_seasons.c
+    CosColour sand;           // the beaches, the desert, the sandy south (recolour_seasons.c)
+    int enemy_colours;        // 0 Off, 1 Random per seed, 2 Random every load (runtime/nvn/recolour_enemies.c)
+    int screen_filter;        // 0 Off, 1 Game Boy, 2 Game Boy Color, 3 Grayscale (runtime/nvn/screen_filter.h)
+    // speedrun (Gameplay tab; runtime/hle/run_timer.c, runtime/livesplit.c)
+    bool timer;            // the in-game run timer in the corner (game time: level loads don't count)
+    int timer_pos;         // TIMER_POS_*: which bottom corner it sits in
+    bool livesplit;        // drive LiveSplit (its Server component) over TCP: start, splits, game time
+    char livesplit_host[64];  // host:port of the LiveSplit Server ("localhost:16834")
     char rando_seed[128];  // active randomizer seed (rando/<name>/), empty = vanilla
     int game_profile;      // 0: existing extracted/, 1: v1.0.0, 2: v1.1.0; each has separate vanilla saves
     bool acnh_speedfix60;  // ACNH 3.0.1 only; selected before loading a native game library
+    char rando_options[48];  // the Randomizer tab's New seed options: a seed ID without its random part (empty = defaults)
 } Settings;
 
-enum { N_TUNIC_COLOURS = 13, N_HEART_COLOURS = 9 };
-extern const char *const g_tunic_colours[N_TUNIC_COLOURS];
-extern const char *const g_heart_colours[N_HEART_COLOURS];
+
+enum { N_ENEMY_COLOUR_MODES = 3, N_SCREEN_FILTERS = 4 };
+extern const char *const g_screen_filters[N_SCREEN_FILTERS];  // (the menu's names)
+extern const char *const g_enemy_colour_modes[N_ENEMY_COLOUR_MODES];  // (the menu's names)
 
 extern Settings g_settings;
 

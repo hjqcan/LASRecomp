@@ -9,6 +9,7 @@
 #include <math.h>
 #include <pthread.h>
 #include <atomic>
+#include <string>
 #include <vector>
 
 #include "imgui.h"
@@ -257,6 +258,7 @@ bool menu_handle_event(const SDL_Event *e) {
     }
 }
 
+extern "C" uint32_t g_window_resize_request;  // (test scripts: runtime/hle/input.c "resize")
 void menu_apply_window_requests(void *win) {
     SDL_Window *w = (SDL_Window *)win;
     g_pixel_density = SDL_GetWindowPixelDensity(w);
@@ -272,6 +274,8 @@ void menu_apply_window_requests(void *win) {
         first = false;
         SDL_SetWindowFullscreen(w, g_settings.fullscreen);
     }
+    if (uint32_t r = __atomic_exchange_n(&g_window_resize_request, 0u, __ATOMIC_RELAXED))
+        SDL_SetWindowSize(w, (int)(r >> 16), (int)(r & 0xffff));
 }
 
 // ------------------------------------------------------------------ render thread
@@ -285,7 +289,13 @@ static int g_focus_frames;
 
 // The start screen's Settings opening: the controller's cursor starts on the first tab the first time in a session,
 // later on the tab that's selected
-void menu_tabs_focus(bool first_tab) { g_focus_tab = first_tab ? -1 : -100, g_focus_frames = 0; }
+static bool g_page_fresh_seen;  // (focus_check: the menu opened)
+static bool g_page_fresh;  // the page shown hasn't been entered yet: the first Down goes to its first enabled row
+static bool g_page_focus_next;  // (that page has no option rows: its first control takes the cursor next frame)
+static int g_shown_tab = -1000;  // the page drawn last (its id)
+void menu_tabs_focus(bool first_tab) {
+    g_focus_tab = first_tab ? -1 : -100, g_focus_frames = 0, g_page_fresh = g_page_fresh_seen = true;
+}
 int g_tab_request_ext = -1;
 
 static void style_init(void) {
@@ -463,18 +473,62 @@ static void tab_display(void) {
     opt_end();
 }
 
-// Cosmetics: tunic / heart colours, live (runtime/nvn/texpatch.c); never part of a seed
+extern "C" bool cosmetics_seed_on(void);  // runtime/cosmetics_seed.c
+
+// Cosmetics: tunic / heart colours, live (runtime/nvn/texpatch.c), and recolours by draw (runtime/nvn/recolour*.c);
+// a seed made with "Random cosmetics" fills the rows left on Default (shown as "Seed: <colour>")
 static void tab_cosmetics(void) {
     opt_begin("##cosmetics", ImGui::GetFontSize() / 34);
-    opt_section("Colors");
-    opt_choice("Tunic color", &g_settings.tunic, g_tunic_colours, N_TUNIC_COLOURS, 0,
-               "Link's tunic color. Default: the game's own (or the randomizer seed's).");
-    opt_choice("Heart color", &g_settings.hearts, g_heart_colours, N_HEART_COLOURS, 0,
-               "The color of the hearts on the HUD.");
-    if (opt_action("Random colors", "", "Picks a random tunic and heart color (any other color, Default included).")) {
-        g_settings.tunic = (g_settings.tunic + 1 + rand() % (N_TUNIC_COLOURS - 1)) % N_TUNIC_COLOURS;
-        g_settings.hearts = (g_settings.hearts + 1 + rand() % (N_HEART_COLOURS - 1)) % N_HEART_COLOURS;
+    CosColour *rows[] = {&g_settings.tunic, &g_settings.hearts, &g_settings.hair, &g_settings.skin, &g_settings.shield,
+                         &g_settings.leaves, &g_settings.grass, &g_settings.sand};
+    if (opt_button("Randomize all", "Every color below gets a random color."))
+        for (CosColour *c : rows) c->pick = 1 + rand() % (COL_RANDOM - 1);  // (a named colour: shown as what it is)
+    if (opt_button("Default all", "Everything on this page back to the game's own look.")) {
+        for (CosColour *c : rows) c->pick = COL_DEFAULT;
+        g_settings.enemy_colours = 0;
+        g_settings.screen_filter = 0;
     }
+    opt_section("Colors");
+    opt_colour("Tunic color", &g_settings.tunic, COL_SLOT_TUNIC,
+               "Link's tunic color. Default: the game's own (or the randomizer seed's).");
+    opt_colour("Heart color", &g_settings.hearts, COL_SLOT_HEARTS, "The color of the hearts on the HUD.");
+    opt_colour("Hair color", &g_settings.hair, COL_SLOT_HAIR, "Link's hair color.");
+    opt_colour("Body color", &g_settings.skin, COL_SLOT_SKIN, "Link's body color.");  // (larecomp.ini: skin)
+    opt_colour("Shield color", &g_settings.shield, COL_SLOT_SHIELD, "The color of Link's shield.");
+    opt_section("Overworld");
+    {   // Season: fills Leaves, Grass and Sand at once (palette: Orange 2, Gold 3, Pink 9, White 10); "Mixed" when
+        // they match none
+        static const char *const names[] = {"Spring", "Autumn", "Winter", "Cherry blossom", "Mixed"};
+        static const int preset[4][3] = {{COL_DEFAULT, COL_DEFAULT, COL_DEFAULT}, {2, 3, 3}, {10, 10, 10},
+                                         {9, COL_DEFAULT, COL_DEFAULT}};
+        int cur = 4;  // (as shown: a row on Default shows the seed's colour, if it has its own)
+        for (int i = 0; i < 4; i++)
+            if (col_pick(&g_settings.leaves, COL_SLOT_LEAVES) == preset[i][0] &&
+                col_pick(&g_settings.grass, COL_SLOT_GRASS) == preset[i][1] &&
+                col_pick(&g_settings.sand, COL_SLOT_SAND) == preset[i][2])
+                cur = i;
+        int v = cur;
+        if (opt_choice("Season", &v, names, 5, 0, "Sets the leaves, grass and sand colors below.") && v != cur) {
+            if (v == 4) v = cur == 0 ? 3 : 0;  // (Mixed is never chosen: past the ends, back round)
+            g_settings.leaves.pick = preset[v][0];
+            g_settings.grass.pick = preset[v][1];
+            g_settings.sand.pick = preset[v][2];
+        }
+    }
+    opt_colour("Leaves color", &g_settings.leaves, COL_SLOT_LEAVES, "The overworld's tree leaves and bushes.");
+    opt_colour("Grass color", &g_settings.grass, COL_SLOT_GRASS, "The overworld's grass.");
+    opt_colour("Sand color", &g_settings.sand, COL_SLOT_SAND, "The beaches, the desert and the sandy south.");
+    opt_section("Enemies");
+    {   // (Off in a seed with its own cosmetics: "Seed", its enemies are per seed)
+        const char *modes[N_ENEMY_COLOUR_MODES];
+        for (int i = 0; i < N_ENEMY_COLOUR_MODES; i++) modes[i] = g_enemy_colour_modes[i];
+        if (cosmetics_seed_on()) modes[0] = "Seed";
+        opt_choice("Enemy colors", &g_settings.enemy_colours, modes, N_ENEMY_COLOUR_MODES, 0,
+                   "Each kind of enemy in another color. Enemies whose color shows their strength or type keep theirs.");
+    }
+    opt_section("Screen");
+    opt_choice("Screen filter", &g_settings.screen_filter, g_screen_filters, N_SCREEN_FILTERS, 0,
+               "A filter over the whole picture, the HUD included.");
     opt_end();
 }
 
@@ -529,10 +583,14 @@ static void tab_quit(float scale, bool in_game) {
 
 extern "C" bool inventory_overlay_wanted(void);
 extern "C" bool tracker_overlay_wanted(void);
+extern "C" bool tracker_dungeon_wanted(void);
+extern "C" void tracker_dungeon_draw(ImVec2 display, ImFont *font);
 extern "C" void tracker_overlay_draw(ImVec2 display, ImFont *font);
 extern "C" bool chaos_overlay_wanted(void);
 extern "C" void chaos_overlay_draw(ImVec2 display, ImFont *font);
 extern "C" void inventory_overlay_draw(ImVec2 display, ImFont *font);
+extern "C" bool race_overlay_wanted(void);
+extern "C" void race_overlay_draw(ImVec2 display, ImFont *font, float scale);
 
 // Reboot (runtime/main.c): the game is gone - menu and name dialog close; the ImGui context stays.
 RT_ON_RESET(menu_reset) {
@@ -598,6 +656,45 @@ extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, in
     return ok;
 }
 
+// LARECOMP_MENU_FOCUS_LOG=1 (test; tools/menu_focus_sweep.sh): every Down / Up on a page of option rows is checked a
+// few frames later against the rows' order and logged "[menu] focus check ... OK / FAIL": the first Down after a tab
+// switch (however it came) or the menu opening, and Down from the tab bar, land on the page's first enabled row; Down
+// goes to the next row (the last one stays), Up to the row before, and Up from the top row onto the selected tab.
+static void focus_check(bool down, bool up, bool any_down, int focused_tab, int tab, const char *tab_name) {
+    static int on = -1;
+    if (on < 0) on = getenv("LARECOMP_MENU_FOCUS_LOG") != NULL;
+    if (!on) return;
+    static int shown = -1000, due_in, want, from, prev_focus = -1;  // (want: a row index, -1: the selected tab)
+    static bool first_down_due;
+    static const char *what;
+    if (tab != shown || g_page_fresh_seen) shown = tab, first_down_due = true, g_page_fresh_seen = false, prev_focus = -1;
+    int n = opt_row_count(), first = opt_first_row(), focus = opt_focused_row();
+    if (any_down && !down) first_down_due = false;  // (a held Down's repeat: the first Down was checked or skipped)
+    if ((down || up) && !due_in && n > 0) {
+        from = prev_focus, due_in = 4;
+        if (down && (first_down_due || from < 0)) want = first, what = first_down_due ? "first Down" : "Down from the tab bar";
+        else if (down) want = from + 1 < n ? from + 1 : from, what = "Down";
+        else if (from > 0) want = from - 1, what = "Up";
+        else if (from == 0) want = -1, what = "Up from the top row";
+        else due_in = 0;  // (Up on the tab bar: not a page move)
+        if (down) first_down_due = false;
+    } else if (down && n == 0 && first_down_due) {
+        first_down_due = false;
+        LOG("[menu] focus check: first Down on %s SKIP (no option rows)\n", tab_name);
+    }
+    prev_focus = focus;
+    if (!due_in || --due_in) return;
+    bool ok = want >= 0 ? focus == want : focused_tab == tab;
+    char got[160];
+    if (focus >= 0) snprintf(got, sizeof got, "\"%s\"", opt_row_label(focus));
+    else snprintf(got, sizeof got, "tab %d", focused_tab);
+    char exp[160];
+    if (want >= 0) snprintf(exp, sizeof exp, "\"%s\"", opt_row_label(want));
+    else snprintf(exp, sizeof exp, "tab %d", tab);
+    LOG("[menu] focus check: %s on %s from %s -> %s (want %s) %s\n", what, tab_name,
+        from >= 0 ? opt_row_label(from) : "the tab bar", got, exp, ok ? "OK" : "FAIL");
+}
+
 // The tab bar and its pages, into the current window: the in-game menu, and the start screen's Settings (in_game
 // false: nothing of the game is loaded yet - the tabs that need it are greyed out; prelaunch: the start screen's own
 // first tab, game files and fonts, drawn by launcher.mm).
@@ -621,6 +718,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     if (g_tab_request_ext >= 0) { g_tab_request = g_tab_request_ext; g_tab_request_ext = -1; }
     bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();
     static int focused_tab = -99;  // the tab the controller's cursor is on (from the frame before; -99: none)
+    bool switching = false;  // (L / R this frame: the page changes next frame)
     if (!any_popup && !typing) {
         int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
                  : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1 : 0;
@@ -628,15 +726,41 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             int i = cur;
             do i = (i + step + ntabs) % ntabs; while (!tabs[i].on);
             g_tab_request = tabs[i].id;
-            // the cursor on the tab bar goes along (left behind, A on it switched straight back; user 2026-10-11)
-            if (focused_tab != -99) g_focus_tab = tabs[i].id, g_focus_frames = 0;
+            // the cursor goes onto the new tab (left behind on the tab bar, A on it switched straight back - user
+            // 2026-10-11; left in the old page, it stayed on a row that is gone, and Down went on from where that row
+            // had been)
+            g_focus_tab = tabs[i].id, g_focus_frames = 0;
+            switching = true;
         }
     }
-    // Down with the cursor on the tab bar: the page's first row (option rows; other pages keep ImGui's own pick)
-    bool down_from_tab = focused_tab != -99 && ImGui::GetCurrentContext()->NavCursorVisible && !any_popup &&
-                         (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown) || ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown) ||
-                          ImGui::IsKeyPressed(ImGuiKey_DownArrow));
+    bool down = !any_popup && !typing && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown) ||
+                                          ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown) ||
+                                          ImGui::IsKeyPressed(ImGuiKey_DownArrow));
+    bool up = !any_popup && !typing && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp) ||
+                                        ImGui::IsKeyPressed(ImGuiKey_GamepadLStickUp) || ImGui::IsKeyPressed(ImGuiKey_UpArrow));
+    // The first Down on a page just switched to (L / R, a click or A on a tab, the menu opening), or Down with the
+    // cursor on the tab bar: the page's first enabled row, top to bottom - never ImGui's pick from wherever its cursor
+    // was (a row of the page before, the tab bar's x). Option rows take it (opt_focus_first); a page without them gets
+    // its first control (g_page_focus_next).
+    if (ImGui::GetIO().MouseClicked[0]) g_page_fresh = false;  // (the mouse went into the page)
+    bool down_from_tab = down && !switching &&
+                         ((focused_tab != -99 && ImGui::GetCurrentContext()->NavCursorVisible) || g_page_fresh);
+    if (down_from_tab) {
+        ImGui::NavMoveRequestCancel();  // (ImGui's own move this frame)
+        g_page_fresh = false;
+        g_focus_tab = -99, g_focus_frames = 0;  // (the cursor stops going back to the tab)
+    }
     opt_focus_first(down_from_tab);
+    // Up / Down on a page of option rows: the next / previous row in order (opt_nav_step), not ImGui's spatial pick
+    if ((down || up) && !down_from_tab && !switching && opt_nav_step(down ? 1 : -1)) ImGui::NavMoveRequestCancel();
+    opt_frame_reset();
+    // The cursor moved out of the page (ImGui's pick, applied this frame for last frame's press - Up from the page's
+    // top control): onto the selected tab. ImGui's pick was the tab nearest the control's x (Controls, from most
+    // rows), or the close button
+    ImGuiContext &g = *ImGui::GetCurrentContext();
+    ImGuiWindow *root = ImGui::GetCurrentWindow()->RootWindow;
+    static bool nav_in_page;  // (the frame before: the cursor on a control of the page - its child windows)
+    if (nav_in_page && g.NavJustMovedToId && g.NavWindow == root && !any_popup) g_focus_tab = -100, g_focus_frames = 0;
     if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_FittingPolicyScroll | ImGuiTabBarFlags_TabListPopupButton)) {
         for (int k = 0; k < ntabs; k++) {
             const Tab &t = tabs[k];
@@ -674,14 +798,13 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             else if (focused_tab == t.id) focused_tab = -99;
             ImGui::EndDisabled();
             if (open) {
+                if (t.id != g_shown_tab) g_shown_tab = t.id, g_page_fresh = true, g_page_focus_next = false;
                 g_tab = t.id;
                 ImGui::Spacing();
                 ImGui::BeginChild("##page", ImVec2(0, 0), ImGuiChildFlags_None,  // (the rest of the window: no hint line)
                                   ImGuiWindowFlags_NavFlattened);
-                // Down from the tab bar, pages that aren't option rows (Prelaunch, Warp): their first control
-                // (option-row pages: opt_focus_first)
-                if (down_from_tab && (t.id == -1 || t.id == 4)) {
-                    opt_focus_first(false);
+                if (g_page_focus_next) {  // (a page without option rows: its first control)
+                    g_page_focus_next = false;
                     ImGui::SetKeyboardFocusHere();
                     ImGui::SetNavCursorVisible(true);
                 }
@@ -704,14 +827,25 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 }
                 static const char *scroll_test = getenv("LARECOMP_MENU_SCROLL");  // test hook: page scroll, 0..1
                 if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
+                // no enabled option row took the cursor: the page's first control, next frame (SetKeyboardFocusHere:
+                // the first item that takes the cursor, in order)
+                if (opt_focus_first_left() && down_from_tab) g_page_focus_next = true;
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
         }
         g_tab_request = -2;
-        opt_focus_first(false);  // (a page without option rows: nothing took it)
+        opt_focus_first_left();  // (no page drawn: nothing took it)
         ImGui::EndTabBar();
     }
+    nav_in_page = g.NavWindow && g.NavWindow != g.NavWindow->RootWindow && g.NavWindow->RootWindow == root;
+    // (checks: fresh presses only - a held key's repeats come faster than a check's few frames)
+    bool down1 = down && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, false) ||
+                          ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown, false) || ImGui::IsKeyPressed(ImGuiKey_DownArrow, false));
+    bool up1 = up && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp, false) ||
+                      ImGui::IsKeyPressed(ImGuiKey_GamepadLStickUp, false) || ImGui::IsKeyPressed(ImGuiKey_UpArrow, false));
+    for (int k = 0; k < ntabs; k++)
+        if (tabs[k].id == g_tab) focus_check(down1, up1, down, focused_tab, g_tab, tabs[k].name);
 }
 
 void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, void (*prelaunch)(float)) {
@@ -738,12 +872,11 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool open = g_open.load();
     bool inv = title_is_las() && !open && inventory_overlay_wanted();
     bool trk = title_is_las() && !open && tracker_overlay_wanted();
+    bool trkd = title_is_las() && !open && tracker_dungeon_wanted();
     bool chaos = title_is_las() && !open && chaos_overlay_wanted();
-    if (photo_mode_suppress_overlay()) {
-        pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); return;
-    }
     bool kbd = g_kbd.load() == 1;
-    if (!open && !kbd && !g_settings.show_fps && !inv && !trk && !chaos && !photo_mode_active() && !workshop_overlay_wanted()) {
+    bool race = title_is_las() && race_overlay_wanted();  // (run timer, race seed hash: race_overlay.mm)
+    if (!open && !kbd && !g_settings.show_fps && !inv && !trk && !trkd && !chaos && !race && !photo_mode_active() && !workshop_overlay_wanted()) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         return;
     }
@@ -797,8 +930,10 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         ImGui::End();
     }
 
+    if (race) race_overlay_draw(io.DisplaySize, g_menu_font_big, scale);
     if (trk) tracker_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     if (chaos) chaos_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
+    if (trkd) tracker_dungeon_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     if (inv) {
         inventory_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     }

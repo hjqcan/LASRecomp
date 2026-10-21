@@ -19,6 +19,11 @@ bool opt_slider(const char *label, float *v, float lo, float hi, float step, flo
 // (if given) is shown for lo instead (e.g. "Any")
 bool opt_int(const char *label, int *v, int lo, int hi, int step, int def, const char *fmt, const char *desc,
              const char *lo_name = NULL);
+// a Cosmetics colour row (the shared palette, runtime/cosmetic_colour.h): Default, the named colours, Random, Custom;
+// with Custom, a row under it shows the colour and opens a colour picker. True when the colour changed.
+struct CosColour;
+// slot: the row (COL_SLOT_*): on Default it shows the randomizer seed's colour as "Seed: <colour>" when it has one.
+bool opt_colour(const char *label, CosColour *c, int slot, const char *desc);
 // an action: true when activated
 bool opt_button(const char *label, const char *desc);
 // one of a set of choices (a ring on the right, filled when selected); true when chosen
@@ -49,6 +54,22 @@ void opt_end(void);
 void opt_split(void);
 void opt_desc_text(void);
 void opt_split_end(void);
-// the next page's first row takes the controller's cursor (Down on the tab bar: ImGui's own pick across the nested
-// panes was unreliable - some tabs went to a row further down, some nowhere). Cleared by the next opt_begin / call.
+// the next page's first enabled row (greyed-out rows are passed over) takes the controller's cursor (Down on the tab
+// bar, or the first Down on a page just switched to: ImGui's own pick across the nested panes was unreliable - some
+// tabs went to a row further down, some nowhere). Cleared by the next opt_begin / call.
 void opt_focus_first(bool on);
+// this frame's page: the row with this index (in drawing order, opt_row_count) takes the controller's cursor
+void opt_focus_row(int i);
+// Up (-1) / Down (+1) with the cursor on an option row (the frame before): the row before / after it in the same pane
+// takes the cursor this frame (Down on the last row: it stays). False: not on a row, or Up from the top row - the
+// caller leaves that move to ImGui. Call before the page's opt_begin and before opt_frame_reset.
+bool opt_nav_step(int dir);
+// after a page: true if a focus request is still waiting (the page has no enabled option row); clears it
+bool opt_focus_first_left(void);
+// this frame's page (focus checks, LARECOMP_MENU_FOCUS_LOG): its rows in order, the first enabled one and the focused
+// one (indices, -1: none); opt_frame_reset clears them before a page is drawn
+int opt_row_count(void);
+const char *opt_row_label(int i);
+int opt_first_row(void);
+int opt_focused_row(void);
+void opt_frame_reset(void);
