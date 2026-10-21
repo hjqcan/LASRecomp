@@ -1107,16 +1107,15 @@ doors:
   outer_extra: null
   door_req: null
   exit_req: null
-  inside:  # (paid inside; the raft leaves from the dock outside the vanilla door: the rapids region)
+  inside:  # (paid inside; a paid ride always starts at the dock outside the vanilla door: entrance_logic.raft_shop_to_dock)
   - location: rapids-race-45
-    cond: rapids
   - location: rapids-race-35
-    cond: rapids & hookshot
+    cond: hookshot
   - location: rapids-race-30
-    cond: rapids & hookshot
+    cond: hookshot
   confidence: medium
   notes: Raft shop (NpcRaftShopMan; LAS patches RaftShopMan.bfevfl for the race prizes). The race itself runs on the overworld rapids starting outside this hut, so LADXR only shuffles it in "insanity" mode.
-    Shuffling it likely needs event fixes.
+    A shuffled exit would leave the paid ride behind (#263), so when the exit is shuffled, paying ends with a jump to the vanilla doorstep (entrance_logic.raft_shop_to_dock); the race needs nothing but the shop then.
 - id: woods-north-cave
   field_room: Field_05C
   zone_index: 0

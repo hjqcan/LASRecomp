@@ -91,7 +91,7 @@ The header of the YAML defines `outer_region`, `outer_extra`, `pocket`, `door_re
 3. **D8 and D6 side exits** (Lv08TurtleRock_03C/03F → Field_01A/01C; Lv06FaceShrine_02A → Field_07M) are `special`. LADXR has no entrance for them, and their outside areas are pockets only reached from inside the dungeon.
 4. **Telephone booths and fairy fountains** are `single` with `ladxr_type: dummy`, not special. LADXR shuffles them as junk, and nothing about them breaks shuffling. In LAS the phones swap tunics.
 5. **Ciao-ciao (ribbon → dog food) is in `madam-meowmeow-house`**, not the kennel. Only MadamHouse's `NpcRibbonBow` carries the `RibbonBowWow` event; the DogHouse copy has an empty event param. LADXR puts the trade in the kennel. `doghouse-dig` is in DogHouse, which has the `ItemSecretSeashell` actor.
-6. **Rapids race prizes are in `raft-shop`** (RapidsRideTicket, the RaftShopMan event). The race itself runs on the overworld, and LADXR only shuffles the raft house in "insanity" mode.
+6. **Rapids race prizes are in `raft-shop`** (RapidsRideTicket, the RaftShopMan event). The race itself runs on the overworld, and LADXR only shuffles the raft house in "insanity" mode. Here a shuffled exit would leave the paid ride behind (#263), so paying ends with a jump to the vanilla doorstep by the dock (`entrance_logic.raft_shop_to_dock`), and the prizes need only the shop (plus the Hookshot for the 35 and 30 second ones).
 7. **Locations not inside any door:**
    - `marin` (Ballad) and `ghost-reward` are given outdoors.
    - `papahl` is on the papahl-ledge pocket.

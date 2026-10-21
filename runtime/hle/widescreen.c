@@ -98,6 +98,13 @@ float rt_cull_aspect(float orig) {
     return rt_aspect_site(6) * (orig > 0.1f && orig < 10.0f ? orig / (16.0f / 9.0f) : 1.0f);
 }
 
+// Sky and sea pieces past the north edge (tools/patches.py SKYSEA_BOX_SITES): a piece shows while Link is within
+// its reach plus half a 16:9 view (7.5). A wider view reaches further: half its extra width, doubled for the far
+// (top) edge of the perspective view, where the sky is.
+float rt_skysea_margin(void) {
+    return g_wide > 1.0f ? 15.0f * (g_wide - 1.0f) : 0.0f;
+}
+
 // Vertical field of view: unchanged for wide outputs; for tall ones (factor < 1) widened so the
 // horizontal view stays what the game shows at 16:9.
 float rt_fovy(float orig) {

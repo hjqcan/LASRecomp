@@ -68,6 +68,27 @@ for _a in FOVY_SITES:
     PATCHES[_a] = _fovy_load
 
 
+# Sky and sea beyond the overworld's north edge (MapSkySea, map/SkySea.bfres): pieces 60 apart, each drawn only while
+# Link stands inside its box, the piece's centre +-(67.5, 50, 27) - its own reach plus half a 16:9 view. With a wider
+# view the next piece is needed sooner: at 32:9 the screen beside Link's showed black (no sky, no sea) until Link came
+# within 67.5. The box's across bounds are widened by the extra view (runtime/hle/widescreen.c rt_skysea_margin).
+SKYSEA_BOX_SITES = {A.SKYSEA_BOX_MAX_SITE: (0x3dc0bae1, 0x2e0, 1.0), A.SKYSEA_BOX_MIN_SITE: (0x3dc0b6e2, 0x2d0, -1.0)}
+
+
+def _skysea_box(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    want, off, sign = SKYSEA_BOX_SITES[a]
+    assert w == want, hex(w)  # ldr qN, [x23, #off]
+    rt = w & 31
+    return ('{ extern float rt_skysea_margin(void); float b[4]; '
+            f'memcpy(b, (const void *)(uintptr_t)(c->x[23] + {off:#x}), 16); b[0] += {sign}f * rt_skysea_margin(); '
+            f'memcpy(&c->v[{rt}], b, 16); }}  /* {a:#x}: ldr q{rt}, [x23, #{off:#x}] (sky / sea piece box) */')
+
+
+for _a in SKYSEA_BOX_SITES:
+    PATCHES[_a] = _skysea_box
+
+
 # Indoor detection: 0x7001023c70 (`ldr s1, =16/9`) is in the indoor shadow setup (community patch notes:
 # "Indoor Shadow AR"). It keeps loading 16:9 and tells the runtime an interior is being rendered.
 INDOOR_SITE = A.INDOOR_SITE

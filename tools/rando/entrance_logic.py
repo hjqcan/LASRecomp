@@ -325,6 +325,31 @@ def _move(logic, location, region, cond):
     return 1
 
 
+def raft_shop_to_dock(exit_, out_dir, romfs, event_tools):
+    """The Rapids Ride starts at the dock outside the raft shop's vanilla door: after paying, Link walks out and boards
+    the raft there. A shuffled exit takes him somewhere else, and the paid ride is gone by the time he gets back to
+    the dock (gate shut, no raft), so the ride and the race could never start (#263). When the shop's exit is
+    shuffled, the owner's paid branch (RaftShopMan.bfevfl `talk`: pay, StartGame, ... Event9) ends with a jump to the
+    vanilla doorstep (Field_04P's own start, played as walking out of the hut), as if Link had left through the
+    vanilla door. Leaving without paying still uses the shuffled exit. Returns True when the flow was changed."""
+    if exit_.get('raft-shop', 'raft-shop') == 'raft-shop':
+        return False
+    rel = os.path.join('region_common', 'event', 'RaftShopMan.bfevfl')
+    path = os.path.join(out_dir, 'romfs', rel)
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(os.path.join(romfs, rel), 'rb') as f, open(path, 'wb') as g:
+            g.write(f.read())
+    flow = event_tools.readFlow(path)
+    fc = flow.flowchart
+    e9 = event_tools.findEvent(fc, 'Event9')  # (SetFacialExpression normal: the end of the paid branch)
+    assert e9 is not None and e9.data.nxt.v is None, 'RaftShopMan.bfevfl Event9 changed'
+    event_tools.createActionChain(fc, 'Event9', [
+        ('GameControl', 'RequestLevelJump', {'level': 'Field', 'locator': 'Field_04P', 'offsetX': 0.0, 'offsetZ': 0.0})])
+    event_tools.writeFlow(path, flow)
+    return True
+
+
 def spoiler(doors, entry, exit_):
     by_id = {d['id']: d for d in doors}
     lines = ['Entrances (door -> interior it leads into):']

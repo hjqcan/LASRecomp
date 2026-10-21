@@ -13,6 +13,8 @@
 #define GA_ASPECT_SITES_4                   UINT64_C(0x70000c3edc)
 #define GA_ASPECT_SITES_5                   UINT64_C(0x700085f824)
 #define GA_CULL_ASPECT                      UINT64_C(0x7000852ad4)
+#define GA_SKYSEA_BOX_MAX_SITE              UINT64_C(0x70008fb1b8)
+#define GA_SKYSEA_BOX_MIN_SITE              UINT64_C(0x70008fb1c4)
 #define GA_FOVY_SITES_0                     UINT64_C(0x7000010914)
 #define GA_FOVY_SITES_1                     UINT64_C(0x7000852ad0)
 #define GA_INDOOR_SITE                      UINT64_C(0x7001023c70)

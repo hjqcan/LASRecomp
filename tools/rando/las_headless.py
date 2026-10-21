@@ -640,6 +640,9 @@ def main():
         with open(os.path.join(out_dir, f'entrances_{settings["seed"]}.txt'), 'w') as f:
             f.write(el.spoiler(*ent) + '\n')
         print('entrance rooms edited:', n, flush=True)
+        from RandomizerCore.Tools import event_tools
+        if el.raft_shop_to_dock(ent[2], out_dir, romfs, event_tools):
+            print('raft shop: a paid ride starts at the dock', flush=True)
 
     if room_plan:
         stage('Building the shuffled dungeons', 0.975)
