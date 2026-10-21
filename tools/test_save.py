@@ -10,7 +10,7 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 # The fork's mount, backup and multi-commit harnesses have their own drivers and
 # link dependencies. This runner covers the upstream host-filesystem harnesses.
-for name in ('test_save_flags.c', 'test_save_errors.c'):
+for name in ('test_save_flags.c', 'test_save_errors.c', 'test_save_romfs_fds.c'):
     source = root/'tools'/name
     with tempfile.TemporaryDirectory(prefix='save-test-') as temporary:
         temporary = Path(temporary)

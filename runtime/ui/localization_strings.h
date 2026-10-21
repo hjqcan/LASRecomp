@@ -910,3 +910,6 @@ UI_TEXT("Spoiler log (locked)", "剧透日志（已锁定）", "劇透日誌（�
 UI_TEXT("Custom", "自定义", "自訂")
 UI_TEXT("\n\nConnected.", "\n\n已连接。", "\n\n已連線。")
 UI_TEXT("\n\nNot connected.", "\n\n未连接。", "\n\n未連線。")
+UI_TEXT("Coupled", "双向连接", "雙向連接")
+UI_TEXT("Decoupled", "单向连接", "單向連接")
+UI_TEXT("Experimental. Rebuilds the dungeons (all but Eagle's Tower) from shuffled rooms; boss, mini-boss, stairs and other key rooms stay put. Any doorway can lead to any doorway of its dungeon. Coupled: going back through a door takes you back. Decoupled: it takes you somewhere else.", "实验功能：以打乱的房间重建迷宫，大鹫塔除外。首领、中首领、楼梯等关键房间保持不变。任意门口可连接本迷宫的任意门口；双向连接可从原门返回，单向连接会通往其他地方。", "實驗功能：以打亂的房間重建迷宮，大鷲塔除外。首領、中首領、樓梯等關鍵房間保持不變。任意門口可連接本迷宮的任意門口；雙向連接可從原門返回，單向連接會通往其他地方。")

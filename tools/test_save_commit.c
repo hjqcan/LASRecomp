@@ -95,7 +95,7 @@ static void write_save(Service *mount, unsigned data, unsigned flags) {
 static uint32_t commit_mount(Service *mount) {
     IpcReq req = {.cmd = 10}; IpcResp resp = {0}; filesystem(mount, &req, &resp); return resp.result;
 }
-static void free_mount(Service *s) { free(s->state); free(s); }
+static void free_mount(Service *s) { s->on_close(s); free(s); }
 
 int main(int argc, char **argv) {
     assert(argc == 2); save_root = argv[1]; g_on = 1;

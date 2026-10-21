@@ -160,7 +160,8 @@ static std::vector<Room> g_rooms;
 static std::vector<int> g_seed_settings, g_seed_off;
 static std::unordered_map<std::string, int> g_flag_idx;  // flags.tsv (trade flags)
 static int g_loaded = 0;
-static std::string g_room_shuffle;  // tracker.tsv O dungeon-room-shuffle (off / coherent / chaos / madness)
+static std::string g_room_shuffle;  // tracker.tsv O dungeon-room-shuffle: off / coupled / decoupled (older seeds' chaos /
+                                    // madness read as those; coherent stays: a retired mode, no doorway letters)
 static bool g_kind_present[K_N];
 
 static int tok(const std::string &s) {
@@ -222,7 +223,8 @@ static void load(void) {
         for (char *s = line, *t; (t = strsep(&s, "\t"));) c.push_back(t);
         if (c[0][0] == 'S' && c.size() >= 2) g_seed_settings.push_back(tok(c[1]));
         else if (c[0][0] == 'F' && c.size() >= 2) g_seed_off.push_back(tok(c[1]));
-        else if (c[0][0] == 'O' && c.size() >= 3 && !strcmp(c[1], "dungeon-room-shuffle")) g_room_shuffle = c[2];
+        else if (c[0][0] == 'O' && c.size() >= 3 && !strcmp(c[1], "dungeon-room-shuffle"))
+            g_room_shuffle = !strcmp(c[2], "chaos") ? "coupled" : !strcmp(c[2], "madness") ? "decoupled" : c[2];
         else if (c[0][0] == 'N' && c.size() >= 7) {
             static const char *types[] = {"region", "item", "room", "interaction", "enemy", "trick", "follower"};
             Node n;
@@ -1862,7 +1864,7 @@ extern "C" void tracker_dungeon_draw(ImVec2 display, ImFont *font) {
         float fs = 14 * u, lh = fs + 6 * u, w = 168 * u;
         bool letters = g_settings.chaos_letters != CHAOS_LETTERS_OFF && g_room_shuffle != "off" && !g_room_shuffle.empty() &&
                        g_room_shuffle != "coherent";
-        float h = 16 * u + lh * pills.size() + (letters ? lh * (g_room_shuffle == "madness" ? 2 : 1) + 12 * u : 0);
+        float h = 16 * u + lh * pills.size() + (letters ? lh * (g_room_shuffle == "decoupled" ? 2 : 1) + 12 * u : 0);
         ImVec2 a(ox + 62 * u, oy + 200 * u), z(ox + 62 * u + w, oy + 200 * u + h);  // (left of the paper, under the title)
         parchment(dl, a, z, u);
         float y = a.y + 9 * u;
@@ -1882,7 +1884,7 @@ extern "C" void tracker_dungeon_draw(ImVec2 display, ImFont *font) {
             dl->AddText(font, fs, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), IM_COL32(255, 240, 200, 255), "A");
             dl->AddText(font, fs, ImVec2(c.x + r + 8 * u, y), P_INK, "leads to A");
             y += lh;
-            if (g_room_shuffle == "madness") {
+            if (g_room_shuffle == "decoupled") {
                 c.y += lh;
                 dl->AddRectFilled(ImVec2(c.x - r, c.y - r * 0.7f), ImVec2(c.x + r, c.y + r * 0.7f), IM_COL32(90, 30, 20, 230), r * 0.3f);
                 dl->AddTriangleFilled(ImVec2(c.x - r * 0.5f, c.y - r * 0.4f), ImVec2(c.x - r * 0.5f, c.y + r * 0.4f), ImVec2(c.x + r * 0.4f, c.y),

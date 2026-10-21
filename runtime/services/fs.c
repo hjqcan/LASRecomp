@@ -151,7 +151,7 @@ static void base_open(void) {
 }
 
 // ------------------------------------------------------------------ RomFS file index (offset -> path)
-typedef struct { uint64_t start, size; char *path; int fd; const uint8_t *mem; } Overlay;
+typedef struct { uint64_t start, size; char *path; bool warned; const uint8_t *mem; } Overlay;
 // in-image patches (copies of RomFS tables with changes): header, dir meta, file hash, file meta
 typedef struct { uint64_t off, size; uint8_t *data; } Patch;
 static Patch patches[8];
@@ -166,12 +166,63 @@ static RomFile *rom_files;
 static int rom_nfiles;
 static uint64_t rom_data_off;
 
-// Reboot: the next seed builds its own index / overlay when the game opens the RomFS again.
-RT_ON_RESET(fs_reset) {
-    for (int i = 0; i < ov_n; i++) {
-        if (ov[i].fd >= 0) close(ov[i].fd);
-        free(ov[i].path);
+// A seed replaces ~850 files and adds more: each is opened when it's read and kept in a small cache like the base
+// files', never all at once. They used to stay open until reboot, which ran into the open-file limit (256 for a
+// macOS app) mid-play: saves failed to stage ("could not be saved") and seed-file reads came back as zeros.
+#define OV_FDS 64
+static struct { int ov, fd; uint64_t used; } g_ov_fds[OV_FDS];
+static uint64_t g_ov_tick;
+static pthread_mutex_t g_ov_lock = PTHREAD_MUTEX_INITIALIZER;
+int fs_overlay_open_fds(void) {  // (tests)
+    int n = 0;
+    pthread_mutex_lock(&g_ov_lock);
+    for (int k = 0; k < OV_FDS; k++) n += g_ov_fds[k].fd > 0;
+    pthread_mutex_unlock(&g_ov_lock);
+    return n;
+}
+static void ov_fds_close(void) {  // (g_ov_lock held)
+    for (int k = 0; k < OV_FDS; k++) if (g_ov_fds[k].fd > 0) close(g_ov_fds[k].fd);
+    memset(g_ov_fds, 0, sizeof g_ov_fds);
+}
+// replacement file i's fd, opened on demand (-1, logged once per file, if it can't be opened; g_ov_lock held)
+static int ov_file_fd(int i) {
+    int slot = 0;
+    for (int k = 0; k < OV_FDS; k++) {
+        if (g_ov_fds[k].fd > 0 && g_ov_fds[k].ov == i) { g_ov_fds[k].used = ++g_ov_tick; return g_ov_fds[k].fd; }
+        if (g_ov_fds[k].used < g_ov_fds[slot].used) slot = k;
     }
+    if (g_ov_fds[slot].fd > 0) close(g_ov_fds[slot].fd);
+    g_ov_fds[slot].fd = 0, g_ov_fds[slot].used = 0;
+    int fd = open(ov[i].path, O_RDONLY);
+    if (fd < 0 && (errno == EMFILE || errno == ENFILE)) {  // out of descriptors: give back the cache's, try once more
+        int error = errno;
+        ov_fds_close();
+        fd = open(ov[i].path, O_RDONLY);
+        if (fd < 0) errno = error;
+    }
+    if (fd < 0) {
+        if (!ov[i].warned) LOG("[fs] ERROR: can't open randomizer file %s (%s): the game reads zeros there\n", ov[i].path,
+                               strerror(errno));
+        ov[i].warned = true;
+        return -1;
+    }
+    if (fd == 0) {  // (0 marks a free slot: keep stdin's number out of the cache)
+        int d = dup(fd);
+        close(fd);
+        fd = d;
+        if (fd < 0) return -1;
+    }
+    g_ov_fds[slot].ov = i, g_ov_fds[slot].fd = fd, g_ov_fds[slot].used = ++g_ov_tick;
+    return fd;
+}
+
+// Reboot: the next seed builds its own index / overlay when the game opens the RomFS again.
+static void mounts_reset(void);
+RT_ON_RESET(fs_reset) {
+    pthread_mutex_lock(&g_ov_lock);
+    ov_fds_close();
+    pthread_mutex_unlock(&g_ov_lock);
+    for (int i = 0; i < ov_n; i++) free(ov[i].path);
     for (int i = 0; i < npatches; i++) free(patches[i].data);  // (ov_meta and the extended table are among these)
     for (int i = 0; i < rom_nfiles; i++) free(rom_files[i].path);
     free(ov), free(rom_files);
@@ -180,6 +231,7 @@ RT_ON_RESET(fs_reset) {
     npatches = 0;
     rom_files = NULL, rom_nfiles = 0, rom_data_off = 0;
     base_close();
+    mounts_reset();  // (the old boot's mounts are gone with it)
     g_save_dir = "save";
 }
 
@@ -326,7 +378,7 @@ static void add_new_files(const uint64_t *h, const uint8_t *dmeta, uint64_t dsz,
         memcpy(hcopy + 4 * bucket, &entry, 4);
         o += 0x20 + ((nl + 3) & ~3u);
         if (ov_n == ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
-        ov[ov_n++] = (Overlay){data_at, size, strdup(nf[i].host), -1, NULL};
+        ov[ov_n++] = (Overlay){data_at, size, strdup(nf[i].host), false, NULL};
         rom_files[rom_nfiles++] = (RomFile){data_at, size, strdup(nf[i].rel), entry};
         data_at = (data_at + size + 0xF) & ~0xFull;
         added++;
@@ -334,7 +386,7 @@ static void add_new_files(const uint64_t *h, const uint8_t *dmeta, uint64_t dsz,
     // the new table goes before the new data (keep the overlay list sorted by start)
     if (ov_n == ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
     memmove(ov + (ov_n - added) + 1, ov + (ov_n - added), sizeof *ov * added);
-    ov[ov_n - added] = (Overlay){meta_at, nsz, NULL, -1, meta};
+    ov[ov_n - added] = (Overlay){meta_at, nsz, NULL, false, meta};
     ov_n++;
     ov_end = data_at;
     uint64_t fmeta_off = meta_at, fmeta_size = o;
@@ -398,7 +450,7 @@ static void rom_index(void) {
         ov[ov_n].start = ov_end;
         ov[ov_n].size = size;
         ov[ov_n].path = strdup(host);
-        ov[ov_n].fd = -1;
+        ov[ov_n].warned = false;
         ov[ov_n].mem = NULL;
         ov_n++;
         ov_end = (ov_end + size + 0xF) & ~0xFull;
@@ -430,8 +482,20 @@ static ssize_t romfs_read(uint8_t *dst, uint64_t size, uint64_t off) {
                 r = in < ov[i].size ? (ssize_t)(n < ov[i].size - in ? n : ov[i].size - in) : 0;
                 memcpy(dst + done, ov[i].mem + in, (size_t)r);
             } else {
-                if (ov[i].fd < 0) ov[i].fd = open(ov[i].path, O_RDONLY);
-                r = in < ov[i].size ? pread(ov[i].fd, dst + done, n < ov[i].size - in ? n : ov[i].size - in, (off_t)in) : 0;
+                uint64_t want = in < ov[i].size ? (n < ov[i].size - in ? n : ov[i].size - in) : 0;
+                r = 0;
+                if (want) {
+                    pthread_mutex_lock(&g_ov_lock);
+                    int fd = ov_file_fd(i);
+                    r = fd < 0 ? -1 : pread(fd, dst + done, want, (off_t)in);
+                    if (fd >= 0 && r != (ssize_t)want && !ov[i].warned) {
+                        LOG("[fs] ERROR: short read of randomizer file %s at %llu (%lld of %llu bytes, %s): zeros "
+                            "there\n", ov[i].path, (unsigned long long)in, (long long)r, (unsigned long long)want,
+                            r < 0 ? strerror(errno) : "file changed?");
+                        ov[i].warned = true;
+                    }
+                    pthread_mutex_unlock(&g_ov_lock);
+                }
                 extern void enemy_random_filter(const char *host, uint64_t off, uint8_t *dst, uint64_t n);
                 if (r > 0) enemy_random_filter(ov[i].path, in, dst + done, (uint64_t)r);  // (enemy mode Random)
             }
@@ -529,7 +593,18 @@ typedef struct {
     int npending;
     char pending[PENDING_MAX][1100];
     bool failed[PENDING_MAX];  // a write to this working copy failed: dropped at the Commit, never published
+    bool live;                 // a journaled mount the game hasn't closed yet (g_mount_lock)
 } HostFs;
+// The game mounts the save folder for each save. A new mount drops the working copies a crash left behind - but
+// never while another mount of the same folder is still open: those could be its copies, mid-save.
+static pthread_mutex_t g_mount_lock = PTHREAD_MUTEX_INITIALIZER;
+#define LIVE_MOUNTS_MAX 16
+static HostFs *g_live_mounts[LIVE_MOUNTS_MAX];
+static void mounts_reset(void) {
+    pthread_mutex_lock(&g_mount_lock);
+    memset(g_live_mounts, 0, sizeof g_live_mounts);
+    pthread_mutex_unlock(&g_mount_lock);
+}
 typedef struct {
     int fd;
     char path[1100];
@@ -537,6 +612,7 @@ typedef struct {
     int slot;      // its working copy in fs->pending (-1: a scratch copy)
     bool writable;
     bool scratch;  // staging failed: the writes go to a temporary file outside the save folder, never committed
+    bool dropped;  // no scratch copy either: the writes are dropped (fd: the committed file read-only, or -1)
 } HostFile;
 
 // Saving failed: say so loudly in the log, and once per run in a dialog (the game itself still says "Game saved").
@@ -757,6 +833,15 @@ static bool recover_save_flags(const char *root) {
 }
 typedef struct { DIR *d; char path[1024]; int mode; } HostDir;
 
+// Forget a closed mount before Multi releases its host state.
+static void fs_unmount(Service *s) {
+    HostFs *fs = s->state;
+    pthread_mutex_lock(&g_mount_lock);
+    for (int i = 0; fs && i < LIVE_MOUNTS_MAX; i++) if (g_live_mounts[i] == fs) g_live_mounts[i] = NULL;
+    if (fs) fs->live = false;
+    pthread_mutex_unlock(&g_mount_lock);
+}
+
 // The game closed the file / directory: close the host one too. They used to stay open for the whole run - a leak
 // everywhere, and on Windows the open working copy blocked the Commit's replace, so saves never landed (a file can't
 // be replaced while it's open there; the game closes its files before it commits, as nn::fs requires).
@@ -764,11 +849,12 @@ static void file_failed(HostFile *f, const char *what, int error);
 static void host_file_close(Service *s) {
     HostFile *f = s->state;
     if (!f) return;
-    if (f->writable && fsync(f->fd)) {
+    if (f->writable && !f->dropped && fsync(f->fd)) {
         if (f->fs) file_failed(f, "flush on close", errno);
         else LOG("[save] flush failed on close: %s (%s)\n", f->path, strerror(errno));
     }
-    close(f->fd); free(f); s->state = NULL;
+    if (f->fd >= 0) close(f->fd);
+    free(f); s->state = NULL;
 }
 static void host_directory_close(Service *s) {
     HostDir *d = s->state;
@@ -822,6 +908,7 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         IpcBuf *b = out_buf(req, 0);
         if (!b || off < 0 || size < 0) { resp->result = MAKE_RESULT(2, 6001); break; }
         if ((uint64_t)size > b->size) size = (int64_t)b->size;
+        if (f->dropped && f->fd < 0) { OUT(int64_t, 0) = 0; resp_size(resp, 8); break; }  // (nothing open: empty)
         ssize_t n = pread(f->fd, (void *)(uintptr_t)b->addr, (size_t)size, off);
         if (n < 0) resp->result = errno_result();
         if (n > 0 && !f->scratch && title_is_las() && strstr(f->path, "savedata")) {
@@ -841,6 +928,7 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         if (!a || off < 0 || size < 0 || (uint64_t)size > a->size) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (getenv("ACNH_LOG_SAVE"))
             LOG("[save] write %s off %lld size %lld <- guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)a->addr);
+        if (f->dropped) break;  // (reported when it was opened; the game is never told, see save_failed)
         int error = 0;
         for (int64_t done = 0; done < size;) {  // (a short write goes on from where it stopped)
             ssize_t n = pwrite(f->fd, (void *)(uintptr_t)(a->addr + done), (size_t)(size - done), off + done);
@@ -859,6 +947,7 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         break;
     }
     case 2:  // Flush
+        if (f->dropped) break;
         if (fsync(f->fd)) {
             int error = errno;
             if (f->fs) file_failed(f, "flush", error);
@@ -866,6 +955,7 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         }
         break;
     case 3:  // SetSize
+        if (f->dropped) break;
         if (!ftruncate(f->fd, IN(int64_t, 0))) break;
         {
             int error = errno;
@@ -875,8 +965,7 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         break;
     case 4: {
         struct stat sb;
-        fstat(f->fd, &sb);
-        OUT(int64_t, 0) = sb.st_size;
+        OUT(int64_t, 0) = f->fd >= 0 && !fstat(f->fd, &sb) ? sb.st_size : 0;
         resp_size(resp, 8);
         break;
     }
@@ -981,7 +1070,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         char work[2100];
         struct stat sb;
         int slot = -1, fd = -1;
-        bool scratch = false;
+        bool scratch = false, dropped = false;
         bool exists = !stat(p, &sb);
         if (exists) slot = pending_of(fs, p, save, work, sizeof work);
         if (slot >= 0) {
@@ -991,15 +1080,19 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
             save_failed(fs, "could not stage", p, errno);
             fd = scratch_copy(p);
             scratch = true;
-            if (fd < 0) fd = open(p, O_RDONLY);  // (no scratch copy either: the writes fail and are dropped)
+            if (fd < 0) {  // no scratch copy either: the writes are dropped (never sent to a read-only fd)
+                save_failed(fs, "could not make a scratch copy of", p, errno);
+                dropped = true;
+                fd = open(p, O_RDONLY);  // (reads still see the committed file; -1 if even that can't be opened)
+            }
         }
         if (fd < 0 && !scratch) fd = open(p, (mode & 2) ? O_RDWR : O_RDONLY);
-        if (fd < 0) { resp->result = errno_result(); break; }
+        if (fd < 0 && !dropped) { resp->result = errno_result(); break; }
         HostFile *f = calloc(1, sizeof *f);
         f->fd = fd;
         f->writable = (mode & 2) != 0;
-        snprintf(f->path, sizeof f->path, "%s%s", p, scratch ? " (scratch copy)" : "");
-        if (save) { f->fs = fs; f->slot = scratch ? -1 : slot; f->scratch = scratch; }
+        snprintf(f->path, sizeof f->path, "%s%s", p, dropped ? " (writes dropped)" : scratch ? " (scratch copy)" : "");
+        if (save) { f->fs = fs; f->slot = scratch ? -1 : slot; f->scratch = scratch; f->dropped = dropped; }
         Service *fsvc = service_new("IFile", file, f);
         fsvc->on_close = host_file_close;
         ipc_return_object(resp, fsvc);
@@ -1029,6 +1122,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
 }
 
 static void host_fs_close(Service *s) {
+    fs_unmount(s);
     free(s->state);
     s->state = NULL;
 }
@@ -1057,8 +1151,19 @@ static Service *open_host_fs(const char *sub) {
         if (*q == '/') { *q = 0; mkdir(cmd, 0755); *q = '/'; }
     mkdir(cmd, 0755);
     fs->journaled = strcmp(sub, "sdcard") != 0;
-    if (fs->journaled) {  // (a working copy left by a crash: never committed - dropped, as on the Switch)
-        if (!recover_save_flags(fs->root)) { int error = errno; free(fs); errno = error; return NULL; }
+    pthread_mutex_lock(&g_mount_lock);
+    bool other_live = false;
+    for (int i = 0; i < LIVE_MOUNTS_MAX; i++)
+        if (g_live_mounts[i] && !strcmp(g_live_mounts[i]->root, fs->root)) other_live = true;
+    if (fs->journaled && other_live) LOG("[save] %s is still mounted: its working copies are left alone\n", fs->root);
+    if (fs->journaled && !other_live) {  // (a working copy left by a crash: never committed - dropped, as on the Switch)
+        if (!recover_save_flags(fs->root)) {
+            int error = errno;
+            pthread_mutex_unlock(&g_mount_lock);
+            free(fs);
+            errno = error;
+            return NULL;
+        }
         DIR *d = opendir(fs->root);
         struct dirent *e;
         while (d && (e = readdir(d))) {
@@ -1072,6 +1177,9 @@ static Service *open_host_fs(const char *sub) {
         }
         if (d) closedir(d);
     }
+    for (int i = 0; fs->journaled && i < LIVE_MOUNTS_MAX; i++)
+        if (!g_live_mounts[i]) { g_live_mounts[i] = fs, fs->live = true; break; }
+    pthread_mutex_unlock(&g_mount_lock);
     backup_save(fs, "Before play");
     LOG("[fs] mounted host directory %s\n", fs->root);
     Service *result = service_new("IFileSystem", filesystem, fs);

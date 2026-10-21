@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Item logic for shuffled dungeons (Dungeon room shuffle: Coherent / Chaos, tools/rando/dungeon_gen.py).
+"""Item logic for shuffled dungeons (Dungeon room shuffle: Coupled / Decoupled, tools/rando/dungeon_gen.py).
 
 LAS's dungeon logic describes the vanilla layouts: a few "room" regions per dungeon named after cells (D1-8D,
 D1-6F...) and each check gated by one of them plus key counts and what the check itself needs. With rooms moved
 that no longer holds, so for every shuffled dungeon this module builds the logic from the generated layout:
 
   graph      cells of the layout; edges = doorways that connect (neighbours whose doorways line up, door jumps -
-             Coherent and Chaos, directed for Chaos), plus the stairs links (side-view passages; stairs rooms are
+             directed), plus the stairs links (side-view passages; stairs rooms are
              anchors and never move)
   doors      only a room's OWN door actors count (a "(mirror)" door stood in the old neighbour, which isn't there):
              lock -> the dungeon's small keys, boss door -> its Nightmare Key, cracked wall -> bombs, shutter ->
@@ -19,7 +19,7 @@ that no longer holds, so for every shuffled dungeon this module builds the logic
              as a fixed point in minimal sum-of-products form (LAS evaluates conditions recursively, so cyclic
              region references aren't possible - the finished, loop-free condition goes into the logic)
   regions    LAS's cell regions (Dn-XY) are redefined as "reach cell XY of the new layout" (macros elsewhere use them)
-  checks     reach any cell holding the check's room (Coherent duplicates count, also in other dungeons) AND what
+  checks     reach the cell holding the check's room AND what
              the check needs inside its room: its vanilla condition with the region / key tokens taken out (where
              such a token sat inside an OR, the OR becomes an AND - stricter, never weaker). A check whose room isn't
              used anywhere is excluded (junk). Dungeon items go to the dungeon a check physically is in now.
@@ -358,12 +358,7 @@ def level_graph(cat, romfs, level, layout, jump_rows, openings):
         if row[0] != level:
             continue
         cell, side, own = row[1], row[2], int(row[3])
-        if len(row) > 6:  # Chaos: (level, cell, side, own, partner, tcell, tside, ...)
-            target = row[5]
-        else:  # Coherent jump: to the neighbour
-            c, r = cell_pos(cell)
-            dc, dr = STEP[side]
-            target = pos.get((c + dc, r + dr))
+        target = row[5]  # (level, cell, side, own, partner, tcell, tside, ...)
         jumped.add((cell, side, own))
         if target not in layout:
             continue
@@ -636,12 +631,6 @@ def apply(cat, romfs, layouts, jump_rows, logic_defs, item_defs, settings, extra
                 v.pop(key, None)
             continue
         places = rooms_at.get(room, [])
-        # Coherent copies: a room may sit in two dungeons. The check is credited to one (dungeon-of: a dungeon item
-        # there counts for that dungeon) - only that copy reaches it in logic (the other is a bonus pickup: a key found
-        # there would count for the wrong dungeon)
-        if len({p[0] for p in places}) > 1:
-            lvl_home = next((p[0] for p in places if LEVELS[p[0]][0] == home), places[0][0])
-            places = [p for p in places if p[0] == lvl_home]
         def with_blocks(p):  # a check in a room with keyhole blocks: they may guard it
             e = cell_expr.get(p)
             bl = lock_blocks(romfs, room)
@@ -723,7 +712,7 @@ def apply(cat, romfs, layouts, jump_rows, logic_defs, item_defs, settings, extra
 
 
 def boss_door_ok(cat, romfs, level, layout, rows):
-    """The generator's check (Coherent / Chaos): without passing a boss door, every cell is reachable except the boss
+    """The generator's check (Coupled / Decoupled): without passing a boss door, every cell is reachable except the boss
     arena and the instrument room (DevRL_chaos_off: Turtle Rock's entrance was paired straight into the room before
     the boss door - the whole dungeon sat behind the Nightmare Key). layout: dungeon_gen's ({'Lv.._08D': room})."""
     import dungeon_gen

@@ -60,7 +60,7 @@ const char *rando_seed_dir(void) { return NULL; }
 bool romfs_layout(const char *p, RomfsLayout *l, char *why, size_t n) { abort(); }
 bool rando_romfs_override(const char *p, char *out, size_t n) { abort(); }
 void romfs_file_read_hook(const char *p) { abort(); }
-void enemy_random_filter(const char *p, uint64_t off, uint8_t *d, uint64_t n) { abort(); }
+void enemy_random_filter(const char *p, uint64_t off, uint8_t *d, uint64_t n) {}
 void rt_fatal_msg(const char *fmt, ...) { abort(); }
 void rt_fatal_trace(void) { abort(); }
 void save_editor_file_read(const char *p, uint64_t a, int64_t o, int64_t n) {}

@@ -259,6 +259,7 @@ static void require_cpu(void) {}
 
 void plat_init(void) {
     log_to_file_without_terminal();
+    raise_open_file_limit();
     require_cpu();
 }
 

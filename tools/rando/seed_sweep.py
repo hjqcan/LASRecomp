@@ -43,6 +43,7 @@ FLAGS = ['bomb_bag', 'powder_bag', 'environments', 'pets_in_dungeons', 'skip_sto
          'pots', 'no_buffs', 'bushes', 'pet_rooster', 'pet_ghost', 'pet_marin', 'trendsanity', 'boss_souls',
          'hookshot_any', 'digs', 'miniboss_souls', 'no_start_sword', 'no_start_shield', 'no_start_ocarina',
          'tunic_upgrades', 'shellsanity']
+ROOM_IDS = {'off': 0, 'coupled': 2, 'decoupled': 3}  # room_shuffle in the ID (1: the retired Coherent)
 BITS = 150  # (v5: 30 characters; v4 IDs had 125 - decode reads both)
 TIMEOUT = 900  # (seconds per seed)
 
@@ -76,6 +77,8 @@ def decode(text):
     pos[0] = n - 10
     o['steal_needs_sword'], o['no_stealing'] = bool(get(1)), bool(get(1))
     o['enemy_mode'], o['miniboss_freq'] = get(1), get(2)
+    if o['room_shuffle'] == 1:  # (retired Coherent: Coupled, as rando_tab.mm decodes it)
+        o['room_shuffle'] = 2
     return o
 
 
@@ -127,7 +130,7 @@ def request(sid, o, logic='basic'):
         'tunic-color': 'default', 'enemy-minibosses': mini, 'miniboss-frequency': o['miniboss_freq'] if mini else 0,
         'enemy-mode': 'random' if o['randomize_enemies'] and o['enemy_mode'] else 'seeded',
         'keysanity': ['off', 'keys', 'keys+nk', 'all'][o['keysanity']],
-        'dungeon-room-shuffle': ['off', 'coherent', 'chaos', 'madness'][o['room_shuffle']],
+        'dungeon-room-shuffle': ['off', 'coupled', 'coupled', 'decoupled'][o['room_shuffle']],  # (1: retired Coherent)
         'shopsanity': ['off', 'vanilla', 'random'][o['shopsanity']], 'trendsanity': o['trendsanity'],
         'stealing': stealing(o),
         'boss-souls': o['boss_souls'], 'miniboss-souls': o['miniboss_souls'], 'hookshot-anything': o['hookshot_any'],
@@ -149,7 +152,7 @@ def random_options(rng):
     o.update({k: 0 for k, _ in FIELDS}, rng=rng.getrandbits(36), enemy_mode=0, miniboss_freq=0)
     o.update(digs=True, skip_story=True, fast_songs=True, spoiler=True, seashells=rng.randrange(6),
              dungeon_items=rng.randrange(4), keysanity=rng.randrange(4), traps=rng.randrange(5),
-             entrances=rng.choice([0, 0, 1, 2, 2]), room_shuffle=rng.choice([0, 0, 0, 1, 2]),
+             entrances=rng.choice([0, 0, 1, 2, 2]), room_shuffle=rng.choice([0, 0, 0, 2, 3]),
              shopsanity=rng.randrange(3), steal_needs_sword=rng.random() < 0.5, no_stealing=rng.random() < 0.3)
     for k in ('bomb_bag', 'powder_bag', 'bushes', 'pots', 'open_mabe', 'decoupled', 'pet_rooster', 'pet_ghost',
               'pet_marin', 'trendsanity', 'boss_souls', 'miniboss_souls', 'hookshot_any', 'no_start_sword',
@@ -291,8 +294,8 @@ def main():
     ap.add_argument('--souls', action='store_true', help='every random mix with boss and mini-boss souls on')
     ap.add_argument('--triforce', type=int, metavar='N', help='every random mix a Triforce hunt for N pieces '
                     '(extra pieces cycled: none / +25%% / +50%%)')
-    ap.add_argument('--rooms', type=int, choices=[0, 1, 2, 3], action='append',
-                    help='dungeon room shuffle of the random mixes (off / coherent / chaos / madness; repeat: cycled)')
+    ap.add_argument('--rooms', choices=list(ROOM_IDS), action='append',
+                    help='dungeon room shuffle of the random mixes (repeat: cycled)')
     args = ap.parse_args()
     romfs = os.path.abspath(args.romfs)
     if args.keep:
@@ -313,7 +316,7 @@ def main():
         if args.triforce:
             o['triforce_needed'], o['triforce_extra'] = args.triforce, i % 3
         if args.rooms:
-            o['room_shuffle'] = args.rooms[(i // len(levels)) % len(args.rooms)]  # (not in step with the levels)
+            o['room_shuffle'] = ROOM_IDS[args.rooms[(i // len(levels)) % len(args.rooms)]]  # (not in step with the levels)
         if args.stealing:
             o['no_stealing'], o['steal_needs_sword'] = args.stealing == 'never', args.stealing == 'normal'
             if args.stealing == 'never' and not o['shopsanity']:

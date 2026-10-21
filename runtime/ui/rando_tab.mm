@@ -138,7 +138,7 @@ struct GenOpts {
     bool bushes = false;      // bushsanity: every overworld bush hides an item (tools/rando/bushes.py)
     bool digs = false;        // digsanity: every diggable overworld tile is a check (tools/rando/digs.py)
     bool shellsanity = false; // every Secret Seashell spot is a check (tools/rando/seashell_spots.py); off: vanilla
-    int room_shuffle = 0;     // dungeon-room-shuffle: off / coherent / chaos / madness (tools/rando/dungeon_gen.py)
+    int room_shuffle = 0;     // dungeon-room-shuffle: 0 off / 2 coupled / 3 decoupled (1: retired Coherent; dungeon_gen.py)
     bool pet_rooster = false, pet_ghost = false;  // pets in the pool (tools/rando/pets.py)
     bool pet_marin = false;   // Marin in the pool, the desert closed until she wakes the Walrus (open-desert off)
     int shopsanity = 0;       // off / vanilla prices / random prices (tools/rando/shopsanity.py)
@@ -291,12 +291,13 @@ static std::string seed_id_decode(const char *text, GenOpts &o) {
         t.entrances > 3 || t.start_rupees > 999 || t.tri_needed > 50 || t.tri_extra > 2)
         return "not a valid seed ID";
     t.ohko = false;
-    // retired choices (older IDs still load): logic is always basic, story scenes always skipped, and tier 3
-    // (+ connector caves) is part of tier 2 now
+    // retired choices (older IDs still load): logic is always basic, story scenes always skipped, tier 3
+    // (+ connector caves) is part of tier 2 now, and the Coherent room shuffle (1) is Coupled
     t.logic = 0;
     t.skip_story = true;
     t.tunic = 0;  // (the tunic colour is the Cosmetics tab's, live: new seeds stay green; placement never used it)
     if (t.entrances > 2) t.entrances = 2;
+    if (t.room_shuffle == 1) t.room_shuffle = 2;
     o = t;
     return "";
 }
@@ -450,7 +451,7 @@ static void start_generation(void) {
     fprintf(f, " \"enemy-mode\": \"%s\",\n", g_opts.randomize_enemies && g_opts.enemy_mode ? "random" : "seeded");
     static const char *ks[] = {"off", "keys", "keys+nk", "all"};
     fprintf(f, " \"keysanity\": \"%s\",\n", ks[g_opts.keysanity]);
-    static const char *rs[] = {"off", "coherent", "chaos", "madness"};
+    static const char *rs[] = {"off", "coupled", "coupled", "decoupled"};  // (1: retired Coherent, never written)
     fprintf(f, " \"dungeon-room-shuffle\": \"%s\",\n", rs[g_opts.room_shuffle]);
     static const char *shop[] = {"off", "vanilla", "random"};
     fprintf(f, " \"shopsanity\": \"%s\", \"trendsanity\": %s,\n", shop[g_opts.shopsanity], g_opts.trendsanity ? "true" : "false");
@@ -899,26 +900,16 @@ extern "C" void rando_tab_draw(float scale) {
             ImGui::EndPopup();
         }
     }
-    {  // dungeon room shuffle (dungeon-room-shuffle: 0 off / 1 coherent / 2 chaos / 3 madness): On / Off, and the mode
-       // as a radio set beneath (one always chosen; remembered while it's off)
-        static int mode = 1;
-        if (g_opts.room_shuffle) mode = g_opts.room_shuffle;
-        bool on = g_opts.room_shuffle != 0;
-        if (opt_toggle("Dungeon room shuffle", &on, false,
+    {  // dungeon room shuffle (dungeon-room-shuffle; seed ID 0 off / 2 coupled / 3 decoupled, 1 = the retired
+       // Coherent, read as Coupled): Off by default
+        static const char *names[] = {"Off", "Coupled", "Decoupled"};
+        static const int ids[] = {0, 2, 3};
+        int i = g_opts.room_shuffle == 3 ? 2 : g_opts.room_shuffle ? 1 : 0;
+        if (opt_choice("Dungeon room shuffle", &i, names, 3, 0,
                        "Experimental. Rebuilds the dungeons (all but Eagle's Tower) from shuffled rooms; boss, mini-boss, "
-                       "stairs and other key rooms stay put."))
-            g_opts.room_shuffle = on ? mode : 0;
-        opt_indent(1);
-        static const struct { const char *name, *desc; } modes[] = {
-            {"Coherent", "Rooms connect north / south / east / west like they look, and the dungeon map is right."},
-            {"Chaos", "Any doorway can lead to any doorway of the dungeon. Every room is used once."},
-            {"Madness", "Chaos with decoupled doors: going back through the door you came in by takes you somewhere else."},
-        };
-        for (int m = 1; m <= 3; m++) {
-            if (!on) opt_disable_next();
-            if (opt_radio(modes[m - 1].name, on && g_opts.room_shuffle == m, modes[m - 1].desc)) g_opts.room_shuffle = mode = m;
-        }
-        opt_indent(-1);
+                       "stairs and other key rooms stay put. Any doorway can lead to any doorway of its dungeon. Coupled: "
+                       "going back through a door takes you back. Decoupled: it takes you somewhere else."))
+            g_opts.room_shuffle = ids[i];
     }
     {  // its doorway letters on the dungeon map (runtime/ui/chaos_overlay.mm; a player setting, not part of the seed):
        // on = as you explore, every pair once you have the map (CHAOS_LETTERS_MAP); off = none

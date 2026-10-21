@@ -103,13 +103,19 @@ def default_settings(seed):
         'digs': False,  # digsanity: every diggable overworld tile is a check (tools/rando/digs.py)
         'shellsanity': False,  # every Secret Seashell spot is a check (tools/rando/seashell_spots.py); off: vanilla
         'hookshot-anything': False,  # the hookshot latches onto anything (tools/rando/hookshot_logic.py)
-        'dungeon-room-shuffle': 'off',  # off / coherent / chaos / madness (tools/rando/dungeon_gen.py)
+        'dungeon-room-shuffle': 'off',  # off / coupled / decoupled (tools/rando/dungeon_gen.py; ROOM_MODES)
         'pet-rooster': False, 'pet-ghost': False, 'open-desert': True,  # pets (tools/rando/pets.py)
         'shopsanity': 'off', 'trendsanity': False,  # tools/rando/shopsanity.py (off / vanilla / random prices), trendsanity.py
         'triforce-hunt': 0, 'triforce-extra': 0,  # pieces needed (0 = off), extra % (tools/rando/triforce.py)
         'starting-items': ['sword', 'shield', 'ocarina', 'song-mambo'], 'starting-rupees': 0,
         'excluded-locations': excluded,
     }
+
+
+# dungeon-room-shuffle values: Coupled = two-way doorway pairs, Decoupled = one-way doorways. The older names still
+# work: chaos / madness are the same modes, and the retired Coherent mode becomes Coupled.
+ROOM_MODES = {'off': 'off', 'coupled': 'coupled', 'decoupled': 'decoupled',
+              'chaos': 'coupled', 'madness': 'decoupled', 'coherent': 'coupled'}
 
 
 import time as _time
@@ -122,7 +128,7 @@ def stage(label, frac):
 
 
 def shuffle_dungeon_rooms(romfs, out_dir, mode, layouts, jumps):
-    """Dungeon room shuffle (Coherent / Chaos, tools/rando/dungeon_gen.py) on top of the seed: the generator reads
+    """Dungeon room shuffle (Coupled / Decoupled, tools/rando/dungeon_gen.py) on top of the seed: the generator reads
     rooms from an overlay romfs where the seed's own room files (LAS chests, pots, bushes, entrances) replace the
     game's - as copies, since it writes the seed's rooms while still reading others."""
     import shutil
@@ -168,7 +174,7 @@ def shuffle_dungeon_rooms(romfs, out_dir, mode, layouts, jumps):
                 os.remove(os.path.join(dst, f))
             shutil.copyfile(os.path.join(seed_lv, f), os.path.join(dst, f))
     try:
-        dungeon_gen.write_all(overlay, out_romfs, layouts, jumps)  # (jumps None: Coherent)
+        dungeon_gen.write_all(overlay, out_romfs, layouts, jumps)
     finally:
         shutil.rmtree(overlay, ignore_errors=True)
     return f"{mode}, {len(layouts)} dungeons, {sum(sum(1 for k, v in L.items() if k != v) for L in layouts.values())} rooms moved"
@@ -193,6 +199,9 @@ def main():
     settings['excluded-locations'] = set(settings['excluded-locations'])
     if settings['stealing'] not in rd.STEALING_REQUIREMENTS:
         raise SystemExit(f"bad stealing setting {settings['stealing']!r}")
+    if settings['dungeon-room-shuffle'] not in ROOM_MODES:
+        raise SystemExit(f"bad dungeon-room-shuffle setting {settings['dungeon-room-shuffle']!r}")
+    settings['dungeon-room-shuffle'] = ROOM_MODES[settings['dungeon-room-shuffle']]
     # optional location groups (Randomizer tab): included = real checks with logic instead of junk
     groups = {'include-fishing': rd.FISHING_REWARDS, 'include-rapids': rd.RAPIDS_REWARDS,
               'include-dampe': rd.DAMPE_REWARDS, 'include-trade-gifts': rd.TRADE_GIFT_LOCATIONS,
@@ -346,11 +355,11 @@ def main():
         ent = (ent_doors + cave[0], {**ent_entry, **cave[1]}, {**ent_exit, **cave[2]})
         print('entrances:', len(ent_entry), 'doors +', len(cave[1]), 'cave doors shuffled,', moved, 'locations moved', flush=True)
 
-    # ---- Dungeon room shuffle (Coherent / Chaos): the layouts are planned first, the item logic follows them
+    # ---- Dungeon room shuffle (Coupled / Decoupled): the layouts are planned first, the item logic follows them
     # (tools/rando/room_logic.py), the same layouts are written into the seed after LAS's files
-    room_mode = settings.get('dungeon-room-shuffle', 'off')
+    room_mode = settings['dungeon-room-shuffle']
     room_plan = None
-    if room_mode in ('coherent', 'chaos', 'madness'):
+    if room_mode != 'off':
         stage('Planning dungeon rooms', 0.03)
         import dungeon_gen
         import room_logic
@@ -360,21 +369,13 @@ def main():
         layouts = jumps = None
         for attempt in range(40):  # a layout whose dungeons can't be filled: the next one (same seed ID, same result)
             sub = settings['seed'] if attempt == 0 else f"{settings['seed']}~{attempt}"
-            if room_mode in ('chaos', 'madness'):  # (Madness: Chaos with one-way doorways)
-                try:
-                    layouts, jumps = dungeon_gen.plan_all_chaos(cat, sub, romfs, madness=room_mode == 'madness',
-                                                                  settings=settings)
-                except RuntimeError as e:  # (no round left every dungeon room for its keys and items: next one)
-                    print('room layout:', e, '- planning another', flush=True)
-                    continue
-                logic_rows = jumps
-            else:
-                try:
-                    layouts, jumps = dungeon_gen.plan_all(cat, sub, romfs), None
-                except RuntimeError as e:  # (as Chaos: this round's plan failed - the next one)
-                    print('room layout:', e, '- planning another', flush=True)
-                    continue
-                logic_rows = [row for lv, L in layouts.items() for row in dungeon_gen._jumps(cat, lv, L)]
+            try:  # (Decoupled: Coupled with one-way doorways)
+                layouts, jumps = dungeon_gen.plan_all_chaos(cat, sub, romfs, madness=room_mode == 'decoupled',
+                                                              settings=settings)
+            except RuntimeError as e:  # (no round left every dungeon room for its keys and items: next one)
+                print('room layout:', e, '- planning another', flush=True)
+                continue
+            logic_rows = jumps
             logic_defs, item_defs, settings = (copy.deepcopy(x) for x in base)
             print('room logic:', room_logic.apply(cat, romfs, layouts, logic_rows, logic_defs, item_defs, settings, extra),
                   flush=True)

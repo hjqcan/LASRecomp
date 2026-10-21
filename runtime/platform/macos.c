@@ -44,7 +44,10 @@ static void log_to_file_in_app(void) {
     session_log_open(dir, g_log_path, sizeof g_log_path);
 }
 
-void plat_init(void) { log_to_file_in_app(); }
+void plat_init(void) {
+    log_to_file_in_app();
+    raise_open_file_limit();
+}
 
 static uint64_t g_guest_lo, g_guest_hi;
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {

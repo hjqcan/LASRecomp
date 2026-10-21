@@ -202,16 +202,14 @@ def _exit_sides(cat, room):
 
 
 def plan(cat, level, entrance, seed, size=None, exit_side=None, tries=400, romfs=None, anchors=None, exclude=(),
-         stats=None, max_moved=None, exact=None, seal=False, avoid=(), chaos=False):
+         stats=None, max_moved=None, exact=None, seal=False, chaos=False):
     """A layout {cell: source room} for `level`: the entrance and `anchors` (default anchors_of) at their own cells,
     movable single-cell rooms of any dungeon (not in `exclude`) grown around them until every doorway meets a
     matching one (door jumps allowed, _openings_match) and every anchor is reachable from the entrance.
     max_moved: at most this many rooms brought in from elsewhere; the rest of the cells get their own original rooms
-    (plan_all: the dungeons share one pool of movable rooms). exact: a set of rooms the layout must use, all of them
-    and nothing else (plan_all trades rooms between dungeons). seal: a plain doorway may stay unconnected (it gets a
+    exact: a set of rooms the layout must use, all of them and nothing else. seal: a plain doorway may stay unconnected (it gets a
     door that never opens, sealable()) - an open side toward an empty cell or a room that doesn't match it.
-    avoid: rooms to use only when nothing else fits (plan_all: rooms another dungeon already has).
-    chaos: Chaos dungeon room shuffle - free doorways (sealable()) need no neighbour (implies seal); the pieces only
+    chaos: Coupled / Decoupled dungeon room shuffle - free doorways (sealable()) need no neighbour (implies seal); the pieces only
     have to be joinable by door jumps afterwards (chaos_pairs): every piece keeps a free doorway."""
     if anchors is None:
         anchors = anchors_of(cat, level)
@@ -430,7 +428,7 @@ def plan(cat, level, entrance, seed, size=None, exit_side=None, tries=400, romfs
                         continue
                     # grow while small (rooms opening 1-2 more doorways first), then close (rooms opening nothing
                     # first; opening more is still allowed - exact dead ends are rare)
-                    out.append((room in avoid, abs(n - 1.5) if not want_close else n, rng.random(), room))
+                    out.append((abs(n - 1.5) if not want_close else n, rng.random(), room))
                 return out
             # fewest candidates first (and give up at once when an open cell has none)
             best = None
@@ -840,61 +838,6 @@ ENTRANCES = {  # each dungeon's entrance room (its AreaLevelOpen back to the ove
     'Lv04AnglersTunnel': 'Lv04AnglersTunnel_08D', 'Lv05CatfishsMaw': 'Lv05CatfishsMaw_08H',
     'Lv06FaceShrine': 'Lv06FaceShrine_08D', 'Lv08TurtleRock': 'Lv08TurtleRock_08D',
     'Lv10ClothesDungeon': 'Lv10ClothesDungeon_08C'}  # (Eagle's Tower: its own rules, notes/PLAN.md)
-
-
-def plan_all(cat, seed, romfs, levels=None, stats=None, rounds=None):
-    """Layouts for every dungeon of a seed, each movable room used once across all of them where possible.
-    The pool (85 single rooms) can't close every dungeon without some rooms appearing twice (user 2026-10-08: allow
-    duplicates, as few as possible, never twice in one dungeon; duplicated checks become extra checks): several
-    rounds, the one with the fewest duplicates wins (then the fewest unused rooms)."""
-    levels = levels or list(ENTRANCES)
-    if rounds is None:
-        rounds = int(os.environ.get('LARECOMP_GEN_ROUNDS', 8))
-    fixed = set()
-    for lv in levels:
-        fixed |= set(anchors_of(cat, lv)) | {ENTRANCES[lv]}
-    pool = {k for k, v in cat.items() if len(v['unit']) == 1 and movable(v) and k not in fixed
-            and k.split('_')[0] in levels}
-    best = None
-    for rnd in range(rounds):
-        sub = seed if rnd == 0 else f'{seed}#{rnd}'
-        used, out, dups = set(), {}, []
-        # most constrained dungeons first (most anchors); a dungeon that can't be built from the rooms left may reuse
-        # its own original rooms, then (last resort) any room
-        order = sorted(levels, key=lambda lv: -len(anchors_of(cat, lv)))
-        if rnd:  # later rounds: other orders (whoever goes last tends to reuse its own rooms)
-            random.Random(sub).shuffle(order)
-        for lv in order:
-            own = {k for k in cat if k.startswith(lv + '_')}
-            n = len(set(anchors_of(cat, lv)) | {ENTRANCES[lv]})
-            L = None
-            for size in (n + 10, n + 6, n + 3):  # smaller before duplicating
-                L = L or plan(cat, lv, ENTRANCES[lv], sub, size=size, romfs=romfs, exclude=used, stats=stats, tries=8)
-            for size in (n + 6, n + 3, None):
-                L = L or plan(cat, lv, ENTRANCES[lv], sub, size=size, romfs=romfs, exclude=used - own, avoid=used,
-                              stats=stats, tries=8)
-            L = (L or plan(cat, lv, ENTRANCES[lv], sub, romfs=romfs, avoid=used, stats=stats, tries=40) or
-                 plan(cat, lv, ENTRANCES[lv], sub, romfs=romfs, stats=stats))
-            if L is None:
-                raise RuntimeError('no layout for ' + lv)
-            placed = {src for src in L.values() if src in pool}
-            dups += sorted(placed & used)
-            used |= placed
-            out[lv] = L
-        moved = sum(1 for L in out.values() for cell, src in L.items() if src != cell)
-        import room_logic  # (only the boss and the instrument may sit behind the boss door)
-        if not all(room_logic.boss_door_ok(cat, romfs, lv, L, _jumps(cat, lv, L)) for lv, L in out.items()):
-            continue
-        score = (len(dups), len(pool - used), -moved)  # then the most variety
-        if best is None or score < best[0]:
-            best = (score, out, dups)
-
-    if best is None:
-        raise RuntimeError('no round passed the boss door check')
-    (ndup, unused, moved), out, dups = best
-    print(f'dungeons: {ndup} room(s) used twice{": " + ", ".join(dups) if dups else ""}; {unused} room(s) unused; '
-          f'{-moved} moved')
-    return {lv: out[lv] for lv in levels}
 
 
 _grid_cache = {}
@@ -1500,17 +1443,6 @@ if __name__ == '__main__' and len(sys.argv) > 3 and sys.argv[3] == '--chaos':
     for lv, L in layouts.items():
         print(lv, len(L), 'cells,', sum(1 for k, v in L.items() if k != v), 'moved')
     write_all(romfs, out, layouts, jumps)
-    sys.exit(0)
-
-if __name__ == '__main__' and len(sys.argv) > 3 and sys.argv[3] == '--all':
-    # python3 dungeon_gen.py <romfs> <out romfs> --all [seed]: every dungeon (except Eagle's Tower)
-    romfs, out = sys.argv[1:3]
-    seed = sys.argv[4] if len(sys.argv) > 4 else 'LARecomp'
-    cat = json.load(open(os.path.join(HERE, 'room_catalog.json')))
-    layouts = plan_all(cat, seed, romfs)
-    for lv, L in layouts.items():
-        print(lv, len(L), 'cells,', sum(1 for k, v in L.items() if k != v), 'moved')
-    write_all(romfs, out, layouts)
     sys.exit(0)
 
 if __name__ == '__main__':

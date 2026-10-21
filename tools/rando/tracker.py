@@ -483,7 +483,8 @@ def build(seed_dir, romfs):
             f.write(f'S\t{k}\n')
         for k in out['off']:
             f.write(f'F\t{k}\n')
-        f.write(f"O\tdungeon-room-shuffle\t{settings.get('dungeon-room-shuffle') or 'off'}\n")
+        rs = settings.get('dungeon-room-shuffle') or 'off'  # (las_headless.ROOM_MODES: older names read as the new)
+        f.write(f"O\tdungeon-room-shuffle\t{ {'chaos': 'coupled', 'madness': 'decoupled'}.get(rs, rs)}\n")
         for n in nodes:
             f.write(f"N\t{n['t']}\t{n['n']}\t{n['r'] or '-'}\t{n['c'] or '-'}\t{n.get('pit', '-')}\t{n.get('heavy', '-')}"
                     f"\t{n.get('trick', '-') or '-'}\n")

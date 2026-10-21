@@ -114,13 +114,11 @@ The gameplay and randomizer options below apply to Link's Awakening. Other games
 - Triforce hunt - collect Triforce pieces (3, 12, 24 or any number up to 50, optionally with extra pieces hidden) instead
   of waking the Wind Fish; the last one needed rolls the credits.
 - Entrance Randomizer - shuffles dungeon entrances, houses and caves, and connector caves. Includes a decoupled option.
-- Dungeon Room Shuffler - shuffles all dungeon rooms, creating unique custom dungeons every seed. Three modes:
-  - Coherent: dungeon rooms are shuffled but connecting rooms are lined up. To keep this workable in logic, dungeons
-    sometimes use duplicate rooms (as few as possible).
-  - Chaos: dungeon rooms are shuffled but don't need to make sense. Walking north may lead you to a door from another
-    direction.
-  - Madness: dungeon rooms are shuffled in a way that doesn't need to make sense AND the doors are decoupled, creating
-    nightmares to navigate.
+- Dungeon Room Shuffler - shuffles all dungeon rooms, creating unique custom dungeons every seed. Any doorway can
+  lead to any doorway of its dungeon (walking north may bring you out of a door on another side). Two modes:
+  - Coupled: doorways are linked in pairs, so going back through a door takes you back where you came from.
+  - Decoupled: doorways are one-way, so going back through a door takes you somewhere else, creating nightmares to
+    navigate.
   - Labyrinth (planned): an option for all dungeon room shuffles where doors in dungeons can lead into other dungeons,
     essentially making one giant dungeon with numerous wings.
   - Optionally the map shows what's connected to what as you explore, or in full once you find the dungeon's map.
