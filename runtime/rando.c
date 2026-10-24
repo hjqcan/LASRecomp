@@ -6,6 +6,10 @@
 //
 // Code patches: gen.py compiled every variant of every patched instruction in (tools/rando/patch_variants.json);
 // rando_word() tells the generated code which one the seed uses (0 = the original instruction).
+//
+// Every supported game version reads 1.0.0.pchtxt: 1.0.1 / 1.1.0 changed one function, and every randomizer patch
+// site is at the same offset with the same original instruction or data in all of them (tools/test_game_addresses.py
+// --game checks the seeds and patch_variants.json against the game files). The file's @nsobid is checked here.
 #include "rando.h"
 #include "game_addresses.h"
 
@@ -77,7 +81,18 @@ static bool init(void) {
     snprintf(p, sizeof p, "%s/exefs/%s", g_seed_dir, rando_patch_filename(game_version_current()));
     if (!load_pchtxt(p)) return false;
     g_active = true;
-    LOG("[rando] seed \"%s\" active\n", seed);
+    // the seed ID (the start screen writes it next to a seed it makes): it regenerates the same seed, so a log a
+    // player attaches to an issue is enough to reproduce their seed
+    char id[96] = "";
+    snprintf(p, sizeof p, "%s/seed_id.txt", g_seed_dir);
+    FILE *f = fopen(p, "r");
+    if (f) {
+        if (!fgets(id, sizeof id, f)) id[0] = 0;
+        fclose(f);
+        id[strcspn(id, "\r\n")] = 0;
+    }
+    if (id[0]) LOG("[rando] seed \"%s\" active, seed ID %s\n", seed, id);
+    else LOG("[rando] seed \"%s\" active (no seed ID saved with it)\n", seed);
     return true;
 }
 

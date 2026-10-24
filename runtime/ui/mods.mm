@@ -45,7 +45,7 @@ static bool backup_before_change(int profile, const char *version, std::string &
 }
 extern "C" void mods_draw(float scale, bool in_game) {
     int profile = game_profile_index(game_root.c_str(), rt_data_root());
-    GameVersion game = game_version_file((game_root + "/exefs/main").c_str());
+    GameLayout game = game_version_file((game_root + "/exefs/main").c_str());
     const char *version = game_version_name(game);
     bool locked = in_game || gamelib_tables() || profile < 0 || game == GAME_UNSUPPORTED;
     std::string source, preset_source;

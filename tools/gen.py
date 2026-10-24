@@ -1132,9 +1132,10 @@ class Module:
         return out
 
 
-from patches import HOOKS, PATCHES
-from game_versions import game_version, patch_table, hook_table
 from rando_profiles import validate_catalog
+# tools/patches.py, for the main module only (its sites are main addresses): loaded in main() once the game version
+# is known from the NSO's build ID (tools/game_addresses.py; an unknown build ID stops the generator)
+HOOKS, PATCHES = {}, {}
 
 import json as _json
 import os as _os
@@ -1202,13 +1203,17 @@ def main():
         if game.id == 'pokemon_za':
             from pokemon_za import configure
             configure(m)
-    if args.name == "main" and args.profile == 'las':
-        m.game_version = game_version(m.nso.build_id)
-        HOOKS = hook_table(HOOKS, m)
-        PATCHES = patch_table(PATCHES, m.game_version)
+    if args.name == 'main' and args.profile == 'las':
+        import game_addresses
+        try:
+            version = game_addresses.select_build_id(m.nso.build_id)
+        except game_addresses.UnknownGameVersion as e:
+            sys.exit(f'{args.name}: {e}')
+        import patches
+        HOOKS, PATCHES = patches.HOOKS, patches.PATCHES
+        label, build_id = game_addresses.VERSIONS[version]
+        print(f'{args.name}: game version {label} (build {build_id[:16]}), address table {version}', file=sys.stderr)
         RANDO_CODE = validate_catalog(m.nso.image, m.nso.build_id, RANDO_CODE)
-        print(f"Randomizer: {len(RANDO_CODE)} validated patch sites", file=sys.stderr)
-        print(f"Game version: {m.game_version}", file=sys.stderr)
     starts = m.boundaries()
     hle = {}
     if args.hle and os.path.exists(args.hle):
@@ -1290,6 +1295,8 @@ def main():
         f.write(f'const char {args.name}_build_id[] = "{m.nso.build_id}";\n')
         f.write(f'const char {args.name}_build_id_full[] = "{m.nso.build_id_full}";\n')
         write_if_changed(os.path.join(args.outdir, f'{args.name}_table.c'), f.getvalue())
+    if args.name == 'main':  # (what this code was generated from: the Makefile's game code library id, GAMELIB_BUILD_ID)
+        write_if_changed(os.path.join(args.outdir, 'main_build_id.txt'), game_addresses.VERSIONS[version][1] + '\n')
     print(f'{args.name}: wrote {nchunks} chunks, {time.time() - t0:.0f}s total', file=sys.stderr)
 
 

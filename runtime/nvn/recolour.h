@@ -28,6 +28,8 @@ typedef struct {
 
 // Which recolour texture `t` is (its index), or -1. total = the texture's size in memory.
 int recolour_identify(const NvnTexture *t, uint64_t total);
+// The name of recolour texture `id` (texpatch id), or NULL (test logs)
+const char *recolour_name(int id);
 // The class of texpatch id `id` (0: not a recolour texture)
 int recolour_class_of(int id);
 // Of two classes a draw's textures have (0: none), the one to tint with: one whose option is on, and of two on the
@@ -35,6 +37,15 @@ int recolour_class_of(int id);
 int recolour_pick(int a, int b);
 // The per-draw tint of class `cls` (left untouched when its option is off)
 void recolour_tint(int cls, float tint[8]);
+// A draw's tint buffer: float4[4] (runtime/nvn/maxwell/translate.c, emit_recolour). [0..7] the highlight / first
+// recolour, [8..15] a second recolour (its own hue window: [8..15] laid out as [0..7]; [11] >= 0: none)
+#define RECOLOUR_TINT_FLOATS 16
+// Adds texture class `c` (0: none) to a draw's two classes (zeroed per draw): cls[0] = recolour_pick of them all,
+// cls[1] = the pick of the others. A ground draw blending grass and sand maps has both (issue #327: the grass' green
+// at the edges of the pale ground stayed green under the sand's hue window).
+void recolour_add(int cls[2], int c);
+// The draw's recolour tint for its classes: cls[0]'s, and cls[1]'s as the second window when both are on and differ
+void recolour_tint_draw(const int cls[2], float tint[RECOLOUR_TINT_FLOATS]);
 // Packs a recolour tint: hue moved by `shift` (turns), saturation / value scaled, for colours whose hue lies within
 // `width` (turns; >= 0.5: any) of `centre` and whose saturation is at least `min_sat` (all in the shader's HSV of
 // the gamma-encoded colour). spread: their hues' distance from `centre` is scaled by it (1: a plain shift; 0: all

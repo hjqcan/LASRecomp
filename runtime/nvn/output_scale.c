@@ -422,6 +422,8 @@ double output_scale_dynamic_hold_fps(void) { return g_hold_dt > 0 ? 1000 / g_hol
 void output_scale_log(unsigned long long frame, double dw, double dh, const OutScale *o) {
     static double psx, psy, pdw, pdh;
     static int nlog;
+    extern void pace_hitch(const char *why);  // pace.c: new targets at the new size, a stall
+    if (psx && (o->sx != psx || o->sy != psy || dw != pdw || dh != pdh)) pace_hitch("a render scale change");
     if ((o->sx != psx || o->sy != psy || dw != pdw || dh != pdh) && nlog++ < 200)
         LOG("[scale] frame %llu drawable %.0fx%.0f -> render scale %.3fx%.3f (reshape %d)\n", frame, dw, dh, o->sx, o->sy,
             o->shape != 1.0);
@@ -439,6 +441,16 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     // render height in units of the Switch's 1080 lines
     double h, dyn = 1.0;
     int mode = g_settings.res_mode;
+    // The user changed a setting that changes the GPU's load (the menu, the start screen; Dynamic's own steps are g_dyn,
+    // not a setting): the frame pacer's 30 fps hold and backoff were learned under the old load (pace.c).
+    static int p_mode = -1, p_ups, p_aa;
+    if (p_mode >= 0) {
+        extern void pace_settings_changed(const char *what);
+        if (mode != p_mode) pace_settings_changed("resolution");
+        else if (g_settings.upscaler != p_ups) pace_settings_changed("upscaler");
+        else if (g_settings.antialias != p_aa) pace_settings_changed("anti-aliasing");
+    }
+    p_mode = mode, p_ups = g_settings.upscaler, p_aa = g_settings.antialias;
     if (forced > 0) h = forced;
     else if (mode >= 1 && mode <= 8) h = mode == 1 && g_gpu_integrated ? 720 / 1080.0 : mode;
     else {

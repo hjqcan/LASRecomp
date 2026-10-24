@@ -69,9 +69,24 @@ typedef struct ShaderFp {
 // Takes the fingerprint on first use, compares it after that. stage: "vs", "fs", "cs" (for the log)
 void shader_fp_check(ShaderFp *fp, const struct NvnShaderStage *s, const char *stage);
 
-// (LARECOMP_RECORD_KEYS) note a variant the game builds; cheap when recording is off
+// (LARECOMP_RECORD_KEYS, the player's own list) note a variant the game builds; cheap when recording is off
 bool shader_rec_recording(void);
 void shader_rec_note(const ShaderRec *r);
+
+// ---- the player's own list (runtime/nvn/shader_seen.c): cache/shader_seen.txt in the data folder, in the shipped
+// list's format. Every variant the game builds that the shipped list doesn't have is added (queued by
+// shader_rec_note, written by a background thread in batches and at exit; at most 20000 records), and the next
+// preparation does them after the shipped list ("[shader] prepared N + M seen before"), so a shader met once is
+// ready from the second run on. LARECOMP_SHADER_SEEN=0 turns it off (nothing recorded, nothing prepared from it).
+bool shader_seen_on(void);
+void shader_seen_note(const ShaderRec *r);
+bool shader_seen_shipped(const char *line);  // the record (its text form) is in the shipped list
+// (preparation) the file's text (NULL: none) and the game id in its header (0: none)
+char *shader_seen_read(uint64_t *file_game);
+// (preparation) game: the id of the game files' shaders; keep (not NULL: the file was of another game): the records
+// whose shaders this game has, to replace the file's records with
+void shader_seen_prep_done(uint64_t game, const char *keep);
+const char *shader_prep_shipped_list(void);  // the shipped list's text
 
 // First visits: a program / pipeline / compute program the game had to build itself (preparation didn't cover it).
 // what: "program", "pipeline", "compute"; a, b: its shaders' hashes; id: what it is (logged once per process)
@@ -95,8 +110,9 @@ int renderer_prepare_pending(void);
 void renderer_prepare_end(void);  // all builds done (e.g. keep the pipeline cache)
 
 // Prepares every record of the shipped list (LARECOMP_SHADER_LIST=<file>: that list instead) from the game files in
-// romfs (the extracted romfs folder). progress(done, total) is called now and then; *cancel (any thread) stops it
-// early (builds already started finish in the background). Logs "[shader] prepared N, not found M". Returns false
+// romfs (the extracted romfs folder), then the player's own list (shader_seen_*). progress(done, total) is called now
+// and then; *cancel (any thread) stops it early (builds already started finish in the background). Logs
+// "[shader] prepared N + M seen before, not found K". Returns false
 // when it couldn't start (no list, no GPU device).
 bool shader_prep_run(const char *romfs, void (*progress)(int done, int total), const volatile int *cancel);
 // (LARECOMP_SHADER_PREP=1, tests) the same at game start, before the game's first frame: runtime/nvn/objects.c

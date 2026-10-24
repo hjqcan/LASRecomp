@@ -107,18 +107,36 @@ static void timer_panel(ImDrawList *dl, ImVec2 a, ImVec2 z, float u, bool done) 
     dl->AddRect(a, z, done ? IM_COL32(0xE8, 0xB8, 0x4A, 255) : IM_COL32(0xC8, 0x9B, 0x3C, 200), r, 0, (done ? 3.0f : 2.0f) * u);
 }
 
+// The run timer's text (tenths) and state (2: finished); false when it isn't shown
+static bool timer_text(char *t, size_t cap, int *st) {
+    if (!(g_settings.timer && game_in_play() && !inventory_items_page_shown())) return false;  // (not over the Items page: it still counts)
+    uint64_t us = 0;
+    bool counting = false;
+    *st = run_timer_state(&us, &counting);
+    uint64_t ds = us / 100000;  // tenths
+    if (ds >= 36000) snprintf(t, cap, "%llu:%02llu:%02llu.%llu", (unsigned long long)(ds / 36000),
+                              (unsigned long long)(ds / 600 % 60), (unsigned long long)(ds / 10 % 60), (unsigned long long)(ds % 10));
+    else snprintf(t, cap, "%llu:%02llu.%llu", (unsigned long long)(ds / 600), (unsigned long long)(ds / 10 % 60),
+                  (unsigned long long)(ds % 10));
+    return true;
+}
+
+// (menu.mm's overlay reuse) what race_overlay_draw would draw now, as text: the same key = the same drawing at the
+// same display size. false: not reusable (the seed hash: its icons load over the first frames)
+extern "C" bool race_overlay_key(char *out, size_t cap) {
+    if (hash_wanted()) return false;
+    char t[32];
+    int st = 0;
+    if (timer_text(t, sizeof t, &st)) snprintf(out, cap, "timer %s %d %d", t, st == 2, (int)g_settings.timer_pos);
+    else snprintf(out, cap, "-");
+    return true;
+}
+
 extern "C" void race_overlay_draw(ImVec2 display, ImFont *font, float scale) {
     ImDrawList *dl = ImGui::GetBackgroundDrawList();
-    if (g_settings.timer && game_in_play() && !inventory_items_page_shown()) {  // (not over the Items page: it still counts)
-        uint64_t us = 0;
-        bool counting = false;
-        int st = run_timer_state(&us, &counting);
-        uint64_t ds = us / 100000;  // tenths
-        char t[32];
-        if (ds >= 36000) snprintf(t, sizeof t, "%llu:%02llu:%02llu.%llu", (unsigned long long)(ds / 36000),
-                                  (unsigned long long)(ds / 600 % 60), (unsigned long long)(ds / 10 % 60), (unsigned long long)(ds % 10));
-        else snprintf(t, sizeof t, "%llu:%02llu.%llu", (unsigned long long)(ds / 600), (unsigned long long)(ds / 10 % 60),
-                      (unsigned long long)(ds % 10));
+    char t[32];
+    int st = 0;
+    if (timer_text(t, sizeof t, &st)) {
         float size = 62 * scale;
         // (digits at a fixed width: the panel and the time don't wobble as it counts)
         float dw = font->CalcTextSizeA(size, FLT_MAX, 0, "0").x, tw = 0;

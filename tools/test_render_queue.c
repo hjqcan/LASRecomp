@@ -23,6 +23,7 @@ void *backend_pool_push(void) { return NULL; }
 void backend_pool_pop(void *p) { (void)p; }
 uint64_t renderer_present_count(void) { return 0; }
 uint64_t renderer_submit_seq(void) { return atomic_load(&completed)*10; }
+uint64_t renderer_issued_seq(void) { return renderer_submit_seq(); }
 void backend_present_now(NvnTexture *t,uint64_t f) { (void)t; (void)f; }
 void backend_upload_now(NvnTexture *t,int k,void *p,uint32_t w,uint32_t h,uint32_t s,uint32_t o) { abort(); }
 void nvn_texture_destroy(NvnTexture *t) { (void)t; abort(); }

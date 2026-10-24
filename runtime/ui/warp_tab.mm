@@ -21,7 +21,7 @@ int warp_available(void);
 bool warp_blocked(const char *locator);
 }
 
-// GA_PLAYER_STATUS_PTR: main + 0x1CC1368: PlayerStatus* (current level name at +0)
+// GA(PLAYER_STATUS_PTR): main + 0x1CC1368: PlayerStatus* (current level name at +0)
 
 static const int kNumSpots = (int)(sizeof kWarpSpots / sizeof kWarpSpots[0]);
 static int g_group = -1;
@@ -29,7 +29,7 @@ static char g_filter[64];
 static char g_last[160];
 
 static const char *current_level(void) {
-    uint64_t ps = *(uint64_t *)(uintptr_t)GA_PLAYER_STATUS_PTR;
+    uint64_t ps = *(uint64_t *)(uintptr_t)GA(PLAYER_STATUS_PTR);
     if (ps < 0x7000000000ull || ps >= 0x7400000000ull) return "";
     const char *s = (const char *)(uintptr_t)ps;
     for (int i = 0; i < 0x40; i++) {

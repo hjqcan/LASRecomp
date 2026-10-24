@@ -36,9 +36,8 @@ a = Analysis(
     binaries=collect_dynamic_libs('capstone') + collect_dynamic_libs('unicorn')
              + [(p, 'unicorn/lib') for p in _uc_versioned],
     datas=[(os.path.join(TOOLS, 'rando', 'patch_variants.json'), 'rando')] + adapter_data + profile_data,
-    hiddenimports=collect_submodules('unicorn'),  # (it imports its arch modules by name at run time)
-    excludes=['import_game', 'nca', 'containers', 'probe_archive', 'zstandard', 'cryptography',
-              'tkinter', 'pydoc', 'doctest', 'unittest', 'pdb', 'IPython', 'numpy', 'setuptools', '_distutils_hack',
+    hiddenimports=collect_submodules('unicorn') + ['patches'],  # (unicorn imports its arch modules by name at run time; gen.py imports patches once the version is known)
+    excludes=['import_game', 'nca', 'containers', 'probe_archive', 'zstandard', 'cryptography', 'tkinter', 'pydoc', 'doctest', 'unittest', 'pdb', 'IPython', 'numpy', 'setuptools', '_distutils_hack',
               'pkg_resources', 'ssl', '_ssl', '_hashlib', '_multibytecodec', '_codecs_cn', '_codecs_hk',
               '_codecs_iso2022', '_codecs_jp', '_codecs_kr', '_codecs_tw', '_decimal'],
     noarchive=False,

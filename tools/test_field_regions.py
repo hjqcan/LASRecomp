@@ -149,8 +149,41 @@ def test_game(romfs, seed_dirs):
             fail(f'{name}: hint area {v["spoiler-region"]} but the tracker place is {tracker.PLACE[place]!r}')
         n += 1
     print('game:', n, 'bush / dig checks resolve; logic region, hint area and tracker place agree')
+    test_pockets(romfs, leb, bl, dl)
     for sd in seed_dirs:
         test_seed(sd, bl, dl, zones)
+
+
+def test_pockets(romfs, leb, bl, dl):
+    """Entrance shuffle: every bush / dig check on the walkable area a connector cave's pocket door opens on needs that
+    pocket (entrance_logic.pocket_of), on its door's screen or the next - or has it as its region (pothole). A check there labelled with the pocket's
+    vanilla region alone was free in the logic while the game only reaches it through the shuffled cave: bush-05A-1
+    (5F5HF-AB703-5RKZW-E4VTZ-9D100-0035Z) held the Flippers, behind the Quadruplets' house and the river."""
+    import entrance_logic as el
+    import field_reach
+    area, _ = field_reach.areas(romfs, leb)
+    cdoors = el.connector_pool(el.load())
+    pocket_at = el.pocket_of(cdoors)
+    n = 0
+    for d in cdoors:
+        if not d['pocket_region']:
+            continue
+        p = (int(d['pos_xz'][0] // 1.5), int(d['pos_xz'][1] // 1.5))
+        ids = {area.get(q) for q in (p, (p[0], p[1] + 1), (p[0], p[1] - 1), (p[0] + 1, p[1]), (p[0] - 1, p[1]))}
+        ids.discard(None)
+        for name, c in list(bl.items()) + list(dl.items()):
+            if area.get(field_reach.global_tile(c['room'], c['tile'])) in ids:
+                n += 1
+                if d['pocket_region'] not in (pocket_at(c['room'], c['tile']), fr.region_of(c['room'], c['tile'])[0]):
+                    fail(f"{name} ({c['room']} tile {c['tile']}): on {d['id']}'s pocket, logic "
+                         f"{pocket_at(c['room'], c['tile'])} instead of {d['pocket_region']} (entrance_logic.POCKET_TILES)")
+    # the reported seed's tiles
+    for room, tile in (('Field_05A', 54), ('Field_05A', 53), ('Field_05A', 55), ('Field_05B', 50)):
+        if pocket_at(room, tile) != 'pocket-toadstool-clearing':
+            fail(f'{room} tile {tile}: pocket {pocket_at(room, tile)}, not the toadstool clearing')
+    if pocket_at('Field_05A', 27) is not None:  # (the swamp side of 05A: not in the clearing)
+        fail(f"Field_05A tile 27: pocket {pocket_at('Field_05A', 27)}")
+    print('pockets:', n, 'bush / dig checks on connector cave pockets need their pocket')
 
 
 def test_seed(seed_dir, bl, dl, zones):

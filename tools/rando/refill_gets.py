@@ -14,7 +14,9 @@ while the item isn't owned) never saw those, so a bomb refill in a chest unlocke
     relabels only the real Bomb Bag;
   - found powder (shuffle-powder), the same: the game's own powder text once the Powder Bag is found, before it "You
     got some Magic Powder! But you have nowhere to put it and it blew away.." (System:PowderNoBag) -
-    tools/rando/powder_bag_text.py relabels only the real Powder Bag.
+    tools/rando/powder_bag_text.py relabels only the real Powder Bag. (Any get sequence for the key MagicPowder - this
+    message, the Bomb Bag's - also sets GetMagicPowder, the Items.gsheet gettingFlag: the runtime clears it again while
+    the powder isn't owned, runtime/hle/keysanity.c rt_powder_flag_tick.)
 
     apply(out_dir, romfs, settings) -> number of flow events changed
 """

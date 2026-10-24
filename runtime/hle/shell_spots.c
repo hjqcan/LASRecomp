@@ -149,7 +149,7 @@ static int load_locked(void) {
 }
 
 static const char *level_name(void) {
-    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
     return ps ? (const char *)(uintptr_t)ps : "";
 }
 
@@ -214,7 +214,7 @@ void rt_shell_swap(uint64_t info) {
 // an index whose shell isn't owned (its own while that one isn't: hole_spawn), is kept on one (hole_beacons), and its
 // shell drop is taken for the item (hole_of: Seashell<that index> from where the hole stands).
 static uint64_t owned_shells(void) {
-    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
     return ps ? LD64(ps + 0x88) : 0;
 }
 
@@ -417,9 +417,9 @@ static void fly_step(Spot *s) {
 // once and drops nothing; ItemDrop Seashell<n> drops the tagged Heart Piece), so it makes its Seashell Sensor beacon
 // (AreaShellDrop +0x2b8: the ShellBeacon component). The beacon is switched off here once the hole is up (+0x14c: 0 =
 // the sensor's check skips it, f_70008dd860), so the sensor doesn't ring for it. The level's placed actors by key:
-// GA_ACTOR_REGISTRY (pets.c).
+// GA(ACTOR_REGISTRY) (pets.c).
 static void hole_beacons(const char *lv) {
-    uint64_t map = LD64(GA_ACTOR_REGISTRY);
+    uint64_t map = LD64(GA(ACTOR_REGISTRY));
     for (int i = 0; i < g_n && map; i++) {
         Spot *s = &g_spots[i];
         if (!s->hole || !s->key || strcmp(lv, s->level)) continue;
@@ -465,7 +465,7 @@ void shell_spots_tick(Cpu *c, uint64_t frame) {
         g_pool_ready = ok;
         if (!ok) LOG("[shells] string pool full\n");
     }
-    uint64_t mgr = LD64(GA_GAME_MGR), scene = mgr ? LD64(mgr + 0x4a8) : 0;
+    uint64_t mgr = LD64(GA(GAME_MGR)), scene = mgr ? LD64(mgr + 0x4a8) : 0;
     if (scene != g_scene_was) {  // a new scene: the holes (and items in them) are gone
         g_scene_was = scene;
         for (int i = 0; i < g_n; i++) {
@@ -479,7 +479,7 @@ void shell_spots_tick(Cpu *c, uint64_t frame) {
             if (g_spots[i].item && !digs_actor_alive(g_spots[i].item)) digs_drop_ref(c, &g_spots[i].item);
         }
     }
-    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
     uint64_t owned = ps ? LD64(ps + 0x88) : 0;  // (PlayerStatus +0x88: the Secret Seashells found, one bit per index)
     for (int i = 0; i < g_n && frame % 16 == 0; i++)
         if (g_spots[i].owned && g_spots[i].index < 64 && (owned >> g_spots[i].index & 1) && !flags_ext_get(g_spots[i].flag_idx)) {

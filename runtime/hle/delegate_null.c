@@ -48,10 +48,10 @@ int rt_delegate_null(Cpu *c, int slot) {
     bool in_owner = owner && owner + 0xc8 == obj;  // (the layout this was worked out on; anything else just skips)
     uint64_t t0 = plat_now_ns(), waited = 0;
     bool forwarded = false;
-    if (vt == GA_DELEGATE_JOB_VTABLE_LIVE && in_owner) {
+    if (vt == GA(DELEGATE_JOB_VTABLE_LIVE) && in_owner) {
         while ((waited = plat_now_ns() - t0) < 1000000000ull) {
             if (rd64(obj + 0x10) && !rd32(owner + 0x1f8)) { forwarded = true; break; }
-            if (rd64(obj) != GA_DELEGATE_JOB_VTABLE_LIVE) break;  // (torn down meanwhile: it ran)
+            if (rd64(obj) != GA(DELEGATE_JOB_VTABLE_LIVE)) break;  // (torn down meanwhile: it ran)
             plat_sleep_until_ns(plat_now_ns() + 50000);
         }
     }
@@ -80,13 +80,13 @@ void rt_frame_job_kickoff(uint64_t owner) {
     }
     uint64_t job = owner + 0xc8;
     if (off || !owner || !(__atomic_load_n((uint8_t *)(uintptr_t)(owner + 0x1d8), __ATOMIC_ACQUIRE) & 1) ||
-        rd64(job) != GA_DELEGATE_JOB_VTABLE_LIVE || !frame_job(job))
+        rd64(job) != GA(DELEGATE_JOB_VTABLE_LIVE) || !frame_job(job))
         return;  // (the usual case: no run of J is still finishing)
     uint64_t t0 = plat_now_ns(), waited = 0;
     bool finished;
     // The finish (slot +0x00) is two stores: the base vtable, then [J+0x10] = 0. Wait for both - a worker preempted
     // between them would otherwise clear the delegate of the J being rebuilt (the kick-off sets it non-zero).
-    while (!(finished = rd64(job) != GA_DELEGATE_JOB_VTABLE_LIVE && !rd64(job + 0x10)) &&
+    while (!(finished = rd64(job) != GA(DELEGATE_JOB_VTABLE_LIVE) && !rd64(job + 0x10)) &&
            (waited = plat_now_ns() - t0) < 1000000000ull)
         plat_sleep_until_ns(plat_now_ns() + 20000);
     static int logged;
@@ -102,7 +102,7 @@ void rt_frame_job_finish(uint64_t job) {
         const char *e = getenv("LARECOMP_DEBUG_FRAMEJOB_LATE_FINISH");
         ms = e ? atol(e) : 0;
     }
-    if (ms <= 0 || rd64(job) != GA_DELEGATE_JOB_VTABLE_LIVE || !frame_job(job)) return;
+    if (ms <= 0 || rd64(job) != GA(DELEGATE_JOB_VTABLE_LIVE) || !frame_job(job)) return;
     plat_sleep_until_ns(plat_now_ns() + (uint64_t)ms * 1000000ull);
 }
 

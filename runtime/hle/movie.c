@@ -260,6 +260,8 @@ static void ex_set_data_source(Cpu *c) {
     if (!rando_romfs_override(rel ? rel : "", host, sizeof host) && !mods_romfs_override(rel ? rel : "", host, sizeof host))
         snprintf(host, sizeof host, "%s/%s", g_romfs_dir, rel ? rel : "");
     LOG("[movie] open %s -> %s\n", path ? path : "(null)", host);
+    { extern void pace_hitch(const char *why);  // nvn/pace.c
+      pace_hitch("a movie"); }
     if (avformat_open_input(&e->fmt, host, NULL, NULL) < 0 || avformat_find_stream_info(e->fmt, NULL) < 0) {
         LOG("[movie] cannot open %s\n", host);
         if (e->fmt) avformat_close_input(&e->fmt);

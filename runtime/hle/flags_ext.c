@@ -23,7 +23,7 @@
 
 
 
-#define LIVE_FLAGS (GA_LIVE_SAVE + 0x5DC0)
+#define LIVE_FLAGS (GA(LIVE_SAVE) + 0x5DC0)
 #define BODY_CRC 0x5EC4
 #define NFLAGS 45056
 #define BUF (NFLAGS / 8)
@@ -136,7 +136,7 @@ bool flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_
     strlcpy(g_current, save, sizeof g_current);
     // the slot now holds the written CRC; the live save keeps its own (the game writes from a copy) - track that
     // one, else the next tick sees a "new" save in play and reloads another slot's extra bits over ours
-    g_live_crc = *(const uint32_t *)(uintptr_t)(GA_LIVE_SAVE + BODY_CRC);
+    g_live_crc = *(const uint32_t *)(uintptr_t)(GA(LIVE_SAVE) + BODY_CRC);
     Slot *s = slot_for(save);
     if (s) { s->crc = *(const uint32_t *)(uintptr_t)(addr + BODY_CRC); memcpy(s->ext, g_buf + 256, EXT); }
     char sc[1200], committed[1200];
@@ -156,11 +156,11 @@ bool flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_
 void flags_ext_tick(void) {
     if (!enabled()) return;
     uint8_t *live = (uint8_t *)(uintptr_t)LIVE_FLAGS;
-    uint64_t p = LD64(GA_FLAG_PTR);
+    uint64_t p = LD64(GA(FLAG_PTR));
     if (p != LIVE_FLAGS && p != (uint64_t)(uintptr_t)g_buf) return;  // not set up yet (or not what we expect)
     // a save read from a slot came into play: that slot's extra bits (an unknown CRC - e.g. the game updating it
     // while saving - keeps what we have)
-    uint32_t crc = *(const uint32_t *)(uintptr_t)(GA_LIVE_SAVE + BODY_CRC);
+    uint32_t crc = *(const uint32_t *)(uintptr_t)(GA(LIVE_SAVE) + BODY_CRC);
     if (crc != g_live_crc) {
         g_live_crc = crc;
         for (int i = 0; i < g_nslots; i++)
@@ -178,8 +178,8 @@ void flags_ext_tick(void) {
     if (p == LIVE_FLAGS) {  // take over the bitfield
         memcpy(g_buf, live, 256);
         memcpy(g_shadow, live, 256);
-        *(uint64_t *)(uintptr_t)GA_FLAG_PTR = (uint64_t)(uintptr_t)g_buf;
-        *(uint32_t *)(uintptr_t)GA_FLAG_CAP = BUF;
+        *(uint64_t *)(uintptr_t)GA(FLAG_PTR) = (uint64_t)(uintptr_t)g_buf;
+        *(uint32_t *)(uintptr_t)GA(FLAG_CAP) = BUF;
         LOG("[flags] event flag bitfield moved to our %d-byte buffer\n", BUF);
         return;
     }
@@ -202,14 +202,14 @@ void flags_ext_tick(void) {
 // event flag `idx` (0..NFLAGS-1) as the game sees it: our buffer once it has taken over, else the save's own bitfield
 bool flags_ext_get(int idx) {
     if (idx < 0 || idx >= NFLAGS) return false;
-    if (LD64(GA_FLAG_PTR) == (uint64_t)(uintptr_t)g_buf) return (g_buf[idx >> 3] >> (idx & 7)) & 1;
+    if (LD64(GA(FLAG_PTR)) == (uint64_t)(uintptr_t)g_buf) return (g_buf[idx >> 3] >> (idx & 7)) & 1;
     if (idx >= 2048) return false;
     return (LD8(LIVE_FLAGS + (idx >> 3)) >> (idx & 7)) & 1;
 }
 
 // set event flag `idx` (runtime features: Chaos map letters, dug tiles) - only once the bitfield is ours
 void flags_ext_set(int idx) {
-    if (idx < 0 || idx >= NFLAGS || LD64(GA_FLAG_PTR) != (uint64_t)(uintptr_t)g_buf) return;
+    if (idx < 0 || idx >= NFLAGS || LD64(GA(FLAG_PTR)) != (uint64_t)(uintptr_t)g_buf) return;
     g_buf[idx >> 3] |= (uint8_t)(1 << (idx & 7));
 }
 
@@ -217,13 +217,13 @@ void flags_ext_set(int idx) {
 // save's own bitfield (runtime features that keep flags whether or not the seed has the extension: Triforce pieces)
 void flags_put(int idx, bool on) {
     if (idx < 0 || idx >= NFLAGS) return;
-    uint8_t *p = LD64(GA_FLAG_PTR) == (uint64_t)(uintptr_t)g_buf ? g_buf : idx < 2048 ? (uint8_t *)(uintptr_t)LIVE_FLAGS : NULL;
+    uint8_t *p = LD64(GA(FLAG_PTR)) == (uint64_t)(uintptr_t)g_buf ? g_buf : idx < 2048 ? (uint8_t *)(uintptr_t)LIVE_FLAGS : NULL;
     if (!p) return;
     if (on) p[idx >> 3] |= (uint8_t)(1 << (idx & 7));
     else p[idx >> 3] &= (uint8_t)~(1 << (idx & 7));
 }
 
 void flags_ext_clear(int idx) {
-    if (idx < 0 || idx >= NFLAGS || LD64(GA_FLAG_PTR) != (uint64_t)(uintptr_t)g_buf) return;
+    if (idx < 0 || idx >= NFLAGS || LD64(GA(FLAG_PTR)) != (uint64_t)(uintptr_t)g_buf) return;
     g_buf[idx >> 3] &= (uint8_t)~(1 << (idx & 7));
 }

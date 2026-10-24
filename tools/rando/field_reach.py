@@ -8,7 +8,10 @@ module is an independent second opinion, from the game's own tile grids (used to
 - a tile is walkable unless it has collision, is a pit / deep water, or something solid stands on it (rocks, statues,
   signs, trees ...; bushes and grass count as walkable: they can be cut);
 - neighbours connect unless a wall bit sits between them or the floor heights differ by more than ELEV;
-- each house / cave door (entrance_data.yml, outer_region) anchors its region to the area its doorway opens on.
+- each house / cave door (entrance_data.yml, outer_region) anchors its region to the area its doorway opens on; a
+  door in a `pocket` (an outside area vanilla only reaches through a connector cave) anchors the pocket's own logic
+  region (entrance_logic.POCKETS: it exists in the logic with the entrance shuffle; OUTER gives the door's
+  outer_region for logic without one), so a check there needs the pocket, not the region it belongs to in vanilla.
 
 So an area's anchors are the regions it can be walked to from without jumping pits, lifting rocks or swimming:
 "(anchor1 | anchor2 ...)" is a lower bound of what reaching a tile there needs. The grid doesn't hold everything
@@ -31,6 +34,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ELEV = 1.0
 # actors that don't block walking (the rest - rocks, statues, signs, trees, NPCs - do)
 PASSABLE = ('Enemy', 'Tag', 'Area', 'Item', 'ObjButterfly', 'Map', 'ObjGrass', 'ObjLawn', 'ObjFieldTip')
+
+
+OUTER = {}  # pocket logic region -> the outer_region of its door (for logic without the entrance shuffle)
 
 
 def _tiles(romfs, leb):
@@ -92,9 +98,16 @@ def areas(romfs, leb):
             continue
         p = (int(d['pos_xz'][0] // 1.5), int(d['pos_xz'][1] // 1.5))
         near = [p] if p in area else [(p[0], p[1] + 1), (p[0], p[1] - 1), (p[0] + 1, p[1]), (p[0] - 1, p[1])]
+        region = d['outer_region']
+        if d.get('pocket'):  # (pockets of the pooled connector caves; the others stay vanilla)
+            import entrance_logic
+            pk = entrance_logic.POCKETS.get(d['pocket']['name'])
+            if pk:
+                region = pk[0]
+                OUTER[region] = d['outer_region']
         for q in near:
             if q in area:
-                anchors[area[q]].add(d['outer_region'])
+                anchors[area[q]].add(region)
     return area, anchors
 
 
@@ -137,6 +150,7 @@ def main():
     tr = tile_regions(romfs, leb)
     for name, (room, tile) in sorted(location_tiles(romfs, leb).items()):
         a = tr.get((room, tile))
+        a = a and {OUTER.get(r, r) for r in a}  # (the table is the logic without the entrance shuffle: no pockets)
         try:
             region, cond = field_regions.region_of(room, tile)
         except field_regions.NoRegion as e:

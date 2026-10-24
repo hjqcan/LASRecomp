@@ -5,6 +5,7 @@ Without it, Multi uses a system font. Windows Chinese modes prefer Microsoft YaH
 Microsoft JhengHei (traditional), since the Japanese Yu Gothic fallback lacks some Chinese glyphs.
 Other Windows languages use Yu Gothic; macOS uses Hiragino Sans (the same style of Japanese gothic as
 the Switch's Morisawa UD Shin Go), then Arial. No system fonts are copied into or shipped with Multi.
+On Linux it uses bundled BIZ UDPGothic, then DejaVu Sans, with Switch-compatible vertical metrics.
 
 For the exact look, put your own copies of the system fonts here:
 

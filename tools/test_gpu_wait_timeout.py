@@ -19,6 +19,11 @@ host = (root / f'runtime/platform/{platform}.c').read_text(encoding='utf-8')
 terminate = re.search(r'void plat_terminate\(int status\) \{[^}]+\}', host).group()
 harness = r'''
 #include <stdint.h>
+#include <pthread.h>
+static pthread_mutex_t seq_lock=PTHREAD_MUTEX_INITIALIZER;
+static uint64_t submit_seq=7;
+static uint64_t rec_submitted(void) { return submit_seq; }
+static void rec_wait_submitted(uint64_t seq) { (void)seq; }
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -50,6 +55,7 @@ static void rt_fatal_msg(const char *fmt, ...) {
 }
 void vk_devlost_dump(void) { puts("device dump"); }
 static void vk_device_fault_report(void) { puts("fault report"); }
+#define LOG(...) fprintf(stderr,__VA_ARGS__)
 #define FATAL(...) do { rt_fatal_msg(__VA_ARGS__); exit(7); } while (0)
 #define VK_WATCHDOG(operation, sequence, statement) do { statement; } while (0)
 ''' + terminate + '\n' + wait + r'''

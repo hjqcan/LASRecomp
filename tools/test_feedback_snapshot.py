@@ -72,7 +72,7 @@ static VkImageCopy copied[256];
 static struct { VkImage image; VkImageViewType type; VkFormat format; uint32_t base,levels,layer,layers; VkComponentMapping sw; } views[128];
 static int vmaCreateImage(int vma,const VkImageCreateInfo *ci,const VmaAllocationCreateInfo *ai,VkImage *image,VmaAllocation *mem,void *info) {
  (void)vma;(void)ai;(void)info; *image=++creates+10;*mem=*image;allocations[*image]=*ci;return 0; }
-static void vkCmdCopyImage(VkCommandBuffer cb,VkImage src,int sl,VkImage dst,int dl,unsigned n,const VkImageCopy *r) {
+static void rec_CmdCopyImage(VkCommandBuffer cb,VkImage src,int sl,VkImage dst,int dl,unsigned n,const VkImageCopy *r) {
  (void)cb;(void)sl;(void)dl;
  for(unsigned i=0;i<n;i++) { copied[copies++]=r[i]; mip_data[dst][r[i].dstSubresource.mipLevel]=mip_data[src][r[i].srcSubresource.mipLevel]; }
 }

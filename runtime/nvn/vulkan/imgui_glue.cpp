@@ -5,12 +5,17 @@
 
 extern "C" {
 #include "vk.h"
+#include "record.h"
 }
+
+// imgui_impl_vulkan.cpp: fixed vertex input draws nothing on this driver while dynamic vertex input is enabled.
+extern "C" int las_imgui_dyn_vertex = 0;
 
 // Per ImGui context (the start screen and the in-game menu each have one, and the start screen comes back after an
 // in-place reboot while the menu's context lives on): the backend keeps its data in the current context.
 extern "C" bool vk_imgui_backend_init(void) {
     if (ImGui::GetIO().BackendRendererUserData) return true;
+    las_imgui_dyn_vertex = g_vk.vids;
     ImGui_ImplVulkan_InitInfo ii = {};
     ii.ApiVersion = VK_API_VERSION_1_3;
     ii.Instance = g_vk.inst;
@@ -29,11 +34,19 @@ extern "C" bool vk_imgui_backend_init(void) {
     ii.PipelineRenderingCreateInfo.pColorAttachmentFormats = &g_vk.sc_format;
     bool ok = ImGui_ImplVulkan_Init(&ii);
     if (!ok) LOG("[vk] ImGui Vulkan backend init failed\n");
+    // The font texture now (the fonts were added before this): ImGui uploads it with a submission and a queue wait of
+    // its own, which its NewFrame would otherwise make at the first frame, while the recorder thread (record.c) may
+    // be submitting. Here the recorder is drained first, so the queue is idle.
+    if (ok) {
+        rec_drain();
+        ImGui_ImplVulkan_CreateFontsTexture();
+    }
     return ok;
 }
 
 extern "C" void vk_imgui_backend_shutdown(void) {
     if (!ImGui::GetIO().BackendRendererUserData) return;
+    rec_drain();  // (the queue is the recorder's: idle for the wait below)
     vkDeviceWaitIdle(g_vk.dev);
     ImGui_ImplVulkan_Shutdown();
 }
@@ -61,7 +74,7 @@ extern "C" uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h) {
     rg.bufferOffset = s.off;
     rg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     rg.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
-    vkCmdCopyBufferToImage(cb, s.buf, img, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+    rec_CmdCopyBufferToImage(cb, s.buf, img, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
     VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vi.image = img;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;

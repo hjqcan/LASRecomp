@@ -34,12 +34,14 @@ static volatile uint64_t g_frame_now, g_load_frame;
 static unsigned g_loads_at_warp;
 static uint64_t g_warp_frame;
 static int g_warp_waiting;
+static int g_change;  // a level change of the game's own is under way (watch_level_change)
 RT_ON_RESET(warp_reset) {  // (reboot: nothing queued; the request objects were in the wiped memory)
     g_pending = 0;
     g_request = 0;
     g_req = 0;
     g_give_pending = 0;
     g_warp_waiting = 0;
+    g_change = 0;
 }
 
 // Called from the generated code when a level registers its request object.
@@ -48,6 +50,8 @@ void rt_warp_request_obj(uint64_t r) {
         LOG("[warp] level-jump request object %llx\n", (unsigned long long)r);
         g_loads++;
         g_load_frame = g_frame_now;
+        { extern void pace_hitch(const char *why);  // nvn/pace.c
+          pace_hitch("a level load"); }
     }
     g_request = r;
 }
@@ -88,7 +92,7 @@ int g_start_screen;  // runtime/ui/launcher.mm: the start screen is up - before 
 
 int game_in_play(void) {
     if (!title_is_las() || g_start_screen) return 0;
-    uint64_t gm = LD64(GA_GAME_MGR);
+    uint64_t gm = LD64(GA(GAME_MGR));
     return gm && LD64(gm + 0x4b8) != 0;
 }
 
@@ -104,7 +108,7 @@ bool warp_blocked(const char *locator) {
     static const char *const kSwim[] = {"Field_03O", "Field_15K", "Field_03K", "EagleTowerExit_01A_b",  // WaterTopOutForward
                                         "FishingBoat_01A", "MamboCave_01A"};  // WaterSideOutLeft / Right (swim in)
     for (size_t i = 0; i < sizeof kSwim / sizeof kSwim[0]; i++)
-        if (!strcmp(locator, kSwim[i])) return !(LD32(GA_LIVE_SAVE + 0x556C) & 1);
+        if (!strcmp(locator, kSwim[i])) return !(LD32(GA(LIVE_SAVE) + 0x556C) & 1);
     return false;
 }
 int warp_busy(void) { return g_pending; }  // a queued warp not applied yet (shader tour)
@@ -137,7 +141,7 @@ static void warp_test(uint64_t frame) {
     if (next) next++;
 }
 
-// GA_LEVEL_REQUEST_SITE: performs a pending level-jump request (x0 = request)
+// GA(LEVEL_REQUEST_SITE): performs a pending level-jump request (x0 = request)
 
 // LARECOMP_DUMP_MEM=<frame>:<main offset>:<deref offsets, '+'-separated or ->:<bytes>  e.g. 4400:1cb9fb8:0+8:0x2000
 // -> build/memdump.bin (test hook: [[main+off]+0]+8 ...)
@@ -211,23 +215,59 @@ void warp_frame(uint64_t frame) {
     warp_on_load(frame);
     mem_dump_test(frame);
     if (ENV("LARECOMP_LOG_WARPAVAIL") && frame % 300 == 0) {
-        uint64_t gm = LD64(GA_GAME_MGR), ps = LD64(GA_PLAYER_STATUS_PTR);
+        uint64_t gm = LD64(GA(GAME_MGR)), ps = LD64(GA(PLAYER_STATUS_PTR));
         LOG("[warp] frame %llu gm %llx +4b8 %llx +4a8 %llx level '%s'\n", (unsigned long long)frame, (unsigned long long)gm,
             gm ? (unsigned long long)LD64(gm + 0x4b8) : 0, gm ? (unsigned long long)LD64(gm + 0x4a8) : 0,
             ps ? (const char *)(uintptr_t)ps : "");
     }
     if (ENV("LARECOMP_LOG_KEYITEMS") && frame % 120 == 0) {  // PlayerStatus key items vs the save buffer copy
-        uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+        uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
         LOG("[keyitems] frame %llu ps %llx ps+ac %08x save+556c %08x\n", (unsigned long long)frame, (unsigned long long)ps,
-            ps ? *(uint32_t *)(uintptr_t)(ps + 0xac) : 0, *(uint32_t *)(uintptr_t)(GA_LIVE_SAVE + 0x556c));
+            ps ? *(uint32_t *)(uintptr_t)(ps + 0xac) : 0, *(uint32_t *)(uintptr_t)(GA(LIVE_SAVE) + 0x556c));
     }
+}
+
+// A level or area change of the game's own under way (Link walked through a doorway or into another area, or a warp
+// point fired): from the moment it starts, the request object the level registered (g_request) holds the destination
+// - level name +0xa8 / length +0xe8, locator +0xf0 / length +0x130 (the field the processor tests) - until the next
+// level registers a new, empty one. Once that change starts, the processor (main+0x81ba80) soon finds no player
+// component either - entity [gm+0x4a8], its object [entity+0x88], the component [object+0x618] (main+0x1b730 /
+// main+0x11b70, type-checked shared_ptrs: null when missing) - and calls main+0x864d50 with it unchecked: null+0x3f8,
+// the crash at return address main+0x81bdc8 (Field warps fired while Link walked into the Animal Village entrance or
+// the Mad Batter's well). A warp handed over while the component was still there didn't crash but was lost (the
+// game's own change won). So a warp waits while the request object holds a destination - checked every frame and
+// remembered until the next level's request object registers (the old one is freed during the load; a stale one
+// left over without a successor holds garbage, not a destination), at most CHANGE_TIMEOUT frames - and while there is
+// no player component; then WARP_SETTLE frames after the new level's request object, as after any load.
+enum { CHANGE_TIMEOUT = 600 };
+static unsigned g_change_loads;       // g_loads when the game's own change was last seen pending
+static uint64_t g_change_req, g_change_since;
+static char g_change_level[64];        // its destination (log)
+static int g_deferred_log;
+static void watch_level_change(uint64_t now) {
+    uint64_t r = g_request;
+    uint64_t ll = r ? LD64(r + 0xe8) : 0, lc = r ? LD64(r + 0x130) : 0;
+    if (ll && ll < 0x40 && lc && lc < 0x40 && strnlen((const char *)(uintptr_t)(r + 0xa8), 0x40) == ll &&
+        strnlen((const char *)(uintptr_t)(r + 0xf0), 0x40) == lc) {  // a destination
+        if (!g_change || r != g_change_req) g_change_since = now;
+        g_change = 1, g_change_req = r, g_change_loads = g_loads;
+        strlcpy(g_change_level, (const char *)(uintptr_t)(r + 0xf0), sizeof g_change_level);
+    } else if (g_change && g_loads != g_change_loads) {
+        g_change = 0;  // (the next level registered its request object)
+    }
+    if (g_change && now - g_change_since > CHANGE_TIMEOUT) g_change = 0;
+}
+static int player_component_missing(void) {
+    uint64_t gm = LD64(GA(GAME_MGR)), e = gm ? LD64(gm + 0x4a8) : 0, o = e ? LD64(e + 0x88) : 0;
+    return !o || !LD64(o + 0x618);
 }
 
 // Game main thread, once per frame (from the controller read): if a warp is queued, build a request with
 // the fields main+0x81b950 fills and hand it to the game's own request processor.
 void warp_game_tick(Cpu *c) {
-    if (!g_pending) return;
     uint64_t now = g_frame_now;
+    watch_level_change(now);
+    if (!g_pending) return;
     if (g_warp_waiting && g_loads == g_loads_at_warp && now - g_warp_frame < WARP_TIMEOUT)
         return;  // (the last warp's level isn't loaded yet: this one stays queued)
     g_warp_waiting = 0;
@@ -237,6 +277,14 @@ void warp_game_tick(Cpu *c) {
         return;
     }
     if (now - g_load_frame < WARP_SETTLE) return;  // (a level just loaded: let it settle first)
+    if (g_change || player_component_missing()) {  // (the game's own level / area change: stays queued until done)
+        if (!g_deferred_log)
+            LOG("[warp] waiting: a level change of the game's own is under way (%s)\n",
+                g_change ? g_change_level : "no player component");
+        g_deferred_log = 1;
+        return;
+    }
+    g_deferred_log = 0;
     if (!g_req) g_req = (uint64_t)(uintptr_t)hle_alloc(0x200);
     uint64_t req = g_req;
     pthread_mutex_lock(&g_lock);
@@ -253,7 +301,7 @@ void warp_game_tick(Cpu *c) {
     uint64_t saved[31], sp = c->sp, pc = c->pc;
     memcpy(saved, c->x, sizeof saved);
     c->x[0] = req;
-    guest_call(c, GA_LEVEL_REQUEST_SITE);
+    guest_call(c, GA(LEVEL_REQUEST_SITE));
     memcpy(c->x, saved, sizeof saved);
     c->sp = sp;
     c->pc = pc;
@@ -309,7 +357,7 @@ static void find_floats_tick(uint64_t frame) {
                             uint64_t v = *(volatile uint64_t *)(uintptr_t)(ra[r] + q), loc = ra[r] + q;
                             for (int t = 0; t < nl; t++)
                                 if (v <= lv[t] && v >= lv[t] - (depth ? 0x800 : 0x10)) {
-                                    bool gl = loc >= MAIN_BASE && loc < GA_MAIN_IMAGE_SCAN_END;
+                                    bool gl = loc >= MAIN_BASE && loc < GA(MAIN_IMAGE_SCAN_END);
                                     LOG("[findfloats] path d%d %s%llx -> %llx (+%llx)\n", depth, gl ? "MAIN+" : "",
                                         (unsigned long long)(gl ? loc - MAIN_BASE : loc), (unsigned long long)v,
                                         (unsigned long long)(lv[t] - v));
@@ -692,11 +740,13 @@ void give_item_tick(Cpu *c, uint64_t frame) {
     { extern void rescue_tick(uint64_t); rescue_tick(frame); }  // (softlock rescues: runtime/hle/rescue.c)
     pane_scan_tick(frame);
     { extern void doorjump_tick(uint64_t frame); doorjump_tick(frame); }
-    { extern void pot_reveal_tick(uint64_t frame); pot_reveal_tick(frame); }  // (after doorjump: Link found)
+    { extern void pot_regrow_tick(uint64_t frame); pot_regrow_tick(frame); }  // (after doorjump: Link found)
     { extern void souls_tick(uint64_t frame); souls_tick(frame); }  // (boss / mini-boss souls: runtime/hle/souls.c)
     { extern void triforce_tick(void); triforce_tick(); }  // (Triforce hunt: the get message's flags, triforce.c)
     { extern void hookshot_tour_tick(uint64_t frame); hookshot_tour_tick(frame); }
     { extern void flags_ext_tick(void); flags_ext_tick(); }  // (game thread: flag gets / sets happen here too)
+    { extern void rt_powder_flag_tick(void); rt_powder_flag_tick(); }  // (found powder: keysanity.c)
+    { extern void silent_pickups_tick(uint64_t); silent_pickups_tick(frame); }  // (a silent Heart Container's refill)
     ptrscan_tick(frame);
     memdump_tick(frame);
     find_move_tick(frame);
@@ -734,7 +784,7 @@ void give_item_tick(Cpu *c, uint64_t frame) {
                 uint64_t saved[31];
                 memcpy(saved, c->x, sizeof saved);
                 c->x[0] = (uint64_t)id; c->x[1] = (uint64_t)cnt; c->x[2] = (uint64_t)(int64_t)idx; c->x[3] = (uint64_t)equip;
-                guest_call(c, GA_ADD_ITEM);
+                guest_call(c, GA(ADD_ITEM));
                 memcpy(c->x, saved, sizeof saved);
                 LOG("[give] item %d x%d (index %d)\n", id, cnt, idx);
             }
@@ -767,7 +817,7 @@ void give_item_tick(Cpu *c, uint64_t frame) {
         uint64_t saved[31];
         memcpy(saved, c->x, sizeof saved);
         c->x[0] = (uint64_t)g_give_id; c->x[1] = (uint64_t)g_give_count; c->x[2] = (uint64_t)(int64_t)g_give_index; c->x[3] = 0;
-        guest_call(c, GA_ADD_ITEM);
+        guest_call(c, GA(ADD_ITEM));
         memcpy(c->x, saved, sizeof saved);
         LOG("[give] item %d x%d (index %d)\n", g_give_id, g_give_count, g_give_index);
     }

@@ -5,7 +5,13 @@
 // built-ins it uses, compiled and run on the CPU, and the registers / predicates are compared with values worked
 // out by hand from the instruction's definition. tools/test_translate_ops.sh drives it.
 //
+// --glsl <dir>: instead, writes each case's Vulkan GLSL (key.glsl = 1) as a vertex, fragment and compute shader
+// (<dir>/<case>_<stage>.{vert,frag,comp}, the case names in <dir>/names.txt) for tools/test_spirv_val.sh, which compiles
+// them (glslc, Vulkan 1.3) and runs spirv-val on each. (The shipped shader list holds only hashes of the game's
+// shaders - their code is in the player's game files - so CI validates these synthetic programs instead.)
+//
 // usage: test_translate_ops <out.cpp>
+//        test_translate_ops --glsl <dir>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -126,8 +132,63 @@ static const char prelude[] =
     "    if (got != want) { printf(\"FAIL %s: got 0x%08x, want 0x%08x\\n\", name, got, want); fails++; }\n"
     "}\n";
 
+// The case's program: its instructions with scheduling words, EXIT, padded with NOPs; returns the word count
+static int program(const Case *c, uint64_t prog[16]) {
+    int m = 0;
+    for (const uint64_t *w = c->insn; *w; w++) {
+        if (m % 4 == 0) prog[m++] = 0;  // scheduling word
+        prog[m++] = *w;
+    }
+    if (m % 4 == 0) prog[m++] = 0;
+    prog[m++] = EXIT;
+    while (m % 4) prog[m++] = NOP;
+    return m;
+}
+
+static int write_glsl(const char *dir) {
+    static const struct { int stage; const char *ext; } st[] = {
+        {STAGE_VERTEX, "vert"}, {STAGE_FRAGMENT, "frag"}, {STAGE_COMPUTE, "comp"}};
+    char path[1024];
+    snprintf(path, sizeof path, "%s/names.txt", dir);
+    FILE *names = fopen(path, "w");
+    if (!names) { perror(path); return 2; }
+    int n, bad = 0;
+    const Case *cs = cases(&n);
+    for (int i = 0; i < n; i++) {
+        uint64_t prog[16];
+        int m = program(&cs[i], prog);
+        for (int j = 0; j < 3; j++) {
+            // vertex / fragment: the 0x80-byte program header first (zero, as tools/test_translate.c's; fragment:
+            // color target 0 written, output map at 0x30 + 0x48)
+            uint8_t buf[0x80 + sizeof prog] = {0};
+            size_t hdr = st[j].stage == STAGE_COMPUTE ? 0 : 0x80;
+            if (st[j].stage == STAGE_FRAGMENT) buf[0x30 + 0x48] = 0xF;
+            memcpy(buf + hdr, prog, (size_t)m * 8);
+            ShaderKey key = {0};  // (compute: as the Vulkan backend's key, exec.c translate_compute)
+            key.glsl = 1;
+            ShaderInfo *s = maxwell_translate(buf, hdr + (size_t)m * 8, st[j].stage, &key);
+            fprintf(names, "%02d_%s %s\n", i, st[j].ext, cs[i].name);
+            if (!s->msl) {
+                printf("FAIL %s (%s): translation: %s\n", cs[i].name, st[j].ext, s->error);
+                bad++;
+            } else {
+                snprintf(path, sizeof path, "%s/%02d_%s.%s", dir, i, st[j].ext, st[j].ext);
+                FILE *f = fopen(path, "w");
+                if (!f) { perror(path); return 2; }
+                fputs(s->msl, f);
+                fclose(f);
+            }
+            maxwell_free(s);
+        }
+    }
+    fclose(names);
+    printf("%d cases x 3 stages written to %s, %d translation failures\n", n, dir, bad);
+    return bad != 0;
+}
+
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s <out.cpp>\n", argv[0]); return 2; }
+    if (argc == 3 && !strcmp(argv[1], "--glsl")) return write_glsl(argv[2]);
+    if (argc < 2) { fprintf(stderr, "usage: %s <out.cpp> | --glsl <dir>\n", argv[0]); return 2; }
     FILE *o = fopen(argv[1], "w");
     if (!o) { perror(argv[1]); return 2; }
     fputs(prelude, o);
@@ -135,14 +196,7 @@ int main(int argc, char **argv) {
     const Case *cs = cases(&n);
     for (int i = 0; i < n; i++) {
         uint64_t prog[16];
-        int m = 0;
-        for (const uint64_t *w = cs[i].insn; *w; w++) {
-            if (m % 4 == 0) prog[m++] = 0;  // scheduling word
-            prog[m++] = *w;
-        }
-        if (m % 4 == 0) prog[m++] = 0;
-        prog[m++] = EXIT;
-        while (m % 4) prog[m++] = NOP;
+        int m = program(&cs[i], prog);
         ShaderKey key = {0};
         ShaderInfo *s = maxwell_translate((const uint8_t *)prog, (size_t)m * 8, STAGE_COMPUTE, &key);
         const char *b = s->msl ? strstr(s->msl, "kernel void main0(") : NULL;

@@ -582,7 +582,7 @@ static std::string g_spoiler_seed;  // seed whose spoiler page is open
 
 extern "C" void rando_tab_draw(float scale) {
     (void)scale;
-    static GameVersion scanned_version = GAME_UNSUPPORTED;
+    static GameLayout scanned_version = GAME_UNSUPPORTED;
     if (scanned_version != game_version_current()) {
         g_scanned = false; g_spoiler_seed.clear(); scanned_version = game_version_current();
     }

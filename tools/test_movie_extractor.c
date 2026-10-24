@@ -43,6 +43,7 @@ uint64_t guest_sym(const char *name) { return 0; }
 void guest_call(Cpu *c, uint64_t address) { assert(!"No decoder events in the fixture"); }
 void run_timer_ending_movie(void) {}
 void run_timer_title(void) {}  // (runtime/hle/run_timer.c: the run timer's end)
+void pace_hitch(const char *why) { (void)why; }  // (runtime/nvn/pace.c: a movie opening is a stall)
 
 static void decoder_cleanup(bool reboot) {
     Decoder d = {0};

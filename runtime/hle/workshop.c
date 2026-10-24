@@ -11,11 +11,11 @@ extern uint64_t doorjump_player(uint64_t frame);
 bool workshop_read_sample(RouteSample *out,bool position) {
     RouteSample s=*out;
     s.playing=s.position=s.assisted=false;s.hp=0;s.level[0]=0;s.x=s.y=s.z=0;
-    const uint8_t *save=(const uint8_t *)(uintptr_t)GA_LIVE_SAVE;
+    const uint8_t *save=(const uint8_t *)(uintptr_t)GA(LIVE_SAVE);
     s.playing=game_in_play() && *(const uint32_t *)save==0xE && *(const uint16_t *)(save+0x5388)!=0;
     if (!s.playing) { *out=s;return true; }
     s.hp=*(const int16_t *)(save+0x5544);
-    uint64_t ps=*(const uint64_t *)(uintptr_t)GA_PLAYER_STATUS_PTR;
+    uint64_t ps=*(const uint64_t *)(uintptr_t)GA(PLAYER_STATUS_PTR);
     if (ps<GUEST_LO || ps>GUEST_HI-64) return false;
     const char *level=(const char *)(uintptr_t)ps;
     size_t n=0;
@@ -46,6 +46,6 @@ void workshop_game_tick(uint64_t frame,uint64_t buttons,int lx,int ly,int rx,int
     bool route_position=s.now_ns-last_position>=100000000ull;
     if(!workshop_read_sample(&s,probe||route_position))return;
     if(s.playing&&route_position)last_position=s.now_ns;
-    research_state(&s,s.playing?(const void *)(uintptr_t)(GA_LIVE_SAVE+0x5388):NULL,s.playing?0x259:0);
+    research_state(&s,s.playing?(const void *)(uintptr_t)(GA(LIVE_SAVE)+0x5388):NULL,s.playing?0x259:0);
     if(fresh){s.position&=route_position;workshop_observe(&s);}
 }

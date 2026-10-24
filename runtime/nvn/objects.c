@@ -254,6 +254,8 @@ NVN(nvnMemoryPoolBuilderGetFlags) { RET(G(uint32_t, A(0), 8)); }
 NVN(nvnMemoryPoolBuilderGetMemory) { RET(G(uint64_t, A(0), 0x10)); }
 NVN(nvnMemoryPoolBuilderGetSize) { RET(G(uint64_t, A(0), 0x18)); }
 
+static NvnPool pools[256];
+static int npools;
 NVN(nvnMemoryPoolInitialize) {
     NvnPool *p = calloc(1, sizeof *p);
     p->storage = G(uint64_t, A(1), 0x10);
@@ -262,7 +264,16 @@ NVN(nvnMemoryPoolInitialize) {
     if (!p->storage && ENV("LARECOMP_DEBUG_POOLS")) LOG("[nvn] pool without CPU storage: object %llx size %llx flags %x lr %llx\n",
                          (unsigned long long)A(0), (unsigned long long)p->size, p->flags, (unsigned long long)c->x[30]);
     SET_HOST(A(0), p);
+    if (getenv("LARECOMP_LOG_BINDS")) LOG("[pool] %llx + %llu KB flags %#x\n", (unsigned long long)p->storage, (unsigned long long)(p->size >> 10), p->flags);
+    if (npools < 256) pools[npools++] = *p;  // (debug: nvn_pool_flags_at)
     RET(1);
+}
+// (debug) the flags of the pool holding a guest address (-1: none): CPU_NO_ACCESS 1, CPU_UNCACHED 2, CPU_CACHED 4,
+// GPU_NO_ACCESS 8, GPU_UNCACHED 0x10, GPU_CACHED 0x20, SHADER_CODE 0x40, COMPRESSIBLE 0x80, PHYSICAL 0x100, VIRTUAL 0x200
+int nvn_pool_flags_at(uint64_t addr) {
+    for (int i = npools - 1; i >= 0; i--)
+        if (addr >= pools[i].storage && addr < pools[i].storage + pools[i].size) return (int)pools[i].flags;
+    return -1;
 }
 NVN(nvnMemoryPoolFinalize) {
     NvnPool *pool = HOST(NvnPool, A(0));

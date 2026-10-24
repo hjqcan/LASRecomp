@@ -200,6 +200,46 @@ static PFN_vkCmdBeginRenderingKHR   ImGuiImplVulkanFuncs_vkCmdBeginRenderingKHR;
 static PFN_vkCmdEndRenderingKHR     ImGuiImplVulkanFuncs_vkCmdEndRenderingKHR;
 #endif
 
+// LAS Recomp (runtime/nvn/vulkan/imgui_glue.cpp): set before ImGui_ImplVulkan_Init. This AMD driver draws nothing
+// from a pipeline whose vertex input is fixed while VK_EXT_vertex_input_dynamic_state is enabled, so the start
+// screen stayed the clear colour. The game's pipelines already set vertex input dynamically.
+extern "C" int las_imgui_dyn_vertex;
+static void LasSetVertexInput(VkCommandBuffer command_buffer, VkDevice device)
+{
+    static PFN_vkCmdSetVertexInputEXT set_vertex_input;
+    static int looked;
+    if (!looked)
+    {
+        looked = 1;
+        set_vertex_input = (PFN_vkCmdSetVertexInputEXT)vkGetDeviceProcAddr(device, "vkCmdSetVertexInputEXT");
+    }
+    if (!set_vertex_input)
+        return;
+    VkVertexInputBindingDescription2EXT bind = {};
+    bind.sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT;
+    bind.binding = 0;
+    bind.stride = sizeof(ImDrawVert);
+    bind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    bind.divisor = 1;
+    VkVertexInputAttributeDescription2EXT attr[3] = {};
+    attr[0].sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT;
+    attr[0].location = 0;
+    attr[0].binding = 0;
+    attr[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attr[0].offset = offsetof(ImDrawVert, pos);
+    attr[1].sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT;
+    attr[1].location = 1;
+    attr[1].binding = 0;
+    attr[1].format = VK_FORMAT_R32G32_SFLOAT;
+    attr[1].offset = offsetof(ImDrawVert, uv);
+    attr[2].sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT;
+    attr[2].location = 2;
+    attr[2].binding = 0;
+    attr[2].format = VK_FORMAT_R8G8B8A8_UNORM;
+    attr[2].offset = offsetof(ImDrawVert, col);
+    set_vertex_input(command_buffer, 1, &bind, 3, attr);
+}
+
 // Reusable buffers used for rendering 1 current in-flight frame, for ImGui_ImplVulkan_RenderDrawData()
 // [Please zero-clear before use!]
 struct ImGui_ImplVulkan_FrameRenderBuffers
@@ -450,6 +490,8 @@ static void ImGui_ImplVulkan_SetupRenderState(ImDrawData* draw_data, VkPipeline 
     // Bind pipeline:
     {
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        if (las_imgui_dyn_vertex)
+            LasSetVertexInput(command_buffer, bd->VulkanInitInfo.Device);
     }
 
     // Bind Vertex And Index Buffer:
@@ -950,10 +992,10 @@ static void ImGui_ImplVulkan_CreatePipeline(VkDevice device, const VkAllocationC
     blend_info.attachmentCount = 1;
     blend_info.pAttachments = color_attachment;
 
-    VkDynamicState dynamic_states[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkDynamicState dynamic_states[3] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_VERTEX_INPUT_EXT };
     VkPipelineDynamicStateCreateInfo dynamic_state = {};
     dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamic_state.dynamicStateCount = (uint32_t)IM_ARRAYSIZE(dynamic_states);
+    dynamic_state.dynamicStateCount = las_imgui_dyn_vertex ? 3u : 2u;
     dynamic_state.pDynamicStates = dynamic_states;
 
     VkGraphicsPipelineCreateInfo info = {};

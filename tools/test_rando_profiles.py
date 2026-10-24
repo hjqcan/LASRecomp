@@ -24,7 +24,7 @@ HARNESS = r'''
 #include <string.h>
 int main(int argc,char **argv) {
     if(argc!=4)return 9;
-    GameVersion version=!strcmp(argv[2],"1.0.0")?GAME_100:GAME_110;
+    GameLayout version=!strcmp(argv[2],"1.0.0")?GAME_100:GAME_110;
     if(!strcmp(argv[1],"compatible"))return rando_seed_compatible(argv[3],version)?0:2;
     RandoPatchSet out;char why[256];memset(&out,0x55,sizeof out);
     if(!rando_patch_read(argv[3],version,&out,why,sizeof why)) {

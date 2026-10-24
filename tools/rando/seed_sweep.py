@@ -9,7 +9,7 @@ the logic thinks is open too early - the circular dig-spot gates of #81 / #144. 
 runtime/ui/rando_tab.mm (seed_id_encode, request.json in start_generation): keep the two in step.
 
 usage: seed_sweep.py <romfs> [-n seeds] [-j jobs] [--id SEED-ID ...] [--keep dir] [--stealing M] [--shopsanity N]
-                     [--souls] [--rooms N ...] [--triforce N] [--miniboss-freq F] [--full]
+                     [--souls] [--rooms N ...] [--triforce N] [--miniboss-freq F] [--entrances T] [--full]
        (default: the fixed seed IDs below + 40 random option mixes with digsanity on, every logic level)
 --miniboss-freq F: every random mix randomizes enemies with mini-boss frequency F (0 - 3: Normal, 2x, 3x, All), enemy
 mode Seeded or Random; --full: each seed is also generated in full (game files, enemies and all) and must finish -
@@ -31,7 +31,8 @@ ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
 LAS = os.path.join(ROOT, 'third_party', 'LAS-Randomizer')
 # seeds reported unbeatable (made by older builds; with the fix they come out different, and must be beatable)
 FIXED = ['MBHMM-13FR6-2000W-40GAZ-X700Z',  # #144: shovel in the Pothole Field, all 5 golden leaves buried
-         'MBME8-68NR6-2000W-48GTZ-X700Y']  # #81: shovel next to the Tail Key chest, feather / rooster / powder buried
+         'MBME8-68NR6-2000W-48GTZ-X700Y',  # #81: shovel next to the Tail Key chest, feather / rooster / powder buried
+         '5F5HF-AB703-5RKZW-E4VTZ-9D100-0035Z']  # entrance shuffle: the Flippers in a toadstool clearing bush (bush-05A-1)
 
 # ---- seed IDs (runtime/ui/rando_tab.mm)
 B32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
@@ -208,7 +209,9 @@ def check_seed(out_dir, level, walk, needed=0):
     for k, v in {'D6-4D': 'D6-5D', 'D6-2A': 'D6-4D'}.items():  # (las_headless: rooms LAS's logic never defines)
         logic.setdefault(k, {'type': 'room', 'condition-basic': v})
     p = json.load(open(os.path.join(out_dir, 'placements.json')))
-    extra = {name: ' | '.join(sorted(walk[name])) for name in logic if name in walk}
+    # (walk: (region, fallback) pairs - a pocket's own region with the entrance shuffle, else its door's region)
+    extra = {name: ' | '.join(sorted({r if r in logic else fb for r, fb in walk[name]}))
+             for name in logic if name in walk}
     a, seen = playthrough(logic, p['placements'], p['access'], level)
     def missing(acc):  # (Triforce hunt: the pieces are the goal)
         if needed:
@@ -267,13 +270,15 @@ def run_one(job):
 
 
 def walk_conditions(romfs):
-    """{bush / dig location: set of regions its tile can be walked to from} (field_reach)."""
+    """{bush / dig location: set of (region, fallback) its tile can be walked to from} (field_reach; fallback: the
+    region to use where the logic has no such region - a connector cave pocket without the entrance shuffle)."""
     sys.path.insert(0, HERE)
     sys.path.insert(0, LAS)
     from RandomizerCore.Tools import leb
     import field_reach
     tr = field_reach.tile_regions(romfs, leb)
-    return {name: tr[t] for name, t in field_reach.location_tiles(romfs, leb).items() if t in tr}
+    return {name: {(r, field_reach.OUTER.get(r, r)) for r in tr[t]}
+            for name, t in field_reach.location_tiles(romfs, leb).items() if t in tr}
 
 
 def main():
@@ -290,6 +295,8 @@ def main():
                     'vanilla / random prices)')
     ap.add_argument('--miniboss-freq', type=int, choices=[0, 1, 2, 3], help='every random mix with enemies randomized, '
                     'mini-bosses at this frequency (Normal / 2x / 3x / All)')
+    ap.add_argument('--entrances', type=int, choices=[0, 1, 2], help='every random mix with this entrance tier '
+                    '(off / dungeons / + houses, caves & connector caves), bushsanity on')
     ap.add_argument('--full', action='store_true', help='also generate each seed in full (game files)')
     ap.add_argument('--souls', action='store_true', help='every random mix with boss and mini-boss souls on')
     ap.add_argument('--triforce', type=int, metavar='N', help='every random mix a Triforce hunt for N pieces '
@@ -313,6 +320,8 @@ def main():
                      enemy_mode=int(rng.random() < 0.5))
         if args.souls:
             o['boss_souls'] = o['miniboss_souls'] = True
+        if args.entrances is not None:
+            o['entrances'], o['bushes'] = args.entrances, True
         if args.triforce:
             o['triforce_needed'], o['triforce_extra'] = args.triforce, i % 3
         if args.rooms:

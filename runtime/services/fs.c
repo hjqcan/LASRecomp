@@ -779,6 +779,8 @@ static void drop_slot(const char *path) {
 static bool commit(HostFs *fs) {
     bool ok = !fs->save_failed;
     int remaining = 0;
+    extern void pace_hitch(const char *why);  // nvn/pace.c
+    if (fs->npending) pace_hitch("a save commit");
     for (int i = 0; i < fs->npending; i++) {
         const char *path = fs->pending[i];
         if (fs->failed[i]) {

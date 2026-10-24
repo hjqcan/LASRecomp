@@ -39,7 +39,7 @@ behavior is already present on beta_5 (8a8f74f); no separate kernel PR is requir
 From an MSYS2 UCRT64 shell at the repository root:
 
 ```sh
-clang -O2 $(pkg-config --cflags sdl3) tools/test_rumble.c -o build/test_rumble.exe
+clang -O2 $(pkg-config --cflags sdl3) tools/test_rumble.c $(pkg-config --libs sdl3) -o build/test_rumble.exe
 build/test_rumble.exe
 clang -O2 $(pkg-config --cflags sdl3) tools/test_sdl_rumble.c $(pkg-config --libs sdl3) -o build/test_sdl_rumble.exe
 build/test_sdl_rumble.exe

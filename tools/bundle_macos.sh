@@ -46,7 +46,7 @@ cp docs/icon/icon.icns "$C/Resources/icon.icns"
 cp docs/icon/icon_1024.png "$C/Resources/icon.png"  # (window / Dock icon at run time)
 cp third_party/fonts/Baloo2/Baloo2-SemiBold.ttf "$C/Resources/Baloo2-SemiBold.ttf"  # (start screen; OFL, README "License")
 cp third_party/fonts/Baloo2/OFL.txt "$C/Resources/Baloo2-OFL.txt"
-cp third_party/fonts/DejaVu/DejaVuSans.ttf "$C/Resources/DejaVuSans.ttf"  # (the game text's last-resort font)
+cp third_party/fonts/DejaVu/DejaVuSans.ttf third_party/fonts/DejaVu/DejaVuSans-Bold.ttf "$C/Resources/"  # (last-resort fonts)
 cp third_party/fonts/DejaVu/LICENSE "$C/Resources/DejaVu-LICENSE.txt"
 cp third_party/ryujinx/LICENSE.txt "$C/Resources/Ryujinx-LICENSE.txt"
 

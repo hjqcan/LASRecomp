@@ -8,6 +8,7 @@
 #include <timeapi.h>
 #include <io.h>
 #include <tlhelp32.h>
+#include <wchar.h>
 
 #include "../platform.h"
 
@@ -110,11 +111,39 @@ static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *ep) {
 // CPU wrote, runtime/nvn/vulkan/exec.c). Without it (refused): no tracking, the renderer reads guest memory in place.
 static bool g_write_watch;
 
+// (the reservation failed: main.c starts the process again) what holds part of the range, for the new process's log
+// (main.c, LARECOMP_REEXEC_WHY: this one can't log yet). Windows places heaps, stacks and DLLs' allocations at random
+// addresses in the lower terabyte (high-entropy ASLR), so now and then one lands in the guest's 12.5 GB.
+static void note_guest_conflict(uint64_t lo, uint64_t hi) {
+    char why[200];
+    snprintf(why, sizeof why, "VirtualAlloc error %lu, nothing found in the range", GetLastError());
+    MEMORY_BASIC_INFORMATION mi;
+    for (uint64_t a = lo; a < hi && VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi); ) {
+        uint64_t base = (uint64_t)(uintptr_t)mi.BaseAddress, end = base + mi.RegionSize;
+        if (mi.State != MEM_FREE) {
+            char mod[MAX_PATH] = "";
+            if (mi.Type == MEM_IMAGE && !GetModuleFileNameA((HMODULE)mi.AllocationBase, mod, sizeof mod)) mod[0] = 0;
+            const char *name = strrchr(mod, '\\');
+            snprintf(why, sizeof why, "%s %s at %llx-%llx%s%s",
+                     mi.State == MEM_COMMIT ? "committed" : "reserved",
+                     mi.Type == MEM_IMAGE ? "module" : mi.Type == MEM_MAPPED ? "mapped file" : "private memory",
+                     (unsigned long long)base, (unsigned long long)end, mod[0] ? " " : "", name ? name + 1 : mod);
+            break;
+        }
+        if (end <= a) break;
+        a = end;
+    }
+    _putenv_s("LARECOMP_REEXEC_WHY", why);
+}
+
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
     void *p = VirtualAlloc((void *)(uintptr_t)lo, hi - lo, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_READWRITE);
     if (p == (void *)(uintptr_t)lo) g_write_watch = true;
     else p = VirtualAlloc((void *)(uintptr_t)lo, hi - lo, MEM_RESERVE, PAGE_READWRITE);
-    if (p != (void *)(uintptr_t)lo) return false;
+    if (p != (void *)(uintptr_t)lo) {
+        note_guest_conflict(lo, hi);
+        return false;
+    }
     g_lo = lo;
     g_hi = hi;
     AddVectoredExceptionHandler(1, vectored_handler);
@@ -338,6 +367,7 @@ void plat_thread_realtime(uint64_t period_ns) {
     (void)period_ns;
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 }
+int plat_thread_realtime_check(uint64_t period_ns) { (void)period_ns; return -1; }
 
 // ---- process
 // GUI launches keep their own append-only log; lasrecomp.log names the latest run, with five recent backups.
@@ -570,6 +600,55 @@ bool plat_module_name(uint64_t pc, char *out, size_t n) {
     return GetModuleFileNameA(m, out, (DWORD)n) > 0;
 }
 
+// RtlGetVersion (ntdll): the real version - GetVersionEx answers with the manifest's idea of it
+typedef LONG(WINAPI *RtlGetVersionFn)(OSVERSIONINFOW *);
+void plat_system_info(PlatSysInfo *si) {
+    OSVERSIONINFOW v = {.dwOSVersionInfoSize = sizeof v};
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    RtlGetVersionFn rtl = ntdll ? (RtlGetVersionFn)(void *)GetProcAddress(ntdll, "RtlGetVersion") : NULL;
+    if (!rtl || rtl(&v) != 0) v.dwMajorVersion = 0;
+    SYSTEM_INFO sys;
+    GetNativeSystemInfo(&sys);
+    const char *arch = sys.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64 ? "x64"
+                     : sys.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64 ? "arm64" : "?";
+    const char *name = v.dwMajorVersion != 10 ? "Windows" : v.dwBuildNumber >= 22000 ? "Windows 11" : "Windows 10";
+    if (v.dwMajorVersion)  // (Windows 11 still says 10.0: build 22000 and later)
+        snprintf(si->os, sizeof si->os, "%s (%lu.%lu.%lu, %s)", name, v.dwMajorVersion, v.dwMinorVersion,
+                 v.dwBuildNumber, arch);
+    else snprintf(si->os, sizeof si->os, "Windows (%s)", arch);
+    // the CPU's name: the registry's (what Task Manager shows), else the CPUID brand string
+    DWORD len = sizeof si->cpu;
+    if (RegGetValueA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", "ProcessorNameString",
+                     RRF_RT_REG_SZ, NULL, si->cpu, &len) != ERROR_SUCCESS) {
+        si->cpu[0] = 0;
+#if defined(__x86_64__) || defined(__i386__)
+        unsigned r[12];
+        for (unsigned i = 0; i < 3; i++)
+            __asm__ volatile("cpuid" : "=a"(r[i * 4]), "=b"(r[i * 4 + 1]), "=c"(r[i * 4 + 2]), "=d"(r[i * 4 + 3]) : "a"(0x80000002u + i), "c"(0));
+        memcpy(si->cpu, r, sizeof r);
+        si->cpu[sizeof r] = 0;
+#endif
+    }
+    char *c = si->cpu;  // (both pad the name with spaces)
+    while (*c == ' ') c++;
+    memmove(si->cpu, c, strlen(c) + 1);
+    for (size_t l = strlen(si->cpu); l && si->cpu[l - 1] == ' '; l--) si->cpu[l - 1] = 0;
+    // cores: one RelationProcessorCore record each; threads: every processor group's
+    DWORD bytes = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &bytes);
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *info = bytes ? malloc(bytes) : NULL;
+    if (info && GetLogicalProcessorInformationEx(RelationProcessorCore, info, &bytes))
+        for (char *p = (char *)info; p < (char *)info + bytes; p += ((SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)p)->Size)
+            si->cores++;
+    free(info);
+    si->threads = (int)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    MEMORYSTATUSEX m = {.dwLength = sizeof m};
+    if (GlobalMemoryStatusEx(&m)) si->ram = m.ullTotalPhys;
+#ifdef LARECOMP_ZIP_BUILD
+    si->package = "zip";  // (make dist: the release zip)
+#endif
+}
+
 void plat_init(void) {
     // abort() (rt_fatal_trace, after the crash dialog) without the C runtime's own "Microsoft Visual C++ Runtime
     // Library - abort() has been called" box and the Windows error report: the player sees only Multi's dialog
@@ -615,7 +694,9 @@ static void append_arg(char *out, size_t cap, const char *a) {
     out[n] = 0;
 }
 
-// No exec() on Windows: start the new process with the same console / standard handles, then exit.
+// No exec() on Windows: start the new process with the same console / standard handles, wait for it, and exit with
+// its exit code. (Exiting at once ended the process a launcher, Steam or a test script started about a second in,
+// with code 0, while the game ran on in another process.)
 void plat_exec(char *const argv[]) {
     STARTUPINFOW si = {.cb = sizeof si};
     PROCESS_INFORMATION pi;
@@ -634,8 +715,11 @@ void plat_exec(char *const argv[]) {
     }
     if (!ok) return;
     CloseHandle(pi.hThread);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    if (!GetExitCodeProcess(pi.hProcess, &code)) code = 1;
     CloseHandle(pi.hProcess);
-    ExitProcess(0);
+    ExitProcess(code);
 }
 
 // ---- diagnostics
@@ -848,6 +932,52 @@ bool plat_remove_tree(const char *dir) {
     FindClose(h);
     return remove_tree_w(w, len, fd.dwFileAttributes,
                          (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? fd.dwReserved0 : 0);
+}
+
+// ---- OneDrive
+// A folder's final path (links and junctions resolved), without the \\?\ prefix, backslashes, no trailing one
+static bool final_path(const wchar_t *p, wchar_t *out, DWORD n) {
+    HANDLE h = CreateFileW(p, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    DWORD k = 0;
+    if (h != INVALID_HANDLE_VALUE) {
+        k = GetFinalPathNameByHandleW(h, out, n, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        CloseHandle(h);
+    }
+    if (!k || k >= n) k = GetFullPathNameW(p, n, out, NULL);  // (can't be opened: as written)
+    if (!k || k >= n) return false;
+    if (!wcsncmp(out, L"\\\\?\\UNC\\", 8)) memmove(out + 2, out + 8, (wcslen(out + 8) + 1) * sizeof *out);
+    else if (!wcsncmp(out, L"\\\\?\\", 4)) memmove(out, out + 4, (wcslen(out + 4) + 1) * sizeof *out);
+    for (wchar_t *c = out; *c; c++) if (*c == L'/') *c = L'\\';
+    for (size_t l = wcslen(out); l > 3 && out[l - 1] == L'\\';) out[--l] = 0;
+    return true;
+}
+
+#ifndef FILE_ATTRIBUTE_PINNED
+#define FILE_ATTRIBUTE_PINNED 0x00080000
+#define FILE_ATTRIBUTE_UNPINNED 0x00100000
+#endif
+#ifndef FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+#define FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS 0x00400000
+#endif
+
+// Under one of the OneDrive folders the environment names (personal, work / school), or a cloud file itself
+bool plat_onedrive_synced(const char *dir) {
+    wchar_t w[MAX_PATH], d[1024], r[1024], v[1024];
+    if (MultiByteToWideChar(CP_UTF8, 0, dir, -1, w, MAX_PATH) <= 1 || !final_path(w, d, 1024)) return false;
+    DWORD a = GetFileAttributesW(d);
+    if (a != INVALID_FILE_ATTRIBUTES &&
+        (a & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_UNPINNED)))
+        return true;
+    static const wchar_t *const vars[] = {L"OneDrive", L"OneDriveConsumer", L"OneDriveCommercial"};
+    for (int i = 0; i < 3; i++) {
+        DWORD k = GetEnvironmentVariableW(vars[i], v, 1024);
+        if (!k || k >= 1024 || !final_path(v, r, 1024)) continue;
+        size_t l = wcslen(r);
+        if (r[l - 1] == L'\\') l--;  // (a drive's root: "D:\")
+        if (!_wcsnicmp(d, r, l) && (!d[l] || d[l] == L'\\')) return true;
+    }
+    return false;
 }
 
 // End the process at once, preserving its result and skipping DLL teardown after publishing the log.

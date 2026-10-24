@@ -13,7 +13,7 @@
 //    When gmem_chunk_words is nonzero, split into aligned descriptors at binding 17,
 //    then 96 onward. LDG/STG route each word to its segment without requiring descriptor indexing.
 //  - rscale table -> binding 18: `uniform RScale { vec4 rscale[65]; };` (std140, the MSL buffer 18 contents).
-//  - per-draw tint -> binding 19: `uniform Tint { vec4 ltint[2]; };` (fragment, when uses_tint).
+//  - per-draw tint -> binding 19: `uniform Tint { vec4 ltint[4]; };` (fragment, when uses_tint).
 //  - texture slot i (ShaderInfo.tex[i]) -> binding 32 + i, a combined image sampler: sampler1D/2D/3D/Cube/
 //    1DArray/2DArray/CubeArray, or its *Shadow variant when tex[i].shadow.
 //  - vertex inputs `layout(location=i) in vec4|ivec4|uvec4 a<i>;` (key->attr_kind); varyings: location i =
@@ -77,7 +77,7 @@ typedef struct {
                             // runtime/nvn/vulkan/exec.c
     bool uses_gmem_store;   // writes global memory (STG)
     uint32_t gmem_chunk_words;
-    bool uses_tint;        // fragment: reads the per-draw tint (buffer 19, float4[2]) applied to color target 0
+    bool uses_tint;        // fragment: reads the per-draw tint (buffer 19, float4[4]) applied to color target 0
     uint16_t ssbo_read;     // storage buffer slots whose binding (address) the shader reads from the driver constants
                             // (c0 0x110 + 16 * i vertex, 0x510 + 16 * i fragment): the slots it actually uses
     bool uses_rscale;       // reads the resolution-scale table (fragment/compute buffer 18): float4 [0] = render

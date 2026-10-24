@@ -59,8 +59,24 @@ static void sp(Str *s, const char *fmt, ...) {
 // output colour, in its gamma encoding: for colours whose hue is within ltint[1].y of ltint[1].x (>= 0.5: any) and
 // saturation >= ltint[1].z, the hue goes to ltint[1].x + ltint[0].x + (its distance from ltint[1].x) * ltint[1].w
 // (turns: .w = 1 a plain shift, < 1 also pulls the hues together), saturation * .y, value * .z (kept <= 1 unless it
-// was above). The shading stays: only the colour moves. `c` is the colour target's expression
-// ("c0" / "o.c0"), v3 / v4 the vector types ("vec3" / "float3").
+// was above). The shading stays: only the colour moves. ltint[2] / [3] (ltint[2].w < 0): a second such change with
+// its own hue window, made from the same colour (a draw blending two recoloured maps, e.g. grass and sand: each keeps
+// its own; where both windows take a colour, the two results are averaged by weight). `c` is the colour target's
+// expression ("c0" / "o.c0"), v3 / v4 the vector types ("vec3" / "float3").
+static void emit_recolour_window(Str *s, const char *v3, const char *v4, int k, const char *r, const char *m) {
+    // (rc_hh0 / rc_ss0 / rc_vv0: the colour's HSV) -> r: the changed colour (linear), m: its weight
+    sp(s, "    float rc_sd%d = fract(rc_hh0 - ltint[%d].x + 0.5f) - 0.5f, rc_dh%d = abs(rc_sd%d);\n", k, k + 1, k, k);
+    sp(s, "    float %s = (ltint[%d].y >= 0.5f ? 1.0f : 1.0f - smoothstep(ltint[%d].y * 0.6f, ltint[%d].y, rc_dh%d)) *\n"
+          "              smoothstep(ltint[%d].z * 0.5f, ltint[%d].z + 1e-4f, rc_ss0);\n", m, k + 1, k + 1, k + 1, k, k + 1, k + 1);
+    sp(s, "    float rc_hh%d = fract(ltint[%d].x + ltint[%d].x + rc_sd%d * ltint[%d].w), rc_ss%d = clamp(rc_ss0 * ltint[%d].y, 0.0f, 1.0f);\n",
+       k + 1, k + 1, k, k, k + 1, k + 1, k);
+    sp(s, "    float rc_vv%d = min(rc_vv0 * ltint[%d].z, max(rc_vv0, 1.0f));\n", k + 1, k);
+    sp(s, "    %s rc_k%d = clamp(abs(fract(%s(rc_hh%d) + %s(1.0f, 2.0f / 3.0f, 1.0f / 3.0f)) * 6.0f - %s(3.0f)) - %s(1.0f), "
+          "%s(0.0f), %s(1.0f));\n", v3, k, v3, k + 1, v3, v3, v3, v3, v3);
+    sp(s, "    %s %s = pow(rc_vv%d * mix(%s(1.0f), rc_k%d, %s(rc_ss%d)), %s(2.2f));\n", v3, r, k + 1, v3, k, v3, k + 1, v3);
+    (void)v4;
+}
+
 static void emit_recolour(Str *s, const char *c, const char *v3, const char *v4) {
     sp(s, "  else if (ltint[0].w < 0.0f) {\n");
     sp(s, "    %s rc_g = pow(max(%s.rgb, %s(0.0f)), %s(1.0f / 2.2f));\n", v3, c, v3, v3);
@@ -68,16 +84,13 @@ static void emit_recolour(Str *s, const char *c, const char *v3, const char *v4)
     sp(s, "    %s rc_p = mix(%s(rc_g.b, rc_g.g, rc_K.w, rc_K.z), %s(rc_g.g, rc_g.b, rc_K.x, rc_K.y), %s(step(rc_g.b, rc_g.g)));\n", v4, v4, v4, v4);
     sp(s, "    %s rc_q = mix(%s(rc_p.x, rc_p.y, rc_p.w, rc_g.r), %s(rc_g.r, rc_p.y, rc_p.z, rc_p.x), %s(step(rc_p.x, rc_g.r)));\n", v4, v4, v4, v4);
     sp(s, "    float rc_d = rc_q.x - min(rc_q.w, rc_q.y);\n");
-    sp(s, "    float rc_hh = abs(rc_q.z + (rc_q.w - rc_q.y) / (6.0f * rc_d + 1e-6f)), rc_ss = rc_d / (rc_q.x + 1e-6f), rc_vv = rc_q.x;\n");
-    sp(s, "    float rc_sd = fract(rc_hh - ltint[1].x + 0.5f) - 0.5f, rc_dh = abs(rc_sd);\n");
-    sp(s, "    float rc_m = (ltint[1].y >= 0.5f ? 1.0f : 1.0f - smoothstep(ltint[1].y * 0.6f, ltint[1].y, rc_dh)) *\n"
-          "              smoothstep(ltint[1].z * 0.5f, ltint[1].z + 1e-4f, rc_ss);\n");
-    sp(s, "    rc_hh = fract(ltint[1].x + ltint[0].x + rc_sd * ltint[1].w); rc_ss = clamp(rc_ss * ltint[0].y, 0.0f, 1.0f);\n");
-    sp(s, "    rc_vv = min(rc_vv * ltint[0].z, max(rc_vv, 1.0f));\n");
-    sp(s, "    %s rc_k = clamp(abs(fract(%s(rc_hh) + %s(1.0f, 2.0f / 3.0f, 1.0f / 3.0f)) * 6.0f - %s(3.0f)) - %s(1.0f), "
-          "%s(0.0f), %s(1.0f));\n", v3, v3, v3, v3, v3, v3, v3);
-    sp(s, "    %s rc_r = rc_vv * mix(%s(1.0f), rc_k, %s(rc_ss));\n", v3, v3, v3);
-    sp(s, "    %s.rgb = mix(%s.rgb, pow(rc_r, %s(2.2f)), %s(rc_m));\n  }\n", c, c, v3, v3);
+    sp(s, "    float rc_hh0 = abs(rc_q.z + (rc_q.w - rc_q.y) / (6.0f * rc_d + 1e-6f)), rc_ss0 = rc_d / (rc_q.x + 1e-6f), rc_vv0 = rc_q.x;\n");
+    emit_recolour_window(s, v3, v4, 0, "rc_r", "rc_m");
+    sp(s, "    if (ltint[2].w < 0.0f) {\n");
+    emit_recolour_window(s, v3, v4, 2, "rc_r2", "rc_m2");
+    sp(s, "      float rc_w = rc_m + rc_m2;\n");
+    sp(s, "      if (rc_w > 0.0f) { rc_r = (rc_r * rc_m + rc_r2 * rc_m2) / rc_w; rc_m = min(rc_w, 1.0f); }\n    }\n");
+    sp(s, "    %s.rgb = mix(%s.rgb, rc_r, %s(rc_m));\n  }\n", c, c, v3);
 }
 
 typedef struct {
@@ -956,6 +969,27 @@ static void video_operand(char *out, const char *reg, int width, int select, boo
 }
 
 // ------------------------------------------------------------------ instruction translation
+// The game's light-culling compute shader (a 30x17 grid of 64-pixel tiles for the tiled lighting of interiors and
+// caves) turns a tile's pixel column into a view direction with the screen height alone: x = px * 2 / height -
+// aspect, which assumes square pixels (width / height = aspect). With a widened camera the image keeps its 1920x1080
+// target, so pixels are no longer square: at 32:9 the tiles right of the screen centre got the lights meant for
+// half as far out, and the lighting changed along a hard vertical line where a light's tiles ended (the floor
+// right of it lighter, MarthaUkuku at 2/3 of the window). The two column steps (pc 0x198: tile x, 0x1a8: tile x +
+// 1) are scaled by aspect * height / width, which is 1 at 16:9: the original shader's result there.
+static void light_tiles_fix(Ctx *c, const uint64_t *code, size_t end, uint32_t pc) {
+    static const uint64_t sig[][2] = {{0x188, 0x5c68100000970309ull}, {0x198, 0x5c68100000d7030dull},
+                                      {0x1a8, 0x5c6810000087030bull}, {0x1b0, 0x5c68100000470303ull}};
+    if (c->stage != STAGE_COMPUTE || (pc != 0x198 && pc != 0x1a8) || end <= 0x1b0 / 8) return;
+    for (size_t i = 0; i < sizeof sig / sizeof sig[0]; i++)
+        if (code[sig[i][0] / 8] != sig[i][1]) return;
+    int d = (int)(code[pc / 8] & 0xff);  // (the destination: r13 / r11)
+    char a[48], h[48], w[48];
+    cbuf_ref(c, 4, 0x1bc, NULL, a);  // camera aspect
+    cbuf_ref(c, 4, 0x1c4, NULL, h);  // target height
+    cbuf_ref(c, 4, 0x1c0, NULL, w);  // target width
+    sp(&c->body, "    r%d = as_type<uint>(as_type<float>(r%d) * (as_type<float>(%s) * as_type<float>(%s) / as_type<float>(%s)));\n", d, d, a, h, w);  // (GLSL: as_type is rewritten)
+}
+
 static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
     char t[2048], u[2048];
     int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8);
@@ -2228,7 +2262,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     }
     bool tint = stage == STAGE_FRAGMENT && !dbg && (c->omap_target & 0x7) == 0x7 && (!key || key->rt_kind[0] == 0);
     if (tint) {
-        sp(&s, "layout(std140, set = %d, binding = 19) uniform Tint { vec4 ltint[2]; };\n", set);
+        sp(&s, "layout(std140, set = %d, binding = 19) uniform Tint { vec4 ltint[4]; };\n", set);
         info->uses_tint = true;
     }
     for (int i = 0; i < info->ntex; i++) {
@@ -2467,6 +2501,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         if (any_branch && label[i]) sp(&c->body, "  case %uu:\n", pc);
         if (annotate) sp(&c->body, "    // pc %x: %016llx\n", pc, (unsigned long long)((const uint64_t *)code)[i]);
         emit_insn(c, ((const uint64_t *)code)[i], pc);
+        light_tiles_fix(c, (const uint64_t *)code, end, pc);
         if (dbg && pc == maxwell_dbg_pc) {
             int rr = maxwell_dbg_reg % 1000, half = maxwell_dbg_reg / 1000;  // +1000: low f16, +2000: high f16
             c->reg_used[rr] = 1;

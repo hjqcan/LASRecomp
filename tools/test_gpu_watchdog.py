@@ -15,7 +15,7 @@ host = (root / f'runtime/platform/{platform}.c').read_text(encoding='utf-8')
 terminate = re.search(r'void plat_terminate\(int status\) \{[^}]+\}', host).group()
 device = (root / 'runtime/nvn/vulkan/device.c').read_text(encoding='utf-8')
 idle = device[device.index('static VkResult wait_device_idle('):device.index('\nstatic void recreate_swapchain(')]
-shutdown = device[device.index('static void quick_exit_handler('):device.index('\nvoid ui_window_init(')]
+shutdown = device[device.index('void backend_quit(void)'):device.index('\nvoid ui_window_init(')]
 debug = device[device.index('static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb('):device.index('\n// LARECOMP_VK_VALIDATION=')]
 harness = r'''
 #define _POSIX_C_SOURCE 200809L
@@ -57,6 +57,11 @@ typedef int VkResult;
 enum { VK_SUCCESS = 0, VK_ERROR_DEVICE_LOST = -4 };
 static struct { int dev; } g_vk;
 static int scenario, exit_status;
+static int validating;
+static void validation_exit(void) { abort(); }
+static void rq_stop(void) {}
+static void rec_quit(void) {}
+static void shader_jobs_drain(void) {}
 int plat_exit_status(void) { return exit_status; }
 static VkResult vkDeviceWaitIdle(int device) {
     (void)device;

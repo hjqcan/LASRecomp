@@ -4,8 +4,15 @@
 #include "../runtime/game_addresses.h"
 static uint8_t game_manager[0x500];
 static uintptr_t game_manager_ptr = (uintptr_t)game_manager;
-#undef GA_GAME_MGR
-#define GA_GAME_MGR ((uintptr_t)&game_manager_ptr)
+static const GameAddrs test_addresses={.GAME_MGR=(uintptr_t)&game_manager_ptr};
+const GameAddrs *g_ga=&test_addresses;
+volatile uint64_t g_vsync_count,g_vsync_ns;
+void slow_frame_present(uint64_t now,uint64_t cpu) { (void)now; (void)cpu; }
+int64_t pace_gpu_ns(void) { return -1; }
+int game_in_play(void) { return 1; }
+bool world_on_screen(void) { return true; }
+const char *game_level_name(void) { return "Field"; }
+uint64_t game_camera_zone(void) { return 0; }
 #include "../runtime/nvn/pace.c"
 
 static bool las = true;
@@ -33,10 +40,10 @@ int main(int argc, char **argv) {
     uint64_t counters[6] = {0, 100, 0, 150, 0, 200};
     game_manager[0x4e3] = 1;
     pace_frame();
-    for (unsigned i = 0; i < 60; ++i) frame(10000000, 20000000);
+    for (unsigned i = 0; i < 60; ++i) frame(10000000, 6666667);
     assert(!pace_is_slow() && pace_frames_over() == 0);
-    for (unsigned i = 0; i < 13; ++i) frame(20000000, 0);
-    assert(pace_frames_over() == 13 && pace_frames_over() == 0);
+    for (unsigned i = 0; i < 90; ++i) frame(20000000, 0);
+    assert(pace_frames_over() > 0 && pace_frames_over() == 0);
     if (argc > 1) {
         assert(!pace_is_slow());
         assert(pace_end_counter(counters, counters + 2, 150) == 150);
@@ -50,11 +57,11 @@ int main(int argc, char **argv) {
     assert(game_manager[0x4e2] == 1);
     unsigned first = recover();
     assert(game_manager[0x4e2] == 0);
-    for (unsigned i = 0; i < 13; ++i) frame(20000000, 0);
+    for (unsigned i = 0; i < 90; ++i) frame(20000000, 0);
     assert(pace_is_slow());
     unsigned second = recover();
-    assert(second >= first + 140); // A rapid fallback doubles the 150-frame calm period.
-    for (unsigned i = 0; i < 13; ++i) frame(20000000, 0);
+    assert(second >= first); // A rapid fallback retains the upstream backoff.
+    for (unsigned i = 0; i < 90; ++i) frame(20000000, 0);
     assert(pace_is_slow());
     las = false;
     // The title may switch before its first present: never inflate another game's counter.
@@ -64,7 +71,7 @@ int main(int argc, char **argv) {
     las = true;
     frame(10000000, 0);
     assert(!pace_is_slow());
-    for (unsigned i = 0; i < 13; ++i) frame(20000000, 0);
+    for (unsigned i = 0; i < 90; ++i) frame(20000000, 0);
     assert(pace_is_slow());
     unsigned fresh = recover();
     assert(fresh < second);

@@ -4,7 +4,7 @@
 #include "game_addresses.h"
 #include "research_stores.h"
 #ifndef RESEARCH_STORE_TARGET
-#define RESEARCH_STORE_TARGET GA_RESEARCH_RNG_STATE
+#define RESEARCH_STORE_TARGET GA(RESEARCH_RNG_STATE)
 #endif
 // Evaluate address/value once. The original store is outside the recorder's lock.
 // Snapshots are observations, not atomic guest transactions. Overlap is reported.

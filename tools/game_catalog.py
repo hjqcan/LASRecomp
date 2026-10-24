@@ -17,7 +17,8 @@ SHARED_GENERATOR_INPUTS = ('tools/gen.py', 'tools/lifter.py', 'tools/analyze.py'
                            'tools/passes.py', 'tools/simd_c.py', 'tools/adapter_patches.py')
 PROFILE_INPUTS = {
     'generic': (),
-    'las': ('tools/game_versions.py', 'tools/game_addresses.py', 'runtime/game_addresses/patches_v1_0_0.h',
+    'las': ('tools/game_versions.py', 'tools/game_addresses.py', 'runtime/game_addresses/versions.h',
+            'runtime/game_addresses/patches_v1_0_0.h', 'runtime/game_addresses/patches_v1_0_1.h',
             'tools/rando_profiles.py', 'tools/patches.py', 'tools/rando/patch_variants.json'),
 }
 ADAPTER_INPUTS = {'pokemon_za': ('tools/pokemon_za.py',)}

@@ -19,11 +19,18 @@ static void env(const char *k,const char *v){_putenv_s(k,v);}
 #include <sys/mman.h>
 static void env(const char *k,const char *v){setenv(k,v,1);}
 #endif
-static GameVersion version=GAME_100;
+#define GA_ADDR(name,value) .name=UINT64_C(value),
+static const GameAddrs test_addresses={
+#include "game_addresses/patches_v1_0_0.h"
+#include "game_addresses/runtime_v1_0_0.h"
+};
+#undef GA_ADDR
+const GameAddrs *g_ga=&test_addresses;
+static GameLayout version=GAME_100;
 static bool las=true;
 bool title_is_las(void){return las;}
 static const char *save,*seed;
-GameVersion game_version_current(void){return version;}
+GameLayout game_version_current(void){return version;}
 const char *workshop_save_dir(void){return save;}
 const char *rando_seed_dir(void){return seed;}
 uint64_t game_main_address(uint64_t a){return a;}

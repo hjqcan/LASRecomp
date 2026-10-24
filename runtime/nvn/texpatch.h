@@ -12,6 +12,13 @@
 
 // Which of the known textures `t` is (by its contents: the user's own game files are read once to know them), or -1.
 int texpatch_identify(const NvnTexture *t);
+// The backends' cached marker for `t` (TexBackend.tp): texpatch_identify + 1, or -1 for "checked, none" (0 stays
+// "not checked yet"). Kept until the texture's contents change: identifying hashes the data of every texture shaped
+// like a Cosmetics recolour (runtime/nvn/recolour.c), too slow to repeat at every upload check.
+static inline int texpatch_marker(const NvnTexture *t) {
+    int id = texpatch_identify(t);
+    return id >= 0 ? id + 1 : -1;
+}
 // Known texture `id` is the empty bottle's item icon (1), its 3D model's colour map (2), the fairy's model map (3:
 // boss / mini-boss souls drawn red, runtime/hle/souls.c), the Magic Powder sack's (4), the dungeon map model's (5: the
 // Hint Sheet's hand-over, runtime/hle/hint_sheet.c), the Piece of Power's (6: Triforce pieces drawn gold,

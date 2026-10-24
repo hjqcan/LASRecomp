@@ -1,5 +1,15 @@
 // Synthetic Vulkan images only. Exercise the production fallback, including
 // packed aspect bytes, unequal extents, nonzero mip/layer/offsets and canaries.
+#include "../runtime/nvn/vulkan/vk.h"
+#include "../runtime/nvn/vulkan/record.h"
+#define rec_CmdCopyImageToBuffer vkCmdCopyImageToBuffer
+#define rec_CmdBindPipeline vkCmdBindPipeline
+#define rec_CmdBindDescriptorSets vkCmdBindDescriptorSets
+#define rec_CmdPushConstants vkCmdPushConstants
+#define rec_CmdDispatch vkCmdDispatch
+#define rec_CmdCopyBufferToImage vkCmdCopyBufferToImage
+#define rec_CmdBlitImage vkCmdBlitImage
+#define rec_UpdateDescriptorSets(n,w) vkUpdateDescriptorSets(g_vk.dev,n,w,0,NULL)
 #include "../runtime/nvn/vulkan/depth_copy.c"
 #include <shaderc/shaderc.h>
 #include <assert.h>

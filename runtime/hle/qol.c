@@ -31,7 +31,7 @@ int rt_snap_dir(Cpu *c) {
         static Cpu tmp;
         tmp = *c;
         inner = true;
-        dispatch_lookup(GA_SNAP_DIR_SITE)(&tmp);
+        dispatch_lookup(GA(SNAP_DIR_SITE))(&tmp);
         inner = false;
         LOG("[qol] snap (%.3f, %.3f): 8-way %#x, 360 %#x (%s)\n", x, y, (uint32_t)tmp.x[0], a, on ? "360" : "8-way");
     }
@@ -56,7 +56,7 @@ float rt_walk_speed(uint64_t player, float m, int site) {
     float k = env > 0 ? env : g_settings.walk_speed;
     if (!(k > 0.5f && k <= 4)) k = 1;
     if (k != 1 && !g_settings.walk_speed_dungeons) {  // (off indoors: every level but the overworld, "Field")
-        uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+        uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
         if (ps && strcmp((const char *)(uintptr_t)ps, "Field")) k = 1;
     }
     if (!(mask >> (site >= 100 ? 30 + site - 100 : site) & 1)) k = 1;
@@ -178,7 +178,7 @@ int rt_buff_replace(int allow) {
     static int test = -1;
     if (test < 0) test = ENV("LARECOMP_BUFF_PRIME") ? atoi(ENV("LARECOMP_BUFF_PRIME")) : 0;
     if (test) {
-        uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);  // PlayerStatus*
+        uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));  // PlayerStatus*
         if (ps) ST8(ps + 0xa5, 14);
         if (test == 2) allow = 1;
         { extern uint64_t renderer_present_count(void); LOG("[qol] f%llu drop roll: buff replace %d -> %d\n", (unsigned long long)renderer_present_count(), allow, allow && !no_buff()); }

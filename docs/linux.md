@@ -29,8 +29,8 @@ Switch pads) the user needs access to `/dev/hidraw*`, which most distributions g
 (`steam-devices`, or Steam installed); without them the controller still works through the kernel driver. Started from
 Steam with Steam Input on, the game sees Steam's virtual Xbox controller (Xbox prompts).
 
-If the AppImage won't start with a FUSE error, install your distribution's `fuse3` package (the AppImage runtime
-needs `fusermount3`), or run it as `./Multi-...-linux-x86_64.AppImage --appimage-extract-and-run`.
+If the AppImage won't start with a FUSE error, install your distribution's `fuse3` package, or run it with
+`APPIMAGE_EXTRACT_AND_RUN=1`. On a Steam Deck, put `APPIMAGE_EXTRACT_AND_RUN=1 %command%` in the game's launch options.
 
 ## Building from source
 Ubuntu / Debian packages (other distributions: the same libraries under their names). SDL3 must be 3.4 or newer
@@ -66,7 +66,8 @@ The randomizer from a source checkout uses LAS-Randomizer's own venv (Python 3.1
     third_party/LAS-Randomizer/venv/bin/pip install -r third_party/LAS-Randomizer/requirements.txt
 
 ## AppImages
-Needs podman, and for aarch64 QEMU user emulation with binfmt (`sudo apt install podman qemu-user qemu-user-binfmt`).
+Needs podman, and for the other arch's AppImage QEMU user emulation with binfmt (`sudo apt install podman qemu-user
+qemu-user-binfmt`).
 
     make appimage                # this machine's arch -> build/dist/Multi-<version>-linux-<arch>.AppImage
     make appimage ARCH=aarch64   # cross-compiled from x86-64
@@ -74,12 +75,14 @@ Needs podman, and for aarch64 QEMU user emulation with binfmt (`sudo apt install
 
 Everything is built in Ubuntu 22.04 containers (`tools/linux/Containerfile`), so the result runs on glibc 2.35+:
 SDL3, an LGPL-only FFmpeg (only the movie codecs, as on Windows / macOS), and shaderc from pinned sources
-(`tools/linux/build_deps.sh`), then the game against them (`tools/linux/package.sh`). aarch64 is cross-compiled in
-the amd64 container against the arm64 image's root filesystem (`build/linux/aarch64/sysroot`). The seed generator
-helper (`tools/linux/rando_helper.sh`, PyInstaller) is frozen in a container of its own arch; on arm64 that runs
-under QEMU and builds oead and keystone-engine from source the first time (no arm64 wheels on PyPI; cached in
-`build/linux/aarch64/wheels`). The generated game code comes from the host (`generated/`, `generated-aarch64/`;
-`make appimage` runs `make gen` for it when missing).
+(`tools/linux/build_deps.sh`), then the game against them (`tools/linux/package.sh`). This machine's arch is built
+natively in one container of that arch (the release does both archs that way, on an arm64 runner for aarch64).
+aarch64 on an x86-64 machine is cross-compiled in the amd64 container against the arm64 image's root filesystem
+(`build/linux/aarch64/sysroot`), with only the seed generator helper (`tools/linux/rando_helper.sh`, PyInstaller
+builds for the machine it runs on) frozen in the arm64 container under QEMU, where pip also builds oead and
+keystone-engine from source the first time (no arm64 wheels on PyPI; cached in `build/linux/aarch64/wheels`). The
+generated game code comes from the host (`generated/`, `generated-aarch64/`; `make appimage` runs `make gen` for it
+when missing).
 
 Release check of the x86-64 AppImage (`make smoketest`, tools/linux/smoketest.sh, ~7 minutes on this kind of machine):
 three launches of the AppImage itself - the start screen; a session from a test save warping to four overworld spots
@@ -98,8 +101,10 @@ files or fonts.
   read/write mapping (`MAP_NORESERVE`), crashes are caught with `sigaction` on an alternate stack.
 - The HLE / service / reset tables are ELF sections found through the linker's `__start_` / `__stop_` symbols.
 - Renderer: the Windows Vulkan backend unchanged.
-- Without the user's Switch fonts the game text uses DejaVu Sans (TrueType; the game's font engine can't use CFF
-  fonts such as Noto Sans CJK).
+- Without the user's Switch fonts the game text uses the bundled BIZ UDPGothic (`third_party/fonts/BIZUDPGothic`),
+  sized like the console's font, where macOS / Windows use Hiragino / Yu Gothic; the in-game menu and button letters
+  use DejaVu Sans, the system's or the bundled copy (`third_party/fonts/DejaVu`). TrueType is required; the game's font
+  engine can't use CFF fonts such as Noto Sans CJK.
 - Pages: 4K and 16K kernels (Asahi) work; 64K-page kernels (some ARM servers) are not supported.
 
 ## Testing on ARM (aarch64): what to report

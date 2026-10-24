@@ -1,6 +1,7 @@
 // Some drivers expose depth attachments and transfers without BLIT_DST. Keep
 // nearest depth/stencil copies on the GPU using raw aspect transfers in that case.
 #include "vk.h"
+#include "record.h"
 
 static VkDescriptorSetLayout depth_copy_set;
 static VkPipelineLayout depth_copy_layout;
@@ -80,7 +81,7 @@ static void copy_depth_via_buffer(VkCommandBuffer cb, const TexBackend *src, con
     VkSpan buffers[2]={vk_transient(sizes[0],align),vk_transient(sizes[1],align)};
     VkBufferImageCopy from={.bufferOffset=buffers[0].off,.imageSubresource=region->srcSubresource,
         .imageOffset=region->srcOffsets[0],.imageExtent={(uint32_t)sw,(uint32_t)sh,1}};
-    vkCmdCopyImageToBuffer(cb,src->image,VK_IMAGE_LAYOUT_GENERAL,buffers[0].buf,1,&from);
+    rec_CmdCopyImageToBuffer(cb,src->image,VK_IMAGE_LAYOUT_GENERAL,buffers[0].buf,1,&from);
     vk_full_barrier(cb);
     VkDescriptorSet set=vk_alloc_set(depth_copy_set);
     VkDescriptorBufferInfo bi[2]={{buffers[0].buf,buffers[0].off,sizes[0]},
@@ -88,20 +89,20 @@ static void copy_depth_via_buffer(VkCommandBuffer cb, const TexBackend *src, con
     VkWriteDescriptorSet writes[2];
     for (unsigned i=0;i<2;i++) writes[i]=(VkWriteDescriptorSet){.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
         .dstSet=set,.dstBinding=i,.descriptorCount=1,.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,.pBufferInfo=&bi[i]};
-    vkUpdateDescriptorSets(g_vk.dev,2,writes,0,NULL);
+    rec_UpdateDescriptorSets(2,writes);
     uint32_t params[5]={(uint32_t)sw,(uint32_t)sh,(uint32_t)dw,(uint32_t)dh,bytes};
-    vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_COMPUTE,depth_copy_pipeline);
-    vkCmdBindDescriptorSets(cb,VK_PIPELINE_BIND_POINT_COMPUTE,depth_copy_layout,0,1,&set,0,NULL);
-    vkCmdPushConstants(cb,depth_copy_layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof params,params);
+    rec_CmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_COMPUTE,depth_copy_pipeline);
+    rec_CmdBindDescriptorSets(cb,VK_PIPELINE_BIND_POINT_COMPUTE,depth_copy_layout,0,1,&set,0,NULL);
+    rec_CmdPushConstants(cb,depth_copy_layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof params,params);
     uint32_t groups=(uint32_t)((sizes[1]/4+63)/64), gx=groups;
     if (gx>g_vk.props.limits.maxComputeWorkGroupCount[0]) gx=g_vk.props.limits.maxComputeWorkGroupCount[0];
     uint32_t gy=(groups+gx-1)/gx;
     if (gy>g_vk.props.limits.maxComputeWorkGroupCount[1]) FATAL("Vulkan depth/stencil copy dispatch is too large\n");
-    vkCmdDispatch(cb,gx,gy,1);
+    rec_CmdDispatch(cb,gx,gy,1);
     vk_full_barrier(cb);
     VkBufferImageCopy to={.bufferOffset=buffers[1].off,.imageSubresource=region->dstSubresource,
         .imageOffset=region->dstOffsets[0],.imageExtent={(uint32_t)dw,(uint32_t)dh,1}};
-    vkCmdCopyBufferToImage(cb,buffers[1].buf,dst->image,VK_IMAGE_LAYOUT_GENERAL,1,&to);
+    rec_CmdCopyBufferToImage(cb,buffers[1].buf,dst->image,VK_IMAGE_LAYOUT_GENERAL,1,&to);
     vk_full_barrier(cb);
 }
 
@@ -118,6 +119,6 @@ void vk_blit_depth_nearest(VkCommandBuffer cb, const TexBackend *src, const TexB
         if (count<16) { formats[count].format=src->format;formats[count++].blit=blit; }
     }
     if (src->format==dst->format && blit)
-        vkCmdBlitImage(cb,src->image,VK_IMAGE_LAYOUT_GENERAL,dst->image,VK_IMAGE_LAYOUT_GENERAL,1,region,VK_FILTER_NEAREST);
+        rec_CmdBlitImage(cb,src->image,VK_IMAGE_LAYOUT_GENERAL,dst->image,VK_IMAGE_LAYOUT_GENERAL,1,region,VK_FILTER_NEAREST);
     else copy_depth_via_buffer(cb,src,dst,region);
 }

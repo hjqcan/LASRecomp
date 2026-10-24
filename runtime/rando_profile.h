@@ -14,10 +14,10 @@ typedef struct {
     RandoDataPatch data[2];
 } RandoPatchSet;
 bool rando_seed_name_valid(const char *name);
-bool rando_seed_compatible(const char *directory, GameVersion version);
-const char *rando_patch_filename(GameVersion version);
+bool rando_seed_compatible(const char *directory, GameLayout version);
+const char *rando_patch_filename(GameLayout version);
 // Parse and validate the entire file before any guest memory is changed.
-bool rando_patch_read(const char *path, GameVersion version, RandoPatchSet *out, char *why, size_t cap);
+bool rando_patch_read(const char *path, GameLayout version, RandoPatchSet *out, char *why, size_t cap);
 #ifdef __cplusplus
 }
 #endif

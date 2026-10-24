@@ -12,6 +12,7 @@
 uint64_t renderer_present_count(void);
 
 static uint64_t g_world_frame = ~0ull;  // the mirrored scene was drawn
+static uint64_t g_scene_frame = ~0ull;  // the scene composite was drawn (mirrored or not)
 
 // Could an image of sw x sh be the scene, composited into a w x h window image? The game's dynamic resolution rendered
 // busy scenes smaller (1536x864, 1280x720 into a 1920x1080 window image: the outdoors, D8; off now - tools/patches.py
@@ -40,9 +41,17 @@ void scene_size_log(bool composite, uint32_t sw, uint32_t sh, uint32_t w, uint32
 
 // The renderer found the scene composite (composite): mirror it?
 bool mirror_draw(bool composite) {
+    if (composite) g_scene_frame = renderer_present_count();
     if (!g_settings.mirror_mode || !composite) return false;
     g_world_frame = renderer_present_count();
     return true;
+}
+
+// The world is on screen (its composite drawn this frame or the last three: the render thread can be a frame or two
+// behind the game's) - not the pause menu, title or file select. (Frame pacing: runtime/nvn/pace.c.)
+bool world_on_screen(void) {
+    uint64_t f = g_scene_frame;
+    return f != ~0ull && renderer_present_count() - f <= 3;
 }
 
 // The stick / d-pad swap left and right: mirror mode and the mirrored world on screen (this frame or the last two).

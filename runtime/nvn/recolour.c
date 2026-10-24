@@ -7,6 +7,7 @@
 // draw with a class, set the per-draw tint from recolour_tint.
 #include "recolour.h"
 
+#include <dirent.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,10 +20,41 @@
 extern const RecolourOption g_recolour_link;  // hair / shield colours (recolour_link.c)
 extern const RecolourOption g_recolour_seasons;  // leaves / grass colours (recolour_seasons.c)
 extern const RecolourOption g_recolour_enemies;  // random enemy colours (recolour_enemies.c)
-static const RecolourOption *const g_options[] = {
+// LARECOMP_RECOLOUR_NAMES=1 (test): every albedo map of the overworld's files is recognised too (class RECOLOUR_NAMED,
+// never tinted), so LARECOMP_LOG_RECOLOUR_AT can name what each draw samples
+enum { RECOLOUR_NAMED = 15 };
+static int named(int source, const char *t) {
+    (void)source;
+    size_t n = strlen(t);
+    return n > 4 && !strcmp(t + n - 4, "_alb") ? RECOLOUR_NAMED : 0;
+}
+static bool named_tint(int cls, float t[8]) { (void)cls, (void)t; return false; }
+static RecolourOption g_recolour_named = {"names (test)", NULL, 0, RECOLOUR_NAMED, RECOLOUR_NAMED, named_tint};
+static void named_sources(void) {  // Field.bntx and every actor's file
+    static RecolourSource src[1024];
+    static char paths[1024][96];
+    int n = 0;
+    src[n++] = (RecolourSource){"region_common/map/Field.bntx", named};
+    char dir[1200];
+    snprintf(dir, sizeof dir, "%s/region_common/actor", g_romfs_dir ? g_romfs_dir : "extracted/romfs");
+    DIR *d = opendir(dir);
+    for (struct dirent *e; d && (e = readdir(d)) && n < 1024;) {
+        size_t l = strlen(e->d_name);
+        if (l < 7 || l > 70 || strcmp(e->d_name + l - 6, ".bfres")) continue;
+        snprintf(paths[n], sizeof paths[n], "region_common/actor/%s", e->d_name);
+        src[n] = (RecolourSource){paths[n], named};
+        n++;
+    }
+    if (d) closedir(d);
+    g_recolour_named.sources = src;
+    g_recolour_named.nsources = n;
+}
+
+static const RecolourOption *g_options[] = {
     &g_recolour_link,
     &g_recolour_seasons,
     &g_recolour_enemies,
+    NULL,
     NULL,
 };
 
@@ -30,6 +62,7 @@ typedef struct {
     uint16_t w, h, levels, cls;
     uint32_t size;
     uint64_t hash;
+    char name[40];  // (the texture's name, for the test logs)
 } CRef;
 
 static CRef *g_cr;
@@ -84,14 +117,15 @@ static int64_t find_bntx(FILE *f) {
     return found;
 }
 
-static void add(uint16_t w, uint16_t h, uint16_t levels, uint32_t size, uint64_t hash, int cls) {
+static void add(uint16_t w, uint16_t h, uint16_t levels, uint32_t size, uint64_t hash, int cls, const char *name) {
     for (int i = 0; i < g_ncr; i++)  // (files share textures: the first class wins)
         if (g_cr[i].hash == hash && g_cr[i].size == size && g_cr[i].w == w && g_cr[i].h == h) return;
     if (g_ncr == g_cap) {
         g_cap = g_cap ? g_cap * 2 : 256;
         g_cr = realloc(g_cr, sizeof *g_cr * (size_t)g_cap);
     }
-    g_cr[g_ncr++] = (CRef){w, h, levels, (uint16_t)cls, size, hash};
+    g_cr[g_ncr] = (CRef){w, h, levels, (uint16_t)cls, size, hash, {0}};
+    snprintf(g_cr[g_ncr++].name, sizeof g_cr->name, "%s", name);
 }
 
 static int scan_file(const RecolourOption *o, int src) {
@@ -125,7 +159,7 @@ static int scan_file(const RecolourOption *o, int src) {
                 if (!size || size > (64u << 20) || !rd_at(f, (uint64_t)base + data_ptrs, dp, 8)) continue;
                 uint8_t *data = malloc(size);
                 if (rd_at(f, (uint64_t)base + rd64(dp), data, size)) {
-                    add((uint16_t)w, (uint16_t)h, (uint16_t)levels, size, hash64(data, size), cls);
+                    add((uint16_t)w, (uint16_t)h, (uint16_t)levels, size, hash64(data, size), cls, name);
                     got++;
                 }
                 free(data);
@@ -137,6 +171,7 @@ static int scan_file(const RecolourOption *o, int src) {
 }
 
 static void load(void) {
+    if (getenv("LARECOMP_RECOLOUR_NAMES")) named_sources(), g_options[3] = &g_recolour_named;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     for (int k = 0; g_options[k]; k++) {
@@ -167,11 +202,17 @@ int recolour_identify(const NvnTexture *t, uint64_t total) {
         }
         if (h == r->hash) {
             static int nlog;
-            if (nlog++ < 48) LOG("[recolour] %ux%u (%u levels) uploaded: class %d\n", r->w, r->h, r->levels, r->cls);
+            if (nlog++ < 48 && r->cls != RECOLOUR_NAMED)
+                LOG("[recolour] %ux%u (%u levels) uploaded: class %d (%s)\n", r->w, r->h, r->levels, r->cls, r->name);
             return i;
         }
     }
     return -1;
+}
+
+const char *recolour_name(int id) {
+    if (id < TEXPATCH_RECOLOUR_BASE || id - TEXPATCH_RECOLOUR_BASE >= g_ncr) return NULL;
+    return g_cr[id - TEXPATCH_RECOLOUR_BASE].name;
 }
 
 int recolour_class_of(int id) {
@@ -192,6 +233,23 @@ int recolour_pick(int a, int b) {
     bool aa = active(a), bb = active(b);
     if (aa != bb) return aa ? a : b;
     return a > b ? a : b;
+}
+
+void recolour_add(int cls[2], int c) {
+    if (!c || c == cls[0] || c == cls[1]) return;
+    int p = recolour_pick(cls[0], c), other = p == c ? cls[0] : c;  // (other: the one not picked, or 0)
+    cls[0] = p;
+    if (other) cls[1] = recolour_pick(cls[1], other);
+}
+
+void recolour_tint_draw(const int cls[2], float tint[RECOLOUR_TINT_FLOATS]) {
+    if (!cls[0]) return;
+    recolour_tint(cls[0], tint);
+    if (!cls[1] || tint[3] >= 0) return;  // (a second hue window only beside a first)
+    float t2[8] = {0};
+    recolour_tint(cls[1], t2);
+    if (t2[3] >= 0 || !memcmp(t2, tint, sizeof t2)) return;
+    memcpy(tint + 8, t2, sizeof t2);
 }
 
 void recolour_tint(int cls, float tint[8]) {

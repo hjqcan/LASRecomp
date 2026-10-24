@@ -72,9 +72,13 @@ void rt_crash_explain(char *out, size_t n, const char *log_path) {
                  "patch), and the game stopped at a question it can't show that way. Set up unmodified game files on "
                  "the start screen (Game Files). To play in another language, pick it in Settings (Language).");
     } else if (has("built for another version")) {
-        snprintf(head, sizeof head, "The game code is from another version of Multi");
-        snprintf(what, sizeof what, "Start Multi again: the start screen rebuilds the game code for this version "
-                 "by itself.");
+        snprintf(head, sizeof head, "The game code was built for other game files or another version of Multi");
+        snprintf(what, sizeof what, "Start Multi again: the start screen rebuilds the game code for these game "
+                 "files by itself.");
+    } else if (has("unsupported version of the game")) {
+        snprintf(head, sizeof head, "Wrong version of the game");
+        snprintf(what, sizeof what, "Multi needs version 1.0.0, 1.0.1 or 1.1.0 of the game. Set up those game "
+                 "files on the start screen (Game Files).");
     } else if (has("no font for the game's text")) {
         snprintf(head, sizeof head, "No font for the game's text");
         snprintf(what, sizeof what, "Import the Switch fonts in Settings (Game font), or reinstall Multi - it "

@@ -27,6 +27,7 @@ typedef uintptr_t VkPipeline;
 typedef struct { unsigned marker; } ShaderInfo;
 typedef struct {
     uintptr_t layout, set_layout[3]; int owned_sets; void *snapshot[2]; ShaderInfo *vi, *fi;
+    void *pmemo, *scache[2];
     bool prepared; ShaderJob job;
 } Prog;
 typedef struct { VkPipeline pipe; bool prepared; ShaderJob job; } Pipe;

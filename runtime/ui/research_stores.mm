@@ -78,7 +78,7 @@ extern "C" uint64_t research_store_begin(uint64_t site,uint64_t function,uint64_
     if(!__atomic_load_n(&g_research_stores,__ATOMIC_RELAXED))return 0;
     ++seen;
     if(!site||!before||(size!=1&&size!=2&&size!=4&&size!=8&&size!=16)||
-       address>=GA_RESEARCH_RNG_STATE+16||address<=GA_RESEARCH_RNG_STATE-size){++invalid;return 0;}
+       address>=GA(RESEARCH_RNG_STATE)+16||address<=GA(RESEARCH_RNG_STATE)-size){++invalid;return 0;}
     if(count==capacity){++dropped;return 0;}
     if(pending)++overlaps;
     if(owned_update<0)++outside;

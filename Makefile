@@ -95,7 +95,8 @@ GAMELIB_SHARED := -shared
 else
 EXE      := $(B)/lasrecomp.exe
 DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
-OSFLAGS  := -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S -DWIN32_LEAN_AND_MEAN -DNOMINMAX
+OSFLAGS  := -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S -DWIN32_LEAN_AND_MEAN -DNOMINMAX \
+            $(if $(RELEASE),-DLARECOMP_ZIP_BUILD)  # (the log's [info] line: the release zip)
 GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA for the lifted FP/SIMD code (simd.h); override for older CPUs
 GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
 LDFLAGS  := -fuse-ld=lld -Wl,--stack,16777216 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
@@ -121,7 +122,7 @@ LDFLAGS += -lopus
 GAMELIB_SRCS := tools/gen.py tools/gen_game.py tools/adapter_patches.py runtime/title_profile.c tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py \
                 tools/simd_c.py tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
                 runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h runtime/guest_jump.h
-ADAPTER_SRCS := $(wildcard adapters/*/adapter.json) adapters/core-capabilities.json tools/game_catalog.py tools/game_addresses.py runtime/game_addresses/patches_v1_0_0.h \
+ADAPTER_SRCS := $(wildcard adapters/*/adapter.json) adapters/core-capabilities.json tools/game_catalog.py tools/game_addresses.py runtime/game_addresses/versions.h $(wildcard runtime/game_addresses/patches_v*.h) \
                 tools/game_versions.py tools/rando_profiles.py tools/patches.py tools/rando/patch_variants.json tools/pokemon_za.py
 GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(PLATFORM) $(ARCH) $(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 # GAMELIB_BASE_ID: what every compiled piece of it depends on (the headers, the flags, the pinned compiler). The same
@@ -294,7 +295,7 @@ dist:
 	cp docs/icon/icon_1024.png "$(DIST)/icon.png"
 	cp third_party/fonts/Baloo2/Baloo2-SemiBold.ttf "$(DIST)/"  # (start screen font, OFL)
 	cp third_party/fonts/Baloo2/OFL.txt "$(DIST)/Baloo2-OFL.txt"
-	cp third_party/fonts/DejaVu/DejaVuSans.ttf "$(DIST)/"  # (the game text's last-resort font, free license)
+	cp third_party/fonts/DejaVu/DejaVuSans.ttf third_party/fonts/DejaVu/DejaVuSans-Bold.ttf "$(DIST)/"  # (last-resort fonts, free license)
 	cp third_party/fonts/DejaVu/LICENSE "$(DIST)/DejaVu-LICENSE.txt"
 	cp third_party/release-licenses/opus-COPYING "$(DIST)/"
 	cp third_party/ryujinx/LICENSE.txt "$(DIST)/Ryujinx-LICENSE.txt"

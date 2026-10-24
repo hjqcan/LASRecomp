@@ -7,6 +7,8 @@ import re
 import struct
 
 from game_versions import address, hook_table, original_address, patch_table, TEXT_CUT, TEXT_END
+from game_addresses import select_version
+select_version("v1_0_0")
 from patches import HOOKS, PATCHES
 from game_addresses import ADDRESS
 
@@ -44,7 +46,9 @@ assert address(TEXT_END, '1.1.0') == TEXT_END
 # the updated image, so bypassing patch_word cannot accidentally pass a guard.
 fixture=json.loads((Path(__file__).parent/'tests/patches_v1_0_0.json').read_text())['patches']
 for version in ('1.0.0', '1.1.0'):
-    mapped=patch_table(PATCHES,version)
+    import patches, importlib
+    select_version('v1_0_0' if version=='1.0.0' else 'v1_0_1')
+    mapped=importlib.reload(patches).PATCHES
     for text,expected in fixture.items():
         site=int(text,16); actual=address(site,version); word=int(expected['word'],16)
         if word & 0x7c000000 == 0x14000000:
@@ -69,8 +73,8 @@ for version in ('1.0.0', '1.1.0'):
             except AssertionError: pass
             else: raise AssertionError(f'Changed preceding instruction accepted: {version} {text}')
             image[offset]^=1
-        if site==ADDRESS.FONT_BOX_GLYPH_SITE:
-            assert f'goto L_{address(ADDRESS.FONT_BOX_GLYPH_SKIP,version):x}' in code
+        if actual==ADDRESS.FONT_BOX_GLYPH_SITE:
+            assert f'goto L_{ADDRESS.FONT_BOX_GLYPH_SKIP:x}' in code
             image[0x100]^=1
             try: mapped[actual](gen,actual)
             except AssertionError: pass

@@ -23,6 +23,10 @@
 #else
 #include "imgui_impl_vulkan.h"
 extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.cpp
+// runtime/nvn/vulkan/device.c: the command buffer ImGui records into (a secondary one the recorder thread executes in
+// the window image's commands, or that buffer itself after the recorder caught up), then handed back
+extern "C" void *vk_overlay_begin(void *window_cmd);
+extern "C" void vk_overlay_end(void *window_cmd, void *cmd);
 #endif
 
 extern "C" {
@@ -347,10 +351,13 @@ static void init(void) {
     io.IniFilename = NULL;
     ImFontConfig cfg;
     cfg.OversampleH = 2;
+    char dejavu[1024];  // none of the system's: the bundled DejaVu Sans (third_party/fonts/DejaVu, in every release)
+    const char *bundled = rt_resource("DejaVuSans.ttf", "third_party/fonts/DejaVu/DejaVuSans.ttf", dejavu, sizeof dejavu) ? dejavu : NULL;
     const char *paths[] = {"/System/Library/Fonts/Avenir Next.ttc", "/System/Library/Fonts/Helvetica.ttc",
                            "C:/Windows/Fonts/segoeui.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                           "/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf"};
+                           "/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", bundled};
     for (const char *p : paths) {
+        if (!p) continue;
         if (FILE *f = fopen(p, "rb")) fclose(f);  // a missing file is an assertion in ImGui, not a NULL return
         else continue;
         if (!g_font) g_font = io.Fonts->AddFontFromFileTTF(p, 34, &cfg);
@@ -591,6 +598,35 @@ extern "C" void chaos_overlay_draw(ImVec2 display, ImFont *font);
 extern "C" void inventory_overlay_draw(ImVec2 display, ImFont *font);
 extern "C" bool race_overlay_wanted(void);
 extern "C" void race_overlay_draw(ImVec2 display, ImFont *font, float scale);
+extern "C" bool pickup_flyin_wanted(void);  // (silent pickups: pickup_flyin.mm)
+extern "C" void pickup_flyin_draw(ImVec2 display, ImFont *font, float scale);
+extern "C" bool race_overlay_key(char *out, size_t cap);
+
+// ---- reusing the overlay's last drawing (LARECOMP_OVERLAY_CACHE=0: off, a new ImGui frame every present as before)
+// While only the FPS counter and / or the run timer are up (no menu, no input, nothing interactive or animated), the
+// overlay draws the same thing frame after frame: ImGui's NewFrame + layout + Render then run for nothing on the
+// render thread. Their drawing is described by a key (the text shown, the window size); while it stays the same, the
+// last frame's draw data (ImGui keeps it until the next NewFrame) is drawn again. Only after three frames in a row
+// built with that key: an auto-sized window (the FPS counter) settles over the frames after its text changes.
+// The FPS counter then shows the same average as ImGui's io.Framerate (the last 60 frame times), sampled twice a
+// second instead of every frame.
+static int g_ov_cache = -1;
+static char g_ov_key[96];
+static int g_ov_same;  // frames built in a row with g_ov_key
+static float g_fps_dt[60];
+static int g_fps_n, g_fps_i;
+static double g_fps_sum, g_fps_shown, g_fps_at;
+static void fps_note(double now, float dt) {
+    if (g_fps_n == 60) g_fps_sum -= g_fps_dt[g_fps_i];
+    else g_fps_n++;
+    g_fps_dt[g_fps_i] = dt;
+    g_fps_sum += dt;
+    g_fps_i = (g_fps_i + 1) % 60;
+    if (now - g_fps_at >= 0.5 || now < g_fps_at) {
+        g_fps_at = now;
+        g_fps_shown = g_fps_sum > 0 ? g_fps_n / g_fps_sum : 0;
+    }
+}
 
 // Reboot (runtime/main.c): the game is gone - menu and name dialog close; the ImGui context stays.
 RT_ON_RESET(menu_reset) {
@@ -859,6 +895,12 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
     g_font = f0, g_font_big = f1;
 }
 
+// Whether menu_render draws anything: the menu, the keyboard, an overlay (FPS, inventory, tracker, chaos, race, a
+// pickup card).
+static bool render_needed(bool open, bool kbd, bool inv, bool trk, bool trkd, bool chaos, bool race, bool flyin) {
+    return open || kbd || g_settings.show_fps || inv || trk || trkd || chaos || race || flyin || photo_mode_active() || workshop_overlay_wanted();
+}
+
 #ifdef __APPLE__
 void menu_render(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> target) {
     const double tw = target.width, th = target.height;
@@ -876,8 +918,10 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool chaos = title_is_las() && !open && chaos_overlay_wanted();
     bool kbd = g_kbd.load() == 1;
     bool race = title_is_las() && race_overlay_wanted();  // (run timer, race seed hash: race_overlay.mm)
-    if (!open && !kbd && !g_settings.show_fps && !inv && !trk && !trkd && !chaos && !race && !photo_mode_active() && !workshop_overlay_wanted()) {
+    bool flyin = title_is_las() && pickup_flyin_wanted() && !open;  // (a silent pickup's card)
+    if (!render_needed(open, kbd, inv, trk, trkd, chaos, race, flyin)) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
+        g_ov_same = 0;  // (shown again: built afresh first)
         return;
     }
 #ifdef __APPLE__
@@ -893,6 +937,42 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     double now = SDL_GetTicks() / 1000.0;
     io.DeltaTime = last > 0 && now > last ? (float)(now - last) : 1.0f / 60;
     last = now;
+    if (g_ov_cache < 0) g_ov_cache = !getenv("LARECOMP_OVERLAY_CACHE") || atoi(getenv("LARECOMP_OVERLAY_CACHE")) != 0;
+    char key[sizeof g_ov_key];
+    key[0] = 0;
+    if (g_ov_cache) {
+        fps_note(now, io.DeltaTime);
+        char rk[64];
+        // (only the FPS counter and the run timer; input only reaches ImGui while the menu or the name entry is up)
+        if (!open && !kbd && !inv && !trk && !trkd && !chaos && !flyin && race_overlay_key(rk, sizeof rk)) {
+            pthread_mutex_lock(&q_lock);
+            bool events = !q_events.empty();
+            pthread_mutex_unlock(&q_lock);
+            if (!events) snprintf(key, sizeof key, "%.0fx%.0f fps %d %.0f | %s", tw, th, (int)g_settings.show_fps,
+                                  g_settings.show_fps ? g_fps_shown : 0.0, rk);
+        }
+        ImDrawData *dd = ImGui::GetDrawData();
+        if (key[0] && g_ov_same >= 3 && !strcmp(key, g_ov_key) && dd && dd->Valid) {
+            g_text_busy = false;  // (the menu is closed)
+#ifdef __APPLE__
+            MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+            rp.colorAttachments[0].texture = target;
+            rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+            rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+            ImGui_ImplMetal_NewFrame(rp);  // (the backend's target description only)
+            id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+            ImGui_ImplMetal_RenderDrawData(dd, cb, enc);
+            [enc endEncoding];
+#else
+            void *oc = vk_overlay_begin(cmd);  // (as below)
+            ImGui_ImplVulkan_RenderDrawData(dd, (VkCommandBuffer)oc);
+            vk_overlay_end(cmd, oc);
+#endif
+            return;
+        }
+        if (key[0] && !strcmp(key, g_ov_key)) g_ov_same++;
+        else { memcpy(g_ov_key, key, sizeof key); g_ov_same = key[0] ? 1 : 0; }
+    }
     drain_events(io);
     // fonts are built at 34/56 px for a ~1080 px tall output; scale to the window
     float scale = (float)(th / 1080.0);
@@ -926,11 +1006,12 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         ImGui::SetNextWindowBgAlpha(0.5f);
         ImGui::Begin("##fps", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                         ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
-        ImGui::Text("%.0f fps", io.Framerate);
+        ImGui::Text("%.0f fps", g_ov_cache ? g_fps_shown : io.Framerate);
         ImGui::End();
     }
 
     if (race) race_overlay_draw(io.DisplaySize, g_menu_font_big, scale);
+    if (flyin) pickup_flyin_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont(), scale);
     if (trk) tracker_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     if (chaos) chaos_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     if (trkd) tracker_dungeon_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
@@ -994,6 +1075,14 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
     [enc endEncoding];
 #else
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)cmd);  // inside the window image's rendering
+    // ImGui records its commands itself. Not into cmd, the window image's command buffer, while the recorder thread
+    // (record.c) may still be recording it (one thread at a time on a command buffer and its pool: f054d8b, the device
+    // loss entering Mabe Village), and without waiting for the recorder to catch up every frame either (a full drain:
+    // 20-30 ms a frame on the Steam Deck): into a secondary command buffer of device.c's, which the recorder executes
+    // in cmd in order - after the uploads queued above (overlay icons). Decided right here, where the draw data is
+    // final, so an overlay turning on during this function can't miss it. (Recorder off: into cmd directly.)
+    void *oc = vk_overlay_begin(cmd);
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)oc);  // inside the window image's rendering
+    vk_overlay_end(cmd, oc);
 #endif
 }

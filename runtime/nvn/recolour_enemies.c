@@ -61,7 +61,7 @@ static uint32_t load_seed(void) {
     uint64_t f = renderer_present_count();
     if (f != frame) {  // (once a frame)
         frame = f;
-        uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+        uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
         const char *name = ps ? (const char *)(uintptr_t)ps : "";
         if (!seed || strncmp(name, level, sizeof level - 1)) {
             strlcpy(level, name, sizeof level);

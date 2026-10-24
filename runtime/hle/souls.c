@@ -27,7 +27,7 @@
 #include "../hle.h"
 #include "../rando.h"
 
-// GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
+// GA(PLAYER_STATUS_PTR): PlayerStatus*: current level name at +0
 
 bool flags_ext_get(int idx);
 void flags_ext_set(int idx);
@@ -105,7 +105,7 @@ static void load(void) {
 }
 
 static const char *level_name(void) {
-    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
     return ps ? (const char *)(uintptr_t)ps : "";
 }
 

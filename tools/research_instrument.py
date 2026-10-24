@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import re
 import shutil
-from game_addresses import ADDRESS
+from game_addresses import ADDRESS, select_build_id
 from game_versions import game_version
 
 FORMAT = 'las_generated_store_trace_v1'
@@ -72,6 +72,7 @@ def prepare(source, game, output):
         raise ValueError('Expected an extracted main NSO')
     build = raw[0x40:0x60].rstrip(b'\0').hex()
     version = game_version(build)
+    select_build_id(build)
     if not version:
         raise ValueError('Only identified LAS executables are supported')
     files = sorted(source.glob('main/*.c'))+sorted(source.glob('sdk/*.c'))

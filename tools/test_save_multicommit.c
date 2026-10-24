@@ -1,5 +1,6 @@
 // Real HIPC/CMIF messages through the production dispatcher and filesystem.
 #include <assert.h>
+void pace_hitch(const char *why) { (void)why; }
 #include "../runtime/hle.h"
 #include "../runtime/ipc.h"
 #undef RT_ON_RESET

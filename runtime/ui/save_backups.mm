@@ -20,7 +20,7 @@ extern "C" void save_backups_set_game_root(const char *root) { game_main = std::
 static const char *backup_version(int installation) {
     std::string main = installation == GAME_PROFILE_EXISTING ? "extracted/exefs/main" : std::string(game_profile_dir(installation)) + "/exefs/main";
     if (installation == game_profile_active()) main = game_main;
-    GameVersion v = game_version_file(main.c_str());
+    GameLayout v = game_version_file(main.c_str());
     return v == GAME_UNSUPPORTED ? "Unknown" : game_version_name(v);
 }
 

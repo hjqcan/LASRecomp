@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "game_addresses.h"
 #include "gamelib.h"
 #include "gameversion.h"
 #include "game_profiles.h"
@@ -75,8 +76,15 @@ static uint64_t sdk_start_entry(bool *has_finalizer) {
 
 // Claim the guest address range before anything else can map there. The host allocator places
 // regions at random addresses in the same window; on a collision, re-exec for a fresh layout.
+// LARECOMP_REEXEC_FORCE=1 (test): the first process skips the reservation once and starts again, as when the range is
+// taken (the new process has LARECOMP_REEXEC set and reserves normally).
+#define REEXEC_FORCED "forced by LARECOMP_REEXEC_FORCE"
 __attribute__((constructor(101))) static void reserve_guest_space(void) {
-    if (plat_reserve_guest(GUEST_LO, GUEST_HI)) return;
+    const char *force = getenv("LARECOMP_REEXEC_FORCE");
+    bool forced = force && *force && strcmp(force, "0") && !getenv("LARECOMP_REEXEC");
+    if (forced) setenv("LARECOMP_REEXEC_WHY", REEXEC_FORCED, 1);
+    else if (plat_reserve_guest(GUEST_LO, GUEST_HI)) return;
+    else setenv("LARECOMP_REEXEC_WHY", "", 0);  // (the platform may have said what holds the range; else nothing more)
     const char *tries = getenv("LARECOMP_REEXEC");
     int n = tries ? atoi(tries) : 0;
     if (n >= 20) {
@@ -137,11 +145,12 @@ __attribute__((section(".rst$z"), used)) static const ResetFn __stop_resets[1];
 void backend_reset(void);             // renderer: GPU idle, game textures and address-keyed caches dropped
 void backend_guest_memory_reset(void);  // renderer: guest memory was replaced (re-wrap the heap)
 void backend_clear_window(void);      // a black frame while the game is down
+void backend_quit(void);              // quitting: the render thread stopped, the GPU idle, caches kept (before exit())
 
 static void reboot_idle(void) {  // (main thread, while guest threads stop) keep the window alive
     SDL_Event e;
     while (SDL_PollEvent(&e))
-        if (e.type == SDL_EVENT_QUIT) { LOG("window closed\n"); plat_exit(0); }
+        if (e.type == SDL_EVENT_QUIT) { LOG("window closed\n"); backend_quit(); plat_exit(0); }
 }
 
 static void teardown(void) {
@@ -194,10 +203,11 @@ static void boot(const char *root) {
         backend_guest_heap_prepare();
     }
 #endif
+    if (title_is_las() && !game_version_select(root, why, sizeof why)) FATAL("%s\n", why);  // (the address table: game_addresses.h)
     if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
     char main_path[1100];
     snprintf(main_path, sizeof main_path, "%s/main", exefs);
-    game_version_select(main_path);
+    game_layout_select(main_path);
     if (title_is_las() && game_version_current() == GAME_UNSUPPORTED) FATAL("unsupported game executable\n");
     LOG("[game] %s %s\n",title_profile_current()->name,title_profile_current()->version);
     if (title_is_las() && !mods_load_active(rt_data_root(), root, game_profile_index(root, rt_data_root()),
@@ -235,8 +245,38 @@ static void boot(const char *root) {
     kernel_run_main(t, t->handle, 0, init_fn, main_init_fn, fini_fn);
 }
 
+// The log's first line after the log's own: this build and the machine, for bug reports. Nothing that identifies the
+// player (platform.h plat_system_info). Once per session: a restart of this process (the start screen re-executing
+// itself for the game) appends to the same log and inherits LASRECOMP_INFO_LOGGED.
+static void log_startup_info(void) {
+    if (getenv("LASRECOMP_INFO_LOGGED")) return;
+    setenv("LASRECOMP_INFO_LOGGED", "1", 1);
+    extern const char *larecomp_version(void);  // runtime/ui/launcher.mm
+    PlatSysInfo si = {0};
+    plat_system_info(&si);
+    char cores[96] = "";
+    if (si.cores > 0) {
+        int n = snprintf(cores, sizeof cores, " %d cores", si.cores);
+        if (si.cores_detail[0]) n += snprintf(cores + n, sizeof cores - n, " (%s)", si.cores_detail);
+        if (si.threads > si.cores) snprintf(cores + n, sizeof cores - n, " / %d threads", si.threads);
+    } else if (si.threads > 0) snprintf(cores, sizeof cores, " %d threads", si.threads);
+    unsigned long long tenths = (si.ram * 10 + (1ull << 29)) >> 30;  // (GB to a tenth; whole when it is: 64 GB, 14.5 GB)
+    char ram[32] = "RAM unknown";
+    if (si.ram && tenths % 10) snprintf(ram, sizeof ram, "%llu.%llu GB RAM", tenths / 10, tenths % 10);
+    else if (si.ram) snprintf(ram, sizeof ram, "%llu GB RAM", tenths / 10);
+    fprintf(stderr, "[info] LAS Recomp %s, %s, %s%s, %s%s%s\n", larecomp_version(), si.os[0] ? si.os : "unknown OS",
+            si.cpu[0] ? si.cpu : "unknown CPU", cores, ram, si.package ? ", " : "", si.package ? si.package : "");
+}
+
 int main(int argc, char **argv) {
     plat_init();
+    log_startup_info();
+    if (getenv("LARECOMP_REEXEC")) {  // (reserve_guest_space started this process again)
+        const char *why = getenv("LARECOMP_REEXEC_WHY"), *n = getenv("LARECOMP_REEXEC");
+        if (!why) LOG("[boot] started again (try %s) (LARECOMP_REEXEC set by the caller)\n", n);
+        else if (!strcmp(why, REEXEC_FORCED)) LOG("[boot] started again (try %s): %s\n", n, why);
+        else LOG("[boot] started again (try %s): the guest address range was in use%s%s\n", n, *why ? ": " : "", why);
+    }
 #ifdef _WIN32
     setvbuf(stderr, NULL, _IONBF, 0);  // the Windows CRT treats _IOLBF as full buffering
 #else

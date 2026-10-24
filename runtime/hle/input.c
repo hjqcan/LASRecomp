@@ -291,13 +291,15 @@ void input_reset(void) {
 
 volatile int g_debug_frame_request;  // F9: dump the next frame's passes (build/pass_*.png) + draw log
 
-// Events a test pushes (LARECOMP_HOST_INPUT type: / sdlkey: / sdlpad:) carry this device id: they go the whole way, menu first.
+// Events a test pushes (LARECOMP_HOST_INPUT type: / sdlkey: / sdlpad: / mouse:) carry this device id: they go the whole way, menu first.
 #define TEST_DEVICE 0x7E57u
 static bool test_event(const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP: return e->key.which == TEST_DEVICE;
     case SDL_EVENT_TEXT_INPUT: return e->text.windowID == TEST_DEVICE;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: return e->gbutton.which == TEST_DEVICE;
+    case SDL_EVENT_MOUSE_MOTION: return e->motion.which == TEST_DEVICE;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP: return e->button.which == TEST_DEVICE;
     default: return false;
     }
 }
@@ -325,6 +327,42 @@ bool input_user_blocked(const SDL_Event *e) {
         return true;
     default:
         return false;
+    }
+}
+
+// The mouse cursor during play: hidden as soon as a controller (a button, a stick or trigger past a small deadzone) or
+// a key is used, shown again only when the mouse moves (a few points, so a bumped desk doesn't count), clicks or
+// scrolls. Every window mode and platform: SDL hides it over our window only. Main thread (the event loops: the
+// game's ui_run and the start screen).
+static bool cursor_hidden;  // (the start screen keeps ImGui's backend from showing it again meanwhile)
+bool input_cursor_hidden(void) { return cursor_hidden; }
+void input_cursor_event(const SDL_Event *e) {
+    static float moved;  // (points the mouse moved since the cursor was hidden)
+    bool hide = false, show = false;
+    switch (e->type) {
+    case SDL_EVENT_KEY_DOWN:  // (a modifier alone - Cmd / Alt for switching apps - isn't play)
+        hide = !e->key.repeat && !(e->key.scancode >= SDL_SCANCODE_LCTRL && e->key.scancode <= SDL_SCANCODE_RGUI);
+        break;
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN: hide = true; break;
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION: hide = abs(e->gaxis.value) > 12000; break;  // (stick drift stays below)
+    case SDL_EVENT_MOUSE_MOTION:
+        moved += fabsf(e->motion.xrel) + fabsf(e->motion.yrel);
+        show = moved > 6;
+        break;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_WHEEL: show = true; break;
+    default: break;
+    }
+    if (hide && !cursor_hidden) {
+        SDL_HideCursor();
+        cursor_hidden = true, moved = 0;
+        LOG("[cursor] hidden (%s): SDL cursor visible=%d\n", e->type == SDL_EVENT_KEY_DOWN ? "key" : "controller",
+            SDL_CursorVisible());
+    } else if (show && cursor_hidden) {
+        SDL_ShowCursor();
+        cursor_hidden = false;
+        LOG("[cursor] shown (mouse %s): SDL cursor visible=%d\n",
+            e->type == SDL_EVENT_MOUSE_MOTION ? "moved" : e->type == SDL_EVENT_MOUSE_WHEEL ? "wheel" : "button",
+            SDL_CursorVisible());
     }
 }
 
@@ -476,6 +514,7 @@ static _Atomic int32_t script_lx, script_ly, script_rx, script_ry;
 //   entry first like a player's typing; "{Escape}" (any SDL key name) presses that key. No ',' or ':' in <text>.
 // "frame:sdlpad:<button>:frames" / "frame:sdlkey:<key>:frames" hold a controller button / key as real events (down
 //   at frame, up `frames` later): they reach menus and the on-screen keyboard first, as a player's would.
+// "frame:mouse:<dx>/<dy>" moves the mouse by that many points, "frame:mouse:click" clicks it (real events).
 // "frame:shot:<name>" saves the window (game + menus) to build/<name>.png.
 // "frame:resize:<W>x<H>" resizes the window to W x H points (menu_apply_window_requests: the main thread).
 // LARECOMP_BIND_TEST="frame:pad|key:<input>:<host>,..." starts a rebind capture of <input> (bind_* name: a, zl,
@@ -504,6 +543,24 @@ static void test_push(uint64_t frame, unsigned long start, unsigned long len, co
     if (!strcmp(dev, "shot")) {
         extern char g_window_shot_request[256];  // runtime/hle/hookshot.c
         if (frame == start) snprintf(g_window_shot_request, sizeof g_window_shot_request, "build/%s.png", arg);
+        return;
+    }
+    if (!strcmp(dev, "mouse")) {
+        if (frame != start) return;
+        float mx, my, dx = 0, dy = 0;
+        SDL_GetMouseState(&mx, &my);
+        if (!strcmp(arg, "click")) {
+            e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+            e.button.which = TEST_DEVICE, e.button.button = SDL_BUTTON_LEFT, e.button.down = true, e.button.clicks = 1;
+            e.button.x = mx, e.button.y = my;
+            SDL_PushEvent(&e);
+            e.type = SDL_EVENT_MOUSE_BUTTON_UP, e.button.down = false;
+        } else {
+            sscanf(arg, "%f/%f", &dx, &dy);
+            e.type = SDL_EVENT_MOUSE_MOTION;
+            e.motion.which = TEST_DEVICE, e.motion.x = mx + dx, e.motion.y = my + dy, e.motion.xrel = dx, e.motion.yrel = dy;
+        }
+        SDL_PushEvent(&e);
         return;
     }
     if (!strcmp(dev, "sdlkey")) {
@@ -565,7 +622,7 @@ static void host_test_frame(uint64_t frame) {
             char dev[8] = "", name[400] = "";
             if (sscanf(tok, "%lu:%7[a-z]:%399[^:]:%lu", &start, dev, name, &len) < 3) continue;
             if (!strcmp(dev, "type") || !strcmp(dev, "sdlpad") || !strcmp(dev, "sdlkey") || !strcmp(dev, "shot") ||
-                !strcmp(dev, "resize")) {
+                !strcmp(dev, "resize") || !strcmp(dev, "mouse")) {
                 test_push(frame, start, len, dev, name);
                 continue;
             }

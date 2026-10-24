@@ -142,6 +142,17 @@ POCKETS = {
     'toadstool-clearing': ('pocket-toadstool-clearing', 'swamp & (feather | rooster)', None),  # (LADXR)
     'pothole-field': ('pothole', None, None),  # LAS region pothole = the field behind Richard's villa
 }
+# pocket name -> {Field room: tiles}: the parts of a pocket on screens beside its door's own (pocket_screens: the door's
+# screen, whole), from the walkable area the door opens on (field_reach.areas; tools/test_field_regions.py checks it).
+# A bush / dig tile there stands in the pocket too: the toadstool clearing runs north from Field_06A into the bottom of
+# Field_05A and the edge of Field_05B (bush-05A-1, 5F5HF-AB703-...: only reached through the Quadruplets' house and the
+# river behind it in that seed, while the logic had it as plain woods); the Papahl ledge runs west into Field_02J.
+POCKET_TILES = {
+    'toadstool-clearing': {'Field_05A': (52, 53, 54, 55, 56, 57, 58, 59, 62, 63, 64, 65, 66, 67, 68, 69, 72, 73, 74, 75),
+                           'Field_05B': (50, 60)},
+    'papahl-ledge': {'Field_02J': (5, 6, 10, 11, 12, 13, 14, 15, 16, 21, 24, 25, 26, 34, 35, 36, 37, 38, 39, 44, 45, 46,
+                                   54)},
+}
 # cave -> [(node, condition-basic LAS has, condition-basic without the vanilla route through that cave or None
 # for "only through shuffled cave doors")]; the node's advanced / glitched / hell conditions are dropped
 REGION_PATCHES = {
@@ -194,6 +205,18 @@ def pocket_screens(cdoors):
             if g >= 0:
                 out[f'Field_{g // 16 + 1:02d}{chr(65 + g % 16)}'] = d['pocket_region']
     return out
+
+
+def pocket_of(cdoors):
+    """-> f(room, tile): the pocket region a Field tile stands in (pocket_screens + POCKET_TILES), else None."""
+    screens = pocket_screens(cdoors)
+    tiles = {}
+    for d in cdoors:
+        p = (d.get('pocket') or {}).get('name')
+        for room, ts in POCKET_TILES.get(p, {}).items():
+            for t in ts:
+                tiles[(room, t)] = d['pocket_region']
+    return lambda room, tile: tiles.get((room, tile)) or screens.get(room)
 
 
 def connector_levels(cdoors):

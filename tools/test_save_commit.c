@@ -10,8 +10,9 @@
 bool acnh60_romfs_override(const char *p, char *out, size_t n) { abort(); }
 #include "../runtime/game_addresses.h"
 static uint8_t live_save[0x6000];
-#undef GA_LIVE_SAVE
-#define GA_LIVE_SAVE ((uintptr_t)live_save)
+static const GameAddrs test_addresses = {.LIVE_SAVE=(uintptr_t)live_save};
+const GameAddrs *g_ga=&test_addresses;
+void pace_hitch(const char *why) { (void)why; }
 #include "../runtime/hle/flags_ext.c"
 
 static const char *save_root;
@@ -30,8 +31,8 @@ ssize_t pwrite(int fd, const void *buf, size_t size, off_t offset) {
     return _write(fd, buf, (unsigned)size);
 }
 #endif
-GameVersion game_version_current(void) { return GAME_100; }
-const char *game_version_name(GameVersion version) { (void)version; return "1.0.0"; }
+GameLayout game_version_current(void) { return GAME_100; }
+const char *game_version_name(GameLayout version) { (void)version; return "1.0.0"; }
 int game_profile_active(void) { return 0; }
 const char *game_profile_save_dir(int profile) { (void)profile; return save_root; }
 const char *rando_seed_dir(void) { return NULL; }

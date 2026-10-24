@@ -6,7 +6,9 @@ Its changed interior is deliberately excluded from the patch-address mapping.
 """
 import re
 import struct
-from game_addresses import ADDRESS as A
+from types import SimpleNamespace
+from game_addresses import load_table, table_path
+A = SimpleNamespace(**load_table(table_path("v1_0_0")))
 
 BASE = 0x7000000000
 BASE_ID = 'ae16f71e002af8cb059a9a74c4d90f34ba984892'

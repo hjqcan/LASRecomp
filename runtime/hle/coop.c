@@ -14,14 +14,14 @@
 #include <stdatomic.h>
 
 // Verified 1.0.0 entries; never translated to another version's addresses.
-#define BOWWOW_VTABLE GA_COOP_BOWWOW_VTABLE
-#define IDLE_TICK GA_COOP_IDLE_TICK
-#define FOLLOW_TICK GA_COOP_FOLLOW_TICK
-#define CHANGE_STATE GA_COOP_CHANGE_STATE
-#define MOVE_TARGET GA_COOP_MOVE_TARGET
-#define TRY_ATTACK GA_COOP_TRY_ATTACK
-#define ADD_TARGET GA_COOP_ADD_TARGET
-#define ANIMATE GA_COOP_ANIMATE
+#define BOWWOW_VTABLE GA(COOP_BOWWOW_VTABLE)
+#define IDLE_TICK GA(COOP_IDLE_TICK)
+#define FOLLOW_TICK GA(COOP_FOLLOW_TICK)
+#define CHANGE_STATE GA(COOP_CHANGE_STATE)
+#define MOVE_TARGET GA(COOP_MOVE_TARGET)
+#define TRY_ATTACK GA(COOP_TRY_ATTACK)
+#define ADD_TARGET GA(COOP_ADD_TARGET)
+#define ANIMATE GA(COOP_ANIMATE)
 
 static _Atomic bool enabled, requested;
 static _Atomic uint64_t host_input;
@@ -76,7 +76,7 @@ bool coop_boot(char *why,size_t cap) {
     if(!title_is_las()||!workshop_save_dir()||rando_seed_dir()||game_version_current()!=GAME_100) {
         snprintf(why,cap,"Local co-op requires vanilla 1.0.0 and an isolated Workshop save.");return false;
     }
-    static const struct { uint64_t address;uint32_t words[4]; } guards[]={
+    const struct { uint64_t address;uint32_t words[4]; } guards[]={
         {IDLE_TICK,{0xd101c3ff,0xfd0013ea,0x6d02a3e9,0xf9001ff7}},
         {FOLLOW_TICK,{0xd10143ff,0xfd0013e8,0xf90017f5,0xa9034ff4}},
         {CHANGE_STATE,{0xd100c3ff,0xf9000bf3,0xa9027bfd,0x910083fd}},
@@ -101,7 +101,7 @@ static bool heap(uint64_t p,size_t size) {
     return p>=HEAP_BASE&&p<=limit&&size<=limit-p;
 }
 static uint64_t player_actor(void) {
-    uint64_t scene=LD64(GA_GAME_MGR);
+    uint64_t scene=LD64(GA(GAME_MGR));
     uint64_t player=heap(scene,0x4c0)?LD64(scene+0x4b8):0;
     return heap(player,0x1ba8)&&!(LD8(player+0x43)&0x40)?player:0;
 }
@@ -120,7 +120,7 @@ static bool position(uint64_t actor,float out[4]) {
 // Native target insertion owns references and deduplicates actors. The native selector
 // checks eligibility/range; the host never writes enemy health or reference counts.
 static void register_targets(Cpu *c,uint64_t actor,const float origin[4]) {
-    uint64_t map=LD64(GA_ACTOR_REGISTRY);if(!heap(map,32))return;
+    uint64_t map=LD64(GA(ACTOR_REGISTRY));if(!heap(map,32))return;
     uint64_t node=LD64(map+16);unsigned count=0;
     for(;node&&count++<2048;) {
         if(!heap(node,0x28))return;
@@ -184,7 +184,7 @@ static void enemy_fixture(Cpu *c,uint64_t actor) {
         memset((void *)(uintptr_t)c->sp,0,0x240);
         ST64(info,UINT64_C(0x7b434f4f50000001));ST16(info+8,2);ST32(info+12,UINT32_MAX);
         float *t=(void *)(uintptr_t)(info+0x180);memcpy(t,pos,12);t[0]+=1.4f;t[1]=0.1f;t[7]=1;t[8]=t[9]=t[10]=1;
-        c->x[0]=out;c->x[1]=LD64(GA_GAME_MGR)+0x498;c->x[2]=info;guest_call(c,GA_CREATE_ACTOR);
+        c->x[0]=out;c->x[1]=LD64(GA(GAME_MGR))+0x498;c->x[2]=info;guest_call(c,GA(CREATE_ACTOR));
         test_enemy=LD64(out);test_ctrl=LD64(out+8);
         LOG("[coop-test] enemy %llx ctrl %llx\n",test_enemy,test_ctrl);
     }
@@ -192,7 +192,7 @@ static void enemy_fixture(Cpu *c,uint64_t actor) {
         if(last_frame%60==0)LOG("[coop-test-enemy] flags %#x\n",LD32(test_enemy+0x40));
         if(LD8(test_enemy+0x43)&0x40) {
             LOG("[coop-test] enemy defeated after %llu controlled steps\n",controlled_steps);
-            if(test_ctrl){c->x[0]=test_ctrl;guest_call(c,GA_SP_RELEASE);}test_enemy=test_ctrl=0;
+            if(test_ctrl){c->x[0]=test_ctrl;guest_call(c,GA(SP_RELEASE));}test_enemy=test_ctrl=0;
         }
     }
     *c=saved;

@@ -24,7 +24,7 @@ extern int game_in_play(void);
 extern const char *game_level_name(void);
 extern uint64_t renderer_present_count(void);
 
-#define KEYITEMS (GA_LIVE_SAVE + 0x556C)  // key items: bits 7-14 the instruments
+#define KEYITEMS (GA(LIVE_SAVE) + 0x556C)  // key items: bits 7-14 the instruments
 #define INSTRUMENTS(v) ((v) >> 7 & 0xFF)
 
 enum { RUN_NONE = 0, RUN_GOING = 1, RUN_DONE = 2 };

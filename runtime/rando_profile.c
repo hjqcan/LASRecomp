@@ -13,11 +13,11 @@ bool rando_seed_name_valid(const char *name) {
     return true;
 }
 
-const char *rando_patch_filename(GameVersion version) {
+const char *rando_patch_filename(GameLayout version) {
     return version == GAME_110 ? "1.0.1.pchtxt" : "1.0.0.pchtxt";
 }
 
-bool rando_seed_compatible(const char *directory, GameVersion version) {
+bool rando_seed_compatible(const char *directory, GameLayout version) {
     if (version != GAME_100 && version != GAME_110) return false;
     char path[1200], data[128] = {0};
     if (snprintf(path, sizeof path, "%s/game-version.txt", directory) >= (int)sizeof path) return false;
@@ -48,7 +48,7 @@ static int hex_digit(char c) {
     return c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
 }
 
-bool rando_patch_read(const char *path, GameVersion version, RandoPatchSet *out, char *why, size_t cap) {
+bool rando_patch_read(const char *path, GameLayout version, RandoPatchSet *out, char *why, size_t cap) {
     memset(out, 0, sizeof *out);
     if (version != GAME_100 && version != GAME_110) return fail(why, cap, 0, "unsupported executable");
     FILE *f = fopen(path, "rb");

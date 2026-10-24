@@ -40,7 +40,7 @@ int main(void) {
     no_profile = true;
     check(0, 22, "no function at 7001234000", "Game code is not supported yet");
     no_profile = false;
-    check(22, 22, "library built for another version", "game code is from another version");
+    check(22, 22, "library built for another version", "game code was built for other game files");
     check(22, 22, "no font for the game's text", "No font for the game's text");
     check(22, 22, "get_terminate", "error it couldn't recover from");
     check(22, 22, "Vulkan error", "Graphics driver error");

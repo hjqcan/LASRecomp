@@ -28,11 +28,13 @@
 
 #include "../hle.h"
 #include "../input_bind.h"
+#include "../paths.h"
 #include "../rando.h"
 #include "../settings.h"
 #include "../mods.h"
 #include "astc.h"
 #include "recolour.h"
+#include "skin_face.h"
 #include "tegra.h"
 
 #define STBTT_STATIC
@@ -535,6 +537,19 @@ static stbtt_fontinfo g_font;
 static bool g_font_ok;
 static uint8_t *g_font_data;
 
+static void try_font(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    g_font_data = malloc((size_t)n);
+    if (fread(g_font_data, 1, (size_t)n, f) == (size_t)n && stbtt_InitFont(&g_font, g_font_data, stbtt_GetFontOffsetForIndex(g_font_data, 0)))
+        g_font_ok = true;
+    else { free(g_font_data); g_font_data = NULL; }
+    fclose(f);
+}
+
 static void load_font(void) {  // a bold system font for the letters (none of the game's fonts are needed)
     static const char *const paths[] = {
         "/System/Library/Fonts/Supplemental/Arial Rounded Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
@@ -542,18 +557,9 @@ static void load_font(void) {  // a bold system font for the letters (none of th
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf",
     };
-    for (unsigned i = 0; i < sizeof paths / sizeof *paths && !g_font_ok; i++) {
-        FILE *f = fopen(paths[i], "rb");
-        if (!f) continue;
-        fseek(f, 0, SEEK_END);
-        long n = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        g_font_data = malloc((size_t)n);
-        if (fread(g_font_data, 1, (size_t)n, f) == (size_t)n && stbtt_InitFont(&g_font, g_font_data, stbtt_GetFontOffsetForIndex(g_font_data, 0)))
-            g_font_ok = true;
-        else { free(g_font_data); g_font_data = NULL; }
-        fclose(f);
-    }
+    for (unsigned i = 0; i < sizeof paths / sizeof *paths && !g_font_ok; i++) try_font(paths[i]);
+    char own[1100];  // none of the system's: the bundled DejaVu Sans Bold (third_party/fonts/DejaVu, in every release)
+    if (!g_font_ok && rt_resource("DejaVuSans-Bold.ttf", "third_party/fonts/DejaVu/DejaVuSans-Bold.ttf", own, sizeof own)) try_font(own);
     if (!g_font_ok) LOG("[texpatch] no system font for the button letters: Xbox letters stay Nintendo's\n");
 }
 
@@ -1028,65 +1034,98 @@ static void tunic_apply(uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h, ui
     for (uint32_t y = 0; y < bh; y++) memcpy(blocks + y * row, src + y * bw * 8, bw * 8);
 }
 
-// Link's skin colour (Cosmetics tab "Skin color"): any colour over his skin, keeping the shading. The skin is
-// told by its colour in the maps (BC1): a peach hue (-8..30 degrees), not grey, bright - so the brows and eyes (dark),
-// the mouth's dark lines, the hair, the tunic and the leather stay. The body map (tunic, belt, boots, arms) has
-// browns close to skin: there it must also be brighter than the leather.
-// The colour row's target is reached from the skin's typical colour (hue 21, saturation 0.47, value 0.96).
+// Link's skin colour (Cosmetics tab "Body color"): any colour over his skin, keeping the shading. The skin is told by
+// its colour in the maps (BC1): a peach hue, not grey, bright - so the brows and eyes (dark), the mouth's dark lines
+// and open mouths, the hair, the tunic and the leather stay (skin_face.h skin_weight). The colour row's target is
+// reached from the skin's typical colour (hue 21, saturation 0.47, value 0.96).
 static uint32_t skin_rgb(void) {  // (+1: 0 = Default)
     uint32_t rgb;
     return col_target(&g_settings.skin, COL_SLOT_SKIN, &rgb) ? rgb + 1 : 0;
 }
 
-static float smooth(float e0, float e1, float x) { float t = sat((x - e0) / (e1 - e0)); return t * t * (3 - 2 * t); }
+// body: the tunic map (arms, hands), recoloured block by block; else a face map, recoloured as a whole level
+// (skin_face: with a very dark colour its details are told apart by shape). mouth: one of the mouth maps.
+// The face maps' smaller mip levels are made from the recoloured full-size level (box filter), as the game's own are
+// from its: recoloured on their own, the details' shapes are too few pixels to tell apart (an open mouth's outline
+// would fill it). The levels of one upload come in order, on one thread: the full-size result is kept per thread.
+static __thread struct { int id; uint32_t c, w, h; uint8_t *img; } t_face;
 
-static void skin_apply(uint8_t *blocks, uint32_t w, uint32_t h, uint32_t row, bool body) {
+static void skin_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h, uint32_t row, bool body, bool mouth) {
     uint32_t c = skin_rgb();
     if (!c) return;
-    float sh, sf, vf, th, ts, tv;
-    col_mapping(21 / 360.0f, 0.47f, 0.96f, c - 1, &sh, &sf, &vf);
-    col_hsv(c - 1, &th, &ts, &tv);
-    bool grey = sh == 0 && ts < 0.08f;
+    float sh, ts, tv;
+    SkinParams k;
+    col_mapping(21 / 360.0f, 0.47f, 0.96f, c - 1, &sh, &k.sf, &k.vf);
+    col_hsv(c - 1, &k.th, &ts, &tv);
+    k.grey = sh == 0 && ts < 0.08f;
     // A very dark body colour (Black, or any Custom / Random one this dark: luminance under 0.22) would swallow the
     // face's dark details - pupils, brows, the mouth's and ears' lines, all drawn dark in the face maps on the skin.
-    // Then they turn light (near white, keeping a little of their own shading), so the face still reads.
+    // Then they turn light, open mouths keeping their dark inside within a light outline (skin_face).
     float lum = (0.299f * (float)((c - 1) >> 16 & 255) + 0.587f * (float)((c - 1) >> 8 & 255) + 0.114f * (float)((c - 1) & 255)) / 255;
-    bool light_features = !body && lum < 0.22f;
+    k.light = !body && lum < 0.22f;
     uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
     if (row < bw * 8) return;
+    if (body) {
+        for (uint32_t by = 0; by < bh; by++)
+            for (uint32_t bx = 0; bx < bw; bx++) {
+                uint8_t *b = blocks + by * row + bx * 8, px[16][4];
+                bc1_decode(b, px);
+                bool any = false, holes = false;
+                for (int i = 0; i < 16; i++) {
+                    if (!px[i][3]) { holes = true; continue; }
+                    float m = skin_weight(px[i], true, false);
+                    if (m < 0.004f) continue;
+                    any = true;
+                    skin_recolour(px[i], m, &k);
+                }
+                if (any && !holes) bc1_encode4(px, b);
+            }
+        return;
+    }
+    uint32_t iw = bw * 4, ih = bh * 4;  // (whole blocks: a level under 4 x 4 is padded)
+    uint8_t *img = malloc((size_t)iw * ih * 4), *was = malloc((size_t)iw * ih * 4);
     for (uint32_t by = 0; by < bh; by++)
         for (uint32_t bx = 0; bx < bw; bx++) {
-            uint8_t *b = blocks + by * row + bx * 8, px[16][4];
-            bc1_decode(b, px);
+            uint8_t px[16][4];
+            bc1_decode(blocks + by * row + bx * 8, px);
+            for (int i = 0; i < 16; i++) memcpy(img + (((by * 4 + (i >> 2)) * iw) + bx * 4 + (i & 3)) * 4, px[i], 4);
+        }
+    memcpy(was, img, (size_t)iw * ih * 4);
+    if (lv && t_face.img && t_face.id == id && t_face.c == c && (t_face.w >> lv ? t_face.w >> lv : 1) == w &&
+        (t_face.h >> lv ? t_face.h >> lv : 1) == h) {
+        uint32_t f = 1u << lv;
+        for (uint32_t y = 0; y < h; y++)
+            for (uint32_t x = 0; x < w; x++)
+                for (int ch = 0; ch < 3; ch++) {
+                    uint32_t acc = 0, cnt = 0;
+                    for (uint32_t yy = y * f; yy < (y + 1) * f && yy < t_face.h; yy++)
+                        for (uint32_t xx = x * f; xx < (x + 1) * f && xx < t_face.w; xx++, cnt++)
+                            acc += t_face.img[(yy * t_face.w + xx) * 4 + ch];
+                    if (cnt) img[(y * iw + x) * 4 + ch] = (uint8_t)((acc + cnt / 2) / cnt);
+                }
+    } else {
+        skin_face(img, iw, ih, mouth, &k);
+        if (!lv && iw == w && ih == h) {
+            free(t_face.img);
+            t_face.img = malloc((size_t)w * h * 4);
+            memcpy(t_face.img, img, (size_t)w * h * 4);
+            t_face.id = id, t_face.c = c, t_face.w = w, t_face.h = h;
+        }
+    }
+    for (uint32_t by = 0; by < bh; by++)
+        for (uint32_t bx = 0; bx < bw; bx++) {
+            uint8_t px[16][4];
             bool any = false, holes = false;
             for (int i = 0; i < 16; i++) {
-                if (!px[i][3]) { holes = true; continue; }
-                float r = px[i][0] / 255.0f, g = px[i][1] / 255.0f, bl = px[i][2] / 255.0f;
-                float mx = fmaxf(r, fmaxf(g, bl)), mn = fminf(r, fminf(g, bl)), d = mx - mn, hue = 0;
-                if (d > 0) hue = mx == r ? fmodf((g - bl) / d + 6, 6) : mx == g ? (bl - r) / d + 2 : (r - g) / d + 4;
-                hue *= 60;
-                if (hue > 180) hue -= 360;
-                float s = mx > 0 ? d / mx : 0, v = mx;
-                float m = (1 - smooth(30, 42, hue)) * smooth(-20, -8, hue) * smooth(0.12f, 0.22f, s) *
-                          (1 - smooth(0.9f, 0.97f, s)) * (body ? smooth(0.55f, 0.68f, v) : smooth(0.42f, 0.58f, v));
-                float fm = light_features ? (1 - smooth(0.4f, 0.58f, v)) * (1 - m) : 0;  // (a dark detail, not skin)
-                if (fm > 0.004f) {
-                    float lv = 0.93f - v * 0.35f;  // (near white; the darkest details lightest)
-                    uint8_t to[3] = {clamp8(lv * 255), clamp8(lv * 252), clamp8(lv * 246)};  // (a touch warm)
-                    for (int ch = 0; ch < 3; ch++) px[i][ch] = clamp8(px[i][ch] + (to[ch] - px[i][ch]) * fm + 0.5f);
-                    any = true;
-                }
-                if (m < 0.004f) continue;
-                any = true;
-                float nh = grey ? hue : th * 360 + (hue - 21) * 0.5f, ns = fminf(s * sf, 1), nv = fminf(v * vf, 1);
-                nh = fmodf(nh + 720, 360) / 60;
-                int sector = (int)nh % 6;
-                float f = nh - floorf(nh), p = nv * (1 - ns), q = nv * (1 - ns * f), t = nv * (1 - ns * (1 - f));
-                float o[6][3] = {{nv, t, p}, {q, nv, p}, {p, nv, t}, {p, q, nv}, {t, p, nv}, {nv, p, q}};
-                for (int ch = 0; ch < 3; ch++) px[i][ch] = clamp8(px[i][ch] + (o[sector][ch] * 255 - px[i][ch]) * m + 0.5f);
+                size_t at = (((by * 4 + (i >> 2)) * iw) + bx * 4 + (i & 3)) * 4;
+                memcpy(px[i], img + at, 4);
+                holes |= !was[at + 3];
+                any |= memcmp(img + at, was + at, 3) != 0;
             }
-            if (any && !holes) bc1_encode4(px, b);
+            if (any && !holes) bc1_encode4(px, blocks + by * row + bx * 8);
         }
+    free(img);
+    free(was);
 }
 
 // pictogram.bffnt: glyph index -> role (its CMAP: '+' 0, '-' 1, 'A' 2, 'B' 3, 'L' 6, 'R' 8, 'X' 10, 'Y' 11, 'Z' 12
@@ -1098,10 +1137,10 @@ void texpatch_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h
     const Ref *r = &g_refs[id];
     if (r->role == R_TUNIC || r->role == R_TUNIC_RED || r->role == R_TUNIC_BLUE) {
         tunic_apply(lv, blocks, w, h, row);
-        skin_apply(blocks, w, h, row, true);  // (the arms and hands)
+        skin_apply(id, lv, blocks, w, h, row, true, false);  // (the arms and hands)
         return;
     }
-    if (r->role == R_SKIN) { skin_apply(blocks, w, h, row, false); return; }
+    if (r->role == R_SKIN) { skin_apply(id, lv, blocks, w, h, row, false, !strncmp(r->name, "MI_mouth_alb", 12)); return; }
     if (lv || r->w != w || r->h != h) return;
     if (r->role == R_BOTTLE || r->role == R_BOTTLE_MODEL || r->role == R_FAIRY_MODEL || r->role == R_POWDER_MODEL ||
         r->role == R_ITEM_CURSOR || r->role == R_DGN_MAP || r->role == R_MAP_MODEL || r->role == R_POWER_PIECE_MODEL ||
