@@ -7,6 +7,9 @@
 #undef SERVICE
 #define SERVICE(name, fn) static void fn(Service *s, IpcReq *req, IpcResp *resp)
 #include "../runtime/services/fs.c"
+#ifdef __linux__
+void plat_os_write(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
+#endif
 bool acnh60_romfs_override(const char *p, char *out, size_t n) { abort(); }
 #include "../runtime/game_addresses.h"
 static uint8_t live_save[0x6000];
