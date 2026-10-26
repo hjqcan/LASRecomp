@@ -1,8 +1,8 @@
 # LAS Recomp's checks: the app (build/lasrecomp: everything but the game code, which the start screen builds on the
 # player's machine) builds on Linux, macOS and Windows, and the tests that need no game files or GPU run: the FP/SIMD
 # lowering against a CPU emulator (tools/test_simd.py, x86-64 Linux), the shader translator's GLSL against shaderc +
-# SPIRV-Tools (tools/test_translate.sh, Windows) and its instruction semantics on the CPU (tools/test_translate_ops.sh,
-# Linux / macOS). Nothing is published. Feature tests that need no game files go in as steps here, not as workflows of
+# SPIRV-Tools (tools/test_translate.sh, Windows), its instruction semantics on the CPU (tools/test_translate_ops.sh,
+# Linux / macOS) and the same programs' Vulkan GLSL through spirv-val (tools/test_spirv_val.sh, Linux). Nothing is published. Feature tests that need no game files go in as steps here, not as workflows of
 # their own.
 name: CI
 on:
@@ -70,28 +70,48 @@ jobs:
           build/test-condvar
       - name: Settings regression tests
         run: python3 tools/test_settings.py
+      - name: Game-files delete guard (links, outside the data folder)
+        run: DEPS="$HOME/sdl3" python3 tools/test_delete_guard.py
+      - name: Data folder move (cut off at every step)
+        run: DEPS="$HOME/sdl3" python3 tools/test_data_move.py
       - name: Dynamic resolution controller (simulated GPU)
         run: python3 tools/test_dynres.py
+      - name: Frame pacing (simulated frames, hitches and slow machines)
+        run: python3 tools/test_pace.py
       - name: Controller light colours
         run: |
           clang -std=gnu11 -O1 tools/test_led.c -lm -o build/test-led
           build/test-led
+      - name: Controller rumble (HID bridge to SDL, fake gamepad)
+        run: |
+          clang -std=gnu11 -O2 -I"$HOME/sdl3/include" tools/test_rumble.c -L"$HOME/sdl3/lib" -Wl,-rpath,"$HOME/sdl3/lib" -lSDL3 -lm -o build/test-rumble
+          build/test-rumble
       - name: Vulkan fence sequence regression
         run: python3 tools/test_fence_sequence.py
       - name: Guest heap import on low-memory machines
         run: python3 tools/test_gmem_lowmem.py
       - name: Vulkan validation failure regression
         run: python3 tools/test_vulkan_validation.py
+      - name: Vulkan overlay command buffer (recorder thread)
+        run: python3 tools/test_vulkan_overlay.py
       - name: SIMD rounding and host-state regression
         run: |
           clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -lm -o build/test-simd-rounding
           build/test-simd-rounding
       - name: Game address table tests
         run: python3 tools/test_game_addresses.py
+      - name: Randomizer Field region table
+        run: python3 tools/test_field_regions.py
       - name: Vulkan synchronization failure regression
         run: python3 tools/test_vulkan_sync_errors.py
       - name: Shader translator instruction semantics
         run: tools/test_translate_ops.sh
+      # (the same programs as vertex / fragment / compute GLSL -> glslc -> spirv-val, Vulkan 1.3; the shipped shader
+      # list is only hashes of the game's shaders, so these synthetic programs stand in for it)
+      - name: Shader translator SPIR-V validation (Vulkan 1.3)
+        run: |
+          sudo apt-get install -y --no-install-recommends glslc spirv-tools
+          tools/test_spirv_val.sh
       - name: FP/SIMD lowering vs a CPU emulator (a sample)
         run: |
           python3 -m venv tools/venv && tools/venv/bin/pip install -q unicorn capstone lz4
@@ -128,12 +148,22 @@ jobs:
           build/test-condvar
       - name: Settings regression tests
         run: python3 tools/test_settings.py
+      - name: Game-files delete guard (links, outside the data folder)
+        run: python3 tools/test_delete_guard.py
+      - name: Data folder move (cut off at every step)
+        run: python3 tools/test_data_move.py
       - name: Dynamic resolution controller (simulated GPU)
         run: python3 tools/test_dynres.py
+      - name: Frame pacing (simulated frames, hitches and slow machines)
+        run: python3 tools/test_pace.py
       - name: Controller light colours
         run: |
           clang -std=gnu11 -O1 tools/test_led.c -lm -o build/test-led
           build/test-led
+      - name: Controller rumble (HID bridge to SDL, fake gamepad)
+        run: |
+          clang -std=gnu11 -O2 -I"$(brew --prefix sdl3)/include" -L"$(brew --prefix sdl3)/lib" tools/test_rumble.c -lSDL3 -o build/test-rumble
+          build/test-rumble
       - name: Game address table tests
         run: python3 tools/test_game_addresses.py
       - name: Vulkan synchronization failure regression
@@ -171,6 +201,10 @@ jobs:
           python3 tools/test_windows_processes.py
       - name: Save I/O regression tests
         run: python3 tools/test_save.py
+      - name: Game-files delete guard (junctions, outside the data folder)
+        run: python3 tools/test_delete_guard.py
+      - name: Data folder move (cut off at every step)
+        run: python3 tools/test_data_move.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -o build/test-movie-extractor.exe
@@ -180,12 +214,18 @@ jobs:
         run: |
           clang -O2 -pthread tools/test_condvar.c -o build/test-condvar.exe
           build/test-condvar.exe
+      - name: Controller rumble (HID bridge to SDL, fake gamepad)
+        run: |
+          clang -std=gnu11 -O2 $(pkg-config --cflags sdl3) tools/test_rumble.c $(pkg-config --libs sdl3) -o build/test-rumble.exe
+          build/test-rumble.exe
       - name: Vulkan fence sequence regression
         run: python tools/test_fence_sequence.py
       - name: Guest heap import on low-memory machines
         run: python tools/test_gmem_lowmem.py
       - name: Vulkan validation failure regression
         run: python tools/test_vulkan_validation.py
+      - name: Vulkan overlay command buffer (recorder thread)
+        run: python tools/test_vulkan_overlay.py
       - name: Windows guest thread stack regression
         run: |
           clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe

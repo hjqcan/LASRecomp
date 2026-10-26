@@ -1,9 +1,11 @@
 #!/bin/bash
 # make appimage ARCH=<x86_64|aarch64>: build/dist/LAS Recomp-<version>-linux-<arch>.AppImage, built in Ubuntu 22.04
-# containers (podman; tools/linux/Containerfile) so it runs on glibc 2.35+ distributions. Everything is built inside
-# the amd64 container - aarch64 cross-compiled against the arm64 image's root filesystem (build/linux/aarch64/sysroot)
-# - except the generator helpers, which PyInstaller freezes in a container of their own arch (arm64: QEMU, binfmt).
-# No game code inside: the start screen builds it on the player's machine. See docs/linux.md.
+# containers (podman; tools/linux/Containerfile) so it runs on glibc 2.35+ distributions. On a host of the same arch
+# everything is built natively in that arch's container. An aarch64 AppImage on an x86-64 host: the amd64 container
+# cross-compiles against the arm64 image's root filesystem (build/linux/aarch64/sysroot), only the generator helpers
+# are frozen in the arm64 container (PyInstaller builds for the machine it runs on: QEMU, binfmt - slow, since pip
+# also compiles oead and keystone there). No game code inside: the start screen builds it on the player's machine.
+# See docs/linux.md.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ARCH=${1:?usage: tools/linux/appimage.sh x86_64|aarch64}
@@ -19,6 +21,12 @@ run() {  # image, command...: the checkout mounted at /src
     podman run --rm --arch "${img##*:}" -v "$PWD:/src" -w /src -e SYSROOT=/src/build/linux/aarch64/sysroot "$img" "$@"
 }
 
+if [ "$ARCH" = "$(uname -m)" ]; then  # native: one container of this arch does it all
+    IMG=$(image "$PODARCH")
+    run "$IMG" tools/linux/rando_helper.sh "$ARCH"
+    run "$IMG" tools/linux/package.sh "$ARCH"
+    exit 0
+fi
 AMD=$(image amd64)
 if [ "$ARCH" = aarch64 ]; then
     ARM=$(image arm64)

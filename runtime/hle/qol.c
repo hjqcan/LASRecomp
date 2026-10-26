@@ -31,7 +31,7 @@ int rt_snap_dir(Cpu *c) {
         static Cpu tmp;
         tmp = *c;
         inner = true;
-        dispatch_lookup(GA_SNAP_DIR_SITE)(&tmp);
+        dispatch_lookup(GA(SNAP_DIR_SITE))(&tmp);
         inner = false;
         LOG("[qol] snap (%.3f, %.3f): 8-way %#x, 360 %#x (%s)\n", x, y, (uint32_t)tmp.x[0], a, on ? "360" : "8-way");
     }
@@ -56,7 +56,7 @@ float rt_walk_speed(uint64_t player, float m, int site) {
     float k = env > 0 ? env : g_settings.walk_speed;
     if (!(k > 0.5f && k <= 4)) k = 1;
     if (k != 1 && !g_settings.walk_speed_dungeons) {  // (off indoors: every level but the overworld, "Field")
-        uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+        uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
         if (ps && strcmp((const char *)(uintptr_t)ps, "Field")) k = 1;
     }
     if (!(mask >> (site >= 100 ? 30 + site - 100 : site) & 1)) k = 1;
@@ -147,7 +147,11 @@ RT_ON_RESET(tunic_up_reset) { g_tunic_up = -1; }
 
 // Underwater checks (tools/rando/underwater.py, settings.json "underwater-items"): the sunken heart-piece actors hold
 // randomized items and hide by their own flag, so their "do you own this heart piece already?" check is skipped
-// (tools/patches.py UNDERWATER_OWNED_SITE). Item actors keep their name at +0x398 ("ItemHeartPiece-<id>").
+// (tools/patches.py UNDERWATER_OWNED_SITE, x20 = the item actor) and their pickup adds no heart piece
+// (UNDERWATER_PICKUP_SITE, x19 = its event actor, which keeps the name at +0x398: "ItemHeartPiece-<id>"). The item
+// actor is told by its class (vtable): its name is often not filled in yet when it asks whether to appear, and with
+// the check not skipped a sunken spot whose heart-piece index the player owns was deleted on load (found 2026-10-24:
+// the Eagle's Tower exit cave's item, index 7, gone in most loads - nothing to see or dive for).
 static int g_underwater = -1;  // (per seed)
 int rt_underwater_items(void) {
     if (g_underwater < 0) {
@@ -168,7 +172,8 @@ int rt_underwater_items(void) {
 }
 
 int rt_underwater_skip_owned(uint64_t actor) {
-    return rt_underwater_items() && actor && !memcmp((const void *)(uintptr_t)(actor + 0x398), "ItemHeartPiece-", 15);
+    return rt_underwater_items() && actor && (LD64(actor) == GA(ITEM_HEART_PIECE_VTABLE) ||
+                                              !memcmp((const void *)(uintptr_t)(actor + 0x398), "ItemHeartPiece-", 15));
 }
 RT_ON_RESET(underwater_reset) { g_underwater = -1; }
 
@@ -178,7 +183,7 @@ int rt_buff_replace(int allow) {
     static int test = -1;
     if (test < 0) test = ENV("LARECOMP_BUFF_PRIME") ? atoi(ENV("LARECOMP_BUFF_PRIME")) : 0;
     if (test) {
-        uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);  // PlayerStatus*
+        uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));  // PlayerStatus*
         if (ps) ST8(ps + 0xa5, 14);
         if (test == 2) allow = 1;
         { extern uint64_t renderer_present_count(void); LOG("[qol] f%llu drop roll: buff replace %d -> %d\n", (unsigned long long)renderer_present_count(), allow, allow && !no_buff()); }
@@ -214,7 +219,8 @@ static bool apply_tilt(int removed) {  // false: not set up yet (or not the name
 }
 
 // LARECOMP_SETTING_AT="frame:key=value,..." (test): flip an in-game menu toggle at that presented frame, as the menu
-// would (move_360, blur_removal, dpad_move).
+// would (move_360, blur_removal, dpad_move: 0 / 1; Cosmetics colour rows: a palette name or #RRGGBB - tunic, hearts,
+// hair, shield, skin, leaves, grass, sand; enemy_colours: 0 / 1 / 2; screen_filter: 0-3).
 static void setting_at_tick(void) {
     static const char *spec;
     static int init;
@@ -224,16 +230,23 @@ static void setting_at_tick(void) {
     extern uint64_t renderer_present_count(void);
     uint64_t now = renderer_present_count();
     if (now == last) return;
-    char buf[512];
+    char buf[4096];  // (a long test script: many rows switched in one run)
     snprintf(buf, sizeof buf, "%s", spec);
     for (char *save = NULL, *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
         unsigned long f;
-        char key[32];
-        int v;
-        if (sscanf(tok, "%lu:%31[a-z_0-9]=%d", &f, key, &v) != 3 || f <= last || f > now) continue;
+        char key[32], val[32];
+        if (sscanf(tok, "%lu:%31[a-z_0-9]=%31s", &f, key, val) != 3 || f <= last || f > now) continue;
+        int v = atoi(val);
+        if (!strcmp(key, "screen_filter")) { g_settings.screen_filter = v; LOG("[qol] test: f%llu %s = %d\n", (unsigned long long)now, key, v); }
+        if (!strcmp(key, "enemy_colours")) { g_settings.enemy_colours = v; LOG("[qol] test: f%llu %s = %d\n", (unsigned long long)now, key, v); }
         bool *b = !strcmp(key, "move_360") ? &g_settings.move_360 : !strcmp(key, "blur_removal") ? &g_settings.blur_removal :
                   !strcmp(key, "dpad_move") ? &g_settings.dpad_move : NULL;
         if (b) { *b = v != 0; LOG("[qol] test: f%llu %s = %d\n", (unsigned long long)now, key, v); }
+        CosColour *c = !strcmp(key, "tunic") ? &g_settings.tunic : !strcmp(key, "hearts") ? &g_settings.hearts :
+                       !strcmp(key, "hair") ? &g_settings.hair : !strcmp(key, "shield") ? &g_settings.shield :
+                       !strcmp(key, "skin") ? &g_settings.skin : !strcmp(key, "leaves") ? &g_settings.leaves :
+                       !strcmp(key, "grass") ? &g_settings.grass : !strcmp(key, "sand") ? &g_settings.sand : NULL;
+        if (c) { col_parse(c, val); LOG("[qol] test: f%llu %s = %s\n", (unsigned long long)now, key, val); }
     }
     last = now;
 }

@@ -20,6 +20,7 @@ start = header.index('#define VK_CHECK(x)')
 check = header[start:header.index('\n\n', start)]
 harness = r'''
 #include <assert.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +42,11 @@ static void cq_resolve_done(uint64_t seq) { resolved=seq; }
 void vk_device_fault_report(void) { faults++; }
 void vk_devlost_dump(void) { dumps++; }
 void rq_watch(const char *what, uint64_t arg) { (void)what; (void)arg; }  // (the render thread's hang dump view)
+// the recorder thread (record.c): what the translating thread queued (submit_seq), what the driver has (rec_submitted)
+static pthread_mutex_t seq_lock=PTHREAD_MUTEX_INITIALIZER;
+static uint64_t submit_seq=100, rec_sub=100, rec_waited;
+uint64_t rec_submitted(void) { return rec_sub; }
+void rec_wait_submitted(uint64_t seq) { assert(seq<=submit_seq && seq>rec_sub); rec_waited=seq; rec_sub=seq; }
 static VkResult vkGetSemaphoreCounterValue(int device, int semaphore, uint64_t *value) {
     assert(device==1 && semaphore==2); calls++;
     *value=result==VK_SUCCESS ? 42 : 999; // output is unusable after an API error
@@ -65,6 +71,14 @@ int main(int argc, char **argv) {
         wait_why="no submission"; result=VK_TIMEOUT;
         vk_wait_seq(0);
         assert(!calls && !accounts && !resolved && !wait_why);
+    } else if (!strcmp(mode,"wait-recorder")) {  // not handed to the driver yet: the recorder first, then the GPU
+        rec_sub=3;
+        vk_wait_seq(9);
+        assert(rec_waited==9 && calls==1 && accounts==1 && resolved==9);
+    } else if (!strcmp(mode,"wait-unqueued")) {  // nothing queued at all: no wait
+        submit_seq=0; rec_sub=0; wait_why="unqueued";
+        vk_wait_seq(9);
+        assert(!rec_waited && !calls && !accounts && !resolved && !wait_why);
     } else {
         result=!strcmp(mode,"wait-timeout") ? VK_TIMEOUT : !strcmp(mode,"wait-lost") ? VK_ERROR_DEVICE_LOST : VK_SUCCESS;
         vk_wait_seq(9);
@@ -81,9 +95,11 @@ with tempfile.TemporaryDirectory(prefix='vulkan-sync-', dir=build) as directory:
     exe = temp/('sync.exe' if os.name=='nt' else 'sync')
     subprocess.run(shlex.split(os.environ.get('CC','clang')) + ['-std=gnu11','-O1',str(cfile),'-o',str(exe)],check=True)
     failures=[]
-    for mode in ('query-ok','wait-zero','wait-ok','query-lost','query-memory','wait-timeout','wait-lost'):
+    recorder = 'rec_submitted()' in wait  # (the recorder thread's branch: its two cases too)
+    ok = ('query-ok','wait-zero','wait-ok') + (('wait-recorder','wait-unqueued') if recorder else ())
+    for mode in ok + ('query-lost','query-memory','wait-timeout','wait-lost'):
         run = subprocess.run([str(exe),mode],capture_output=True,text=True,timeout=5)
-        success = mode in ('query-ok','wait-zero','wait-ok')
+        success = mode in ok
         if run.returncode!=(0 if success else 17) or run.stdout!=('completed\n' if success else ''):
             failures.append((mode,run)); continue
         if mode=='wait-timeout': assert '10 s' in run.stderr and '9' in run.stderr,run

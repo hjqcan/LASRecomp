@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Field walkability (LAS Recomp test tool, issue #144): which outdoor logic regions a Field tile can be walked to from.
 
-Bushsanity / digsanity give each bush and dig tile the logic regions of its screen (bushes.screen_regions, plus
-POCKETS by hand). A screen shared by two regions gets the wrong one: #81 (pockets behind pits / rocks) and #144 (the
-Pothole Field's south end shares Richard's villa screen, whose door is plains). This module is an independent second
-opinion, from the game's own tile grids rather than from screens:
+Bushsanity / digsanity give each bush and dig tile the reviewed logic region of its tile (field_regions.py). This
+module is an independent second opinion, from the game's own tile grids (used to build that table):
 
 - every Field screen's 10 x 8 grid joined into one map (1.5-unit tiles, screen (row, col) at tile (col*10, (row-1)*8));
 - a tile is walkable unless it has collision, is a pit / deep water, or something solid stands on it (rocks, statues,
   signs, trees ...; bushes and grass count as walkable: they can be cut);
 - neighbours connect unless a wall bit sits between them or the floor heights differ by more than ELEV;
-- each house / cave door (entrance_data.yml, outer_region) anchors its region to the area its doorway opens on.
+- each house / cave door (entrance_data.yml, outer_region) anchors its region to the area its doorway opens on; a
+  door in a `pocket` (an outside area vanilla only reaches through a connector cave) anchors the pocket's own logic
+  region (entrance_logic.POCKETS: it exists in the logic with the entrance shuffle; OUTER gives the door's
+  outer_region for logic without one), so a check there needs the pocket, not the region it belongs to in vanilla.
 
 So an area's anchors are the regions it can be walked to from without jumping pits, lifting rocks or swimming:
 "(anchor1 | anchor2 ...)" is a lower bound of what reaching a tile there needs. The grid doesn't hold everything
@@ -33,6 +34,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ELEV = 1.0
 # actors that don't block walking (the rest - rocks, statues, signs, trees, NPCs - do)
 PASSABLE = ('Enemy', 'Tag', 'Area', 'Item', 'ObjButterfly', 'Map', 'ObjGrass', 'ObjLawn', 'ObjFieldTip')
+
+
+OUTER = {}  # pocket logic region -> the outer_region of its door (for logic without the entrance shuffle)
 
 
 def _tiles(romfs, leb):
@@ -94,9 +98,16 @@ def areas(romfs, leb):
             continue
         p = (int(d['pos_xz'][0] // 1.5), int(d['pos_xz'][1] // 1.5))
         near = [p] if p in area else [(p[0], p[1] + 1), (p[0], p[1] - 1), (p[0] + 1, p[1]), (p[0] - 1, p[1])]
+        region = d['outer_region']
+        if d.get('pocket'):  # (pockets of the pooled connector caves; the others stay vanilla)
+            import entrance_logic
+            pk = entrance_logic.POCKETS.get(d['pocket']['name'])
+            if pk:
+                region = pk[0]
+                OUTER[region] = d['outer_region']
         for q in near:
             if q in area:
-                anchors[area[q]].add(d['outer_region'])
+                anchors[area[q]].add(region)
     return area, anchors
 
 
@@ -135,14 +146,18 @@ def main():
             for z in range(8):
                 print('   ', ' '.join(sym.get(area.get((col * 10 + x, (row - 1) * 8 + z)), '#') for x in range(10)))
         return
-    regions = bushes.screen_regions()
+    import field_regions
     tr = tile_regions(romfs, leb)
     for name, (room, tile) in sorted(location_tiles(romfs, leb).items()):
         a = tr.get((room, tile))
-        logic = set(regions.get(room, ()))
-        pocket = bushes.pocket_condition(room, tile)
-        if a and not a & (logic | set(re.findall(r'[a-z0-9-]+', pocket or ''))):
-            print(f'{name:14} walks from {sorted(a)}, logic {sorted(logic)}' + (f' + {pocket}' if pocket else ''))
+        a = a and {OUTER.get(r, r) for r in a}  # (the table is the logic without the entrance shuffle: no pockets)
+        try:
+            region, cond = field_regions.region_of(room, tile)
+        except field_regions.NoRegion as e:
+            print(f'{name:14} {e}')
+            continue
+        if a and not a & ({region} | set(re.findall(r'[a-z0-9-]+', cond or ''))):
+            print(f'{name:14} walks from {sorted(a)}, logic {region}' + (f' + {cond}' if cond else ''))
 
 
 if __name__ == '__main__':

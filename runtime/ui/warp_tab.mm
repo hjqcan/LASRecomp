@@ -10,7 +10,9 @@
 #include <string.h>
 
 #include "imgui.h"
+#include "option_rows.h"
 #include "osk.h"
+#include "plastic.h"
 #include "warp_data.h"
 
 extern "C" {
@@ -20,7 +22,7 @@ int warp_available(void);
 bool warp_blocked(const char *locator);
 }
 
-// GA_PLAYER_STATUS_PTR: main + 0x1CC1368: PlayerStatus* (current level name at +0)
+// GA(PLAYER_STATUS_PTR): main + 0x1CC1368: PlayerStatus* (current level name at +0)
 
 static const int kNumSpots = (int)(sizeof kWarpSpots / sizeof kWarpSpots[0]);
 static int g_group = -1;
@@ -28,7 +30,7 @@ static char g_filter[64];
 static char g_last[160];
 
 static const char *current_level(void) {
-    uint64_t ps = *(uint64_t *)(uintptr_t)GA_PLAYER_STATUS_PTR;
+    uint64_t ps = *(uint64_t *)(uintptr_t)GA(PLAYER_STATUS_PTR);
     if (ps < 0x7000000000ull || ps >= 0x7400000000ull) return "";
     const char *s = (const char *)(uintptr_t)ps;
     for (int i = 0; i < 0x40; i++) {
@@ -55,17 +57,16 @@ static bool matches(const WarpSpot &w, const char *f) {
 static bool spot(const WarpSpot &w, bool show_area, bool enabled) {
     bool swim = warp_blocked(w.locator);
     enabled = enabled && !swim;
-    char lbl[256];
-    if (show_area) snprintf(lbl, sizeof lbl, "%s  -  %s##%s/%s", w.area, w.label, w.level, w.locator);
-    else snprintf(lbl, sizeof lbl, "%s##%s/%s", w.label, w.level, w.locator);
-    ImGui::BeginDisabled(!enabled);
-    bool go = ImGui::Selectable(lbl);
-    ImGui::EndDisabled();
-    if (swim && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(strncmp(w.locator, "Warp_", 5) ? "Link arrives here swimming: needs the Flippers." : "A Manbo's Mambo arrival point: can't be warped to directly.");
-    if (ImGui::IsItemHovered() || ImGui::IsItemFocused()) {
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.70f + ImGui::GetCursorStartPos().x);
-        ImGui::TextDisabled("%s / %s", w.level, w.locator);
-    }
+    char lbl[256], desc[320];
+    if (show_area) snprintf(lbl, sizeof lbl, "%s  -  %s", w.area, w.label);
+    else snprintf(lbl, sizeof lbl, "%s", w.label);
+    snprintf(desc, sizeof desc, "%s%s / %s", !swim ? "" : strncmp(w.locator, "Warp_", 5)
+                 ? "Link arrives here swimming: needs the Flippers.\n\n" : "A Manbo's Mambo arrival point: can't be warped to directly.\n\n",
+             w.level, w.locator);
+    ImGui::PushID((int)(&w - kWarpSpots));  // (spot names repeat across levels)
+    if (!enabled) opt_disable_next();
+    bool go = opt_action(lbl, "", desc, false);
+    ImGui::PopID();
     if (go) {
         warp_request(w.level, w.locator);
         snprintf(g_last, sizeof g_last, "%s  -  %s", w.area, w.label);
@@ -73,34 +74,62 @@ static bool spot(const WarpSpot &w, bool show_area, bool enabled) {
     return go;
 }
 
+// The tab in two columns (as the Controls tab's Configure inputs): the groups, the search box and the group's areas
+// on the left; the chosen area's spots (or the search's matches) on the right.
+struct Area { int first, end; };  // (a run of spots of one area, kWarpSpots[first..end))
+static int areas_of(int group, Area *out, int cap) {
+    int n = 0;
+    for (int i = 0; i < kNumSpots;) {
+        int j = i;
+        while (j < kNumSpots && kWarpSpots[j].group == kWarpSpots[i].group && !strcmp(kWarpSpots[j].area, kWarpSpots[i].area)) j++;
+        if (kWarpSpots[i].group == group && n < cap) out[n++] = {i, j};
+        i = j;
+    }
+    return n;
+}
+static bool area_here(const Area &a, const char *cur) {
+    for (int k = a.first; k < a.end; k++)
+        if (!strcmp(kWarpSpots[k].level, cur) && strcmp(cur, "Field")) return true;
+    return false;
+}
+
+static int g_area = -1;            // the area shown (its first spot's index)
+static bool g_in_right;            // the cursor is in the right column (last frame)
+static int g_last_frame = -10;     // (a frame without this tab: it starts over on Link's area)
+static int g_back_frame = -10;     // the frame B went back to the areas (the menu mustn't close on it)
+enum { FOCUS_NONE, FOCUS_AREA, FOCUS_RIGHT };
+static int g_focus;
+extern "C" bool warp_tab_took_back(void) { return g_back_frame == ImGui::GetFrameCount(); }
+
 extern "C" bool warp_tab_draw(float scale) {
-    (void)scale;
     const char *cur = current_level();
     bool avail = warp_available() != 0;
-    if (g_group < 0) {  // start on the group of the level Link is in
-        g_group = 0;
-        for (int i = 0; i < kNumSpots; i++)
-            if (!strcmp(kWarpSpots[i].level, cur)) { g_group = kWarpSpots[i].group; break; }
+    int frame = ImGui::GetFrameCount();
+    if (frame - g_last_frame > 1) {  // (the tab just opened) start on the group and area of the level Link is in
+        g_focus = FOCUS_NONE, g_in_right = false;
+        int here = -1;
+        for (int i = 0; i < kNumSpots && here < 0; i++)
+            if (!strcmp(kWarpSpots[i].level, cur)) here = i;
+        if (g_group < 0 || here >= 0) g_group = here >= 0 ? kWarpSpots[here].group : 0;
+        if (here >= 0 && strcmp(cur, "Field")) {
+            Area a[128];
+            for (int k = 0, n = areas_of(g_group, a, 128); k < n; k++)
+                if (area_here(a[k], cur)) g_area = a[k].first;
+        }
     }
+    g_last_frame = frame;
+    Area areas[128];
+    int na = areas_of(g_group, areas, 128);
+    bool area_ok = false;
+    for (int k = 0; k < na; k++) area_ok |= areas[k].first == g_area;
+    if (!area_ok) g_area = na ? areas[0].first : -1;
 
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Warp");
+    ImGui::TextColored(plastic_col(plastic_theme().title), "Warp");
     ImGui::SameLine();
     if (avail) ImGui::TextDisabled("   Link is in: %s", *cur ? cur : "?");
     else ImGui::TextDisabled("   Load a save and get into the game to warp.");
     if (g_last[0]) { ImGui::SameLine(); ImGui::TextDisabled("   Last warp: %s", g_last); }
     ImGui::Separator();
-
-    // group buttons (dpad left/right + A, or click) and a search box
-    for (int g = 0; g < 3; g++) {
-        if (g) ImGui::SameLine();
-        bool sel = g_group == g;
-        if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_Header));
-        if (ImGui::Button(kWarpGroups[g])) { g_group = g; g_filter[0] = 0; }
-        if (sel) ImGui::PopStyleColor();
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(-1);
-    ui_input_text("##warpfilter", g_filter, sizeof g_filter, 0, "Search places...", "Search places");
     ImGui::Spacing();
 
     bool started = false;
@@ -117,32 +146,66 @@ extern "C" bool warp_tab_draw(float scale) {
             }
         test_state = 2;
     }
+    static int hook_frames = -1;  // (test) LARECOMP_WARP_AREA=<area>[:right]: that area shown (right: cursor on its spots)
+    if (hook_frames < 0) {
+        hook_frames = 0;
+        if (const char *h = getenv("LARECOMP_WARP_AREA"))
+            for (int i = 0; i < kNumSpots; i++)
+                if (!strncmp(h, kWarpSpots[i].area, strlen(kWarpSpots[i].area))) {
+                    g_group = kWarpSpots[i].group, g_area = i, hook_frames = strstr(h, ":right") ? 10 : 0;
+                    na = areas_of(g_group, areas, 128);
+                    break;
+                }
+    }
+    if (hook_frames > 0) hook_frames--, g_focus = FOCUS_RIGHT;
+    // B / Esc in the right column, or Left: back to the area
+    if (g_in_right && !ui_text_busy() && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
+        (opt_pressed_back() || (opt_pressed_left() && !opt_focused_lr())))
+        g_back_frame = frame, g_focus = FOCUS_AREA;
 
-    ImGui::BeginChild("##warplist", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NavFlattened);
+    opt_begin("##warp", scale);
+    opt_compact();
+    for (int g = 0; g < 3; g++)
+        if (opt_radio(kWarpGroups[g], g_group == g, NULL)) {
+            g_group = g, g_filter[0] = 0;
+            na = areas_of(g_group, areas, 128);
+            g_area = na ? areas[0].first : -1;
+            for (int k = 0; k < na; k++)
+                if (area_here(areas[k], cur)) g_area = areas[k].first;
+        }
+    opt_text("Search", g_filter, sizeof g_filter, "Search places...", NULL);
+    opt_section(kWarpGroups[g_group]);
+    for (int k = 0; k < na; k++) {
+        const Area &a = areas[k];
+        char v[48];
+        snprintf(v, sizeof v, area_here(a, cur) ? "<- here   %d" : "%d", a.end - a.first);
+        if (g_in_right && a.first == g_area) opt_mark_next();
+        ImGui::PushID(a.first);
+        bool open = opt_link(kWarpSpots[a.first].area, NULL, v);
+        ImGui::PopID();
+        bool clicked = ImGui::IsItemClicked();
+        if (a.first == g_area && g_focus == FOCUS_AREA) g_focus = FOCUS_NONE, opt_focus_item();
+        if ((opt_item_nav_focused() && g_area != a.first) || open) g_area = a.first;  // (moving down the list shows each)
+        if (open && !clicked) g_focus = FOCUS_RIGHT;  // (A / Right: the cursor goes to its spots)
+    }
+
+    opt_split();
+    opt_section(g_filter[0] ? "Search" : g_area >= 0 ? kWarpSpots[g_area].area : "");
+    opt_list_begin();
+    if (g_focus == FOCUS_RIGHT) g_focus = FOCUS_NONE, opt_focus_next_row();
     if (g_filter[0]) {  // flat list of matches across all groups
         int shown = 0;
         for (int i = 0; i < kNumSpots && shown < 300; i++)
             if (matches(kWarpSpots[i], g_filter)) { started |= spot(kWarpSpots[i], true, avail); shown++; }
         if (!shown) ImGui::TextDisabled("No matches.");
-    } else {
-        for (int i = 0; i < kNumSpots;) {
-            const WarpSpot &a = kWarpSpots[i];
-            int j = i;
-            while (j < kNumSpots && kWarpSpots[j].group == a.group && !strcmp(kWarpSpots[j].area, a.area)) j++;
-            if (a.group == g_group) {
-                bool here = false;
-                for (int k = i; k < j; k++) here |= !strcmp(kWarpSpots[k].level, cur) && strcmp(cur, "Field");
-                char hdr[160];
-                snprintf(hdr, sizeof hdr, "%s%s  (%d)###%s", a.area, here ? "   <- Link is here" : "", j - i, a.area);
-                if (ImGui::CollapsingHeader(hdr)) {
-                    ImGui::Indent();
-                    for (int k = i; k < j; k++) started |= spot(kWarpSpots[k], false, avail);
-                    ImGui::Unindent();
-                }
-            }
-            i = j;
-        }
+    } else if (g_area >= 0) {
+        for (int k = g_area; k < kNumSpots && kWarpSpots[k].group == kWarpSpots[g_area].group &&
+                             !strcmp(kWarpSpots[k].area, kWarpSpots[g_area].area); k++)
+            started |= spot(kWarpSpots[k], false, avail);
     }
-    ImGui::EndChild();
+    opt_list_end();
+    g_in_right = opt_in_right();
+    opt_desc_text();
+    opt_split_end();
     return started;
 }

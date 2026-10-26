@@ -4,8 +4,6 @@
 #include <string.h>
 #include "settings.h"
 
-const char *const g_tunic_colours[N_TUNIC_COLOURS] = {"Default"};
-const char *const g_heart_colours[N_HEART_COLOURS] = {"Default"};
 bool bind_settings_load(const char *key, const char *val) { (void)key; (void)val; return false; }
 void bind_settings_save(FILE *file) { (void)file; }
 
@@ -44,6 +42,22 @@ int main(int argc, char **argv) {
         assert(!g_settings.upscaler_auto);
         settings_resolve_defaults(true);
         assert(g_settings.upscaler == UPSCALE_SHARP);
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "colours")) {  // Cosmetics colour rows: palette names, #RRGGBB, older names
+        settings_load();
+        assert(g_settings.tunic.pick == 3);                                          // Yellow (older tunic) -> Gold
+        assert(g_settings.hearts.pick == 9);                                         // Pink
+        assert(g_settings.hair.pick == COL_CUSTOM && g_settings.hair.rgb == 0x12AB34);
+        assert(g_settings.shield.pick == COL_DEFAULT);                               // unknown -> Default
+        assert(g_settings.skin.pick == COL_RANDOM);
+        settings_save();
+        return 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "rando-options")) {  // the New seed options (an opaque seed ID), kept as saved
+        settings_load();
+        assert(!strcmp(g_settings.rando_options, argv[2]));
+        settings_save();
         return 0;
     }
     assert(argc == 3);

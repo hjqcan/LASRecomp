@@ -88,7 +88,7 @@ static void sync_flags(void) {
         int rb = 0;
         for (int b = 0; b < 6; b++) rb |= flags_ext_get(g_remain + b) << b;
         LOG("[triforce] %d found, %d to go (flags read back %d, done %d; bitfield %llx)\n", have, left, rb,
-            flags_ext_get(g_done), (unsigned long long)LD64(GA_FLAG_PTR));
+            flags_ext_get(g_done), (unsigned long long)LD64(GA(FLAG_PTR)));
     }
 }
 
@@ -145,7 +145,7 @@ void triforce_tick(void) {
 }
 
 static const char *level_name(void) {
-    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
     return ps ? (const char *)(uintptr_t)ps : "";
 }
 

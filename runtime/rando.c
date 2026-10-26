@@ -6,6 +6,10 @@
 //
 // Code patches: gen.py compiled every variant of every patched instruction in (tools/rando/patch_variants.json);
 // rando_word() tells the generated code which one the seed uses (0 = the original instruction).
+//
+// Every supported game version reads 1.0.0.pchtxt: 1.0.1 / 1.1.0 changed one function, and every randomizer patch
+// site is at the same offset with the same original instruction or data in all of them (tools/test_game_addresses.py
+// --game checks the seeds and patch_variants.json against the game files). The file's @nsobid is checked here.
 #include "rando.h"
 #include "game_addresses.h"
 
@@ -42,7 +46,7 @@ static void apply_data(uint64_t img_off, const uint8_t *bytes, size_t n) {
     memcpy(p, bytes, n);
 }
 
-static bool is_code(uint64_t off) { return off < GA_MAIN_CODE_SIZE; }
+static bool is_code(uint64_t off) { return off < GA(MAIN_CODE_SIZE); }
 
 static void load_pchtxt(const char *path) {
     FILE *f = fopen(path, "r");
@@ -51,6 +55,15 @@ static void load_pchtxt(const char *path) {
     bool enabled = false;
     int ndata = 0;
     while (fgets(line, sizeof line, f)) {
+        if (!strncmp(line, "@nsobid-", 8)) {  // the build the patches were made for: a supported version's offsets
+            uint8_t id[20] = {0};
+            int k = 0;
+            for (unsigned b; k < 20 && sscanf(line + 8 + 2 * k, "%2x", &b) == 1; k++) id[k] = (uint8_t)b;
+            const GameVersion *made = k == 20 ? game_version_by_build_id(id) : NULL, *now = game_version();
+            if (!made) LOG("[rando] %s: made for an unknown game build (%.24s): its patches may not fit\n", path, line + 8);
+            else if (now && made != now) LOG("[rando] patches made for %s, game %s: same patch sites\n", made->label, now->label);
+            continue;
+        }
         if (!strncmp(line, "@enabled", 8)) { enabled = true; continue; }
         if (!strncmp(line, "@stop", 5)) { enabled = false; continue; }
         if (!enabled) continue;
@@ -101,7 +114,18 @@ static void init(void) {
     char p[600];
     snprintf(p, sizeof p, "%s/exefs/1.0.0.pchtxt", g_seed_dir);
     load_pchtxt(p);
-    LOG("[rando] seed \"%s\" active\n", seed);
+    // the seed ID (the start screen writes it next to a seed it makes): it regenerates the same seed, so a log a
+    // player attaches to an issue is enough to reproduce their seed
+    char id[96] = "";
+    snprintf(p, sizeof p, "%s/seed_id.txt", g_seed_dir);
+    FILE *f = fopen(p, "r");
+    if (f) {
+        if (!fgets(id, sizeof id, f)) id[0] = 0;
+        fclose(f);
+        id[strcspn(id, "\r\n")] = 0;
+    }
+    if (id[0]) LOG("[rando] seed \"%s\" active, seed ID %s\n", seed, id);
+    else LOG("[rando] seed \"%s\" active (no seed ID saved with it)\n", seed);
 }
 
 void rando_init(void) {

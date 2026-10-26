@@ -47,7 +47,7 @@ already be there or in progress. Rebase onto it if it has moved since you branch
 ## Building
 
 See the README's "Building from source" for macOS and [docs/BUILD-windows.md](docs/BUILD-windows.md) for Windows.
-In short: set up your own v1.0.0 game files on the start screen, `make gen` once to recompile the game code from
+In short: set up your own game files (v1.0.0, v1.0.1 or v1.1.0) on the start screen, `make gen` once to recompile the game code from
 them, then `make -j10`. The randomizer needs its Python environment in
 `third_party/LAS-Randomizer/venv`.
 
@@ -56,11 +56,14 @@ them, then `make -j10`. The randomizer needs its Python environment in
 - `tools/gen.py` - the recompiler: translates the game's executables into C (`generated/`, never committed).
   `tools/patches.py` holds code patches applied during generation; every patch site checks the original instruction
   word, so a wrong address fails loudly instead of silently.
-- `runtime/game_addresses/patches_v1_0_0.h` - addresses used by the patch generator, read by
-  `tools/game_addresses.py` and included in the game-library identity. Runtime-only constants belong in
-  `runtime_v1_0_0.h`, so adding one does not invalidate generated code. The runtime includes both through
-  `game_addresses.h`. The current selection remains 1.0.0; guest memory layout constants and object field
-  offsets are separate. Existing instruction checks still guard patch sites.
+- `runtime/game_addresses/` - the game's addresses, one table per game version: `versions.h` lists the versions
+  by the main program's build ID (1.0.1 and 1.1.0 share one), `patches_<version>.h` holds the addresses used by the
+  patch generator (read by `tools/game_addresses.py`, part of the game-library identity) and `runtime_<version>.h`
+  the runtime-only ones (adding one does not invalidate generated code). Every version has the same names. The
+  generator and the runtime pick the table by build ID (unknown IDs are refused); runtime code reads an address as
+  `GA(NAME)`. Add a name to `*_v1_0_0.h`, then regenerate the others with `tools/version_map.py` (it maps code
+  addresses through identical functions and refuses anything it can't map). Guest memory layout constants and
+  object field offsets are separate. Instruction checks still guard patch sites.
 - `runtime/` - the host side:
   - `kernel.c`, `loader.c`, `services/` - the Switch OS replacement
   - `hle/` - replacements and features (door jumps, keysanity, pots / bushes, souls, warps, input, ...)
@@ -89,11 +92,12 @@ them, then `make -j10`. The randomizer needs its Python environment in
   `LARECOMP_VK_VALIDATION=1` keeps the existing best-effort, log-only behavior.
 
 For address-table changes, run `python tools/test_game_addresses.py`. It checks native/Python agreement,
-patch-output fingerprints from the pre-refactor `beta_5` build, hook records and uncentralized addresses without
-game files. For full generation equivalence, generate from the same player-provided `exefs/main` and `exefs/sdk`
+patch-output fingerprints from the pre-refactor `beta_5` build, hook records, that every version has the same names
+and uncentralized addresses without game files. With `--game v1_0_0=<folder> --game v1_0_1=<folder>` (your extracted
+game files) it also checks every patch and hook instruction and the randomizer's patch sites on each version, and
+that the committed tables match `tools/version_map.py`'s output. For full generation equivalence, generate from the same player-provided `exefs/main` and `exefs/sdk`
 with both revisions, then run `python tools/test_game_addresses.py --compare-generated /path/to/before /path/to/after`.
-The comparison checks every generated C file byte-for-byte. This table records the existing, verified 1.0.0
-sites; it does not yet discover addresses automatically from code patterns.
+The comparison checks every generated C file byte-for-byte.
 
 ## Tests
 

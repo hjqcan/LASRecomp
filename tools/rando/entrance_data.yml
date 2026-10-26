@@ -8,7 +8,8 @@
 #                  in vanilla, outer_extra reproduces that vanilla route so that outer_region & outer_extra ~= LAS; `pocket` names the area and
 #                  says how it is reached in vanilla (an entrance randomizer must replace that term with real pocket logic).
 #   door_req     : needed to pass the door from outside (bombable wall, rock, keyhole, bush ...).
-#   exit_req     : needed to leave through the door from inside (LADXR _addEntranceRequirementExit); usually null.
+#   exit_req     : needed to leave through the door from inside (LADXR _addEntranceRequirementExit), or to get from its doorstep into
+#                  outer_region when the doorstep is walled off from it (a rock ring, the Armos maze rocks); usually null.
 #   inside       : (single) LAS locations inside with cond relative to having just entered, so LAS cond ~= outer_region & outer_extra & door_req & inside.
 #   connectors   : nodes / directed edges / derived pairwise traversal ('impossible' = no path) / items at nodes.
 #   type counts  : {'special': 6, 'connector': 45, 'single': 54, 'dungeon': 9} ; total doors 114
@@ -1107,16 +1108,15 @@ doors:
   outer_extra: null
   door_req: null
   exit_req: null
-  inside:  # (paid inside; the raft leaves from the dock outside the vanilla door: the rapids region)
+  inside:  # (paid inside; a paid ride always starts at the dock outside the vanilla door: entrance_logic.raft_shop_to_dock)
   - location: rapids-race-45
-    cond: rapids
   - location: rapids-race-35
-    cond: rapids & hookshot
+    cond: hookshot
   - location: rapids-race-30
-    cond: rapids & hookshot
+    cond: hookshot
   confidence: medium
   notes: Raft shop (NpcRaftShopMan; LAS patches RaftShopMan.bfevfl for the race prizes). The race itself runs on the overworld rapids starting outside this hut, so LADXR only shuffles it in "insanity" mode.
-    Shuffling it likely needs event fixes.
+    A shuffled exit would leave the paid ride behind (#263), so when the exit is shuffled, paying ends with a jump to the vanilla doorstep (entrance_logic.raft_shop_to_dock); the race needs nothing but the shop then.
 - id: woods-north-cave
   field_room: Field_05C
   zone_index: 0
@@ -1478,7 +1478,7 @@ doors:
   outer_region: ghost-grave
   outer_extra: null
   door_req: null
-  exit_req: null
+  exit_req: bracelet  # (the rock ring: out to the ghost grave)
   confidence: high
   notes: Inside the rock ring by the ghost grave (LADXR needs a second bracelet lift; LAS ghost-grave = woods & bracelet).
 - id: graveyard-cave-east
@@ -1846,7 +1846,7 @@ doors:
   outer_region: armos-maze
   outer_extra: null
   door_req: bombs
-  exit_req: null
+  exit_req: bracelet  # (leaving the doorstep: the maze rocks; entrance_logic exits)
   inside: []
   confidence: medium
   notes: 'Great Fairy behind bombable wall. LADXR: reached from Martha''s bay with flippers or from Animal Village with bracelet (~ LAS armos-maze).'
@@ -1965,10 +1965,14 @@ doors:
   connector: d6-connector
   outer_region: river
   outer_extra: null
+  pocket:
+    name: armos-island
+    vanilla_access: swim from the river (Armos island is walled in by water)
+    items: []
   door_req: null
   exit_req: null
   confidence: high
-  notes: Armos island stairs (LADXR d6_armos_island = bay water + flippers).
+  notes: Armos island stairs (LADXR d6_armos_island = bay water + flippers). The island is water all round (seed 5PVF6-Z6C03-5RKFX-EWVTZ-9DK10-0G156, in game), so reaching or leaving it needs cross-water. A pocket, not plain river.
 - id: mabe-kennel
   field_room: Field_11B
   zone_index: 0
@@ -2141,7 +2145,7 @@ doors:
   outer_region: armos-maze
   outer_extra: null
   door_req: null
-  exit_req: null
+  exit_req: bracelet  # (leaving the doorstep: the maze rocks; entrance_logic exits)
   inside:
   - location: armos-knight
     cond: kill-armos-knight
@@ -2167,7 +2171,7 @@ doors:
   outer_region: armos-maze
   outer_extra: null
   door_req: null
-  exit_req: null
+  exit_req: bracelet  # (leaving the doorstep: the maze rocks; entrance_logic exits)
   inside:
   - location: armos-cave
     cond: null

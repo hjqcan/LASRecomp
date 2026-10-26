@@ -2,7 +2,8 @@
 """Escape Bottle (runtime/hle/escape.c): every randomizer seed starts with the game's third bottle (Bottle index 2) as
 a warp item. Tarin hands it over with the starting items (Tarin.bfevfl Event36, where LAS gives them), Link holds the
 bottle up and the game's message box names it: an Item.bfevfl entry `EscapeBottle` showing System:EscapeBottle, our
-own text in every language's System.msbt (English: nothing of the game's text is copied, only its control tags).
+own text in every language's System.msbt (ours, written per language in loc_text.py; nothing of the game's text is
+copied, only its control tags and - other languages - its name of Mabe Village).
 
     apply(out_dir, romfs) -> True when Tarin's flow was changed
 """
@@ -24,6 +25,18 @@ def text(wait):
     return (b'You got the ' + _COLOR_ON + b'Escape Bottle' + _COLOR_OFF + b'! Use it to\nwarp out of trouble.' + wait +
             _PAGE + b'Uncork it in a dungeon to return\nto the entrance!' + wait +
             _PAGE + b'Uncork it anywhere else to be\nwhisked home to Mabe Village!' + wait + b'\0')
+
+
+def localized(out_dir, romfs, rel, wait):
+    """The message in the language of System.msbt at `rel` (English: text())."""
+    import loc_text as lt
+    lang = lt.lang_of(rel)
+    pages = lt.tr(lt.T['escape'], lang)
+    if not pages:
+        return text(wait)
+    mabe = lt.Names(out_dir, romfs, rel).place('MabeVillage') or b'Mabe Village'
+    parts = {'name': (lt.tr(lt.T['escape-name'], lang), True), 'mabe': (mabe, False)}
+    return lt.pages([lt.fill(p, **parts) for p in pages], wait, lang)
 
 
 def _read(out_dir, romfs, rel):
@@ -66,7 +79,7 @@ def apply(out_dir, romfs):
         m = Msbt(_read(out_dir, romfs, rel))
         # the box's end-of-page wait: the one the game's own bottle message ends with
         wait = next((r for k, g, r in reversed(kt._tokens(m.texts.get('GetBottle', b''))) if g == kt.WAIT), b'')
-        m.set(ENTRY, text(wait))
+        m.set(ENTRY, localized(out_dir, romfs, rel, wait))
         out = os.path.join(out_dir, 'romfs', rel)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, 'wb') as f:

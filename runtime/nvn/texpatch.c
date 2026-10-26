@@ -27,9 +27,12 @@
 #include "../hle.h"
 #include "../input_bind.h"
 #include "../input_prompt.h"
+#include "../paths.h"
 #include "../rando.h"
 #include "../settings.h"
 #include "astc.h"
+#include "recolour.h"
+#include "skin_face.h"
 #include "tegra.h"
 
 #define STBTT_STATIC
@@ -38,7 +41,8 @@
 
 enum { K_BC5, K_BC3, K_ASTC4, K_RGBA8, K_BC1 };
 enum { R_A = 1, R_B, R_X, R_Y, R_L, R_R, R_ZL, R_ZR, R_PLUS, R_MINUS, R_HERO, R_SHEET, R_BOTTLE, R_BOTTLE_MODEL, R_FAIRY_MODEL,
-       R_ITEM_CURSOR, R_TUNIC, R_TUNIC_RED, R_TUNIC_BLUE, R_HEART, R_POWDER_MODEL, R_DGN_MAP, R_MAP_MODEL, R_POWER_PIECE_MODEL };
+       R_ITEM_CURSOR, R_TUNIC, R_TUNIC_RED, R_TUNIC_BLUE, R_HEART, R_POWDER_MODEL, R_DGN_MAP, R_MAP_MODEL, R_POWER_PIECE_MODEL,
+       R_SKIN };
 enum { STYLE_NINTENDO, STYLE_XBOX, STYLE_PS };
 // labels: R_A..R_MINUS = the button that role is on by default; or these
 enum { L_LS = 32, L_RS, L_DUP, L_DDOWN, L_DLEFT, L_DRIGHT, L_OTHER };
@@ -78,7 +82,14 @@ static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 static uint64_t rd64(const uint8_t *p) { return rd32(p) | (uint64_t)rd32(p + 4) << 32; }
 
+static bool g_scanning_link;  // (Playerlink.bfres: its face maps are Link's skin)
+
 static int role_of(const char *name) {
+    // cosmetics: Link's skin (Cosmetics tab "Skin color"): his face's maps (eyes / mouth expressions, ears; the body
+    // map's arms and hands are recoloured with the tunic map, tunic_apply)
+    if (g_scanning_link && (!strncmp(name, "MI_eye_alb", 10) || !strncmp(name, "MI_mouth_alb", 12) ||
+                            !strncmp(name, "MI_ear_alb", 10)))
+        return R_SKIN;
     static const struct { const char *prefix; int role; } m[] = {
         {"BtnA_", R_A}, {"BtnB_", R_B}, {"BtnX_", R_X}, {"BtnY_", R_Y}, {"BtnL_", R_L}, {"BtnR_", R_R},
         {"BtnZL_", R_ZL}, {"BtnZR_", R_ZR}, {"BtnPlus_", R_PLUS}, {"BtnMinus_", R_MINUS},
@@ -181,8 +192,10 @@ static void load_refs(void) {
                                          "region_common/actor/ItemPowerPiece.bfres"};
     for (int m = 0; m < (int)(sizeof models / sizeof *models); m++)
         if ((f = read_all(models[m], &len))) {  // (their textures: one BNTX inside)
+            g_scanning_link = m == 1;
             for (size_t i = 0; i + 8 < len; i += 4)
                 if (!memcmp(f + i, "BNTX\0\0\0\0", 8)) { scan_bntx(f + i, len - i, false); break; }
+            g_scanning_link = false;
             free(f);
         }
     f = read_all("region_common/ui/pictogram.bffnt", &len);  // message icons: one RGBA8 sheet in a BNTX
@@ -256,7 +269,7 @@ int texpatch_identify(const NvnTexture *t) {
         bool tunic = r->role == R_TUNIC || r->role == R_TUNIC_RED || r->role == R_TUNIC_BLUE;
         if (r->w != t->width || r->h != t->height || (r->role != R_POWDER_MODEL && r->role != R_MAP_MODEL &&
             r->role != R_POWER_PIECE_MODEL &&
-            (t->levels > 1) != (r->role == R_BOTTLE_MODEL || r->role == R_FAIRY_MODEL || tunic))) continue;
+            (t->levels > 1) != (r->role == R_BOTTLE_MODEL || r->role == R_FAIRY_MODEL || tunic || r->role == R_SKIN))) continue;
         uint64_t n = r->size < total ? r->size : total;
         if (!memcmp((const void *)(uintptr_t)t->addr, r->data, n)) {
             static int nlog;
@@ -276,7 +289,8 @@ int texpatch_identify(const NvnTexture *t) {
             return tu;
         }
     }
-    return -1;
+    int rc = recolour_identify(t, total);  // (Cosmetics recolours: identified only, runtime/nvn/recolour.c)
+    return rc >= 0 ? TEXPATCH_RECOLOUR_BASE + rc : -1;
 }
 
 static int prompt_style(void) {
@@ -363,10 +377,13 @@ static uint32_t labels_hash(void) {
 static bool restyled(int role, int style) { return style != STYLE_NINTENDO || prompt_label(role) != role; }
 
 static void cosmetics_test(void);
+static uint32_t skin_rgb(void);
+static uint32_t tunic_rgb(void);
 
 uint32_t texpatch_generation(void) {  // (a rebind re-uploads the glyphs, like a style change; so does a tunic colour)
     cosmetics_test();
-    return (1 + (uint32_t)prompt_style() + (hide_hero() ? 4 : 0) + (labels_hash() << 3)) ^ (uint32_t)g_settings.tunic * 0x9E3779B1u;
+    return (1 + (uint32_t)prompt_style() + (hide_hero() ? 4 : 0) + (labels_hash() << 3)) ^ tunic_rgb() * 0x9E3779B1u ^
+           skin_rgb() * 0x85EBCA6Bu;
 }
 
 // ------------------------------------------------------------------ block codecs (BC4/BC5, BC1/BC3, ASTC 4x4)
@@ -537,6 +554,19 @@ static stbtt_fontinfo g_font;
 static bool g_font_ok;
 static uint8_t *g_font_data;
 
+static void try_font(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    g_font_data = malloc((size_t)n);
+    if (fread(g_font_data, 1, (size_t)n, f) == (size_t)n && stbtt_InitFont(&g_font, g_font_data, stbtt_GetFontOffsetForIndex(g_font_data, 0)))
+        g_font_ok = true;
+    else { free(g_font_data); g_font_data = NULL; }
+    fclose(f);
+}
+
 static void load_font(void) {  // a bold system font for the letters (none of the game's fonts are needed)
     static const char *const paths[] = {
         "/System/Library/Fonts/Supplemental/Arial Rounded Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
@@ -544,18 +574,9 @@ static void load_font(void) {  // a bold system font for the letters (none of th
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf",
     };
-    for (unsigned i = 0; i < sizeof paths / sizeof *paths && !g_font_ok; i++) {
-        FILE *f = fopen(paths[i], "rb");
-        if (!f) continue;
-        fseek(f, 0, SEEK_END);
-        long n = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        g_font_data = malloc((size_t)n);
-        if (fread(g_font_data, 1, (size_t)n, f) == (size_t)n && stbtt_InitFont(&g_font, g_font_data, stbtt_GetFontOffsetForIndex(g_font_data, 0)))
-            g_font_ok = true;
-        else { free(g_font_data); g_font_data = NULL; }
-        fclose(f);
-    }
+    for (unsigned i = 0; i < sizeof paths / sizeof *paths && !g_font_ok; i++) try_font(paths[i]);
+    char own[1100];  // none of the system's: the bundled DejaVu Sans Bold (third_party/fonts/DejaVu, in every release)
+    if (!g_font_ok && rt_resource("DejaVuSans-Bold.ttf", "third_party/fonts/DejaVu/DejaVuSans-Bold.ttf", own, sizeof own)) try_font(own);
     if (!g_font_ok) LOG("[texpatch] no system font for the button letters: Xbox letters stay Nintendo's\n");
 }
 
@@ -854,24 +875,20 @@ done:
 }
 
 // ------------------------------------------------------------------ cosmetics (Cosmetics tab): tunic and heart colours
-// Tunic: the colours tools/rando/cosmetics.py had as a seed option (same recolour, now live): where the green and
-// red tunic maps differ (cloth, cap, collar ring) the green pixels get a hue / saturation / value change (PIL HSV,
-// 0-255), keeping the shading. Every mip level is recoloured from the game's own green map, so a seed's own colour
-// is replaced too; "Default" uploads whatever the files hold (green, or an older seed's colour).
-const char *const g_tunic_colours[N_TUNIC_COLOURS] = {"Default", "Purple", "Orange", "Yellow", "Pink", "Teal", "Sky",
-                                                      "Brown", "Black", "White", "Grey", "Lime", "Magenta"};
-static const float k_tunic_hsv[N_TUNIC_COLOURS][3] = {  // hue (-1 = keep), saturation factor, value factor
-    {0}, {195, 1.0f, 1.1f}, {20, 1.2f, 1.75f}, {40, 1.05f, 2.15f}, {232, 0.75f, 1.5f}, {125, 1.0f, 1.0f},
-    {140, 0.8f, 1.45f}, {16, 0.75f, 0.8f}, {-1, 0.15f, 0.45f}, {-1, 0.06f, 2.1f}, {-1, 0.0f, 1.1f}, {70, 1.0f, 1.4f},
-    {215, 1.0f, 1.15f}};
-// Hearts: the colour a full heart gets (sRGB); empty hearts and the frame keep their shade of it (darker)
-const char *const g_heart_colours[N_HEART_COLOURS] = {"Default", "Blue", "Green", "Purple", "Gold", "Orange", "Pink",
-                                                      "Teal", "White"};
-static const uint8_t k_heart_rgb[N_HEART_COLOURS][3] = {{0}, {40, 110, 255}, {40, 205, 60}, {170, 70, 255},
-                                                        {255, 200, 30}, {255, 125, 20}, {255, 105, 185},
-                                                        {20, 205, 195}, {240, 240, 240}};
+// The colour rows share one palette (runtime/cosmetic_colour.h): the chosen colour is a target for the thing's typical
+// colour, reached by a hue / saturation / value change that keeps the shading.
+// Tunic: tools/rando/cosmetics.py's recolour (a seed option once, now live): where the green and red tunic maps differ
+// (cloth, cap, collar ring) the green pixels change (PIL HSV, 0-255) from the green tunic's typical colour (hue 145,
+// saturation 0.75, value 0.55 - its map reads 0.89 / 0.38, lit it looks paler and brighter) to the chosen one. Every
+// mip level is recoloured from the game's own green map, so a seed's own colour is replaced too; "Default" uploads
+// whatever the files hold (green, or an older seed's colour).
+// Hearts: the chosen colour is what a full heart gets; empty hearts and the frame keep their shade of it (darker).
+static uint32_t tunic_rgb(void) {  // (+1: 0 = Default)
+    uint32_t rgb;
+    return col_target(&g_settings.tunic, COL_SLOT_TUNIC, &rgb) ? rgb + 1 : 0;
+}
 
-// LARECOMP_COSMETICS=<frame>:<tunic>:<hearts>,...  test hook: set the colours (by name) at those frames
+// LARECOMP_COSMETICS=<frame>:<tunic>:<hearts>,...  test hook: set the colours (palette names / #RRGGBB) at those frames
 static void cosmetics_test(void) {
     static const char *next;
     static int init;
@@ -881,9 +898,9 @@ static void cosmetics_test(void) {
     if (!next || !*next || sscanf(next, "%ld:%31[^:]:%31[^,]", &at, tu, he) != 3) return;
     extern uint64_t renderer_present_count(void);
     if ((long)renderer_present_count() < at) return;
-    for (int i = 0; i < N_TUNIC_COLOURS; i++) if (!strcmp(tu, g_tunic_colours[i])) g_settings.tunic = i;
-    for (int i = 0; i < N_HEART_COLOURS; i++) if (!strcmp(he, g_heart_colours[i])) g_settings.hearts = i;
-    LOG("[cosmetics] test: tunic %s, hearts %s\n", g_tunic_colours[g_settings.tunic], g_heart_colours[g_settings.hearts]);
+    col_parse(&g_settings.tunic, tu);
+    col_parse(&g_settings.hearts, he);
+    LOG("[cosmetics] test: tunic %s, hearts %s\n", tu, he);
     next = strchr(next, ',');
     if (next) next++;
 }
@@ -895,9 +912,9 @@ static float srgb_lin(int c) { float v = c / 255.0f; return v <= 0.04045f ? v / 
 // (92, 15, 15) and the frame's darker red keep their brightness relative to it.
 void texpatch_heart_tint(int kind, float tint[8]) {
     cosmetics_test();
-    int c = g_settings.hearts;
-    if (c <= 0 || c >= N_HEART_COLOURS || !kind) return;
-    for (int k = 0; k < 3; k++) tint[k] = srgb_lin(k_heart_rgb[c][k]) / 0.319f;
+    uint32_t rgb;
+    if (!kind || !col_target(&g_settings.hearts, COL_SLOT_HEARTS, &rgb)) return;
+    for (int k = 0; k < 3; k++) tint[k] = srgb_lin((int)(rgb >> (16 - 8 * k) & 255)) / 0.319f;
     tint[3] = 1;
     tint[4] = tint[5] = tint[6] = 0;
     tint[7] = 1;
@@ -953,8 +970,8 @@ static void hsv_shift(uint8_t *p, const float *m) {  // PIL's RGB <-> HSV (all 0
 
 // One mip level of the recoloured tunic (linear BC1 blocks), made on first use and kept for that colour
 static uint8_t *g_tunic_lv[16];
-static int g_tunic_lv_colour;
-static const uint8_t *tunic_level(int colour, uint32_t lv) {
+static uint32_t g_tunic_lv_colour;
+static const uint8_t *tunic_level(uint32_t colour, uint32_t lv) {  // (colour: tunic_rgb())
     if (colour != g_tunic_lv_colour) {
         for (int i = 0; i < 16; i++) { free(g_tunic_lv[i]); g_tunic_lv[i] = NULL; }
         g_tunic_lv_colour = colour;
@@ -995,6 +1012,9 @@ static const uint8_t *tunic_level(int colour, uint32_t lv) {
                 dst[y * W + x] = acc / ks;
             }
     }
+    float sh, sf, vf;
+    col_mapping(145 / 360.0f, 0.75f, 0.55f, colour - 1, &sh, &sf, &vf);
+    float m3[3] = {sh == 0 ? -1 : 100 + (sh - floorf(sh)) * 255, sf, vf};  // (hsv_shift: PIL hue, moved from the green's 100)
     uint8_t *out = malloc((size_t)nb * 8);
     memcpy(out, green, (size_t)nb * 8);
     for (uint32_t by = 0; by < l.hb; by++)
@@ -1010,7 +1030,7 @@ static const uint8_t *tunic_level(int colour, uint32_t lv) {
                 uint8_t c[3] = {gimg[at * 3], gimg[at * 3 + 1], gimg[at * 3 + 2]};
                 if (m > 0.002f) {
                     any = true;
-                    hsv_shift(c, k_tunic_hsv[colour]);
+                    hsv_shift(c, m3);
                     for (int k = 0; k < 3; k++) c[k] = clamp8(gimg[at * 3 + k] + (c[k] - gimg[at * 3 + k]) * m + 0.5f);
                 }
                 memcpy(px[i], c, 3);
@@ -1023,12 +1043,106 @@ static const uint8_t *tunic_level(int colour, uint32_t lv) {
 }
 
 static void tunic_apply(uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h, uint32_t row) {
-    int c = g_settings.tunic;
-    if (c <= 0 || c >= N_TUNIC_COLOURS || !g_tunic_layout_ok) return;
+    uint32_t c = tunic_rgb();
+    if (!c || !g_tunic_layout_ok) return;
     const uint8_t *src = tunic_level(c, lv);
     uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
     if (!src || row < bw * 8) return;
     for (uint32_t y = 0; y < bh; y++) memcpy(blocks + y * row, src + y * bw * 8, bw * 8);
+}
+
+// Link's skin colour (Cosmetics tab "Body color"): any colour over his skin, keeping the shading. The skin is told by
+// its colour in the maps (BC1): a peach hue, not grey, bright - so the brows and eyes (dark), the mouth's dark lines
+// and open mouths, the hair, the tunic and the leather stay (skin_face.h skin_weight). The colour row's target is
+// reached from the skin's typical colour (hue 21, saturation 0.47, value 0.96).
+static uint32_t skin_rgb(void) {  // (+1: 0 = Default)
+    uint32_t rgb;
+    return col_target(&g_settings.skin, COL_SLOT_SKIN, &rgb) ? rgb + 1 : 0;
+}
+
+// body: the tunic map (arms, hands), recoloured block by block; else a face map, recoloured as a whole level
+// (skin_face: with a very dark colour its details are told apart by shape). mouth: one of the mouth maps.
+// The face maps' smaller mip levels are made from the recoloured full-size level (box filter), as the game's own are
+// from its: recoloured on their own, the details' shapes are too few pixels to tell apart (an open mouth's outline
+// would fill it). The levels of one upload come in order, on one thread: the full-size result is kept per thread.
+static __thread struct { int id; uint32_t c, w, h; uint8_t *img; } t_face;
+
+static void skin_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h, uint32_t row, bool body, bool mouth) {
+    uint32_t c = skin_rgb();
+    if (!c) return;
+    float sh, ts, tv;
+    SkinParams k;
+    col_mapping(21 / 360.0f, 0.47f, 0.96f, c - 1, &sh, &k.sf, &k.vf);
+    col_hsv(c - 1, &k.th, &ts, &tv);
+    k.grey = sh == 0 && ts < 0.08f;
+    // A very dark body colour (Black, or any Custom / Random one this dark: luminance under 0.22) would swallow the
+    // face's dark details - pupils, brows, the mouth's and ears' lines, all drawn dark in the face maps on the skin.
+    // Then they turn light, open mouths keeping their dark inside within a light outline (skin_face).
+    float lum = (0.299f * (float)((c - 1) >> 16 & 255) + 0.587f * (float)((c - 1) >> 8 & 255) + 0.114f * (float)((c - 1) & 255)) / 255;
+    k.light = !body && lum < 0.22f;
+    uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
+    if (row < bw * 8) return;
+    if (body) {
+        for (uint32_t by = 0; by < bh; by++)
+            for (uint32_t bx = 0; bx < bw; bx++) {
+                uint8_t *b = blocks + by * row + bx * 8, px[16][4];
+                bc1_decode(b, px);
+                bool any = false, holes = false;
+                for (int i = 0; i < 16; i++) {
+                    if (!px[i][3]) { holes = true; continue; }
+                    float m = skin_weight(px[i], true, false);
+                    if (m < 0.004f) continue;
+                    any = true;
+                    skin_recolour(px[i], m, &k);
+                }
+                if (any && !holes) bc1_encode4(px, b);
+            }
+        return;
+    }
+    uint32_t iw = bw * 4, ih = bh * 4;  // (whole blocks: a level under 4 x 4 is padded)
+    uint8_t *img = malloc((size_t)iw * ih * 4), *was = malloc((size_t)iw * ih * 4);
+    for (uint32_t by = 0; by < bh; by++)
+        for (uint32_t bx = 0; bx < bw; bx++) {
+            uint8_t px[16][4];
+            bc1_decode(blocks + by * row + bx * 8, px);
+            for (int i = 0; i < 16; i++) memcpy(img + (((by * 4 + (i >> 2)) * iw) + bx * 4 + (i & 3)) * 4, px[i], 4);
+        }
+    memcpy(was, img, (size_t)iw * ih * 4);
+    if (lv && t_face.img && t_face.id == id && t_face.c == c && (t_face.w >> lv ? t_face.w >> lv : 1) == w &&
+        (t_face.h >> lv ? t_face.h >> lv : 1) == h) {
+        uint32_t f = 1u << lv;
+        for (uint32_t y = 0; y < h; y++)
+            for (uint32_t x = 0; x < w; x++)
+                for (int ch = 0; ch < 3; ch++) {
+                    uint32_t acc = 0, cnt = 0;
+                    for (uint32_t yy = y * f; yy < (y + 1) * f && yy < t_face.h; yy++)
+                        for (uint32_t xx = x * f; xx < (x + 1) * f && xx < t_face.w; xx++, cnt++)
+                            acc += t_face.img[(yy * t_face.w + xx) * 4 + ch];
+                    if (cnt) img[(y * iw + x) * 4 + ch] = (uint8_t)((acc + cnt / 2) / cnt);
+                }
+    } else {
+        skin_face(img, iw, ih, mouth, &k);
+        if (!lv && iw == w && ih == h) {
+            free(t_face.img);
+            t_face.img = malloc((size_t)w * h * 4);
+            memcpy(t_face.img, img, (size_t)w * h * 4);
+            t_face.id = id, t_face.c = c, t_face.w = w, t_face.h = h;
+        }
+    }
+    for (uint32_t by = 0; by < bh; by++)
+        for (uint32_t bx = 0; bx < bw; bx++) {
+            uint8_t px[16][4];
+            bool any = false, holes = false;
+            for (int i = 0; i < 16; i++) {
+                size_t at = (((by * 4 + (i >> 2)) * iw) + bx * 4 + (i & 3)) * 4;
+                memcpy(px[i], img + at, 4);
+                holes |= !was[at + 3];
+                any |= memcmp(img + at, was + at, 3) != 0;
+            }
+            if (any && !holes) bc1_encode4(px, blocks + by * row + bx * 8);
+        }
+    free(img);
+    free(was);
 }
 
 // pictogram.bffnt: glyph index -> role (its CMAP: '+' 0, '-' 1, 'A' 2, 'B' 3, 'L' 6, 'R' 8, 'X' 10, 'Y' 11, 'Z' 12
@@ -1038,7 +1152,12 @@ static const int8_t k_sheet_roles[18] = {R_PLUS, R_MINUS, R_A, R_B, 0, 0, R_L, 0
 void texpatch_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h, uint32_t row) {
     if (id < 0 || id >= g_nrefs) return;
     const Ref *r = &g_refs[id];
-    if (r->role == R_TUNIC || r->role == R_TUNIC_RED || r->role == R_TUNIC_BLUE) { tunic_apply(lv, blocks, w, h, row); return; }
+    if (r->role == R_TUNIC || r->role == R_TUNIC_RED || r->role == R_TUNIC_BLUE) {
+        tunic_apply(lv, blocks, w, h, row);
+        skin_apply(id, lv, blocks, w, h, row, true, false);  // (the arms and hands)
+        return;
+    }
+    if (r->role == R_SKIN) { skin_apply(id, lv, blocks, w, h, row, false, !strncmp(r->name, "MI_mouth_alb", 12)); return; }
     if (lv || r->w != w || r->h != h) return;
     if (r->role == R_BOTTLE || r->role == R_BOTTLE_MODEL || r->role == R_FAIRY_MODEL || r->role == R_POWDER_MODEL ||
         r->role == R_ITEM_CURSOR || r->role == R_DGN_MAP || r->role == R_MAP_MODEL || r->role == R_POWER_PIECE_MODEL ||
@@ -1115,21 +1234,24 @@ NvnTexture *texpatch_hint_icon(void) {
     return state > 0 ? &t : NULL;
 }
 
-// One of the game's own UI textures, by name (e.g. "MapMark_05^w"), decoded to RGBA8 (w x h, the texture's own colour
-// encoding) from the user's UI archives; NULL if it isn't there or its format isn't one of ours. The caller frees it.
-// (Runtime-made icons for our overlays: runtime/ui/triforce_icons.mm - nothing of the game ships.)
-uint8_t *texpatch_ui_rgba(const char *want, int *w_out, int *h_out) {
+// The game's own UI textures, by name (e.g. "MapMark_05^w"), decoded to RGBA8 (w x h, the texture's own colour
+// encoding) from the user's UI archives: out[i] NULL if it isn't there or its format isn't one of ours. Each archive is
+// read once for the whole list. The caller frees them; returns how many were found.
+// (Runtime-made icons for our overlays: runtime/ui/triforce_icons.mm, race_overlay.mm - nothing of the game ships.)
+int texpatch_ui_rgba_list(const char *const *want, int nwant, uint8_t **out, int *w_out, int *h_out) {
     static const char *const arcs[] = {"region_common/ui/Game.arc", "regionUS/common/ui/GameRegionCommon.arc",
                                        "regionEU/common/ui/GameRegionCommon.arc", "region_common/ui/StartUp.arc"};
-    for (int a = 0; a < 4; a++) {
+    int found = 0;
+    for (int i = 0; i < nwant; i++) out[i] = NULL;
+    for (int a = 0; a < 4 && found < nwant; a++) {
         size_t len;
-        uint8_t *d = read_all(arcs[a], &len), *out = NULL;
+        uint8_t *d = read_all(arcs[a], &len);
         if (!d) continue;
         if (len > 0x20 && !memcmp(d, "SARC", 4)) {
             uint32_t data_off = rd32(d + 0xC);
             uint16_t n = rd16(d + 0x1A);
             const uint8_t *ent = d + 0x20, *names = d + 0x20 + 16 * n + 8;
-            for (uint16_t i = 0; i < n && !out && ent + 16 * (i + 1) <= d + len; i++) {
+            for (uint16_t i = 0; i < n && found < nwant && ent + 16 * (i + 1) <= d + len; i++) {
                 uint32_t attr = rd32(ent + 16 * i + 4), s = rd32(ent + 16 * i + 8), e = rd32(ent + 16 * i + 12);
                 const char *nm = (attr >> 24) ? (const char *)names + (attr & 0xffffff) * 4 : "";
                 if ((const uint8_t *)nm >= d + len || strcmp(nm, "timg/__Combined.bntx") || data_off + e > len) continue;
@@ -1138,14 +1260,17 @@ uint8_t *texpatch_ui_rgba(const char *want, int *w_out, int *h_out) {
                 if (blen < 0x40 || memcmp(b, "BNTX", 4)) continue;
                 uint32_t count = rd32(b + 0x24);
                 uint64_t infos = rd64(b + 0x28);
-                for (uint32_t k = 0; k < count && !out && infos + 8 * k + 8 <= blen; k++) {
+                for (uint32_t k = 0; k < count && found < nwant && infos + 8 * k + 8 <= blen; k++) {
                     uint64_t brti = rd64(b + infos + 8 * k);
                     if (brti + 0x90 > blen || memcmp(b + brti, "BRTI", 4)) continue;
                     const uint8_t *t = b + brti + 16;
                     uint64_t name_at = rd64(t + 80), ptrs = rd64(t + 96);
                     if (name_at + 2 >= blen) continue;
                     uint16_t nl = rd16(b + name_at);
-                    if (nl != strlen(want) || memcmp(b + name_at + 2, want, nl) || ptrs + 8 > blen) continue;
+                    int wi = -1;
+                    for (int q = 0; q < nwant && wi < 0; q++)
+                        if (!out[q] && nl == strlen(want[q]) && !memcmp(b + name_at + 2, want[q], nl)) wi = q;
+                    if (wi < 0 || ptrs + 8 > blen) continue;
                     uint32_t fmt = rd32(t + 12), w = rd32(t + 20), h = rd32(t + 24), size = rd32(t + 64);
                     uint64_t data = rd64(b + ptrs);
                     int kind = (fmt >> 8) == 0x1c ? K_BC3 : (fmt >> 8) == 0x2d ? K_ASTC4 : -1;
@@ -1154,15 +1279,21 @@ uint8_t *texpatch_ui_rgba(const char *want, int *w_out, int *h_out) {
                     uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
                     uint8_t *lin = calloc((size_t)bw * bh, 16);
                     tegra_deswizzle(b + data, lin, bw, bh, 1, 16, rd32(t + 36) & 7, 0);
-                    out = malloc((size_t)w * h * 4);
-                    decode_image(&r, lin, bw * 16, out);
+                    out[wi] = malloc((size_t)w * h * 4);
+                    decode_image(&r, lin, bw * 16, out[wi]);
                     free(lin);
-                    *w_out = (int)w, *h_out = (int)h;
+                    w_out[wi] = (int)w, h_out[wi] = (int)h;
+                    found++;
                 }
             }
         }
         free(d);
-        if (out) return out;
     }
-    return NULL;
+    return found;
+}
+
+// One of them (NULL: not there)
+uint8_t *texpatch_ui_rgba(const char *want, int *w_out, int *h_out) {
+    uint8_t *out;
+    return texpatch_ui_rgba_list(&want, 1, &out, w_out, h_out) ? out : NULL;
 }

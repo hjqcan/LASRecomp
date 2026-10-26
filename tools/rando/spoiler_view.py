@@ -49,8 +49,9 @@ ITEMS = {'rooster': 'Flying Rooster (pet)', 'ghost': 'Ghost (pet)', 'marin-compa
          'fishing-hook': 'Fishing Hook', 'necklace': 'Necklace', 'scale': "Mermaid's Scale", 'red-tunic': 'Red Tunic',
          'blue-tunic': 'Blue Tunic', 'golden-leaf': 'Golden Leaf', 'mushroom': 'Sleepy Toadstool',
          'medicine': 'Secret Medicine', 'bottle': 'Bottle', 'zol-trap': 'Trap!', 'bomb-capacity': 'Bomb bag upgrade',
-         'arrow-capacity': 'Quiver upgrade', 'powder-capacity': 'Magic Powder upgrade', 'chamber-stone': 'Chamber Stone'}
-JUNK = re.compile(r'^((pot-|dig-)?rupee-\d+|pot-heart|pot-arrows|pot-bombs|pot-powder|trap|zol-trap|arrows?(-\d+)?|bombs?-\d+|powder-\d+)$')
+         'arrow-capacity': 'Quiver upgrade', 'powder-capacity': 'Magic Powder upgrade', 'chamber-stone': 'Chamber Stone',
+         'apple': 'Apple', 'green-apple': 'Green Apple'}
+JUNK = re.compile(r'^((pot-|dig-)?rupee-\d+|pot-heart|apple|green-apple|pot-arrows|pot-bombs|pot-powder|trap|zol-trap|arrows?(-\d+)?|bombs?-\d+|powder-\d+)$')
 
 
 def pretty_item(it):
@@ -81,6 +82,9 @@ def pretty_loc(loc):
     if pm:
         name = re.sub(r'(?<!^)(?=[A-Z])', ' ', pm.group(1))
         return f'{name}: pot {pm.group(3)}'
+    pm = re.match(r'^apple-tree-(\d\d[A-P])-(\d)$', loc)  # (Applesanity)
+    if pm:
+        return f'Apple tree ({pm.group(1)}), {pm.group(2)} of 3'
     return loc.replace('-', ' ').capitalize()
 
 

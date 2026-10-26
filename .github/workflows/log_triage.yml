@@ -1,0 +1,56 @@
+# Log triage: when an issue or a comment has an attached lasrecomp.log (a github.com/user-attachments/files/... link),
+# tools/log_triage.py keeps one bot comment on the issue with a short summary of the newest logs (build, system, GPU,
+# settings, how the run ended, frame rate, notable lines) and a "log: crash" / "log: device-lost" / "log: ok" label.
+#
+# Security: no issue or comment text is ever put into this file's expressions or a shell. The script gets only the
+# issue number (from the event, or the dispatch input, checked to be digits) and reads the issue itself through the
+# API; logs are downloaded with a size cap from GitHub's attachment host only and only parsed. The default branch's
+# script runs (a dispatch runs the dispatched branch's, for testing); no pull request code is ever checked out.
+#
+# Issue events only run this file from the default branch. workflow_dispatch (Actions tab or `gh workflow run`)
+# tests it on any branch once the file is on the default branch: dry run (the default) prints the comment in the job
+# log / summary and posts nothing.
+name: Log triage
+on:
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number
+        required: true
+        type: string
+      dry_run:
+        description: Print the comment instead of posting it
+        type: boolean
+        default: true
+permissions:
+  contents: read
+  issues: write
+concurrency:  # (one run per issue at a time, in order)
+  group: log-triage-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    # (issue_comment also fires on pull requests: skipped; bots' own comments too)
+    if: github.event_name == 'workflow_dispatch' || ((github.event_name == 'issues' || github.event_name == 'issue_comment') &&
+      !github.event.issue.pull_request && github.event.sender.type != 'Bot')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: tools/log_triage.py
+          sparse-checkout-cone-mode: false
+      - name: Summarise the attached logs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: python3 -I tools/log_triage.py issue
+

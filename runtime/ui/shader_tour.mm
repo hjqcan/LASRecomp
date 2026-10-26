@@ -18,7 +18,7 @@ int warp_busy(void);
 bool warp_blocked(const char *locator);
 }
 
-// GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
+// GA(PLAYER_STATUS_PTR): PlayerStatus*: current level name at +0
 
 extern "C" void shader_tour_tick(uint64_t frame) {
     static int per = -1, i, waiting;
@@ -68,7 +68,7 @@ extern "C" void shader_tour_tick(uint64_t frame) {
     if (applied_reset) { applied = 0; applied_reset = 0; }  // (a new spot: its own wait)
     if (warp_busy() || !game_in_play()) { applied = 0; if (frame - since <= 1800) return; }
     if (!applied) applied = frame;
-    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
     bool there = ps && !strcmp((const char *)(uintptr_t)ps, w.level);
     if ((there && frame - applied >= (uint64_t)per) || frame - since > 1800) {
         if (!there) LOG("[tour] %s / %s: not reached\n", w.level, w.locator);

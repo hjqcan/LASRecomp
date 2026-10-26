@@ -1,5 +1,6 @@
 #!/bin/bash
-# tools/linux/package.sh <x86_64|aarch64> (inside the amd64 build container, tools/linux/appimage.sh): the game built
+# tools/linux/package.sh <x86_64|aarch64> (inside a build container, tools/linux/appimage.sh: the AppImage's own arch
+# when the host has it, else amd64 cross-compiling): the game built
 # against build/linux/<arch>/deps and the seed generator helper (tools/linux/rando_helper.sh) put together
 # as an AppDir and packed by appimagetool: build/dist/LAS Recomp-<version>-linux-<arch>.AppImage
 # (named like the macOS / Windows releases; GitHub shows it as LAS.Recomp-<version>-linux-<arch>.AppImage).
@@ -41,7 +42,9 @@ llvm-strip --strip-debug "$APPDIR/usr/bin/lasrecomp"  # (symbols stay: crash bac
 cp docs/icon/icon_1024.png "$APPDIR/usr/bin/icon.png"
 cp third_party/fonts/Baloo2/Baloo2-SemiBold.ttf "$APPDIR/usr/bin/"  # (start screen font, OFL)
 cp third_party/fonts/Baloo2/OFL.txt "$APPDIR/usr/bin/Baloo2-OFL.txt"
-cp third_party/fonts/DejaVu/DejaVuSans.ttf "$APPDIR/usr/bin/"  # (the game text's last-resort font, free license)
+cp third_party/fonts/BIZUDPGothic/BIZUDPGothic-Regular.ttf "$APPDIR/usr/bin/"  # (game text font on Linux, OFL)
+cp third_party/fonts/BIZUDPGothic/OFL.txt "$APPDIR/usr/bin/BIZUDPGothic-OFL.txt"
+cp third_party/fonts/DejaVu/DejaVuSans.ttf third_party/fonts/DejaVu/DejaVuSans-Bold.ttf "$APPDIR/usr/bin/"  # (last-resort fonts, free license)
 cp third_party/fonts/DejaVu/LICENSE "$APPDIR/usr/bin/DejaVu-LICENSE.txt"
 cp README.md LICENSE "$APPDIR/usr/bin/"  # (licenses and source links of the bundled components: README "License")
 [ -d "$L/helper/rando-gen" ] || { echo "no seed generator helper: tools/linux/rando_helper.sh $ARCH first"; exit 1; }
@@ -83,16 +86,23 @@ fetch() {  # url sha256 file
     [ -f "build/linux/src/$3" ] || { curl -fsSL -o "build/linux/src/$3.part" "$1" && mv "build/linux/src/$3.part" "build/linux/src/$3"; }
     echo "$2  build/linux/src/$3" | sha256sum -c --quiet
 }
-fetch https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage \
-      ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0 appimagetool-x86_64.AppImage
+# (appimagetool for the machine this runs on - the container's arch, not necessarily the AppImage's)
+HOST=$(uname -m)
+case $HOST in
+    x86_64) fetch https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage \
+                  ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0 appimagetool-x86_64.AppImage ;;
+    aarch64) fetch https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-aarch64.AppImage \
+                   f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158 appimagetool-aarch64.AppImage ;;
+    *) echo "no appimagetool for $HOST"; exit 1 ;;
+esac
 case $ARCH in
     x86_64) fetch https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64 \
                   2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d runtime-x86_64 ;;
     aarch64) fetch https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-aarch64 \
                    00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444 runtime-aarch64 ;;
 esac
-chmod +x build/linux/src/appimagetool-x86_64.AppImage
+chmod +x "build/linux/src/appimagetool-$HOST.AppImage"
 mkdir -p build/dist && rm -f "$OUT"
-APPIMAGE_EXTRACT_AND_RUN=1 ARCH=$ARCH build/linux/src/appimagetool-x86_64.AppImage --no-appstream \
+APPIMAGE_EXTRACT_AND_RUN=1 ARCH=$ARCH "build/linux/src/appimagetool-$HOST.AppImage" --no-appstream \
     --runtime-file "build/linux/src/runtime-$ARCH" "$APPDIR" "$OUT"
 ls -la "$OUT"

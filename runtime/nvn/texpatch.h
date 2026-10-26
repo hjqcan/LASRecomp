@@ -6,11 +6,19 @@
 #include <stdint.h>
 
 #include "nvn.h"
+#include "recolour.h"  // (TEXPATCH_RECOLOUR_BASE)
 
 #define TEXPATCH_UNKNOWN (-2)  // (backend's cached id before the first identification)
 
 // Which of the known textures `t` is (by its contents: the user's own game files are read once to know them), or -1.
 int texpatch_identify(const NvnTexture *t);
+// The backends' cached marker for `t` (TexBackend.tp): texpatch_identify + 1, or -1 for "checked, none" (0 stays
+// "not checked yet"). Kept until the texture's contents change: identifying hashes the data of every texture shaped
+// like a Cosmetics recolour (runtime/nvn/recolour.c), too slow to repeat at every upload check.
+static inline int texpatch_marker(const NvnTexture *t) {
+    int id = texpatch_identify(t);
+    return id >= 0 ? id + 1 : -1;
+}
 // Known texture `id` is the empty bottle's item icon (1), its 3D model's colour map (2), the fairy's model map (3:
 // boss / mini-boss souls drawn red, runtime/hle/souls.c), the Magic Powder sack's (4), the dungeon map model's (5: the
 // Hint Sheet's hand-over, runtime/hle/hint_sheet.c), the Piece of Power's (6: Triforce pieces drawn gold,
@@ -18,6 +26,7 @@ int texpatch_identify(const NvnTexture *t);
 int texpatch_bottle_kind(int id);
 // One of the game's own UI textures by name (e.g. "MapMark_05^w") as RGBA8 (malloc'd; NULL if missing)
 uint8_t *texpatch_ui_rgba(const char *name, int *w, int *h);
+int texpatch_ui_rgba_list(const char *const *names, int n, uint8_t **out, int *w, int *h);  // (each archive read once)
 // The Hint Sheet's icon: the dungeon map's, on a bottle-icon-sized canvas (drawn in place of the first bottle's icon;
 // runtime/hle/hint_sheet.c hint_sheet_icon_draw says which draws). NULL: not in the game files.
 NvnTexture *texpatch_hint_icon(void);
@@ -28,7 +37,7 @@ bool texpatch_is_item_cursor(int id);
 uint32_t texpatch_generation(void);
 // Rewrites level `lv` of known texture `id` in place: `blocks` = its linear data in the texture's own format
 // (rows of 4x4 blocks, `row` bytes apart; RGBA8 rows for uncompressed). No-op for the Nintendo look. Only the
-// tunic (Cosmetics tab colour) changes levels other than 0.
+// tunic and Link's skin (Cosmetics tab colours) change levels other than 0.
 void texpatch_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h, uint32_t row);
 // Known texture `id` is a heart of the HUD / file select (full, empty, frame, life-up flash): 1, else 0.
 int texpatch_heart_kind(int id);

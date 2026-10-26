@@ -11,15 +11,15 @@
 
 #include "../hle.h"
 
-// GA_PLAYER_STATUS_PTR: PlayerStatus*: level name at +0
-#define KEY_ITEMS (GA_LIVE_SAVE + 0x556C)  // live save key items: bit 0 = Flippers
+// GA(PLAYER_STATUS_PTR): PlayerStatus*: level name at +0
+#define KEY_ITEMS (GA(LIVE_SAVE) + 0x556C)  // live save key items: bit 0 = Flippers
 extern int game_in_play(void);
 extern int warp_busy(void);
 extern void warp_request(const char *level, const char *locator);
 
 void rescue_tick(uint64_t frame) {
     static uint64_t since;  // frame Link turned up in the cave (0: not there)
-    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
     bool there = game_in_play() && ps && !strcmp((const char *)(uintptr_t)ps, "EagleTowerExit") && !(LD32(KEY_ITEMS) & 1);
     if (!there) { since = 0; return; }
     if (!since) since = frame;

@@ -3741,10 +3741,17 @@ void ImGui::RenderTextEllipsis(ImDrawList* draw_list, const ImVec2& pos_min, con
 }
 
 // Render a rectangle shaped with optional rounding and borders
+// LAS Recomp: our menus draw some frames and window backgrounds themselves (runtime/ui/plastic.mm). what: 0 a frame,
+// 1 a window's background (flags: the window's). True: drawn.
+bool (*GImGuiLasFrameHook)(ImDrawList*, const ImVec2&, const ImVec2&, ImU32, float, int, int) = NULL;
+ImU32 GImGuiLasButtonText = 0;  // (set by the hook: the colour of the button label drawn next; ButtonEx clears it)
+
 void ImGui::RenderFrame(ImVec2 p_min, ImVec2 p_max, ImU32 fill_col, bool borders, float rounding)
 {
     ImGuiContext& g = *GImGui;
     ImGuiWindow* window = g.CurrentWindow;
+    if (GImGuiLasFrameHook && GImGuiLasFrameHook(window->DrawList, p_min, p_max, fill_col, rounding, 0, 0))
+        return;
     window->DrawList->AddRectFilled(p_min, p_max, fill_col, rounding);
     const float border_size = g.Style.FrameBorderSize;
     if (borders && border_size > 0.0f)
@@ -6816,6 +6823,7 @@ void ImGui::RenderWindowDecorations(ImGuiWindow* window, const ImRect& title_bar
             }
             if (override_alpha)
                 bg_col = (bg_col & ~IM_COL32_A_MASK) | (IM_F32_TO_INT8_SAT(alpha) << IM_COL32_A_SHIFT);
+            if (!(GImGuiLasFrameHook && GImGuiLasFrameHook(window->DrawList, window->Pos, window->Pos + window->Size, bg_col, window_rounding, 1, (int)flags)))  // (LAS Recomp)
             window->DrawList->AddRectFilled(window->Pos + ImVec2(0, window->TitleBarHeight), window->Pos + window->Size, bg_col, window_rounding, (flags & ImGuiWindowFlags_NoTitleBar) ? 0 : ImDrawFlags_RoundCornersBottom);
         }
 

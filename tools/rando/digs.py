@@ -22,8 +22,8 @@ A buried Secret Seashell's tile (13 on the Field) is that seashell spot's check 
 spot's LAS location goes, its conditions ANDed in; the game's buried shell is taken out of the room) - proven
 diggable by the game itself, whatever dig_tiles.txt or what stands on it says.
 
-Logic: the shovel AND the logic regions of the tile's screen (the same screen regions as bushsanity: bushes.py, with
-its POCKETS).
+Logic: the shovel AND the reviewed logic region of the tile (field_regions.py, as for bushsanity); its hint / spoiler
+area is the game's place there.
 Filler: what digging turns up in the original game - rupees and hearts mostly, a few refills.
 """
 import copy
@@ -31,6 +31,7 @@ import glob
 import os
 
 import bushes
+import field_regions
 import pots
 import seashell_spots
 import spoiler_view
@@ -101,6 +102,7 @@ def scan(romfs, leb):
     """Every dig tile of the Field: dicts with room ('Field_10D'), tile (0-79, row-major), y (ground height) and
     blocker (None, 'bush' / 'grass': cut it first, 'other': not a check)."""
     out = []
+    zones = field_regions.tile_zones(romfs)
     for name, screen, room in _rooms(romfs, leb):
         blocked = _blockers(room, screen)
         row, col = screen
@@ -109,7 +111,8 @@ def scan(romfs, leb):
         for i, t in enumerate(room.grid.tilesdata):
             if t.flags3['isdigspot'] and not t.flags1['containscollision'] and not t.flags1['deepwaterlava']:  # (pits)
                 # (shell: the seashell index of the Secret Seashell buried there, None: none)
-                out.append({'room': name, 'tile': i, 'y': t.elevation, 'blocker': blocked.get(i), 'shell': shells.get(i)})
+                out.append({'room': name, 'tile': i, 'y': t.elevation, 'blocker': blocked.get(i), 'shell': shells.get(i),
+                            'zone': zones[name][i] if name in zones else None})
     return out
 
 
@@ -142,23 +145,15 @@ def verified_tiles():
 def add_to_logic(digs, logic_defs, item_defs):
     """A location per proven dig tile in LAS's logic + matching filler in the pool. Returns {location: dig}. A buried
     Secret Seashell's tile is that spot's check (seashell_spots.absorb - no filler for it)."""
-    regions = bushes.screen_regions()
     proven = verified_tiles()
-    spoiler_of = {}
-    for k, v in logic_defs.items():
-        if v.get('type') == 'item' and v.get('region') and v.get('spoiler-region'):
-            spoiler_of.setdefault(v['region'], v['spoiler-region'])
     locs, absorbed = {}, 0
     for d in digs:
-        regs = sorted(r for r in regions.get(d['room'], ()) if r in logic_defs)
         shell = d.get('shell') is not None  # (the game digs it up: proven, whatever stands on it - LAS's logic says what)
-        if not regs or (not shell and (d['blocker'] == 'other' or (proven is not None and tile_id(d) not in proven))):
+        if not shell and (d['blocker'] == 'other' or (proven is not None and tile_id(d) not in proven)):
             continue
         name = location_name(d)
-        loc = {'type': 'item', 'subtype': 'standing', 'content': 'rupee-5', 'region': regs[0],
-               'spoiler-region': spoiler_of.get(regs[0], 'mabe-village'),
-               'condition-basic': pots._and(*regs[1:], bushes.pocket_condition(d['room'], d['tile']),
-                                            'shovel', CUT.get(d['blocker']))}
+        # (raises field_regions.NoRegion for a dig tile on a screen / tile without a reviewed region)
+        loc = field_regions.logic_entry(d['room'], d['tile'], d.get('zone'), 'shovel', CUT.get(d['blocker']))
         if shell:
             if not seashell_spots.absorb(logic_defs, d['shell'], loc):
                 continue  # (no such LAS spot - an underwater shell's tile, say: not a check)
@@ -177,7 +172,7 @@ def add_to_logic(digs, logic_defs, item_defs):
 
 def apply(locs, digs, mods, out_dir, romfs, event_tools, oead_tools, item_get, data):
     """Flow entries for the dug-up items (SinkingSword.bfevfl), their actor flag, and rando/<seed>/digs.tsv; a Secret
-    Seashell on a tile: a buried shell (SHELLS)."""
+    Seashell on a tile: a buried shell (SHELLS) - on a tile grass or a bush stands on, an item like any other."""
     SHELLS.clear()
     common_out = os.path.join(out_dir, 'romfs', 'region_common')
 
@@ -204,7 +199,9 @@ def apply(locs, digs, mods, out_dir, romfs, event_tools, oead_tools, item_get, d
     for d in sorted(digs, key=tile_id):
         name = by_tile.get(tile_id(d))
         cols = ['-'] * 7
-        if name and mods.placements[name] == 'seashell':
+        # (a buried shell on a tile tall grass / a bush stands on lies on top of the ground for all to see - play-test
+        #  2026-10-20, 04M and 10F: a Secret Seashell there is dug up like any other item instead)
+        if name and mods.placements[name] == 'seashell' and not d['blocker']:
             index = mods.getItemInfo(name, mods.trap_models)[1]
             buried.setdefault(d['room'], []).append((d, index))
             SHELLS.append((name, index, GOT_FLAG_BASE + tile_id(d)))

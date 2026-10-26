@@ -32,11 +32,19 @@ uint64_t rq_current_item(void);  // on the render thread: the item being run; el
 uint64_t rq_frame(void);
 void rq_drain(void);   // every queued item done (QueueFinish; reboot)
 void rq_flush(void);   // drain, then the backend's full flush, on the render thread (nvnSyncWait with LARECOMP_SYNC_FLUSH)
+// Quitting (the window closed, exit()): the render thread stops after the item it runs; true from then on (the
+// backends present nothing more). backend_quit: rq_stop, the GPU idle, caches saved - before exit(); idempotent.
+void rq_stop(void);
+bool rq_stopping(void);
+void backend_quit(void);
 
 // (backends) called on the render thread
 void backend_present_now(NvnTexture *t, uint64_t frame);
 void backend_upload_now(NvnTexture *t, int kind, void *data, uint32_t w, uint32_t h, uint32_t stride, uint32_t uv_off);
-uint64_t renderer_submit_seq(void);  // the backend's latest GPU submission number
+uint64_t renderer_submit_seq(void);  // the backend's latest GPU submission number (handed to the driver)
+// ... the latest it queued: the Vulkan backend's recorder thread (record.c) may still hold the last ones; waited for by
+// renderer_wait_seq, which first waits for the recorder (the Metal backend: the same as renderer_submit_seq)
+uint64_t renderer_issued_seq(void);
 void *backend_pool_push(void);       // (Metal) an autorelease pool around each item
 void backend_pool_pop(void *p);
 

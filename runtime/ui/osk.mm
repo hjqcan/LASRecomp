@@ -15,6 +15,7 @@
 #include "imgui_internal.h"
 #include "osk.h"
 #include "pad_nav.h"
+#include "plastic.h"
 
 static struct {
     int open;                        // a field's keyboard is up
@@ -98,7 +99,10 @@ int osk_keys(char *text, size_t cap, int max_chars, bool appearing, float scale,
     if (max_chars <= 0 || max_chars > (int)cap - 1) max_chars = (int)cap - 1;
     int len = (int)strlen(text), r = 0;
     auto add = [&](char ch) { if (len < max_chars) text[len++] = ch, text[len] = 0; };
-    auto del = [&]() { if (len > 0) text[--len] = 0; };
+    auto del = [&]() {  // (a whole character: the text may hold UTF-8 typed before a controller took over)
+        while (len > 0 && ((unsigned char)text[len - 1] & 0xc0) == 0x80) text[--len] = 0;
+        if (len > 0) text[--len] = 0;
+    };
 
     // typed on a keyboard while it's up: straight into the text
     for (ImWchar c : io.InputQueueCharacters) if (c >= 0x20 && c < 0x7f) add((char)c);
@@ -175,7 +179,7 @@ void osk_draw(ImFont *big, float scale) {
         return;
     }
     ImGui::PushFont(big);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", s.title);
+    ImGui::TextColored(plastic_col(plastic_theme().title), "%s", s.title);
     ImGui::PopFont();
     int max = (int)(s.size < sizeof s.text ? s.size : sizeof s.text) - 1;
     int r = cancel ? -1 : osk_keys(s.text, sizeof s.text, max, s.appearing, scale, big);

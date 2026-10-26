@@ -92,3 +92,31 @@ static void session_log_open(const char *dir, char *path_out, size_t n) {
     strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime(&now));
     fprintf(stderr, "[log] %s, pid %d%s\n", when, (int)getpid(), append ? " (restarted)" : "");
 }
+
+// The open-file limit: a macOS app starts with 256 (Linux usually 1024). Raised toward the hard limit (at most
+// 10240, macOS's OPEN_MAX) so a long session never runs out - running out fails saves ("could not be saved") and
+// game file reads. Called first thing (plat_init), after the log is set up.
+#include <errno.h>
+#include <sys/resource.h>
+static void raise_open_file_limit(void) {
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_NOFILE, &rl)) {
+        fprintf(stderr, "[fd] open-file limit unknown (%s)\n", strerror(errno));
+        return;
+    }
+    rlim_t before = rl.rlim_cur, want = 10240;
+    if (rl.rlim_max != RLIM_INFINITY && rl.rlim_max < want) want = rl.rlim_max;
+    if (before != RLIM_INFINITY && before < want) {
+        rl.rlim_cur = want;
+        if (setrlimit(RLIMIT_NOFILE, &rl)) {
+            fprintf(stderr, "[fd] open-file limit %llu, could not raise it to %llu (%s)\n", (unsigned long long)before,
+                    (unsigned long long)want, strerror(errno));
+            return;
+        }
+    }
+    getrlimit(RLIMIT_NOFILE, &rl);
+    char hard[32] = "unlimited";
+    if (rl.rlim_max != RLIM_INFINITY) snprintf(hard, sizeof hard, "%llu", (unsigned long long)rl.rlim_max);
+    fprintf(stderr, "[fd] open-file limit %llu (was %llu, hard limit %s)\n", (unsigned long long)rl.rlim_cur,
+            (unsigned long long)before, hard);
+}

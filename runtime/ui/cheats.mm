@@ -14,8 +14,8 @@ extern "C" {
 int game_in_play(void);
 }
 
-// GA_LIVE_SAVE: main + 0x1CBB220
-template <typename T> static T &F(uint32_t off) { return *(T *)(uintptr_t)(GA_LIVE_SAVE + off); }
+// GA(LIVE_SAVE): main + 0x1CBB220
+template <typename T> static T &F(uint32_t off) { return *(T *)(uintptr_t)(GA(LIVE_SAVE) + off); }
 
 enum : uint32_t {
     RUPEES = 0x5540, HP = 0x5544, PIECES = 0x5550, CONTAINERS = 0x5558, UPGRADES = 0x555C, BOMBS = 0x555E,

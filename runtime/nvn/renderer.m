@@ -17,6 +17,8 @@
 #include "renderer.h"
 #include "pace.h"
 #include "shader_prep.h"
+#include "recolour.h"
+#include "slowframe.h"
 
 static id<MTLDevice> dev;
 static id<MTLCommandBuffer> cmdbuf;
@@ -27,10 +29,15 @@ static NSMutableDictionary<NSString *, id> *cache;
 static uint64_t stat_wait_by[3], stat_wait_n[3];
 static uint64_t stat_clears_as_load, stat_clear_passes;  // (deferred clears)
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
+static uint64_t stat_vcopy, stat_vcopy_bytes;  // vertex / index ranges copied at translation (dyn_copy)
 static double stat_gpu_s;
 // GPU busy time (dynamic resolution: output_scale.c; the "gpu" of the [metal] stats line), ns so far: the game's
 // command buffers, the window image's (metal.m backend_present), and the plain sum of their spans (diagnostics)
 uint64_t g_gpu_total_ns, g_gpu_win_ns, g_gpu_sum_ns;
+// Frame pacing (pace.c): the GPU's busy time so far, the game's command buffers and the window image's (renderer_gpu_busy).
+int64_t pace_gpu_ns(void) {
+    return (int64_t)(__atomic_load_n(&g_gpu_total_ns, __ATOMIC_RELAXED) + __atomic_load_n(&g_gpu_win_ns, __ATOMIC_RELAXED));
+}
 // (forward: texture-lifetime cleanup and stats, defined further down)
 static int g_views_live;
 static void views_forget(void *base);
@@ -100,7 +107,8 @@ bool renderer_origin_lower_left(void) { return nvn_window_origin() == 0; }
 static double stat_compile_ms;  // time spent building shaders/pipelines (first-use stutter)
 static int stat_compiles;
 static inline double now_ms(void) { return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e6; }
-#define TIMED_COMPILE(expr) ({ double t0_ = now_ms(); __auto_type r_ = (expr); stat_compile_ms += now_ms() - t0_; stat_compiles++; r_; })
+#define TIMED_COMPILE(expr) ({ double t0_ = now_ms(); __auto_type r_ = (expr); stat_compile_ms += now_ms() - t0_; stat_compiles++; \
+                               slow_note_build("pipeline", (uint64_t)((now_ms() - t0_) * 1e6)); r_; })
 
 static uint64_t stat_counters_gpu;  // timing counters given the GPU's time (the game's 30 / 60 fps choice)
 const char *renderer_stats(void) {
@@ -115,15 +123,16 @@ const char *renderer_stats(void) {
     struct task_vm_info vmi;
     mach_msg_type_number_t vn = TASK_VM_INFO_COUNT;
     uint64_t foot = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vmi, &vn) == KERN_SUCCESS ? vmi.phys_footprint : 0;
-    snprintf(stats_text, sizeof stats_text, "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, gpu %.0fms, wait %.0fms, compile %d/%.0fms, fbcopy %llu | tex %d (%.0f MB) views %d snaps %lu mem %.0f MB | waits fence %.0fms/%llu flush %.0fms/%llu all %.0fms/%llu | deferred: clears as load %llu, clear passes %llu | counters gpu %llu | pace %s, %llu frames over", stat_draws, stat_skipped,
+    snprintf(stats_text, sizeof stats_text, "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, gpu %.0fms, wait %.0fms, compile %d/%.0fms, fbcopy %llu | tex %d (%.0f MB) views %d snaps %lu vcopy %llu/%.0fKB mem %.0f MB | waits fence %.0fms/%llu flush %.0fms/%llu all %.0fms/%llu | deferred: clears as load %llu, clear passes %llu | counters gpu %llu | pace %s, %llu frames over", stat_draws, stat_skipped,
              stat_passes, stat_dispatches, stat_flushes, stat_gpu_s * 1000.0, (double)stat_wait_ns / 1e6 * 125.0 / 3.0, stat_compiles, stat_compile_ms, stat_feedback_copies,
-             g_tex_live, g_tex_live_bytes / 1048576.0, g_views_live, (unsigned long)(g_snap_copies ? g_snap_copies.count : 0), foot / 1048576.0, stat_wait_by[0] / 24e3, (unsigned long long)stat_wait_n[0], stat_wait_by[1] / 24e3, (unsigned long long)stat_wait_n[1], stat_wait_by[2] / 24e3, (unsigned long long)stat_wait_n[2], (unsigned long long)stat_clears_as_load, (unsigned long long)stat_clear_passes,
+             g_tex_live, g_tex_live_bytes / 1048576.0, g_views_live, (unsigned long)(g_snap_copies ? g_snap_copies.count : 0), (unsigned long long)stat_vcopy, stat_vcopy_bytes / 1024.0, foot / 1048576.0, stat_wait_by[0] / 24e3, (unsigned long long)stat_wait_n[0], stat_wait_by[1] / 24e3, (unsigned long long)stat_wait_n[1], stat_wait_by[2] / 24e3, (unsigned long long)stat_wait_n[2], (unsigned long long)stat_clears_as_load, (unsigned long long)stat_clear_passes,
              (unsigned long long)stat_counters_gpu, pace_is_slow() ? "30" : "60", (unsigned long long)pace_frames_over());
     stat_counters_gpu = 0;
     stat_compiles = 0;
     stat_feedback_copies = 0;
     stat_compile_ms = 0;
     stat_draws = stat_skipped = stat_passes = stat_dispatches = stat_flushes = stat_wait_ns = 0;
+    stat_vcopy = stat_vcopy_bytes = 0;
     memset(stat_wait_by, 0, sizeof stat_wait_by); memset(stat_wait_n, 0, sizeof stat_wait_n);
     stat_gpu_s = 0;
     stat_clears_as_load = stat_clear_passes = 0;
@@ -172,6 +181,8 @@ static uint32_t tex_wh[2][64][2];       // per bound texture slot: guest size
 static int draw_bottle;                 // a fragment texture is the bottle's item icon (1) / model map (2): Escape Bottle
 static int draw_heart;                  // ... a HUD / file select heart's: heart colour (Cosmetics tab)
 static bool draw_item_cursor;           // a fragment texture is the Items page's cursor brackets
+static int draw_recolour[2];            // ... Cosmetics recolour textures: their classes (runtime/nvn/recolour.c)
+static char draw_recolour_names[512];   // ... their names (LARECOMP_LOG_RECOLOUR_AT, test)
 #define RSCALE_BUFFER_INDEX 18
 
 static int debug_pass_no;
@@ -304,6 +315,31 @@ static pthread_mutex_t cb_lock = PTHREAD_MUTEX_INITIALIZER;
 #define CB_HIST 256
 static uint64_t submit_seq;
 static id<MTLCommandBuffer> cb_hist[CB_HIST];
+// CPU / GPU overlap. The game's frame loop submits a frame, presents it, and at once waits on that frame's fence
+// (measured: every SyncWait is on the newest submission, one call site, never already done) - so it builds frame
+// N+1 only once the GPU has finished frame N, and a frame costs CPU + GPU time in series (M3 Max 5120x1440 MetalFX:
+// ~5 ms of CPU + 13 ms of GPU missed 60 fps with the GPU under half busy). The Switch's own structure; there the two
+// fit. Here the wait is taken one fence late: SyncWait(fence N) waits for fence N-1's submission and returns, and
+// the next SyncWait waits for N. The CPU builds frame N+1 while the GPU draws N; at most two frames of GPU work
+// are queued; a fence that is already complete is never waited for. What the game may touch in that one frame
+// while the GPU still reads it: its per-frame vertex / index data in the guest heap (bound in place), which an
+// engine built to overlap double-buffers anyway; uniform data is snapshotted at translation (ring_alloc). GPU
+// results the CPU reads (texture-to-buffer and buffer-to-buffer copies) are flushed synchronously at translation,
+// so they don't depend on the fence. The frame timing counters would be read a frame before their GPU time is
+// known: in this mode an end counter reports the latest completed frame's GPU span (counters_resolve keeps it host
+// side and no longer writes the game's memory late - the game may have reused the slot). LARECOMP_GPU_OVERLAP=0:
+// off (the wait on the fence's own submission, as before).
+static uint64_t deferred_seq;  // (cb_lock) the fence the game was told is done but whose submission wasn't waited for
+static bool overlap_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = ENV("LARECOMP_GPU_OVERLAP");
+        on = !e || atoi(e) != 0;
+        LOG("[metal] GPU overlap %s (the game's frame fence waited one frame late; LARECOMP_GPU_OVERLAP=0: off)\n", on ? "on" : "off");
+    }
+    return on;
+}
+static uint64_t g_last_gpu_frame_ticks;  // (overlap) the latest resolved counter pair's GPU span, in Switch GPU ticks
 
 // ---- the game's GPU timing counters (nvnCommandBufferReportCounter, two per frame)
 // The game times its GPU work with these and takes its 30 fps mode when frames look slow (pace.c). They used to get
@@ -340,7 +376,19 @@ static void counters_resolve(void) {
         if (a && a.GPUStartTime > t) t = a.GPUStartTime;
         if (t > 0) {
             uint64_t *out = ctr_pend[i].out;
-            out[1] = pace_end_counter(ctr_pend[i].start, out, ns_to_gpu_ticks((uint64_t)(t * 1e9)));  // (host time base)
+            uint64_t ticks = ns_to_gpu_ticks((uint64_t)(t * 1e9));  // (host time base)
+            if (overlap_on()) {
+                // kept host side: the pair's span becomes the next end counter's reading (the game has read this
+                // pair already, and may have reused the slot for the next frame's counters)
+                static const uint64_t *last_out;
+                static uint64_t last_ticks;
+                if (ctr_pend[i].start && ctr_pend[i].start == last_out && out - ctr_pend[i].start == 2 && ticks >= last_ticks &&
+                    ticks - last_ticks < 614400000ull)  // (an end counter 16 bytes after its start; under a second)
+                    g_last_gpu_frame_ticks = ticks - last_ticks;
+                last_out = out, last_ticks = ticks;
+            } else {
+                out[1] = pace_end_counter(ctr_pend[i].start, out, ticks);
+            }
             stat_counters_gpu++;
         }
     }
@@ -360,6 +408,7 @@ static bool counters_want_next(void) {
 }
 
 static int g_wait_kind;
+static uint64_t cum_wait_ticks;  // GPU waits so far (mach ticks; never reset)
 static void wait_cb(id<MTLCommandBuffer> c) {
     if (!c) return;
     uint64_t t0 = mach_absolute_time();
@@ -369,6 +418,7 @@ static void wait_cb(id<MTLCommandBuffer> c) {
     rq_watch(NULL, 0);
     uint64_t d = mach_absolute_time() - t0;
     stat_wait_ns += d;
+    __atomic_fetch_add(&cum_wait_ticks, d, __ATOMIC_RELAXED);  // (the slow-frame log)
     stat_wait_by[g_wait_kind] += d;
     if (d > 24000) stat_wait_n[g_wait_kind]++;  // (> ~1 ms counts as a real wait)
     counters_resolve();
@@ -455,6 +505,9 @@ void renderer_flush(void) {
     g_wait_kind = 1;
     wait_cb(c);
     g_wait_kind = 0;
+    pthread_mutex_lock(&cb_lock);
+    deferred_seq = 0;  // (everything committed so far is done)
+    pthread_mutex_unlock(&cb_lock);
     ring_reset();
 }
 
@@ -467,6 +520,18 @@ void renderer_sync(void) {
     g_wait_kind = 2;
     wait_cb(c);
     g_wait_kind = 0;
+    pthread_mutex_lock(&cb_lock);
+    deferred_seq = 0;
+    pthread_mutex_unlock(&cb_lock);
+}
+
+// (the slow-frame log, slowframe.h; the game thread) running totals: no heap imports here (the heap is shared once)
+void renderer_slow_counters(uint64_t *submits, uint64_t *gpu_wait_ns, uint64_t *imports) {
+    static mach_timebase_info_data_t tb;
+    if (!tb.denom) mach_timebase_info(&tb);
+    *submits = __atomic_load_n(&submit_seq, __ATOMIC_RELAXED);
+    *gpu_wait_ns = (uint64_t)((unsigned __int128)__atomic_load_n(&cum_wait_ticks, __ATOMIC_RELAXED) * tb.numer / tb.denom);
+    *imports = 0;
 }
 
 uint64_t renderer_submit_seq(void) {
@@ -475,6 +540,7 @@ uint64_t renderer_submit_seq(void) {
     pthread_mutex_unlock(&cb_lock);
     return q;
 }
+uint64_t renderer_issued_seq(void) { return renderer_submit_seq(); }  // (rqueue.h: committed here is submitted)
 
 // Sequence number a fence placed now belongs to: the pending (uncommitted) work's submission, else the last one.
 uint64_t renderer_fence_seq(void) {
@@ -506,6 +572,27 @@ void renderer_wait_seq(uint64_t seq) {
                 (unsigned long long)frames_seen, hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], (unsigned long long)submit_seq);
             memset(hist, 0, sizeof hist);
             f0 = f;
+        }
+    }
+    if (overlap_on()) {  // (see deferred_seq) wait for the fence deferred last time, defer this one
+        pthread_mutex_lock(&cb_lock);
+        bool done = seq <= submit_seq && submit_seq - seq < CB_HIST && cb_hist[seq % CB_HIST] &&
+                    cb_hist[seq % CB_HIST].status >= MTLCommandBufferStatusCompleted;
+        uint64_t prev = deferred_seq;
+        if (done) {
+            if (seq >= prev) deferred_seq = 0;  // (in order: the older one is complete too)
+            pthread_mutex_unlock(&cb_lock);
+            counters_resolve();
+            return;
+        }
+        if (seq > prev) {  // a newer fence: the deferred one is waited for now, this one at the next call
+            deferred_seq = seq;
+            pthread_mutex_unlock(&cb_lock);
+            if (!prev) { counters_resolve(); return; }
+            seq = prev;
+        } else {  // the deferred fence again, or an older one: a real wait on it
+            if (seq == prev) deferred_seq = 0;
+            pthread_mutex_unlock(&cb_lock);
         }
     }
     pthread_mutex_lock(&cb_lock);
@@ -1014,12 +1101,93 @@ static uint64_t ring_alloc(const void *data, uint64_t size) {
 
 static void ring_reset(void) { ring_off = 0; }
 
-// Bind guest memory [addr, addr+size) as a buffer: zero-copy inside the heap, copied otherwise.
+// (debug) LARECOMP_LOG_BINDS=1: guest memory the GPU reads in place, per frame (bytes bound; distinct ranges once),
+// and the ranges of the previous frame whose contents the game rewrote by the time this frame is translated: with
+// the frame fence deferred (overlap) the GPU may still read them - the racing data.
+static uint64_t range_hash(uint64_t addr, uint64_t size) {
+    const uint64_t *w = (const uint64_t *)(uintptr_t)addr;
+    uint64_t h = 1469598103934665603ull, n = size / 8;
+    for (uint64_t i = 0; i < n; i++) h = (h ^ w[i]) * 1099511628211ull;
+    return h;
+}
+static void bind_note(int kind, uint64_t addr, uint64_t size) {
+    static int on = -1;
+    if (on < 0) on = ENV("LARECOMP_LOG_BINDS") != NULL;
+    if (!on) return;
+    extern uint64_t renderer_present_count(void);
+    extern int nvn_pool_flags_at(uint64_t addr);
+    uint64_t g_cur_fs_hash = 0; (void)g_cur_fs_hash;
+    enum { REC = 8192 };
+    static struct { uint64_t addr, size, hash, fs; uint8_t kind; } rec[REC];
+    static int nrec;
+    static uint64_t frame, all[5], uniq[5], wr[5];
+    static uint32_t n[5];
+    uint64_t f = renderer_present_count();
+    if (f != frame) {
+        // the previous frame's ranges, rewritten since?
+        uint64_t chg[5] = {0}, chgn[5] = {0};
+        int shown = 0;
+        for (int i = 0; i < nrec; i++) {
+            if (range_hash(rec[i].addr, rec[i].size) == rec[i].hash) continue;
+            chg[rec[i].kind] += rec[i].size; chgn[rec[i].kind]++;
+            if (frame % 120 == 0 && shown++ < 12)
+                LOG("[race] frame %llu %s %llx+%llu pool flags %#x fs %016llx\n", (unsigned long long)frame,
+                    rec[i].kind == 0 ? "vertex" : rec[i].kind == 1 ? "index" : rec[i].kind == 2 ? "storage" : rec[i].kind == 3 ? "compute" : "gmem-ptr", (unsigned long long)rec[i].addr,
+                    (unsigned long long)rec[i].size, nvn_pool_flags_at(rec[i].addr), (unsigned long long)rec[i].fs);
+        }
+        if (frame % 120 == 0 || chgn[0] + chgn[1] + chgn[2] + chgn[3] + chgn[4])
+            LOG("[binds] frame %llu: vertex %llu KB (%llu KB distinct, %u binds), index %llu KB (%llu), storage %llu KB (%llu, %u), compute %llu KB (%llu), gmem-ptr %llu KB (%llu) | in CPU-writable pools: %llu/%llu/%llu/%llu/%llu KB | rewritten since: vertex %llu KB/%llu, index %llu KB/%llu, storage %llu KB/%llu, compute %llu KB/%llu, gmem-ptr %llu KB/%llu\n",
+                (unsigned long long)frame, all[0] >> 10, uniq[0] >> 10, n[0], all[1] >> 10, uniq[1] >> 10, all[2] >> 10, uniq[2] >> 10, n[2], all[3] >> 10, uniq[3] >> 10, all[4] >> 10, uniq[4] >> 10,
+                wr[0] >> 10, wr[1] >> 10, wr[2] >> 10, wr[3] >> 10, wr[4] >> 10,
+                chg[0] >> 10, chgn[0], chg[1] >> 10, chgn[1], chg[2] >> 10, chgn[2], chg[3] >> 10, chgn[3], chg[4] >> 10, chgn[4]);
+        nrec = 0; memset(all, 0, sizeof all); memset(uniq, 0, sizeof uniq); memset(n, 0, sizeof n); memset(wr, 0, sizeof wr);
+        frame = f;
+    }
+    all[kind] += size; n[kind]++;
+    {   // (LARECOMP_WATCH_ADDR) the frames in which the watched range is bound for the GPU
+        extern uint64_t g_watch_lo, g_watch_hi;
+        static uint64_t last;
+        if (g_watch_lo && addr < g_watch_hi && addr + size > g_watch_lo && last != f) { last = f; LOG("[watch-bind] frame %llu kind %d %llx+%llu\n", (unsigned long long)f, kind, (unsigned long long)addr, (unsigned long long)size); }
+    }
+    for (int i = 0; i < nrec; i++) if (rec[i].addr == addr && rec[i].size == size) return;
+    if (nrec == REC) return;
+    rec[nrec].addr = addr; rec[nrec].size = size; rec[nrec].kind = (uint8_t)kind; rec[nrec].fs = g_cur_fs_hash;
+    rec[nrec].hash = range_hash(addr, size);
+    nrec++;
+    uniq[kind] += size;
+    int pf = nvn_pool_flags_at(addr);
+    if (pf < 0 || !(pf & 1)) wr[kind] += size;  // (distinct bytes in pools the CPU can write: what a snapshot would copy)
+}
+
+static void snap_note_vertex_bind(uint64_t addr, uint64_t size);
+extern uint64_t renderer_exec_frame(void);
+// The game's per-frame geometry (effects, dust, UI quads, BowWow's chain links: 32-1024-byte ranges at changing
+// addresses) lives in pools the CPU writes uncached and the GPU reads uncached (NVN flags CPU_UNCACHED | GPU_UNCACHED,
+// 0x12 - a 64 MB and a 96 MB pool), a ring the game reuses once the frame's fence has passed. With the fence waited a
+// frame late (overlap) the CPU rewrites those vertices while the previous frame's GPU may still read them: a one-frame
+// flicker on the path by the Face Shrine (an M3 Max at any resolution; LARECOMP_LOG_BINDS "[race] ... vertex ... pool
+// flags 0x12" every sample). So vertex and index ranges in such pools are copied at translation (the ring the uniforms
+// use), as the storage snapshots are; static meshes live in cached pools and stay in place. The pool table is small
+// (nvn_pool_flags_at), the ranges are; the stats line counts them ("vcopy"). LARECOMP_DYN_COPY=0: off (in place).
+static bool dyn_copy(uint64_t addr, uint64_t size) {
+    static int on = -1;
+    if (on < 0) { const char *x = ENV("LARECOMP_DYN_COPY"); on = x && atoi(x) != 0 && overlap_on(); }  // (off by default: the rewrites are real but not the visible flicker; ~25 KB a frame when on)
+    if (!on || size > (1u << 20)) return false;  // (a range over 1 MB isn't per-frame geometry: in place, as before)
+    extern int nvn_pool_flags_at(uint64_t addr);
+    int pf = nvn_pool_flags_at(addr);
+    if ((pf & 0x13) != 0x12) return false;  // CPU_UNCACHED | GPU_UNCACHED, not CPU_NO_ACCESS
+    stat_vcopy++; stat_vcopy_bytes += size;
+    return true;
+}
 static void bind_guest(id<MTLRenderCommandEncoder> e, bool vertex_stage, uint64_t addr, uint64_t size, int index) {
     if (addr >= HEAP_BASE && addr + size <= HEAP_BASE + HEAP_MAX && (addr & 3) == 0) {
-        if (vertex_stage) [e setVertexBuffer:g_guest_buffer offset:addr - HEAP_BASE atIndex:index];
-        else [e setFragmentBuffer:g_guest_buffer offset:addr - HEAP_BASE atIndex:index];
-        return;
+        bind_note(0, addr, size);  // (LARECOMP_LOG_BINDS: the race detector still reports the rewrites; copied, they are harmless)
+        snap_note_vertex_bind(addr, size);
+        if (!dyn_copy(addr, size)) {
+            if (vertex_stage) [e setVertexBuffer:g_guest_buffer offset:addr - HEAP_BASE atIndex:index];
+            else [e setFragmentBuffer:g_guest_buffer offset:addr - HEAP_BASE atIndex:index];
+            return;
+        }
     }
     uint64_t off = ring_alloc((void *)(uintptr_t)addr, size);
     if (vertex_stage) [e setVertexBuffer:ring offset:off atIndex:index];
@@ -1331,7 +1499,7 @@ static id<MTLRenderPipelineState> archive_render_pipeline_(MTLRenderPipelineDesc
     pd.binaryArchives = @[archive];
     id<MTLRenderPipelineState> ps = [dev newRenderPipelineStateWithDescriptor:pd options:MTLPipelineOptionFailOnBinaryArchiveMiss
                                                                     reflection:nil error:nil];
-    if (ps) { g_archive_hits++; return ps; }
+    if (ps) { g_archive_hits++; slow_note_cache_hit(); return ps; }
     bool added = false;  // (not while a save runs: it can take a while - this one goes in a later run)
     if (!pthread_rwlock_tryrdlock(&g_archive_lock)) {
         added = [archive addRenderPipelineFunctionsWithDescriptor:pd error:nil];
@@ -1357,7 +1525,7 @@ static id<MTLComputePipelineState> archive_compute_pipeline(id<MTLFunction> f, N
     cd.binaryArchives = @[archive];
     id<MTLComputePipelineState> ps = [dev newComputePipelineStateWithDescriptor:cd options:MTLPipelineOptionFailOnBinaryArchiveMiss
                                                                       reflection:nil error:nil];
-    if (ps) { g_archive_hits++; return ps; }
+    if (ps) { g_archive_hits++; slow_note_cache_hit(); return ps; }
     bool added = false;  // (not while a save runs: it can take a while - this one goes in a later run)
     if (!pthread_rwlock_tryrdlock(&g_archive_lock)) {
         added = [archive addComputePipelineFunctionsWithDescriptor:cd error:nil];
@@ -1391,6 +1559,7 @@ static void compile_program(Prog *pr) {
     __atomic_fetch_add(&stat_compiles, 1, __ATOMIC_RELAXED);
     double dt = now_ms() - t0;
     @synchronized(cache) { stat_compile_ms += dt; }
+    slow_note_build("program", (uint64_t)(dt * 1e6));
     pr->ready = true;
 }
 
@@ -1400,7 +1569,7 @@ static bool translate_program(Prog *pr, const uint8_t *vcode, size_t vmax, const
                               ShaderKey *vkey, ShaderKey *fkey, uint64_t vaddr, uint64_t faddr) {
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
-    pr->vi = maxwell_translate(vcode, vmax, STAGE_VERTEX, vkey);
+    pr->vi = slow_translate(vcode, vmax, STAGE_VERTEX, vkey);
     if (!pr->vi->msl) {
         LOG("[shader] VS translate failed: %s (code %llx)\n", pr->vi->error, vaddr);
         if (vaddr) {
@@ -1413,7 +1582,7 @@ static bool translate_program(Prog *pr, const uint8_t *vcode, size_t vmax, const
         return false;
     }
     fkey->vs_out_mask = pr->vi->out_mask;
-    pr->fi = maxwell_translate(fcode, fmax, STAGE_FRAGMENT, fkey);
+    pr->fi = slow_translate(fcode, fmax, STAGE_FRAGMENT, fkey);
     if (!pr->fi->msl) { LOG("[shader] FS translate failed: %s\n", pr->fi->error); pr->failed = true; return false; }
     if (getenv("LARECOMP_SAVE_MSL") && vaddr) {
         mkdir("build/msl", 0755);
@@ -1612,6 +1781,63 @@ static MTLTextureType mtl_type_for(int t) {
     }
 }
 
+// Shadow slots (depth2d, sample_compare) need a depth texture: with nothing usable bound they get a 1x1 Depth32Float
+// cleared to 1.0 (lit under the usual less / less-equal compare, as an empty shadow map) instead of the RGBA8 dummy,
+// which compared as 0 (in shadow) and is not a depth texture. The Vulkan side does the same (exec.c shadow_slot_check).
+static id<MTLTexture> dummy_depth_texture(int type) {
+    static id<MTLTexture> t[10];
+    if (type < 0 || type >= 10) type = TEXTYPE_2D;
+    if (type != TEXTYPE_2D && type != TEXTYPE_2D_ARRAY && type != TEXTYPE_CUBE && type != TEXTYPE_CUBE_ARRAY)
+        return dummy_texture(type);  // (3D has no shadow form; 1D depth textures don't exist)
+    if (!t[type]) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor new];
+        d.pixelFormat = MTLPixelFormatDepth32Float;
+        d.width = d.height = 1;
+        d.textureType = mtl_type_for(type);
+        d.storageMode = MTLStorageModePrivate;
+        d.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+        id<MTLTexture> tex = [dev newTextureWithDescriptor:d];
+        if (!tex) return dummy_texture(type);
+        NSUInteger slices = type == TEXTYPE_CUBE || type == TEXTYPE_CUBE_ARRAY ? 6 : 1;
+        id<MTLCommandBuffer> cb = [renderer_queue() commandBuffer];  // (committed now: runs before the current one)
+        for (NSUInteger s = 0; s < slices; s++) {
+            MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+            rp.depthAttachment.texture = tex;
+            rp.depthAttachment.slice = s;
+            rp.depthAttachment.loadAction = MTLLoadActionClear;
+            rp.depthAttachment.storeAction = MTLStoreActionStore;
+            rp.depthAttachment.clearDepth = 1.0;
+            [[cb renderCommandEncoderWithDescriptor:rp] endEncoding];
+        }
+        [cb commit];
+        t[type] = tex;
+    }
+    return t[type];
+}
+
+static bool mtl_depth_comparable(id<MTLTexture> t) {
+    switch (t.pixelFormat) {
+    case MTLPixelFormatDepth16Unorm: case MTLPixelFormatDepth32Float: case MTLPixelFormatDepth32Float_Stencil8:
+        return true;  // (depth targets are never D24S8 here)
+    default: return false;
+    }
+}
+
+// The texture for a shadow slot: tex if it is a comparable depth texture, else the depth dummy (logged once per cause).
+static id<MTLTexture> shadow_slot_texture(id<MTLTexture> tex, const ShaderTexture *st_, int i, uint64_t h) {
+    if (tex && mtl_depth_comparable(tex) && tex.textureType != MTLTextureType2DMultisample) return tex;
+    static bool logged[3];
+    int why = !h ? 0 : !tex ? 1 : 2;
+    if (!logged[why]) {
+        logged[why] = true;
+        static const char *names[3] = {"handle 0 (nothing bound)", "no texture (unregistered / finalized / type mismatch)",
+                                       "not a comparable depth texture"};
+        LOG("[mtl] shadow slot t%d (type %d): %s - handle %#llx, pixel format %lu: 1x1 depth dummy instead (once per cause)\n",
+            i, st_->type, names[why], (unsigned long long)h, tex ? (unsigned long)tex.pixelFormat : 0ul);
+    }
+    return dummy_depth_texture(st_->type);
+}
+
 // NVN texture/view component swizzle (same enum values as MTLTextureSwizzle), applied as a view.
 static id<MTLTexture> apply_swizzle(id<MTLTexture> tex, NvnTexture *t, const NvnTextureView *v, bool has_view) {
     const uint8_t *sw = (has_view && (v->setmask & 8)) ? v->swizzle : t->swizzle;
@@ -1781,7 +2007,10 @@ static int sampler_slots(int n, __strong id<MTLSamplerState> *smp, NvnSamplerDes
 }
 
 static void bind_textures(int stage, ShaderInfo *si) {
-    if (stage == 1) draw_bottle = draw_heart = 0, draw_item_cursor = false;
+    if (stage == 1) {
+        draw_bottle = draw_heart = draw_recolour[0] = draw_recolour[1] = 0, draw_item_cursor = false;
+        draw_recolour_names[0] = 0;
+    }
     bool mapped = si->ntex > MSL_MAX_SAMPLERS;  // (fragment only: the translator refuses such vertex shaders)
     __strong id<MTLSamplerState> msmp[64];
     NvnSamplerDesc *mdesc[64];
@@ -1816,6 +2045,12 @@ static void bind_textures(int stage, ShaderInfo *si) {
                     }
                 }
                 if (!draw_heart) draw_heart = texpatch_heart_kind(id);
+                recolour_add(draw_recolour, recolour_class_of(id));
+                if (recolour_name(id)) {
+                    size_t n = strlen(draw_recolour_names);
+                    snprintf(draw_recolour_names + n, sizeof draw_recolour_names - n, " t%d=%s(%d)", i, recolour_name(id),
+                             recolour_class_of(id));
+                }
                 draw_item_cursor |= texpatch_is_item_cursor(id);
             }
             if (e->tex && i < 64) {
@@ -1879,6 +2114,7 @@ static void bind_textures(int stage, ShaderInfo *si) {
         }
         NvnSamplerDesc *sd = h && st.spool && tsc < (uint32_t)st.spool->count ? &((NvnSamplerDesc *)st.spool->entries)[tsc] : NULL;
         if (sd) smp = sampler_for(sd);
+        if (st_->shadow) tex = shadow_slot_texture(tex, st_, i, h);
         if (!tex) tex = dummy_texture(st_->type);
         if (!smp) smp = default_sampler();
         if (g_debug_frame && tex.textureType == MTLTextureType2D && stage == 1) {
@@ -1903,6 +2139,335 @@ static void bind_textures(int stage, ShaderInfo *si) {
     }
 }
 
+// ---- storage buffers the game rewrites one frame ahead (overlap)
+// The game's tiled light / exposure lists: each frame its CPU memcpys the list for the frame after this one into
+// the buffer the frame being drawn reads (7281e33500+32640 and 7281e3bd00+2040, alternating by frame; f_7000fe5960
+// found with LARECOMP_WATCH_ADDR), which the Switch's fence made safe. With the fence deferred that copy lands while
+// the GPU still reads the list: screen-aligned tiles without shadow, a dark saturated picture when the exposure
+// program (72a8da6000) reads it - worse the slower the GPU. Other storage data (the skinning program 72a8da0000's
+// outputs in slots 6-9, read in place by the exposure program and by draws binding them as vertex data from an
+// offset into the pool) is only ever written by the GPU and must stay where the game put it.
+// Which is which is decided per memory range, with no wait and no probe of the programs. A range a draw reads as
+// storage is shader-consumed game data (the lists): COPY for good - every binder of it, the compute dispatches that
+// read or modify it too, works on a copy taken at translation (in a ring at the top of the guest heap range:
+// shaders address storage through the heap buffer, and the game's heap never reaches there), refreshed whenever
+// its data changes (hash) and otherwise kept, so the GPU's own modifications stay. The CPU's rewrite can't be told
+// from the data: standing still it rewrites the same bytes, and the boxes come from the GPU reading the list while
+// it is rewritten (an M6 at 4x in the woods), so no hash decides this case. A range only compute slots bind gets a
+// one-frame PROBE on its first use in a level (all binders on the copy, the GPU can't touch the original) and its
+// next use looks at the original: changed, the CPU rewrites it - COPY; unchanged, a GPU output or static (the
+// skinning outputs, which draws then bind as vertex data from an offset into the pool) - IN PLACE for good, probed
+// again when the level changes or after 10 s unused. With the write watch below (the default) a compute-only range
+// starts in place and is copied from the first CPU store into it instead - the probe is the fallback.
+// ~100 KB copied and hashed per frame in the field.
+// LARECOMP_OVERLAP_SNAP=0: off (everything in place).
+#define SNAP_RING (16u << 20)
+enum { RS_PROBE, RS_COPY, RS_PLACE };
+typedef struct { uint64_t addr, size, copy, pristine, hash, frame; uint32_t gen, level; uint8_t mode; bool cs_bound, draw_bound; } RangeState;
+static RangeState rs_tab[512];
+static int nrs;
+static uint64_t snap_ring_base, snap_ring_off;
+static uint32_t snap_gen = 1;  // (bumped when the table starts over)
+static uint32_t rs_level_gen = 1;
+static bool snap_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = ENV("LARECOMP_OVERLAP_SNAP");
+        on = (!e || atoi(e) != 0) && overlap_on();
+        if (on) {
+            extern uint64_t kernel_heap_size(void);
+            snap_ring_base = HEAP_BASE + HEAP_MAX - SNAP_RING;
+            if (kernel_heap_size() > HEAP_MAX - SNAP_RING) { on = 0; LOG("[metal] storage snapshots off: the game's heap fills the range\n"); }
+            else LOG("[metal] storage buffers the CPU rewrites: copies at %llx (%u MB ring)\n", (unsigned long long)snap_ring_base, SNAP_RING >> 20);
+        }
+    }
+    return on;
+}
+static void rs_level_tick(void) {  // (a new level: every range is probed again on its next use)
+    extern const char *game_level_name(void);
+    static char last[64];
+    const char *lv = game_level_name();
+    if (lv && strncmp(lv, last, sizeof last - 1)) { snprintf(last, sizeof last, "%s", lv); rs_level_gen++; }
+}
+static void rs_log(RangeState *e, const char *what, bool cs_slot, uint64_t f) {  // (rare: a new range, a decision)
+    static int n;
+    if (e->size >= 2040 ? n < 100000 : n++ < 200)  // (the small per-object ranges are many: capped)
+        LOG("[snap] %llx+%llu %s (%s bind, frame %llu)\n", (unsigned long long)e->addr, (unsigned long long)e->size, what, cs_slot ? "compute" : "draw", (unsigned long long)f);
+}
+// A copy lives until its entry remakes it (the original changed) or releases it (unused for 10 s): the ring
+// allocator walks past live copies, so a ring wrap no longer remakes every copy from its original (which lost the
+// GPU's own modifications of a copy - the exposure program's writes into the lists - for a frame). A slot freed by
+// a remake is reused only after the ring comes round (16 MB of copies later), long after the GPU work that read it.
+// `need` bytes of the ring (256-aligned), past the live copies (`skip`: the entry being remade may reuse its own
+// slot's space only after the merge below read it, so it is skipped too); 0 when the ring is all live copies.
+static uint64_t ring_take(uint64_t need, const RangeState *skip) {
+    (void)skip;
+    uint64_t at = (snap_ring_off + 255) & ~255ull;
+    for (int pass = 0; pass < 2; pass++) {
+        if (at + need > SNAP_RING) at = 0;
+        bool moved = true;
+        while (moved && at + need <= SNAP_RING) {
+            moved = false;
+            for (int i = 0; i < nrs; i++) {
+                const RangeState *o = &rs_tab[i];
+                if (!o->copy) continue;
+                uint64_t olo = o->copy - snap_ring_base, ohi = (olo + o->size * (o->pristine ? 2 : 1) + 255) & ~255ull;
+                if (at < ohi && at + need > olo) { at = ohi; moved = true; }
+            }
+        }
+        if (at + need <= SNAP_RING) break;
+        at = 0;  // (ran off the end skipping live copies: once more from the start)
+    }
+    if (at + need > SNAP_RING) return 0;
+    snap_ring_off = at + need;
+    return snap_ring_base + at;
+}
+// A copy a compute dispatch binds carries the GPU's own writes into it (the exposure program keeps its adaptation
+// state in the 2040-byte exposure list it reads and writes; the lists' tile data beside it is the CPU's). When the
+// CPU changes the original the copy is remade from it - and the GPU's state would go back to whatever the original
+// held when the copy was first taken: the screen at half brightness for one frame (the path by the Face Shrine, an
+// M3 Max at any resolution; two frames three apart, one per list buffer). So such a copy keeps a pristine image of
+// what it was copied from right behind it, and a remake merges: a byte the GPU changed (copy != pristine) that the
+// CPU didn't (original == pristine) keeps the GPU's value; everything else is the original's, the CPU's write winning
+// where both changed (its write is the later one, as in place). Draw-only copies have no GPU state and no image.
+static uint64_t rs_copy_make(RangeState *e, uint64_t h) {
+    bool keep = e->cs_bound;
+    uint64_t need = (e->size * (keep ? 2 : 1) + 255) & ~255ull;
+    uint64_t old = e->copy, old_p = e->pristine;
+    uint64_t at = ring_take(need, e);
+    if (!at) {  // (the ring is all live copies: not in practice - 512 entries, most far smaller)
+        static int warned; if (warned++ < 3) LOG("[snap] copy ring full: %llx+%llu in place\n", (unsigned long long)e->addr, (unsigned long long)e->size);
+        e->copy = e->pristine = 0; e->hash = h;
+        return e->addr;
+    }
+    uint8_t *dst = (uint8_t *)(uintptr_t)at;
+    const uint8_t *src = (const uint8_t *)(uintptr_t)e->addr;
+    memcpy(dst, src, e->size);
+    if (keep && old && old_p) {
+        const uint8_t *a = (const uint8_t *)(uintptr_t)old, *b = (const uint8_t *)(uintptr_t)old_p;
+        uint64_t kept = 0;
+        for (uint64_t i = 0; i < e->size; i++) if (a[i] != b[i] && src[i] == b[i]) { dst[i] = a[i]; kept++; }
+        if (kept) { static int n; if (n++ < 20 || ENV("LARECOMP_LOG_BINDS")) LOG("[snap] %llx+%llu remade: %llu bytes of the GPU's kept (frame %llu)\n", (unsigned long long)e->addr, (unsigned long long)e->size, (unsigned long long)kept, (unsigned long long)renderer_exec_frame()); }
+    }
+    e->copy = at;
+    if (keep) { e->pristine = at + e->size; memcpy((void *)(uintptr_t)e->pristine, src, e->size); }
+    else e->pristine = 0;
+    e->hash = h, e->gen = snap_gen;
+    return e->copy;
+}
+static void rs_release_unused(uint64_t f) {  // (every 600 frames) copies of entries unbound for 10 s go back to the ring
+    static uint64_t last;
+    if (f - last < 600) return;
+    last = f;
+    for (int i = 0; i < nrs; i++) if (rs_tab[i].copy && f - rs_tab[i].frame > 600) rs_tab[i].copy = rs_tab[i].pristine = 0;
+}
+// Write watch (compute-only ranges). The CPU's rewrite of a range can't be seen in its bytes (the light lists are
+// rewritten with the same bytes while the view stands still, and the race is the GPU reading them mid-rewrite), so it
+// is caught as it happens: the pages of a range bound only by compute slots are write-protected (plat_protect) when
+// the range is first bound in a frame; the first CPU store into them faults (the platform's handler calls the hook
+// registered with rt_fault_watch_hook, renderer_watch_fault), the handler opens the page again and, if the store hit inside a watched range, marks that
+// range CPU-written: COPY from then on. A store to a watched page outside any range only opens the page. A GPU
+// output is never stored to by the CPU and stays in place. A few pages and at most a few faults a frame.
+// LARECOMP_OVERLAP_WATCH=0: off (compute-only ranges stay in place, as before).
+#define WATCH_PAGES 64
+static struct { uint64_t page; volatile int armed; } watch_pages[WATCH_PAGES];
+static int nwatch_pages;
+static volatile int rs_cpu_wrote[512];  // (by entry index, set by the fault handler: a store hit the range's page)
+static uint8_t rs_hit_inside[512];      // (a store was ever seen inside the range itself, not just on its page)
+static uint64_t rs_store_frame[512];    // the frame of the previous counted store (a one-off initialisation store of
+                                        // a GPU output - BowWow's skinning buffers at his spawn - must not copy it)
+bool renderer_watch_fault(uint64_t fa);
+static bool watch_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = ENV("LARECOMP_OVERLAP_WATCH");
+        on = !e || atoi(e) != 0;
+        if (on) { extern void rt_fault_watch_hook(bool (*hook)(uint64_t fa)); rt_fault_watch_hook(renderer_watch_fault); }  // (dispatch.c: faults come here first)
+    }
+    return on;
+}
+static uint64_t watch_stat_ns, watch_stat_arms, watch_stat_faults, watch_stat_frame;  // (diagnostics: the cost per frame)
+static void watch_stat_tick(uint64_t f) {
+    if (f == watch_stat_frame) return;
+    if (watch_stat_ns > 2000000 || (ENV("LARECOMP_LOG_BINDS") && f % 120 == 0))
+        LOG("[watch] frame %llu: %llu arms, %llu faults, %.2f ms in mprotect\n", (unsigned long long)watch_stat_frame, (unsigned long long)watch_stat_arms,
+            (unsigned long long)watch_stat_faults, watch_stat_ns / 1e6);
+    watch_stat_frame = f; watch_stat_ns = watch_stat_arms = watch_stat_faults = 0;
+}
+static void watch_arm_range(const RangeState *e) {
+    uint64_t lo = e->addr & ~(PLAT_PAGE - 1), hi = (e->addr + e->size + PLAT_PAGE - 1) & ~(PLAT_PAGE - 1);
+    for (uint64_t pg = lo; pg < hi; pg += PLAT_PAGE) {
+        int i = 0;
+        for (; i < nwatch_pages; i++) if (watch_pages[i].page == pg) break;
+        if (i == nwatch_pages) { if (nwatch_pages == WATCH_PAGES) return; watch_pages[nwatch_pages++].page = pg; watch_pages[i].armed = 0; }
+        if (!watch_pages[i].armed) {
+            uint64_t t0 = plat_now_ns();
+            if (plat_protect(pg, PLAT_PAGE, PLAT_PROT_READ) == 0) watch_pages[i].armed = 1;
+            watch_stat_ns += plat_now_ns() - t0; watch_stat_arms++;
+        }
+    }
+}
+// The platform's fault handler: a store to a watched page (any thread). Opens the page; true when it was ours.
+bool renderer_watch_fault(uint64_t fa) {
+    uint64_t pg = fa & ~(PLAT_PAGE - 1);
+    int i = 0;
+    for (; i < nwatch_pages; i++) if (watch_pages[i].page == pg) break;
+    if (i == nwatch_pages) return false;
+    uint64_t t0 = plat_now_ns();
+    plat_protect(pg, PLAT_PAGE, PLAT_PROT_RW);
+    watch_stat_ns += plat_now_ns() - t0; watch_stat_faults++;
+    watch_pages[i].armed = 0;
+    {   // (debug) LARECOMP_LOG_FAULTS=<from>,<to>: every store fault in those frames: address, the range it is in, the storing function
+        static long lf = -1, lt; static int nl;
+        if (lf < 0) { const char *x = ENV("LARECOMP_LOG_FAULTS"); lf = 0; if (x) sscanf(x, "%ld,%ld", &lf, &lt); }
+        uint64_t f = renderer_exec_frame();
+        if (lf && (long)f >= lf && (long)f <= lt && nl++ < 400) {
+            extern uint64_t g_fault_lr; extern const char *rt_host_sym(uint64_t pc, uint64_t *off);
+            uint64_t lo = 0; const char *ls = rt_host_sym(g_fault_lr, &lo);
+            int in = -1; for (int k = 0; k < nrs; k++) if (fa >= rs_tab[k].addr && fa < rs_tab[k].addr + rs_tab[k].size) in = k;
+            LOG("[fault] frame %llu store at %llx (page %llx) %s %llx+%llu by %s+%llx\n", (unsigned long long)f, (unsigned long long)fa, (unsigned long long)pg,
+                in >= 0 ? "inside" : "outside every range; nearest?", in >= 0 ? (unsigned long long)rs_tab[in].addr : 0ull, in >= 0 ? (unsigned long long)rs_tab[in].size : 0ull, ls ? ls : "?", (unsigned long long)lo);
+        }
+    }
+    // The range holding the address is marked. The page stays open until it is armed again, so a store into a
+    // neighbour range on it goes unseen: the three light / exposure lists are one contiguous allocation the CPU
+    // memcpys in one go and share a page (Kanalet Castle, interiors: the big list's store opened the page, the two
+    // small lists' stores were never seen), so a store inside a list marks every watched range on its page too.
+    // Not so a store into a small parameter block (the skinning dispatch's 12-byte slot 5, rewritten every frame):
+    // it says nothing about the buffers beside it, and marking them copied BowWow's skinning output, which the
+    // CPU reads back every frame (f_700102d0f4: the body's chain) - read from the frozen original once the dispatch
+    // wrote the copy, the body came apart into spikes as a companion indoors. A store outside every range (per-frame
+    // constants next to a buffer) only opens the page. LARECOMP_LOG_BINDS: "[snap] ... never inside" shows what
+    // this marked by neighbourhood.
+    int x = -1;
+    for (int k = 0; k < nrs; k++) if (fa >= rs_tab[k].addr && fa < rs_tab[k].addr + rs_tab[k].size) { x = k; break; }
+    if (x >= 0) {
+        rs_hit_inside[x] = 1;
+        rs_cpu_wrote[x] = 2;  // (the store was inside the range itself)
+        if (rs_tab[x].size >= 256)
+            for (int k = 0; k < nrs; k++)
+                if (k != x && rs_tab[k].addr < pg + PLAT_PAGE && pg < rs_tab[k].addr + rs_tab[k].size && !rs_cpu_wrote[k]) rs_cpu_wrote[k] = 1;
+    }
+    return true;
+}
+
+static void snap_note_vertex_bind(uint64_t addr, uint64_t size) {  // (LARECOMP_LOG_BINDS) reads the original, not the copy
+    static int on = -1, n;
+    if (on < 0) on = ENV("LARECOMP_LOG_BINDS") != NULL;
+    if (!on || n >= 40) return;
+    for (int i = 0; i < nrs; i++)
+        if (rs_tab[i].mode == RS_COPY && rs_tab[i].copy && addr < rs_tab[i].addr + rs_tab[i].size && addr + size > rs_tab[i].addr) {
+            n++; LOG("[snap] vertex bind %llx+%llu overlaps copied %llx+%llu (%s, frame %llu)\n", (unsigned long long)addr, (unsigned long long)size, (unsigned long long)rs_tab[i].addr, (unsigned long long)rs_tab[i].size, addr < rs_tab[i].addr ? "from outside" : "inside", (unsigned long long)renderer_exec_frame());
+        }
+}
+// The address a binder of [addr, addr+size) uses: the original or its copy (cs_slot: bound by a compute dispatch)
+static uint64_t snap_storage(uint64_t addr, uint64_t size, bool cs_slot) {
+    if (!snap_on() || !addr || !size || size > SNAP_RING / 8 || addr < HEAP_BASE || addr + size > snap_ring_base) return addr;
+    extern int nvn_pool_flags_at(uint64_t addr);
+    int pf = nvn_pool_flags_at(addr);
+    if (pf < 0 || (pf & 1)) return addr;  // (CPU_NO_ACCESS: static data, nothing to race with)
+    rs_level_tick();
+    extern uint64_t renderer_exec_frame(void);
+    uint64_t f = renderer_exec_frame();
+    rs_release_unused(f);
+    watch_stat_tick(f);
+    // A draw's storage read from the game's per-frame pools (CPU_UNCACHED | GPU_UNCACHED, 0x12: the 64-byte per-object
+    // blocks at changing addresses, hundreds a frame) is copied without an entry: a fresh range every frame filled the
+    // table in a few minutes, and the table starting over remade every copy from its original - the exposure list's
+    // GPU state with it (one dark frame per list buffer, see rs_copy_make).
+    if (!cs_slot && (pf & 0x13) == 0x12 && size <= 65536) {
+        uint64_t at = ring_take((size + 255) & ~255ull, NULL);
+        if (!at) return addr;
+        memcpy((void *)(uintptr_t)at, (const void *)(uintptr_t)addr, size);
+        return at;
+    }
+    RangeState *e = NULL;
+    for (int i = 0; i < nrs; i++) if (rs_tab[i].addr == addr && rs_tab[i].size == size) { e = &rs_tab[i]; break; }
+    if (!e) {
+        if (nrs == 512) {  // table full: the entry bound longest ago makes room (never the whole table at once)
+            int k = 0;
+            for (int i = 1; i < nrs; i++) if (rs_tab[i].frame < rs_tab[k].frame) k = i;
+            rs_log(&rs_tab[k], "evicted (table full, bound longest ago)", cs_slot, f);
+            rs_tab[k].copy = rs_tab[k].pristine = 0;
+            e = &rs_tab[k];
+        } else e = &rs_tab[nrs++];
+        memset(e, 0, sizeof *e);
+        // (stamped with this frame: a second binder in the probe frame - the exposure dispatch and the draws read the
+        // list the first dispatch wrote - must share the copy, not rehash an original the CPU hasn't had a frame to
+        // touch and settle it in place for good; that left the race on the beach at 4x on an M6)
+        e->addr = addr, e->size = size, e->mode = RS_PROBE, e->level = rs_level_gen, e->frame = f;
+        e->cs_bound = cs_slot;
+        rs_cpu_wrote[e - rs_tab] = 0, rs_store_frame[e - rs_tab] = 0, rs_hit_inside[e - rs_tab] = 0;
+        {   // (debug) LARECOMP_WATCH_SIZE=<size>,<frame>,<page>,<frames>: the data watchpoint (dispatch.c, any access, the
+            // GPU stalls on the protected page) on page <page> of the first range of that size bound from <frame>, for <frames> frames
+            static long ws = -1, wf, wp, wn; static bool armed; static uint64_t at;
+            if (ws < 0) { const char *x = ENV("LARECOMP_WATCH_SIZE"); ws = 0; if (x) sscanf(x, "%ld,%ld,%ld,%ld", &ws, &wf, &wp, &wn); }
+            if (ws && !armed && (long)size == ws && (long)f >= wf) {
+                extern uint64_t g_watch_lo, g_watch_hi; extern void watch_arm(void);
+                armed = true; at = f; g_watch_lo = addr + wp * PLAT_PAGE; g_watch_hi = addr + size; watch_arm();
+                LOG("[snap] data watch on %llx+%llu from %llx (frame %llu)\n", (unsigned long long)addr, (unsigned long long)size, (unsigned long long)g_watch_lo, (unsigned long long)f);
+            }
+            extern volatile int g_watch_stop;
+            if (armed && !g_watch_stop && f > at + wn) { g_watch_stop = 1; LOG("[snap] data watch off (frame %llu)\n", (unsigned long long)f); }
+        }
+        if (!cs_slot) { e->mode = RS_COPY; e->draw_bound = true; rs_log(e, "new: copy (a draw's storage read)", cs_slot, f); return rs_copy_make(e, range_hash(addr, size)); }
+        if (watch_on()) { e->mode = RS_PLACE; watch_arm_range(e); rs_log(e, "new: in place, watched for CPU stores", cs_slot, f); return addr; }
+        rs_log(e, "new: probe", cs_slot, f);
+        return rs_copy_make(e, range_hash(addr, size));  // the probe frame
+    }
+    if (cs_slot) e->cs_bound = true; else e->draw_bound = true;
+    if (e->mode != RS_COPY && rs_cpu_wrote[e - rs_tab]) {  // a CPU store hit its page since the last bind
+        int k = (int)(e - rs_tab);
+        int inside = rs_cpu_wrote[k] == 2;
+        rs_cpu_wrote[k] = 0;
+        if (rs_store_frame[k] && f - rs_store_frame[k] <= 8) {  // stores keep coming: the CPU rewrites it - copied from now on
+            e->mode = RS_COPY;
+            rs_log(e, inside ? "-> copy (CPU stores keep hitting it)" : rs_hit_inside[k] ? "-> copy (CPU stores keep hitting its page; one was inside)" : "-> copy (CPU stores keep hitting its page, never inside)", cs_slot, f);
+            e->frame = f;
+            return rs_copy_make(e, range_hash(addr, size));
+        }
+        rs_store_frame[k] = f;  // (one store so far: an initialisation, or the first of many - the next one decides)
+    }
+    if (e->frame == f) return e->mode == RS_PLACE ? addr : (e->copy ? e->copy : rs_copy_make(e, e->hash));  // (bound again this frame)
+    // probe again on a new level or after 10 s unused - only the hash fallback: a copied range stays copied (a
+    // draw's storage read, a CPU store seen), a watched one just gets its pages armed again
+    bool again = !watch_on() && e->mode == RS_PLACE && (e->level != rs_level_gen || f - e->frame > 600);
+    e->level = rs_level_gen;
+    e->frame = f;
+    if (!cs_slot && e->mode != RS_COPY) {  // a draw reads it as storage: copied for good (see above)
+        e->mode = RS_COPY;
+        rs_log(e, "-> copy (a draw's storage read)", cs_slot, f);
+        return rs_copy_make(e, range_hash(addr, size));
+    }
+    if (e->mode == RS_PLACE && e->cs_bound && watch_on()) { watch_arm_range(e); return addr; }  // (watched: a store decides, no hash)
+    if (e->mode == RS_PLACE && !again && e->cs_bound) return addr;
+    uint64_t h = range_hash(addr, size);
+    if (again) { e->mode = RS_PROBE; rs_log(e, "probe again (level / unused)", cs_slot, f); return rs_copy_make(e, h); }
+    switch (e->mode) {
+    case RS_PLACE:  // (never a compute slot's: a change can only be the CPU's)
+        if (h == e->hash) return addr;
+        e->mode = RS_COPY;
+        rs_log(e, "in place -> copy (changed later)", cs_slot, f);
+        return rs_copy_make(e, h);
+    case RS_PROBE:  // the use after the probe: did the CPU touch the original meanwhile?
+        if (h == e->hash) { e->mode = RS_PLACE; e->copy = e->pristine = 0; rs_log(e, "probe -> in place (unchanged)", cs_slot, f); return addr; }
+        e->mode = RS_COPY;
+        rs_log(e, "probe -> copy (the CPU rewrote it)", cs_slot, f);
+        return rs_copy_make(e, h);
+    default:  // RS_COPY
+        {   static int on = -1, n; if (on < 0) on = ENV("LARECOMP_LOG_BINDS") != NULL;
+            if (on && n < 4000 && size >= 2040) {
+                uint64_t hc = e->copy ? range_hash(e->copy, size) : 0;
+                static int quiet, gw;  // (every remake of a GPU-written copy - the GPU's state in it is lost; 200 of the GPU-written binds; 40 of the rest)
+                if ((e->copy && hc != e->hash && (h != e->hash || gw++ < 200)) || quiet++ < 40) { n++;
+                LOG("[snap] copied %llx+%llu at frame %llu: original %s, copy %s (%s bind)\n", (unsigned long long)addr, (unsigned long long)size, (unsigned long long)f,
+                    h == e->hash ? "unchanged" : "CHANGED", !e->copy ? "released" : hc == e->hash ? "unchanged" : "GPU-written", cs_slot ? "compute" : "draw"); } }
+        }
+        if (h == e->hash && e->copy) return e->copy;  // unchanged: the copy (maybe GPU-written: its state) is current
+        return rs_copy_make(e, h);
+    }
+}
+
 static void bind_cbufs(int stage, ShaderInfo *si) {
     for (int k = 0; k < 18; k++) {
         if (!(si->cbuf_mask & (1u << k))) continue;
@@ -1913,8 +2478,10 @@ static void bind_cbufs(int stage, ShaderInfo *si) {
             uint32_t base = 0x110 + 0x100 * (stage == 1 ? 4 : 0);
             for (int i = 0; i < 16; i++) {
                 uint32_t *e = &drv[(base + 16 * i) / 4];
-                e[0] = (uint32_t)st.sbuf[stage][i].addr;
-                e[1] = (uint32_t)(st.sbuf[stage][i].addr >> 32);
+                uint64_t sa = st.sbuf[stage][i].addr;
+                if (sa && (si->ssbo_read & (1u << i))) { bind_note(2, sa, st.sbuf[stage][i].size); sa = snap_storage(sa, st.sbuf[stage][i].size, false); }
+                e[0] = (uint32_t)sa;
+                e[1] = (uint32_t)(sa >> 32);
                 e[2] = (uint32_t)st.sbuf[stage][i].size;
             }
             uint64_t size = si->cbuf_size[0] > sizeof drv ? sizeof drv : (si->cbuf_size[0] ? si->cbuf_size[0] : 256);
@@ -1975,6 +2542,7 @@ static void compile_compute(CsProg *cp) {
     id<MTLFunction> f = lib ? [lib newFunctionWithName:@"main0"] : nil;
     id<MTLComputePipelineState> pipe = f ? archive_compute_pipeline(f, &err) : nil;
     @synchronized(cache) { stat_compile_ms += now_ms() - t0; }
+    slow_note_build("pipeline cs", (uint64_t)((now_ms() - t0) * 1e6));
     __atomic_fetch_add(&stat_compiles, 1, __ATOMIC_RELAXED);
     if (!pipe) {
         LOG("[compute] compile failed: %s\n%s\n", err.localizedDescription.UTF8String, cp->si->msl);
@@ -1997,7 +2565,7 @@ static bool translate_compute(CsProg *cp, const uint8_t *code, size_t max) {
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
     ShaderKey k = {0};
-    cp->si = maxwell_translate(code, max, STAGE_COMPUTE, &k);
+    cp->si = slow_translate(code, max, STAGE_COMPUTE, &k);
     if (!cp->si->msl) { LOG("[compute] translate failed: %s (code %llx)\n", cp->si->error, cp->code_addr); cp->failed = true; return false; }
     return true;
 }
@@ -2044,6 +2612,12 @@ static CsProg *compute_program(NvnProgram *p) {
     cp->code_addr = ss->code_addr;
     memcpy(cp->local, local, sizeof local);
     if (!translate_compute(cp, (const uint8_t *)(uintptr_t)ss->code_addr, ss->const_offset ? ss->const_offset : 0x10000)) return NULL;
+    if (getenv("LARECOMP_SAVE_MSL") && cp->si && cp->si->msl) {  // (debug, as the draw programs': build/msl/<code addr>_cs.metal)
+        mkdir("build/msl", 0755);
+        char path[256];
+        snprintf(path, sizeof path, "build/msl/%llx_cs.metal", (unsigned long long)ss->code_addr);
+        FILE *f = fopen(path, "w"); if (f) { fputs(cp->si->msl, f); fclose(f); }
+    }
     if (sync_shaders()) {
         compile_compute(cp);
         return cp->failed ? NULL : cp;
@@ -2057,6 +2631,10 @@ static CsProg *compute_program(NvnProgram *p) {
 
 static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
+    {   // (debug) LARECOMP_WATCH_ADDR: the data watchpoint (dispatch.c) armed once the game draws
+        static bool armed;
+        if (!armed) { armed = true; if (ENV("LARECOMP_WATCH_ADDR")) { extern void watch_arm(void); watch_arm(); } }
+    }
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program);
     if (!cp) return;
@@ -2082,7 +2660,22 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
                 uint32_t *u = &drv[(0x210 + 16 * i) / 4];
                 if (i < 18) { u[0] = (uint32_t)st.ubuf[5][i].addr; u[1] = (uint32_t)(st.ubuf[5][i].addr >> 32); u[2] = (uint32_t)st.ubuf[5][i].size; }
                 uint32_t *e = &drv[(0x310 + 16 * i) / 4];
-                e[0] = (uint32_t)st.sbuf[5][i].addr; e[1] = (uint32_t)(st.sbuf[5][i].addr >> 32); e[2] = (uint32_t)st.sbuf[5][i].size;
+                // every slot goes through the snapshot table: inputs the CPU rewrites are read from a copy; a slot the
+                // program writes (BowWow's soft-body state, LARECOMP_SSBO_PROBE=1 shows which) is copied only when its
+                // pages are shared with CPU-written data, and then its copy holds the GPU's state for good (rs_copy_make)
+                uint64_t sa = st.sbuf[5][i].addr;
+                if (sa) {
+                    static int on = -1, n; if (on < 0) on = ENV("LARECOMP_LOG_BINDS") != NULL;
+                    static struct { uint64_t cs, size; int slot; } seen[64]; static int nseen;
+                    if (on && n < 64) {
+                        uint64_t cs = st.program->stages[5].code_addr; int j = 0;
+                        for (; j < nseen; j++) if (seen[j].cs == cs && seen[j].slot == i && seen[j].size == st.sbuf[5][i].size) break;
+                        if (j == nseen) { seen[nseen].cs = cs; seen[nseen].slot = i; seen[nseen++].size = st.sbuf[5][i].size; n++;
+                            LOG("[snap] compute %llx slot %d %llx+%llu gmem %d store %d (frame %llu)\n", (unsigned long long)cs, i, (unsigned long long)sa, (unsigned long long)st.sbuf[5][i].size, si->uses_gmem, si->uses_gmem_store, (unsigned long long)renderer_exec_frame()); }
+                    }
+                    sa = snap_storage(sa, st.sbuf[5][i].size, true);
+                }
+                e[0] = (uint32_t)sa; e[1] = (uint32_t)(sa >> 32); e[2] = (uint32_t)st.sbuf[5][i].size;
             }
             off = ring_alloc(drv, sizeof drv);
         } else if (k == 1) {
@@ -2137,6 +2730,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
         NvnSamplerDesc *sd = h && st.spool && tsc < (uint32_t)st.spool->count ? &((NvnSamplerDesc *)st.spool->entries)[tsc] : NULL;
         if (sd) smp = sampler_for(sd);
         if (!smp) smp = default_sampler();
+        if (st_->shadow) tex = shadow_slot_texture(tex, st_, i, h);
         [ce setTexture:tex ? tex : dummy_texture(st_->type) atIndex:i];
         if (cmapped) { msmp[i] = smp; mdesc[i] = sd; }
         else [ce setSamplerState:smp atIndex:i];
@@ -2163,9 +2757,59 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
         LOG(" ubo:");
         for (int i = 0; i < 18; i++) if (st.ubuf[5][i].addr) LOG(" %d(%llx,%llu)", i, st.ubuf[5][i].addr, st.ubuf[5][i].size);
         LOG(" gmem %d\n", si->uses_gmem);
+        for (int i = 0; i < 16; i++) if (st.sbuf[5][i].addr && st.sbuf[5][i].size <= 64) {
+            const uint32_t *u = (const uint32_t *)(uintptr_t)st.sbuf[5][i].addr; LOG("[dispatch]   ssbo %d words:", i);
+            for (uint64_t k = 0; k < st.sbuf[5][i].size / 4; k++) LOG(" %08x", u[k]); LOG("\n");
+        }
+        for (int i = 0; i < 18; i++) if (st.ubuf[5][i].addr && st.ubuf[5][i].size <= 64) {
+            const uint32_t *u = (const uint32_t *)(uintptr_t)st.ubuf[5][i].addr; LOG("[dispatch]   ubo %d words:", i);
+            for (uint64_t k = 0; k < st.ubuf[5][i].size / 4; k++) LOG(" %08x", u[k]); LOG("\n");
+        }
+    }
+    // (debug) LARECOMP_SSBO_PROBE=1: which storage slots a compute program writes - run synchronously, slot ranges
+    // (and the 64 KB after each) hashed before and after; the slots read by it are noted for the CPU-rewrite check
+    static int probe = -1;
+    if (probe < 0) probe = ENV("LARECOMP_SSBO_PROBE") != NULL;
+    uint64_t before[16][2];
+    if (probe) {
+        for (int i = 0; i < 16; i++) {
+            Range r = st.sbuf[5][i];
+            before[i][0] = r.addr ? range_hash(r.addr, r.size) : 0;
+            before[i][1] = r.addr && r.addr + r.size + 0x10000 <= HEAP_BASE + HEAP_MAX ? range_hash(r.addr + r.size, 0x10000) : 0;
+            if (r.addr) bind_note(3, r.addr, r.size);
+        }
     }
     [ce dispatchThreadgroups:MTLSizeMake(gx, gy, gz) threadsPerThreadgroup:MTLSizeMake(cp->local[0], cp->local[1], cp->local[2])];
     [ce endEncoding];
+    if (probe) {
+        extern int nvn_pool_flags_at(uint64_t addr);
+        static struct { uint64_t cs; uint32_t read, written, after, flags_in, flags_w; } seen[64];
+        static int nseen;
+        renderer_flush();
+        uint64_t cs = st.program->stages[5].code_addr;
+        int k = -1;
+        for (int i = 0; i < nseen; i++) if (seen[i].cs == cs) k = i;
+        if (k < 0 && nseen < 64) { k = nseen++; memset(&seen[k], 0, sizeof seen[k]); seen[k].cs = cs; }
+        if (k >= 0) {
+            uint32_t written = seen[k].written, after = seen[k].after, read = seen[k].read;
+            for (int i = 0; i < 16; i++) {
+                Range r = st.sbuf[5][i];
+                if (!r.addr) continue;
+                read |= 1u << i;
+                int pf = nvn_pool_flags_at(r.addr);
+                if (range_hash(r.addr, r.size) != before[i][0]) { written |= 1u << i; seen[k].flags_w |= pf > 0 ? pf : 0x80000000; }
+                else seen[k].flags_in |= pf > 0 ? pf : 0x80000000;
+                if (r.addr + r.size + 0x10000 <= HEAP_BASE + HEAP_MAX && range_hash(r.addr + r.size, 0x10000) != before[i][1]) after |= 1u << i;
+            }
+            if (written != seen[k].written || after != seen[k].after || read != seen[k].read) {
+                seen[k].written = written; seen[k].after = after; seen[k].read = read;
+                LOG("[probe] cs %llx (gmem store %d): slots %#x written %#x after %#x; pool flags of unwritten %#x written %#x; e.g.", (unsigned long long)cs,
+                    cp->si->uses_gmem_store, read, written, after, seen[k].flags_in, seen[k].flags_w);
+                for (int i = 0; i < 16; i++) if (st.sbuf[5][i].addr) LOG(" %d=%llx/%llu", i, (unsigned long long)st.sbuf[5][i].addr, (unsigned long long)st.sbuf[5][i].size);
+                LOG("\n");
+            }
+        }
+    }
     CST("done");
     stat_dispatches++;
 }
@@ -2608,6 +3252,7 @@ static void draw(CmdRec *r, bool indexed) {
                 if (!ps) { static int n; if (n++ < 10) LOG("[metal] pipeline failed: %s\n", e.localizedDescription.UTF8String); }
                 @synchronized(ready_pipes) { ready_pipes[k] = ps ? (id)ps : (id)[NSNull null]; }
                 @synchronized(cache) { stat_compile_ms += now_ms() - t0; }
+                slow_note_build("pipeline", (uint64_t)((now_ms() - t0) * 1e6));
                 __atomic_fetch_add(&stat_compiles, 1, __ATOMIC_RELAXED);
             });
             stat_skipped++;
@@ -2711,6 +3356,27 @@ static void draw(CmdRec *r, bool indexed) {
     // resources
     bind_cbufs(0, pr->vi);
     bind_cbufs(1, pr->fi);
+    // (debug, LARECOMP_LOG_BINDS) shaders loading global memory read through pointers in their uniform buffers: note
+    // 4 KB at each heap pointer found in the bound uniforms, to see whether the game rewrites that data per frame
+    if (pr->vi->uses_gmem || pr->fi->uses_gmem) {
+        static int on = -1;
+        if (on < 0) on = ENV("LARECOMP_LOG_BINDS") != NULL;
+        if (on) {
+            for (int stage = 0; stage < 2; stage++) {
+                ShaderInfo *si = stage ? pr->fi : pr->vi;
+                if (!si->uses_gmem) continue;
+                for (int k = 2; k < 18; k++) {
+                    Range r = st.ubuf[stage][k];
+                    if (!r.addr || !(si->cbuf_mask & (1u << k))) continue;
+                    uint64_t n = (r.size ? r.size : 256) / 8;
+                    if (n > 2048) n = 2048;
+                    const uint64_t *w = (const uint64_t *)(uintptr_t)r.addr;
+                    for (uint64_t i = 0; i < n; i++)
+                        if (w[i] >= HEAP_BASE && w[i] + 4096 <= HEAP_BASE + HEAP_MAX && !(w[i] & 15)) bind_note(4, w[i], 4096);
+                }
+            }
+        }
+    }
     if (pr->vi->uses_gmem) [enc setVertexBuffer:g_guest_buffer offset:0 atIndex:GMEM_BUFFER_INDEX];
     static id<MTLBuffer> dbgvs;
     bool dbg_this = maxwell_dbg_vs && (const uint8_t *)(uintptr_t)st.program->stages[0].code_addr == maxwell_dbg_vs;
@@ -2737,7 +3403,9 @@ static void draw(CmdRec *r, bool indexed) {
         // Full-screen overlays without textures (fades, flashes) cover the whole window too.
         bool fullscreen_quad = r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
                                st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height;
-        bool fullscreen_fill = pr->fi->ntex == 0 && fullscreen_quad;
+        extern bool widescreen_ui_pane_partial(const float *u, uint64_t size);  // (a smaller layout pane: boxed UI)
+        bool fullscreen_fill = pr->fi->ntex == 0 && fullscreen_quad &&
+                               !widescreen_ui_pane_partial((const float *)(uintptr_t)st.ubuf[0][0].addr, st.ubuf[0][0].size);
         // A full-screen quad sampling a reshaped (screen-shaped) texture is a scene background too, even a
         // downscaled one: the blurred scene behind the pause menu reads a 192x108 copy.
         // (single-texture draws only: the menu's frosted panels sample the same blurred copy but are UI pieces)
@@ -2840,8 +3508,35 @@ static void draw(CmdRec *r, bool indexed) {
                 }
         }
     }
+    {  // LARECOMP_LOG_RECOLOUR_AT=<frame>[,<frame>...] (test): each draw of those frames sampling a recognised
+       // texture (LARECOMP_RECOLOUR_NAMES=1: any of the overworld's), and the class it is tinted with
+        static const char *at;
+        static int init;
+        if (!init) init = 1, at = getenv("LARECOMP_LOG_RECOLOUR_AT");
+        extern uint64_t renderer_exec_frame(void);
+        if (at && draw_recolour_names[0]) {
+            long f = (long)renderer_exec_frame();
+            for (const char *p = at; p && *p; p = strchr(p, ','), p = p ? p + 1 : NULL)
+                if (atol(p) == f) {
+                    LOG("[recolour-draw] f%ld class %d/%d tint %d:%s\n", f, draw_recolour[0], draw_recolour[1], pr->fi->uses_tint,
+                        draw_recolour_names);
+                    break;
+                }
+        }
+    }
     if (pr->fi->uses_tint) {  // per-draw highlight tint (golden unchecked pots, runtime/hle/pot_glow.c)
-        float tint[8] = {0};
+        float tint[RECOLOUR_TINT_FLOATS] = {0};
+        recolour_tint_draw(draw_recolour, tint);  // (Cosmetics; the highlights below win)
+        {   // LARECOMP_RECOLOUR_FLASH=<text> (test, Metal): draws sampling a recognised texture whose name has <text>
+            // (LARECOMP_RECOLOUR_NAMES=1: any overworld map) turn magenta - which objects a texture is on
+            static const char *fl;
+            static int init;
+            if (!init) init = 1, fl = getenv("LARECOMP_RECOLOUR_FLASH");
+            if (fl && strstr(draw_recolour_names, fl)) {
+                memset(tint, 0, sizeof tint);
+                recolour_pack(tint, 0.83f, 4.0f, 1.0f, 0.0f, 0.5f, 0.0f, 0.0f);
+            }
+        }
         extern bool pot_tint(const float *m, float tint[8], uint64_t mesh);
         extern bool pot_glow_active(void);
         if (model_ubo && st.ubuf[0][2].addr && st.ubuf[0][2].size >= 48 && pot_glow_active())
@@ -2893,9 +3588,10 @@ static void draw(CmdRec *r, bool indexed) {
     if (!nruns) { run_at[0] = 0; run_n[0] = inst_all; nruns = 1; run_gold[0] = false; }
     for (int ri = 0; ri < nruns; ri++) {
     if (nruns > 1 || run_gold[0]) {
-        float tint[8] = {0};
+        float tint[RECOLOUR_TINT_FLOATS] = {0};
         extern void pot_gold_tint(float tint[8]);
         if (run_gold[ri]) pot_gold_tint(tint);
+        else recolour_tint_draw(draw_recolour, tint);
         [enc setFragmentBytes:tint length:sizeof tint atIndex:19];
     }
     // draw
@@ -2922,7 +3618,9 @@ static void draw(CmdRec *r, bool indexed) {
             uint32_t isz = itype == 1 ? 2 : 4;
             id<MTLBuffer> ib;
             uint64_t ioff;
-            if (iaddr >= HEAP_BASE && iaddr + (uint64_t)count * isz <= HEAP_BASE + HEAP_MAX && (iaddr % isz) == 0) {
+            bool in_heap = iaddr >= HEAP_BASE && iaddr + (uint64_t)count * isz <= HEAP_BASE + HEAP_MAX && (iaddr % isz) == 0;
+            if (in_heap) { bind_note(1, iaddr, (uint64_t)count * isz); snap_note_vertex_bind(iaddr, (uint64_t)count * isz); }
+            if (in_heap && !dyn_copy(iaddr, (uint64_t)count * isz)) {
                 ib = g_guest_buffer; ioff = iaddr - HEAP_BASE;
             } else {
                 ioff = ring_alloc((void *)(uintptr_t)iaddr, (uint64_t)count * isz); ib = ring;
@@ -3496,7 +4194,11 @@ static void exec_list(uint64_t handle, int depth) {
             if (gpu < 0) gpu = !(getenv("LARECOMP_MTL_COUNTER") && !strcmp(getenv("LARECOMP_MTL_COUNTER"), "cpu"));
             static uint64_t *prev_out;  // (frame pacing: the pair's start)
             out[0] = 0;
-            out[1] = pace_end_counter(prev_out, out, ns_to_gpu_ticks(plat_now_ns()));
+            uint64_t now_ticks = ns_to_gpu_ticks(plat_now_ns());
+            // (overlap) the game reads this pair before its GPU work is done: the end counter reports the latest
+            // completed pair's GPU span after this pair's start (the frame before, as a frame-late measurement)
+            if (gpu && overlap_on() && prev_out && out - prev_out == 2) now_ticks = prev_out[1] + g_last_gpu_frame_ticks;
+            out[1] = pace_end_counter(prev_out, out, now_ticks);
             if (gpu && type == 0) {  // (type 0: timestamp) the GPU's time at this point, once it's done
                 renderer_submit();
                 pthread_mutex_lock(&ctr_lock);
@@ -3526,6 +4228,7 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_COPY_BUFFER_TO_TEXTURE: copy_buffer_to_texture(r->x[0], x); break;
         case CMD_COPY_TEXTURE_TO_BUFFER: copy_texture_to_buffer(x, r->x[3]); break;
         case CMD_COPY_BUFFER_TO_BUFFER:
+            { static int nlog; if (nlog++ < 40 && ENV("LARECOMP_LOG_BINDS")) LOG("[copybuf] frame %llu %llx -> %llx %llu bytes\n", (unsigned long long)renderer_exec_frame(), r->x[0], r->x[1], r->x[2]); }
             renderer_flush();
             memmove((void *)(uintptr_t)r->x[1], (void *)(uintptr_t)r->x[0], r->x[2]);
             break;
@@ -3656,6 +4359,17 @@ void renderer_reset(void) {
     @synchronized(g_ready_pipes) { [g_ready_pipes removeAllObjects]; }
     g_boot_gen++;
     [g_snap_copies removeAllObjects];
+    // storage snapshots: their copies live in guest memory, which the reboot wipes, so a kept entry would hand back
+    // zeroed data (blank names and death counts on the file select)
+    for (int i = 0; i < nwatch_pages; i++)
+        if (watch_pages[i].armed) plat_protect(watch_pages[i].page, PLAT_PAGE, PLAT_PROT_RW), watch_pages[i].armed = 0;
+    nwatch_pages = 0;
+    nrs = 0;
+    snap_ring_off = 0;
+    snap_gen++;
+    memset((void *)rs_cpu_wrote, 0, sizeof rs_cpu_wrote);
+    memset(rs_hit_inside, 0, sizeof rs_hit_inside);
+    memset(rs_store_frame, 0, sizeof rs_store_frame);
     memset(snap_tex, 0, sizeof snap_tex);
     memset(snap_ok, 0, sizeof snap_ok);
     for (int i = 0; i < 4; i++) { feedback_tex[i] = NULL; feedback_copy[i] = nil; }

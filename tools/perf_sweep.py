@@ -44,7 +44,8 @@ def run():
         subprocess.run([os.path.join(ROOT, 'tools', 'fresh_save.sh'), 'testsave_sweep'], cwd=ROOT,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         env = dict(os.environ, LARECOMP_SAVE_DIR='build/testsave_sweep', LARECOMP_INPUT=TITLE_INPUT,
-                   LARECOMP_WARP_AT=warps, LARECOMP_FPS_INTERVAL='0.5', LARECOMP_WINDOW='1280x720')
+                   LARECOMP_WARP_AT=warps, LARECOMP_FPS_INTERVAL='0.5', LARECOMP_WINDOW='1280x720',
+                   LARECOMP_NO_LAUNCHER='1')  # (never the start screen: runtime/main.c)
         end = FIRST + len(chunk) * STEP + 60
         crashed_at = None
         with open(log, 'w') as f:

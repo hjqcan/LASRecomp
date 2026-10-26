@@ -1,22 +1,37 @@
 # Build environment for the Linux AppImages (tools/linux/appimage.sh): Ubuntu 22.04, so the result runs on glibc 2.35+.
-# Built once per arch (podman build --arch amd64 / arm64). The amd64 image builds everything, the aarch64 AppImage
-# cross-compiled; the arm64 image is the cross build's sysroot (the same -dev packages) and freezes the arm64 seed
-# generator helper (PyInstaller only builds for the machine it runs on).
+# Built once per arch (podman build --arch amd64 / arm64). The host's arch builds its own AppImage in its image. An
+# aarch64 AppImage on an x86-64 host: the amd64 image cross-compiles it, the arm64 image is that build's sysroot (the
+# same -dev packages) and freezes the arm64 seed generator helper (PyInstaller only builds for the machine it runs on).
 FROM docker.io/library/ubuntu:22.04
 ARG DEBIAN_FRONTEND=noninteractive
+# Python 3.12 for the seed generator helper (tools/linux/rando_helper.sh): a python-build-standalone build (needs only
+# glibc 2.17, ships a shared libpython for PyInstaller), pinned by release and SHA-256. To bump: pick the newest release
+# at https://github.com/astral-sh/python-build-standalone/releases, take the 3.12.x install_only_stripped lines for
+# x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu from its SHA256SUMS file, and update these four ARGs.
+ARG PBS_RELEASE=20261020
+ARG PBS_PYTHON=3.12.15
+ARG PBS_SHA256_X86_64=7d6ef1164fb94c4b60d913340610fc7e0ef8e3d1b705aa5628b299b08cbdd4b5
+ARG PBS_SHA256_AARCH64=6d129ebdfa88ef11a78c42bd11426c17fad28a42ae20257c1b242cb7e971a235
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git file xz-utils patchelf make cmake ninja-build pkg-config nasm python3 \
-        g++ software-properties-common gpg-agent \
+        g++ \
         # SDL3's video / audio / input backends (it loads them at run time; the headers decide what it can use)
         libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev \
         libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgl-dev libdrm-dev libgbm-dev \
         libpulse-dev libasound2-dev libpipewire-0.3-dev libdbus-1-dev libudev-dev libibus-1.0-dev \
         libvulkan-dev \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
     # clang 21 from apt.llvm.org: 22.04's clang 15 lacks the __builtin_elementwise_* the lifted FP code uses (simd_fp.h)
     && curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /etc/apt/trusted.gpg.d/apt.llvm.org.asc \
     && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" > /etc/apt/sources.list.d/llvm.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends python3.12 python3.12-venv python3.12-dev clang-21 lld-21 llvm-21 \
+    && apt-get install -y --no-install-recommends clang-21 lld-21 llvm-21 \
     && rm -rf /var/lib/apt/lists/* \
-    && for t in clang clang++ ld.lld llvm-ar llvm-nm llvm-ranlib llvm-strip; do ln -sf $t-21 /usr/bin/$t; done
+    && for t in clang clang++ ld.lld llvm-ar llvm-nm llvm-ranlib llvm-strip; do ln -sf $t-21 /usr/bin/$t; done \
+    && arch=$(uname -m) \
+    && case $arch in x86_64) sum=$PBS_SHA256_X86_64 ;; aarch64) sum=$PBS_SHA256_AARCH64 ;; *) echo "no Python pin for $arch" >&2; exit 1 ;; esac \
+    && tgz=cpython-$PBS_PYTHON+$PBS_RELEASE-$arch-unknown-linux-gnu-install_only_stripped.tar.gz \
+    && curl -fsSL -o /tmp/$tgz "https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_RELEASE/$(echo $tgz | sed 's/+/%2B/')" \
+    && echo "$sum  /tmp/$tgz" | sha256sum -c - \
+    && mkdir -p /opt/python3.12 && tar -xzf /tmp/$tgz -C /opt/python3.12 --strip-components 1 && rm /tmp/$tgz \
+    && ln -s /opt/python3.12/bin/python3.12 /usr/local/bin/python3.12 \
+    && python3.12 -m venv /tmp/v && /tmp/v/bin/python -c "import ssl, sqlite3, ctypes; print('python ok')" && rm -rf /tmp/v

@@ -19,11 +19,29 @@ native Windows, macOS and Linux application.
 > - Linux aarch64 (ARM) - **experimental**: built but untested on real hardware; reports welcome
 >   ([docs/linux.md](docs/linux.md) lists what to include)
 
+## System requirements
+
+These are the minimums during the beta and may change as development continues.
+
+**macOS:** any Apple Silicon Mac (M1 or newer) on macOS 15 or newer. Intel Macs aren't supported.
+
+**Windows and Linux:**
+
+| | Minimum |
+|---|---|
+| OS | Windows 10 or 11 (64-bit), or 64-bit Linux from about 2022 or newer (including the Steam Deck) |
+| CPU | x86-64 with AVX2 and FMA: Intel 4th gen (Haswell) or newer, or AMD Ryzen |
+| GPU | Vulkan 1.3 with an up-to-date driver, about as fast as a Switch or faster. For example: NVIDIA GTX 900 series or newer, AMD Radeon RX 400 series or Ryzen integrated graphics or newer, Intel Iris Xe or newer |
+| RAM | 8 GB (16 GB recommended) |
+| Disk | About 12 GB free for setup |
+
+Not supported: Intel UHD 600-series and older Intel integrated graphics, and anything slower than a Switch. Linux on ARM (aarch64) is experimental.
+
 ![Mabe Village in a 21:9 window: the unlocked aspect ratio shows more of the island](docs/ultrawide.jpg)
 
 > [!NOTE]
 > **No game files are included.** LAS Recomp needs your own legally obtained copy of the extracted game files of
-> *Link's Awakening* **v1.0.0**, with no updates applied. When setting up, choose a folder that contains the `exefs`
+> *Link's Awakening* **v1.0.0, v1.0.1 or v1.1.0**. When setting up, choose a folder that contains the `exefs`
 > and `romfs` folders, or their contents. Instructions on how to obtain these files will **NOT** be provided.
 > On first launch the app sets up what it needs, including the actual recompilation locally. No game files, assets or fonts are included.
 > The screenshot shows the start screen after setup; no Nintendo artwork is included until provided by the user.
@@ -41,81 +59,68 @@ This is a beta release. That means bugs are likely, crashes could occur, randomi
 
 Known issues and their status are on the [GitHub issues page](https://github.com/peiikai/LASRecomp/issues).
 
+## Steam Deck
+
+- Add the AppImage to Steam as a non-Steam game and play it from there. In Desktop Mode, games Steam didn't launch
+  get Steam's desktop controller layout, which sends extra keyboard presses.
+- If it won't start, add this to the game's launch options in Steam: `APPIMAGE_EXTRACT_AND_RUN=1 %command%`
+
 ## Features
 
 **Runs natively**
-- **This is not emulation.** Runs natively on Windows, macOS and Linux using static recompilation of the Switch code.
-- Unlocked aspect ratio: wider (or taller) windows show more of the island, up to ultrawide; houses and dungeons
-  keep their framing. The original 16:9 framing is one option away.
-- Start screen: play vanilla or any randomizer seed, set up your own extracted game files, import fonts.
-  - Switch games use fonts built into the Switch operating system for some text. Sensible replacements are used by default, but you may optionally set up the Switch fonts for an authentic look. Switch fonts are Nintendo IP; you must provide them from your own hardware.
-- In-game overlay menu (F1, or Minus + Plus on a controller).
+- **This is not emulation.** It runs natively on Windows, macOS and Linux.
+- Works with game versions 1.0.0, 1.0.1 and 1.1.0.
+- Wider screens show more of the island, up to ultrawide. You can switch back to the original 16:9.
+- Higher resolutions, a "match your display" option and dynamic resolution, with MetalFX (Mac) or FSR 1 (Windows and Linux) upscaling and SMAA anti-aliasing.
+- Shaders are prepared ahead of time, so new areas don't stutter.
+- A start screen where you pick vanilla or a randomizer seed, set up your game files and choose your settings.
+- In-game menu: F1, or Minus + Plus on a controller.
 - [Photo mode](docs/photo-mode.md) (F2): freeze the scene, adjust framing/color and save a PNG (F12).
-- Switch between vanilla and any randomizer seed without restarting the app.
-- Keyboard and controller support, with every button and key remappable (Controls tab / start screen Settings >
-  Controls; menus keep a fixed layout, so a remap can never lock you out).
-- Button prompts for your controller: Xbox or PlayStation icons in the game's own UI and text when SDL reports
-  that controller (or pick Nintendo / Xbox / PlayStation yourself); the icons follow your controller remapping.
-- A controller SDL doesn't recognise can be added with your own SDL mapping line (as in
-  [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB)) in `gamecontrollerdb.txt` in the data
-  folder (see "Where files live" below); the log names it once it works: `[input] gamepad: ...`.
-- Optional 360-degree movement, blur removal and a hidden Hero Mode icon.
-- Apple MetalFX upscaler on macOS (the default there).
-- Internal resolution adjustments: raise or lower the resolution in steps, match the display, or use dynamic resolution. Combined with the MetalFX upscaler, even a MacBook Air should handle this easily with the right settings. Bilinear upscaling is the only option on Windows currently.
+- Switch between vanilla and any randomizer seed without restarting.
+- Keyboard and controller support, with every button remappable. Button prompts match your controller (Xbox, PlayStation or Nintendo).
+- Controller rumble, and the light bar on PlayStation controllers shows Link's health.
+- Controllers that aren't recognised can be added with a mapping file (see [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB)).
+- Play in English, Japanese, Spanish, French, German, Italian, Dutch, Russian, Korean or Chinese (Simplified or Traditional).
+- Optional extras: 360-degree movement, blur removal, mirror mode, faster walking and hiding the Hero Mode icon.
+- Cosmetics: change Link's tunic, hair, skin and shield colours, the colour of the grass, leaves and sand (with season presets) and of the water, give enemies random colours, or play with a Game Boy, Game Boy Color or grayscale filter.
+- Optional run timer, with LiveSplit support.
 
 **Randomizer**
-- In-game seed generator.
-- Seed IDs for sharing or reproducing exact seeds.
-- Per-seed save games.
-- Full item shuffle.
-- Trade Quest shuffle.
-- Disable Acorn / Piece of Power drops.
-- Bombs / Magic Powder shuffle.
-- Hookshot anything - the hookshot latches onto any wall or object, not just hookshot targets (in logic where enabled).
-- Environment Randomizer - randomizes in-game environmental effects.
-- Enemy Randomizer - shuffles overworld enemies, optionally including mini-bosses. Not all mini-bosses are included
-  yet; more will be added as they're made to work outside their dungeons.
-- Music Randomizer.
-- Escape Bottle - every seed gives you this gold bottle from the start (it replaces one bottle in the pool). Use it to
-  warp to the dungeon entrance when in a dungeon, or to Marin and Tarin's house anywhere else. Never required by the logic.
-- Pickup text in the game's own message box: dungeon items name the dungeon they belong to ("You got a small key for
-  Tail Cave!").
-- Potsanity - every pot is a check. Pots are golden until checked, so you can see at a glance which pots you've checked.
-- Bushsanity - every cuttable bush (not the grass) is a check. Like pots, bushes are golden until checked for the first
-  time. Bushes over a hole or staircase stay normal, so items can't fall in.
-- Digsanity - a truly insane setting that makes every diggable tile on the overworld a check (about 5,000). Holes stay
-  dug permanently so you know where you've dug. Made for shovel enthusiasts.
-- Keysanity - keys can be found anywhere for any dungeon.
-- Shopsanity - the shop's 6 items are checks, at vanilla or random prices, or just steal them. A bought or stolen slot
-  shows a sold-out sign.
-- Trendsanity - full Trendy Game randomization: every prize, including the figures, is a check.
-- Pets - companions as items in the pool:
-  - Rooster - in logic for Feather checks (including in dungeons if companions are allowed there).
-  - Marin - you need to find Marin to get into the desert; choosing open desert removes Marin from the item pool.
-  - Ghost - find the Ghost to unlock his grave check.
-  - Switch companions from the pause menu, or send yours away.
-- Boss souls - a boss doesn't appear, can't be beaten and its reward stays locked until you find its soul.
-- Mini-boss souls - the same for dungeon mini-bosses (a separate option).
-- Triforce hunt - collect Triforce pieces (3, 12, 24 or any number up to 50, optionally with extra pieces hidden) instead
-  of waking the Wind Fish; the last one needed rolls the credits.
-- Entrance Randomizer - shuffles dungeon entrances, houses and caves, and connector caves. Includes a decoupled option.
-- Dungeon Room Shuffler - shuffles all dungeon rooms, creating unique custom dungeons every seed. Three modes:
-  - Coherent: dungeon rooms are shuffled but connecting rooms are lined up. To keep this workable in logic, dungeons
-    sometimes use duplicate rooms (as few as possible).
-  - Chaos: dungeon rooms are shuffled but don't need to make sense. Walking north may lead you to a door from another
-    direction.
-  - Madness: dungeon rooms are shuffled in a way that doesn't need to make sense AND the doors are decoupled, creating
-    nightmares to navigate.
-  - Labyrinth (planned): an option for all dungeon room shuffles where doors in dungeons can lead into other dungeons,
-    essentially making one giant dungeon with numerous wings.
-  - Optionally the map shows what's connected to what as you explore, or in full once you find the dungeon's map.
-- The inventory screen tracks keys, dungeon items, trade items and souls for each dungeon, so you can see at a glance
-  what you have keys for and which trade items you still hold.
-- Built-in check tracker on the overworld map (optional).
+- In-game seed generator, with seed IDs for sharing and separate saves for each seed.
+- Shuffles all items, the trade quest, bombs and Magic Powder.
+- Hint Sheet: every seed starts with one that points you to your next important item.
+- Escape Bottle: every seed starts with it. Use it to warp to the dungeon entrance, or to Marin and Tarin's house outside dungeons.
+- Pickup text says which dungeon a key or dungeon item belongs to.
+- Extra places items can hide:
+  - Potsanity: every pot. Unchecked pots are gold.
+  - Bushsanity: every bush. Unchecked bushes are gold.
+  - Digsanity: every diggable spot on the overworld, about 5,000. Holes stay dug.
+  - Shellsanity: every Secret Seashell hiding spot.
+  - Underwater items: sunken treasures you dive for.
+  - Shopsanity: the shop's items. Buy them or steal them.
+  - Trendsanity: every Trendy Game prize.
+  - Keysanity: keys for any dungeon can be anywhere.
+- Small items from bushes, pots and digging don't stop you with the item scene; important items still do.
+- Item placement is paced, so big seeds don't hand you every key item right away.
+- Pets: companions are items you find. The Rooster helps with Feather checks, Marin opens the desert, and the Ghost unlocks his grave. Switch or send them away from the pause menu.
+- Boss souls and mini-boss souls: a boss won't appear until you find its soul.
+- Triforce Hunt: collect Triforce pieces instead of waking the Wind Fish.
+- Enemy Randomizer: shuffles enemies, optionally with mini-bosses (including Shadow Link) on the overworld. Enemies can change every time you enter an area.
+- Hookshot anything: the hookshot grabs onto any wall or object.
+- Environment and music randomizers. Acorn and Piece of Power drops can be turned off.
+- Entrance Randomizer: shuffles dungeons, houses, caves and connectors, with a decoupled option.
+- Dungeon Room Shuffle: every dungeon is rebuilt from its own rooms each seed.
+  - Coupled: going back through a door takes you back where you came from.
+  - Decoupled: going back through a door takes you somewhere else.
+  - Labyrinth (planned): doors can lead into other dungeons.
+  - The map can show how rooms connect as you explore.
+- A tracker on the pause menu's map shows how many checks are left in each area and whether you can reach them.
+- The inventory screen shows your keys, dungeon items, trade items and souls for each dungeon.
+- Race mode: the spoiler log stays locked until the credits, and the title screen shows a seed hash so racers can check they have the same seed.
 
 ## Building from source
 
-Every platform needs your own v1.0.0 game files: build first, then use the start screen's game-file setup.
+Every platform needs your own game files (v1.0.0, v1.0.1 or v1.1.0): build first, then use the start screen's game-file setup.
 `make gen` then recompiles the game code from your own game files into `generated/`, and `make` builds it into its own
 library next to the app (`build/lasgame.*`); without it the start screen builds that library itself, as it does for
 players. Release builds hold none of the game's code: the start screen builds it on each player's machine from their
@@ -161,54 +166,43 @@ Vulkan Memory Allocator from your distribution, Python 3.12. Packages, cross bui
    `build/dist/LAS Recomp-<version>-linux-<arch>.AppImage`, built in Ubuntu 22.04 containers (podman). `make smoketest`
    checks the x86-64 AppImage before a release.
 
-Where files live (game files, saves, seeds, settings, caches, imported fonts):
-- macOS app: `~/Library/Application Support/com.peiikai.lasrecomp/` (the app itself is never written to).
-- Windows: next to `lasrecomp.exe`, so put the `LAS Recomp` folder somewhere writable (not Program Files).
-- Linux: `~/.local/share/lasrecomp/` (`$XDG_DATA_HOME/lasrecomp`).
-- Dev / portable mode: if the folder you start from has `extracted/` (a source checkout), that folder is used, as above.
+Where files live (game files, saves, seeds, settings and logs):
+- macOS: `~/Library/Application Support/com.peiikai.lasrecomp/`
+- Windows: next to `lasrecomp.exe`, so keep the `LAS Recomp` folder somewhere writable (not Program Files).
+- Linux: `~/.local/share/lasrecomp/`
+- You can move it to another folder or drive in Settings > Prelaunch > Data folder.
 - `LARECOMP_DATA_ROOT=<dir>` overrides all of these.
-- The log (started without a terminal) is `lasrecomp.log` in that folder, always the latest run; up to five recent
-  runs are kept as `lasrecomp-backup-*.log`. For a bug report attach `lasrecomp.log`, or if the problem was in an
-  earlier run, that run's backup (by date modified).
+- For a bug report, attach `lasrecomp.log` from that folder.
 
 ### Resuming game-code builds
 
-The game-code build keeps completed pieces in the game folder's `.gamebuild/`
-directory. **Cancel (B / Esc)** stops the compiler helpers; **Resume game code**
-appears after cancellation or interruption and continues from verified completed
-pieces. An interrupted build also resumes when LAS Recomp starts again. Generated
-source and object contents are checked before reuse. After success, only objects
-and their cache records are kept; generated C, logs, link files and compiler caches
-are removed. A generator update recompiles only changed pieces. Moving the app
-keeps reusable objects; changed compiler contents or flags require a full rebuild.
-
-**Game Files → Clear build cache** removes cached objects and temporary files,
-including the older `.zigcache` folder, while keeping the installed game library,
-game files and saves. Legacy build caches are upgraded automatically. Failed or
-cancelled builds keep the previous installed library until a replacement is ready.
+If the game-code build is cancelled or interrupted, **Resume game code** continues where it stopped. It also resumes
+by itself the next time LAS Recomp starts. **Game Files > Clear build cache** removes the build's leftover files
+without touching the installed game, your game files or your saves.
 
 ## Credits
 
 **Contributors** - thank you to everyone who has sent code (GitHub handles, in order of first contribution):
-- **[@dvilelaf](https://github.com/dvilelaf)** - the System language setting (#15), packaging fix for the game code
-  generator helper (#10), and the task forwarder fix for the level-transition crash (#34, issue #19)
-- **[@Tensorlong](https://github.com/Tensorlong)** - Metal half-precision fix for the white Link on M1 Macs (#18)
-- **[@mansarip](https://github.com/mansarip)** - support for unrecognised controllers through a simple mapping file (#26)
-- **[@we11adam](https://github.com/we11adam)** - shared fonts served per language instead of one Japanese font (#27),
-  and the zh-Hans / zh-Hant codes for Chinese (#25)
-- **[@Maganra](https://github.com/Maganra)** - Linux page write tracking (userfaultfd + PAGEMAP_SCAN) for the Vulkan
-  vertex cache and texture checks (#42)
-- **[@hjqcan](https://github.com/hjqcan)** - centralized game patch and runtime addresses (#57); CRLF settings
-  parsing and Traditional Chinese locale detection (#53); Windows game thread stacks reserved instead of committed,
-  about 9 GB less memory committed (#107); the Vulkan fence fix for reused submission slots (#108); x86 rounding
-  without x87 state changes (#115); movie memory freed on close, source change and reboot (#112); Vulkan stopping
-  cleanly on GPU timeouts (#127); a strict Vulkan validation mode for automated tests (#128); Windows session logs:
-  `lasrecomp.log` always the latest run, with five backups (#114); resumable game-code builds: a cancelled or interrupted setup picks up where it stopped (#56); randomizer check flags kept with committed saves (#170); save write fixes that keep a failed save from losing data (#169, merged in #182)
-- **[@gitarre1234rr5](https://github.com/gitarre1234rr5)** - controller rumble: the game's vibration on your controller
-  (#104), and a regression test for the kernel's timed condition-variable wait (#88)
-- **[@rkammoun](https://github.com/rkammoun)** - diagnosed and patched the Metal 16-sampler limit behind the black walls in the Ukuku Prairie cave (#215, fixed in #216)
+- **[@dvilelaf](https://github.com/dvilelaf)** - the System language setting (#15), a packaging fix (#10) and the
+  level-transition crash fix (#34)
+- **[@Tensorlong](https://github.com/Tensorlong)** - the fix for the white Link on M1 Macs (#18)
+- **[@mansarip](https://github.com/mansarip)** - support for unrecognised controllers (#26)
+- **[@we11adam](https://github.com/we11adam)** - the right font for each language (#27) and the Chinese language
+  codes (#25)
+- **[@Maganra](https://github.com/Maganra)** - faster graphics checks on Linux (#42)
+- **[@hjqcan](https://github.com/hjqcan)** - game addresses in one place (#57), settings and Traditional Chinese fixes
+  (#53), much less memory used on Windows (#107), Vulkan fixes (#108, #127, #128), an x86 rounding fix (#115), movie
+  memory fixes (#112), Windows logs (#114), resumable game-code builds (#56), and save fixes (#169, #170, #182)
+- **[@gitarre1234rr5](https://github.com/gitarre1234rr5)** - controller rumble (#104) and a regression test (#88)
+- **[@rkammoun](https://github.com/rkammoun)** - the fix for the black walls in the Ukuku Prairie cave on Mac (#215, #216)
+- **[@NevesHenry](https://github.com/NevesHenry)** - a clear message on Linux when no file window can open (#298), and
+  the rumble test running in CI (#299)
+- **[@ky1vstar](https://github.com/ky1vstar)** - a much faster Linux ARM release build (#319)
+- **[@theb0rg](https://github.com/theb0rg)** - the fix for AMD integrated graphics on Windows (#335)
+- **[@gtf-dot](https://github.com/gtf-dot)** - the game-text font on Linux (#330)
+- **[@cfcosta](https://github.com/cfcosta)** - full speed on Linux AMD handhelds like the Steam Deck and ROG Ally (#392)
 
-Thanks also to everyone who reports issues and tests builds; your logs and screenshots find most of the bugs.
+Thanks also to everyone who reports issues and tests builds. Your logs and screenshots find most of the bugs.
 
 **LAS-Randomizer** - the randomizer at the heart of this project's randomizer features, vendored (with local
 changes) in `third_party/LAS-Randomizer` under the MIT license. Huge thanks to its authors and community:
@@ -230,7 +224,8 @@ none of their files are used):
 - [FFmpeg](https://ffmpeg.org) - movie playback (LGPL)
 - [Dear ImGui](https://github.com/ocornut/imgui) - overlay menu and start screen (MIT)
 - [Baloo 2](https://github.com/EkType/Baloo2) by Ek Type - the start screen's font (SIL Open Font License 1.1, `third_party/fonts/Baloo2/OFL.txt`)
-- [DejaVu Sans](https://dejavu-fonts.github.io) - the game text's fallback font when no other is available (Bitstream Vera / DejaVu license, `third_party/fonts/DejaVu/LICENSE`)
+- [BIZ UDPGothic](https://github.com/googlefonts/morisawa-biz-ud-gothic) by Morisawa - the game's text on Linux when you haven't imported the Switch fonts: a free font from the same universal-design gothic family as the Switch's UD Shin Go (SIL Open Font License 1.1, `third_party/fonts/BIZUDPGothic/OFL.txt`)
+- [DejaVu Sans](https://dejavu-fonts.github.io) - the in-game menu and button letters when no system font fits, and the game text's last resort (Bitstream Vera / DejaVu license, `third_party/fonts/DejaVu/LICENSE`)
 - [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) - Windows and Linux renderer (MIT)
 - [SMAA](https://github.com/iryoku/smaa) by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego
   Gutierrez - the anti-aliasing option (MIT, `third_party/smaa/LICENSE.txt`)
@@ -248,9 +243,9 @@ none of their files are used):
   (GPL 2.0; Python bindings BSD; runs small pieces of code to resolve jump tables) and
   [python-lz4](https://github.com/python-lz4/python-lz4) (BSD 3-clause, with the LZ4 library: BSD 2-clause)
 - [envytools](https://github.com/envytools/envytools) - NVIDIA GPU documentation used for the shader translator
-- **Ryujinx** by the Ryujinx Team and Contributors (MIT, `third_party/ryujinx/LICENSE.txt`) - the audio renderer's
-  reverb is a port of its ReverbState / reverb command and the mixer is modelled on its AudioRenderer; its shader
-  instruction decoders were the bit-layout reference for parts of the shader translator
+- An MIT-licensed open-source project's audio renderer and shader instruction decoders (license and copyright notice:
+  `third_party/ryujinx/LICENSE.txt`) - the audio renderer's reverb is a port of its reverb code and the mixer is
+  modelled on its renderer; its instruction decoders were the bit-layout reference for parts of the shader translator
 - **Dusklight** by the TwilitRealm team (https://github.com/TwilitRealm/dusklight) - design inspiration for the start
   screen (Play / Settings / Game Files layout)
 - **SuperMarioWonderRecomp** by BelmanteGu (https://github.com/BelmanteGu/SuperMarioWonderRecomp) - its
@@ -267,8 +262,8 @@ this repository and not in release builds. You must provide your own legally obt
 ## License
 
 LAS Recomp's own code (the recompiler tools, the runtime, the randomizer additions) is open source under the
-[MIT License](LICENSE). Third-party components keep their own licenses: LAS-Randomizer (MIT), code ported from Ryujinx (MIT), Dear ImGui (MIT),
-Vulkan Memory Allocator (MIT), SMAA (MIT), AMD FSR 1 (MIT), the Baloo 2 font (SIL OFL 1.1), the DejaVu Sans font (Bitstream Vera / DejaVu license), SDL 3 (zlib), FFmpeg (LGPL 2.1+, linked dynamically), the
+[MIT License](LICENSE). Third-party components keep their own licenses: LAS-Randomizer (MIT), ported audio renderer code (MIT, see `third_party/`), Dear ImGui (MIT),
+Vulkan Memory Allocator (MIT), SMAA (MIT), AMD FSR 1 (MIT), the Baloo 2 and BIZ UDPGothic fonts (SIL OFL 1.1), the DejaVu Sans font (Bitstream Vera / DejaVu license), SDL 3 (zlib), FFmpeg (LGPL 2.1+, linked dynamically), the
 Zig compiler (MIT; its LLVM / Clang / LLD: Apache 2.0 with LLVM exceptions; its C library headers keep their own
 licenses), and the generator helpers' bundled libraries listed under Credits (oead / evfl / Keystone in the seed
 generator and Unicorn in the game code generator are under the GPL, versions in the table below: each helper is a separate program the game runs, and its
@@ -298,6 +293,8 @@ Release builds include these components; their source code for the exact version
 | GCC runtime: libgcc, libstdc++ (Windows) | 16.2.0 | GPL 3.0 with the GCC Runtime Library Exception | https://gcc.gnu.org/ |
 | winpthreads (Windows, mingw-w64) | 14.0.0 | MIT / BSD | https://www.mingw-w64.org/ |
 | Baloo 2 font (SemiBold) | 1.640 | SIL OFL 1.1 | https://github.com/EkType/Baloo2 |
+| BIZ UDPGothic font (Regular, Linux) | 1.05 (Google Fonts) | SIL OFL 1.1 | https://github.com/googlefonts/morisawa-biz-ud-gothic, https://github.com/google/fonts/tree/main/ofl/bizudpgothic |
+| DejaVu Sans font (Book, Bold) | 2.37 | Bitstream Vera license (DejaVu changes public domain) | https://github.com/dejavu-fonts/dejavu-fonts/releases/tag/version_2_37 |
 | SMAA (shader and lookup textures, built in) | 2013 (repository master) | MIT | https://github.com/iryoku/smaa |
 
 The exact build scripts that fetch and build these (with checksums) are in this repository: `tools/build_deps_macos.sh`,

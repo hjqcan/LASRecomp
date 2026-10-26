@@ -17,7 +17,7 @@
 void guest_call(Cpu *c, uint64_t addr);
 uint64_t doorjump_player(uint64_t frame);  // PlayerCollision component: position at +0x80
 
-// GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0
+// GA(PLAYER_STATUS_PTR): PlayerStatus*: current level name at +0
 
 // per class: vtable, its state machine's change(sm, state) (+0xd current state, +0xe previous; states 0x30 apart
 // from +0x40: ctx, enter, exec, exit member functions), the state machine's offset in the actor, idle state, fight
@@ -29,25 +29,26 @@ uint64_t doorjump_player(uint64_t frame);  // PlayerCollision component: positio
 // (NULL: the Field only) - also a plain enemy in dungeons, caves and houses (enemies.yml, Include mini-bosses): copies
 // there are woken too; the original (its level name starts with `own`; a copy keeps the replaced enemy's) is left to
 // its arena
-typedef struct {
-    uint64_t vt, chg; uint32_t sm, pos; uint8_t idle, fight; const char *name; uint8_t rest, then, at_once; uint32_t start;
+typedef struct {  // (vt, chg, start: GA_FIELD - the address is GA_AT(...))
+    uint16_t vt, chg; uint32_t sm, pos; uint8_t idle, fight; const char *name; uint8_t rest, then, at_once; uint16_t start;
     const char *own;
 } Kind;
 static const Kind g_kinds[] = {
-    {GA_HINOX_VTABLE, GA_HINOX_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Hinox", 0xff},                          // 0x53: 10 = request HinoxStart
+    {GA_FIELD(HINOX_VTABLE), GA_FIELD(HINOX_CHANGE_STATE), 0xff0, 0x260, 0, 1, "Hinox", 0xff},                          // 0x53: 10 = request HinoxStart
     // (found 2026-10-12 with tools placing each one on Field_13D: LARECOMP_MB_SCAN_NAME / _FORCE)
-    {GA_SMASHER_VTABLE, GA_SMASHER_CHANGE_STATE, 0x1110, 0x260, 0, 1, "Smasher", 0xff},                   // 0x5c (+ iron ball)
-    {GA_AVALAUNCH_VTABLE, GA_AVALAUNCH_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Avalaunch", 0xff},              // 0x60
-    {GA_ROLLING_BONES_VTABLE, GA_ROLLING_BONES_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Rolling Bones", 0xff},  // 0x51 (+ spike bar)
-    {GA_GOHMA_VTABLE, GA_GOHMA_CHANGE_STATE, 0x1200, 0x260, 13, 0, "Gohma", 0xff},                        // 0x5a (heads for Link: GOHMA_*)
-    {GA_BLAINO_VTABLE, GA_BLAINO_CHANGE_STATE, 0x11a0, 0x260, 10, 1, "Blaino", 5, 0, 0, 0, "EnemyMightPu"},  // 0x5f (5: after a knock-out)
-    {GA_CUE_BALL_VTABLE, GA_CUE_BALL_CHANGE_STATE, 0xff0, 0x260, 0, 3, "Cue Ball", 0xff},                 // 0x58 (+ a rail fitted)
+    {GA_FIELD(SMASHER_VTABLE), GA_FIELD(SMASHER_CHANGE_STATE), 0x1110, 0x260, 0, 1, "Smasher", 0xff},                   // 0x5c (+ iron ball)
+    {GA_FIELD(AVALAUNCH_VTABLE), GA_FIELD(AVALAUNCH_CHANGE_STATE), 0xff0, 0x260, 0, 1, "Avalaunch", 0xff},              // 0x60
+    {GA_FIELD(ROLLING_BONES_VTABLE), GA_FIELD(ROLLING_BONES_CHANGE_STATE), 0xff0, 0x260, 0, 1, "Rolling Bones", 0xff},  // 0x51 (+ spike bar)
+    {GA_FIELD(GOHMA_VTABLE), GA_FIELD(GOHMA_CHANGE_STATE), 0x1200, 0x260, 13, 0, "Gohma", 0xff},                        // 0x5a (heads for Link: GOHMA_*)
+    {GA_FIELD(BLAINO_VTABLE), GA_FIELD(BLAINO_CHANGE_STATE), 0x11a0, 0x260, 10, 1, "Blaino", 5, 0, 0, 0, "EnemyMightPu"},  // 0x5f (5: after a knock-out)
+    {GA_FIELD(CUE_BALL_VTABLE), GA_FIELD(CUE_BALL_CHANGE_STATE), 0xff0, 0x260, 0, 3, "Cue Ball", 0xff},                 // 0x58 (+ a rail fitted)
     // 0x57: 0 = under the sand until his screen's event (AreaEventBox - not copied) runs his start; back in 0, again
-    {GA_LANMOLA_VTABLE, GA_LANMOLA_CHANGE_STATE, 0xff0, 0x260, 0, 1, "Lanmola", 0, 0, 0, (GA_LANMOLA_START - MAIN_BASE)},
+    {GA_FIELD(LANMOLA_VTABLE), GA_FIELD(LANMOLA_CHANGE_STATE), 0xff0, 0x260, 0, 1, "Lanmola", 0, 0, 0, GA_FIELD(LANMOLA_START)},
     // 0x59: 12 = hidden until his room's event (AreaEventBox - not copied: intro, music) drops him in; 13 shows him
-    {GA_MASTER_STALFOS_VTABLE, GA_MASTER_STALFOS_CHANGE_STATE, 0x1230, 0x260, 12, 13, "Master Stalfos", 0xff, 1, 1},
+    {GA_FIELD(MASTER_STALFOS_VTABLE), GA_FIELD(MASTER_STALFOS_CHANGE_STATE), 0x1230, 0x260, 12, 13, "Master Stalfos", 0xff, 1, 1},
 };
 #define NKINDS (int)(sizeof g_kinds / sizeof g_kinds[0])
+_Static_assert(GA_FIELD(LANMOLA_START) != 0, "start 0: none");
 #define WAKE_DIST 7.0f  // (a Field screen is ~15 x 12 units)
 
 typedef struct { uint64_t obj, first, last, woken_at; int kind, woken; float px, pz; int stuck; uint64_t flip_at; } Seen;
@@ -80,7 +81,7 @@ static uint64_t g_scan_vt[16], g_scan_obj[8], g_scan_sm[8][8];
 static uint8_t g_scan_last[8][8];
 static int g_scan_nv = -1;
 
-static bool code_ptr(uint64_t p) { return p >= MAIN_BASE && p < GA_MAIN_CODE_SCAN_END; }
+static bool code_ptr(uint64_t p) { return p >= MAIN_BASE && p < GA(MAIN_CODE_SCAN_END); }
 
 static void scan_seen(uint64_t o, uint64_t vt) {
     if (g_scan_nv < 0) {
@@ -166,11 +167,11 @@ static void scan_tick(uint64_t frame) {
 static void shadow_link_seen(uint64_t o);
 void rt_mb_seen(uint64_t o) {
     uint64_t vt = LD64(o);
-    if (vt == GA_SHADOW_LINK_VTABLE) shadow_link_seen(o);
+    if (vt == GA(SHADOW_LINK_VTABLE)) shadow_link_seen(o);
     if (ENV("LARECOMP_MB_LOG")) log_new_vtable(o, vt);
     if (ENV("LARECOMP_MB_SCAN") || ENV("LARECOMP_MB_SCAN_NAME")) scan_seen(o, vt);
     int k = 0;
-    while (k < NKINDS && g_kinds[k].vt != vt) k++;
+    while (k < NKINDS && GA_AT(g_kinds[k].vt) != vt) k++;
     if (k == NKINDS) return;
     uint64_t f = renderer_present_count();
     int free_i = -1;
@@ -196,7 +197,7 @@ static void force_tick(Cpu *c, uint64_t frame) {
     if (at == -2) {
         at = -1;
         const char *e = ENV("LARECOMP_MB_FORCE");
-        unsigned long long smo = 0, ch = GA_HINOX_CHANGE_STATE - MAIN_BASE;
+        unsigned long long smo = 0, ch = GA(HINOX_CHANGE_STATE) - MAIN_BASE;
         if (e && sscanf(e, "%ld:%llx:%d:%llx", &at, &smo, &state, &ch) >= 3) sm = smo, chg = MAIN_BASE + ch;
         else at = -1;
     }
@@ -206,7 +207,7 @@ static void force_tick(Cpu *c, uint64_t frame) {
         uint64_t saved[31], sp = c->sp;
         memcpy(saved, c->x, sizeof saved);
         c->x[0] = scan_latest();
-        guest_call(c, GA_AREA_EVENT_TRIGGER);
+        guest_call(c, GA(AREA_EVENT_TRIGGER));
         memcpy(c->x, saved, sizeof saved);
         c->sp = sp;
         LOG("[mb-zone] f%llu actor %llx: zone entry call\n", (unsigned long long)frame, (unsigned long long)scan_latest());
@@ -285,7 +286,7 @@ static void life_tick(uint64_t frame) {
     if (at < 0 || (long)frame != at || !scan_latest()) return;
     for (uint64_t o = 0x80; !off && o < 0x3000; o += 8) {  // (offset 0: the first member that is a life component)
         uint64_t q = LD64(scan_latest() + o);
-        if (q >= HEAP_BASE && q + 0x200 <= HEAP_BASE + HEAP_MAX && !(q & 7) && LD64(q) == GA_ENEMY_LIFE_VTABLE) off = o;
+        if (q >= HEAP_BASE && q + 0x200 <= HEAP_BASE + HEAP_MAX && !(q & 7) && LD64(q) == GA(ENEMY_LIFE_VTABLE)) off = o;
     }
     LOG("[mb-life] component at +%#llx\n", off);
     uint64_t comp = LD64(scan_latest() + off);
@@ -321,7 +322,7 @@ static void kill_tick(Cpu *c, uint64_t frame) {
     if (at < 0 || (long)frame != at || !a) return;
     for (uint64_t o = 0x80; o < 0x3000; o += 8) {
         uint64_t q = LD64(a + o);
-        if (q >= HEAP_BASE && q + 0x200 <= HEAP_BASE + HEAP_MAX && !(q & 7) && LD64(q) == GA_ENEMY_LIFE_VTABLE) { ST32(q + 0x168, 0); break; }
+        if (q >= HEAP_BASE && q + 0x200 <= HEAP_BASE + HEAP_MAX && !(q & 7) && LD64(q) == GA(ENEMY_LIFE_VTABLE)) { ST32(q + 0x168, 0); break; }
     }
     int dead = -1;
     for (int st = 0; st < 24 && dead < 0; st++) {
@@ -365,8 +366,8 @@ static void miniboss_marker_set(void) {
         }
     }
     if (g_marker < 0) return;
-    uint8_t *fl = (uint8_t *)(uintptr_t)LD64(GA_FLAG_PTR);
-    if (!fl || (uint32_t)(g_marker >> 3) >= LD32(GA_FLAG_CAP)) return;
+    uint8_t *fl = (uint8_t *)(uintptr_t)LD64(GA(FLAG_PTR));
+    if (!fl || (uint32_t)(g_marker >> 3) >= LD32(GA(FLAG_CAP))) return;
     fl[g_marker >> 3] |= (uint8_t)(1 << (g_marker & 7));
 }
 
@@ -418,7 +419,7 @@ static bool wall_at(float x, float z) {  // (Gohma's body around (x, z) touches 
 }
 int rt_gohma_free(void) {
     extern const char *rando_seed_dir(void);
-    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
     return rando_seed_dir() && ps && !strcmp((const char *)(uintptr_t)ps, "Field");
 }
 
@@ -462,7 +463,7 @@ static void set_state(Cpu *c, const Seen *s, const Kind *k, int state) {  // (it
     memcpy(saved, c->x, sizeof saved);
     c->x[0] = s->obj + k->sm;
     c->x[1] = (uint64_t)state;
-    guest_call(c, k->chg);
+    guest_call(c, GA_AT(k->chg));
     memcpy(c->x, saved, sizeof saved);
     c->sp = sp;
 }
@@ -519,11 +520,11 @@ int rt_crashout_skip(uint64_t o) {
     (void)o;
     extern const char *rando_seed_dir(void);
     if (rt_gohma_free()) return 1;
-    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
     if (!rando_seed_dir() || !ps || !strncmp((const char *)(uintptr_t)ps, "Panel", 5)) return 0;
     uint64_t f = renderer_present_count();
     for (int i = 0; i < MAX_SEEN; i++)
-        if (g_seen[i].obj && f - g_seen[i].last <= 2 && LD64(g_seen[i].obj) == GA_BLAINO_VTABLE &&
+        if (g_seen[i].obj && f - g_seen[i].last <= 2 && LD64(g_seen[i].obj) == GA(BLAINO_VTABLE) &&
             !is_copy(g_seen[i].obj, &g_kinds[g_seen[i].kind]))
             return 0;
     LOG("[miniboss] Blaino knock-out: a copy's, no crash-out\n");
@@ -551,7 +552,7 @@ static void shadow_link_seen(uint64_t o) {
 
 int rt_shadow_link_appear(uint64_t o) {  // (SHADOW_LINK_APPEAR_SITE: 1 = the request is skipped)
     extern const char *rando_seed_dir(void);
-    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
     if (!rando_seed_dir() || !ps || !strncmp((const char *)(uintptr_t)ps, "Panel", 5)) return 0;  // (Dampe's chamber: as is)
     uint64_t f = renderer_present_count();
     int slot = -1;
@@ -564,18 +565,30 @@ int rt_shadow_link_appear(uint64_t o) {  // (SHADOW_LINK_APPEAR_SITE: 1 = the re
     return 1;
 }
 
+// His music (SHADOW_LINK_BGM_SITE): his code starts BGM_PANEL_SHADOW_LINK through Dampe's chamber manager (the level's
+// music held until his defeat). Only the chamber is his; in seeds, everywhere else the area's own music plays on.
+int rt_shadow_link_bgm(void) {  // (1 = the call is skipped)
+    extern const char *rando_seed_dir(void);
+    uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
+    if (!rando_seed_dir() || !ps || !strncmp((const char *)(uintptr_t)ps, "Panel", 5)) return 0;  // (Dampe's chamber: as is)
+    static uint64_t logged;
+    uint64_t f = renderer_present_count();
+    if (f - logged > 600) LOG("[miniboss] f%llu Shadow Link: no chamber music here\n", (unsigned long long)f), logged = f;
+    return 1;
+}
+
 static void shadow_link_sign(Cpu *c, uint64_t o) {
     static uint64_t mem;  // ({"Other", 5}, {"Sign", 4}: the tailor's channel and animation names)
     if (!mem) mem = (uint64_t)(uintptr_t)hle_alloc(0x20);
     uint64_t holder = LD64(o + 0x16c0), t = holder ? LD64(holder + 0x58) : 0;
     if (!t) return;
-    ST64(mem, GA_STRING_OTHER), ST64(mem + 8, 5), ST64(mem + 0x10, GA_STRING_SIGN), ST64(mem + 0x18, 4);
+    ST64(mem, GA(STRING_OTHER)), ST64(mem + 8, 5), ST64(mem + 0x10, GA(STRING_SIGN)), ST64(mem + 0x18, 4);
     uint64_t saved[31], sp = c->sp;
     memcpy(saved, c->x, sizeof saved);
     c->x[0] = t, c->x[1] = mem, c->x[2] = mem + 0x10;
-    guest_call(c, GA_TAILOR_PREPARE);
+    guest_call(c, GA(TAILOR_PREPARE));
     c->x[0] = LD64(holder + 0x58), c->x[1] = mem, c->x[2] = mem + 0x10;
-    guest_call(c, GA_TAILOR_PLAY);
+    guest_call(c, GA(TAILOR_PLAY));
     memcpy(c->x, saved, sizeof saved);
     c->sp = sp;
 }
@@ -584,8 +597,8 @@ static void shadow_link_tick(Cpu *c, uint64_t frame) {
     for (int i = 0; i < MAX_SL; i++) {
         uint64_t o = g_sl[i].obj;
         if (!o) continue;
-        if (frame - g_sl[i].last > 2 || LD64(o) != GA_SHADOW_LINK_VTABLE || !LD8(o + SL_RUNNING)) {
-            if (frame - g_sl[i].last > 120 || (LD64(o) == GA_SHADOW_LINK_VTABLE && !LD8(o + SL_RUNNING)))
+        if (frame - g_sl[i].last > 2 || LD64(o) != GA(SHADOW_LINK_VTABLE) || !LD8(o + SL_RUNNING)) {
+            if (frame - g_sl[i].last > 120 || (LD64(o) == GA(SHADOW_LINK_VTABLE) && !LD8(o + SL_RUNNING)))
                 memset(&g_sl[i], 0, sizeof g_sl[i]);  // (up, or gone)
             continue;
         }
@@ -605,7 +618,7 @@ void miniboss_tick(Cpu *c, uint64_t frame) {
     if (!rando_seed_dir()) return;  // (only seeds put mini-bosses on the Field)
     shadow_link_tick(c, frame);  // (any level: Shadow Link is a plain enemy in dungeons too)
     miniboss_marker_set();       // (any level: his copies there have the marker on switch 2 too)
-    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
     if (!ps || !strncmp((const char *)(uintptr_t)ps, "Panel", 5)) return;  // (Dampe's chamber: as is)
     bool field = !strcmp((const char *)(uintptr_t)ps, "Field");  // (elsewhere: only copies of kinds with `own`)
     uint64_t pc = doorjump_player(frame);
@@ -614,7 +627,7 @@ void miniboss_tick(Cpu *c, uint64_t frame) {
     memcpy(g_link, lp, sizeof g_link), g_have_link = true;
     for (int i = 0; i < MAX_SEEN; i++) {
         Seen *s = &g_seen[i];
-        if (!s->obj || frame - s->last > 2 || frame - s->first < 30 || LD64(s->obj) != g_kinds[s->kind].vt) continue;
+        if (!s->obj || frame - s->last > 2 || frame - s->first < 30 || LD64(s->obj) != GA_AT(g_kinds[s->kind].vt)) continue;
         const Kind *k = &g_kinds[s->kind];
         if (!field && (!k->own || !is_copy(s->obj, k))) continue;  // (dungeon arenas start their own)
         if (!strcmp(k->name, "Gohma")) gohma_walls(s->obj);
@@ -641,11 +654,11 @@ void miniboss_tick(Cpu *c, uint64_t frame) {
         memcpy(saved, c->x, sizeof saved);
         if (k->start) {
             c->x[0] = s->obj;
-            guest_call(c, MAIN_BASE + k->start);
+            guest_call(c, GA_AT(k->start));
         } else {
             c->x[0] = s->obj + k->sm;
             c->x[1] = k->fight;
-            guest_call(c, k->chg);
+            guest_call(c, GA_AT(k->chg));
         }
         memcpy(c->x, saved, sizeof saved);
         c->sp = sp;

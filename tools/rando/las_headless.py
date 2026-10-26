@@ -103,13 +103,19 @@ def default_settings(seed):
         'digs': False,  # digsanity: every diggable overworld tile is a check (tools/rando/digs.py)
         'shellsanity': False,  # every Secret Seashell spot is a check (tools/rando/seashell_spots.py); off: vanilla
         'hookshot-anything': False,  # the hookshot latches onto anything (tools/rando/hookshot_logic.py)
-        'dungeon-room-shuffle': 'off',  # off / coherent / chaos / madness (tools/rando/dungeon_gen.py)
+        'dungeon-room-shuffle': 'off',  # off / coupled / decoupled (tools/rando/dungeon_gen.py; ROOM_MODES)
         'pet-rooster': False, 'pet-ghost': False, 'open-desert': True,  # pets (tools/rando/pets.py)
         'shopsanity': 'off', 'trendsanity': False,  # tools/rando/shopsanity.py (off / vanilla / random prices), trendsanity.py
         'triforce-hunt': 0, 'triforce-extra': 0,  # pieces needed (0 = off), extra % (tools/rando/triforce.py)
         'starting-items': ['sword', 'shield', 'ocarina', 'song-mambo'], 'starting-rupees': 0,
         'excluded-locations': excluded,
     }
+
+
+# dungeon-room-shuffle values: Coupled = two-way doorway pairs, Decoupled = one-way doorways. The older names still
+# work: chaos / madness are the same modes, and the retired Coherent mode becomes Coupled.
+ROOM_MODES = {'off': 'off', 'coupled': 'coupled', 'decoupled': 'decoupled',
+              'chaos': 'coupled', 'madness': 'decoupled', 'coherent': 'coupled'}
 
 
 import time as _time
@@ -122,7 +128,7 @@ def stage(label, frac):
 
 
 def shuffle_dungeon_rooms(romfs, out_dir, mode, layouts, jumps):
-    """Dungeon room shuffle (Coherent / Chaos, tools/rando/dungeon_gen.py) on top of the seed: the generator reads
+    """Dungeon room shuffle (Coupled / Decoupled, tools/rando/dungeon_gen.py) on top of the seed: the generator reads
     rooms from an overlay romfs where the seed's own room files (LAS chests, pots, bushes, entrances) replace the
     game's - as copies, since it writes the seed's rooms while still reading others."""
     import shutil
@@ -168,7 +174,7 @@ def shuffle_dungeon_rooms(romfs, out_dir, mode, layouts, jumps):
                 os.remove(os.path.join(dst, f))
             shutil.copyfile(os.path.join(seed_lv, f), os.path.join(dst, f))
     try:
-        dungeon_gen.write_all(overlay, out_romfs, layouts, jumps)  # (jumps None: Coherent)
+        dungeon_gen.write_all(overlay, out_romfs, layouts, jumps)
     finally:
         shutil.rmtree(overlay, ignore_errors=True)
     return f"{mode}, {len(layouts)} dungeons, {sum(sum(1 for k, v in L.items() if k != v) for L in layouts.values())} rooms moved"
@@ -190,6 +196,9 @@ def main():
     settings['excluded-locations'] = set(settings['excluded-locations'])
     if settings['stealing'] not in rd.STEALING_REQUIREMENTS:
         raise SystemExit(f"bad stealing setting {settings['stealing']!r}")
+    if settings['dungeon-room-shuffle'] not in ROOM_MODES:
+        raise SystemExit(f"bad dungeon-room-shuffle setting {settings['dungeon-room-shuffle']!r}")
+    settings['dungeon-room-shuffle'] = ROOM_MODES[settings['dungeon-room-shuffle']]
     # optional location groups (Randomizer tab): included = real checks with logic instead of junk
     groups = {'include-fishing': rd.FISHING_REWARDS, 'include-rapids': rd.RAPIDS_REWARDS,
               'include-dampe': rd.DAMPE_REWARDS, 'include-trade-gifts': rd.TRADE_GIFT_LOCATIONS,
@@ -260,6 +269,14 @@ def main():
         dig_locs = digs_mod.add_to_logic(dig_tiles, logic_defs, item_defs)
         print('digs:', len(dig_locs), 'locations of', len(dig_tiles), 'dig tiles', flush=True)
 
+    apple_locs = {}
+    if settings.get('apples'):  # Applesanity: 3 checks in each overworld apple tree (tools/rando/apple_trees.py)
+        import apple_trees
+        import random as _rnd
+        apple_locs = apple_trees.add_to_logic(apple_trees.scan(romfs, leb), logic_defs, item_defs,
+                                              settings.get('traps', 'none'), _rnd.Random(f"{settings['seed']}-apples"))
+        print('apple trees:', len(apple_locs), 'locations', flush=True)
+
     import shopsanity
     import trendsanity
     for f in ('shopsanity.tsv', 'check_flags.tsv'):  # (appended to by both modules)
@@ -312,15 +329,17 @@ def main():
         for name, p in pot_locs.items():
             if p['level'] in lv_node:
                 cextra.setdefault(lv_node[p['level']], []).append((name, 'break-pot'))
-        pockets = el.pocket_screens(cdoors)
+        pocket_at = el.pocket_of(cdoors)
 
         def with_caves(cv):
             lg = copy.deepcopy(logic_defs)
             n = el.apply_connector_logic(lg, ed, *cv, cextra) if cv[0] else 0
-            # a bush / dig tile on a pocket's screen may stand in the pocket: needs it
-            for name, b in list(bush_locs.items()) + list(dig_locs.items()):
-                if cv[0] and pockets.get(b['room']) and name in lg:
-                    lg[name]['condition-basic'] = el._and(lg[name].get('condition-basic'), pockets[b['room']])
+            # a bush / dig tile in a pocket (its door's screen, or its tiles on the screens beside it) needs it
+            for name, b in list(bush_locs.items()) + list(dig_locs.items()) + \
+                    [(n, {'room': t['room'], 'tile': t['tile']}) for n, (t, _) in apple_locs.items()]:
+                pk = cv[0] and name in lg and pocket_at(b['room'], b.get('tile'))
+                if pk:
+                    lg[name]['condition-basic'] = el._and(lg[name].get('condition-basic'), pk)
             n += el.apply_logic(lg, ent_doors, ent_entry, ent_exit, extra)
             if settings.get('hookshot-anything'):  # (its routes, on conditions the caves' logic replaced)
                 import hookshot_logic
@@ -343,11 +362,11 @@ def main():
         ent = (ent_doors + cave[0], {**ent_entry, **cave[1]}, {**ent_exit, **cave[2]})
         print('entrances:', len(ent_entry), 'doors +', len(cave[1]), 'cave doors shuffled,', moved, 'locations moved', flush=True)
 
-    # ---- Dungeon room shuffle (Coherent / Chaos): the layouts are planned first, the item logic follows them
+    # ---- Dungeon room shuffle (Coupled / Decoupled): the layouts are planned first, the item logic follows them
     # (tools/rando/room_logic.py), the same layouts are written into the seed after LAS's files
-    room_mode = settings.get('dungeon-room-shuffle', 'off')
+    room_mode = settings['dungeon-room-shuffle']
     room_plan = None
-    if room_mode in ('coherent', 'chaos', 'madness'):
+    if room_mode != 'off':
         stage('Planning dungeon rooms', 0.03)
         import dungeon_gen
         import room_logic
@@ -357,21 +376,13 @@ def main():
         layouts = jumps = None
         for attempt in range(40):  # a layout whose dungeons can't be filled: the next one (same seed ID, same result)
             sub = settings['seed'] if attempt == 0 else f"{settings['seed']}~{attempt}"
-            if room_mode in ('chaos', 'madness'):  # (Madness: Chaos with one-way doorways)
-                try:
-                    layouts, jumps = dungeon_gen.plan_all_chaos(cat, sub, romfs, madness=room_mode == 'madness',
-                                                                  settings=settings)
-                except RuntimeError as e:  # (no round left every dungeon room for its keys and items: next one)
-                    print('room layout:', e, '- planning another', flush=True)
-                    continue
-                logic_rows = jumps
-            else:
-                try:
-                    layouts, jumps = dungeon_gen.plan_all(cat, sub, romfs), None
-                except RuntimeError as e:  # (as Chaos: this round's plan failed - the next one)
-                    print('room layout:', e, '- planning another', flush=True)
-                    continue
-                logic_rows = [row for lv, L in layouts.items() for row in dungeon_gen._jumps(cat, lv, L)]
+            try:  # (Decoupled: Coupled with one-way doorways)
+                layouts, jumps = dungeon_gen.plan_all_chaos(cat, sub, romfs, madness=room_mode == 'decoupled',
+                                                              settings=settings)
+            except RuntimeError as e:  # (no round left every dungeon room for its keys and items: next one)
+                print('room layout:', e, '- planning another', flush=True)
+                continue
+            logic_rows = jumps
             logic_defs, item_defs, settings = (copy.deepcopy(x) for x in base)
             print('room logic:', room_logic.apply(cat, romfs, layouts, logic_rows, logic_defs, item_defs, settings, extra),
                   flush=True)
@@ -627,6 +638,9 @@ def main():
         with open(os.path.join(out_dir, f'entrances_{settings["seed"]}.txt'), 'w') as f:
             f.write(el.spoiler(*ent) + '\n')
         print('entrance rooms edited:', n, flush=True)
+        from RandomizerCore.Tools import event_tools
+        if el.raft_shop_to_dock(ent[2], out_dir, romfs, event_tools):
+            print('raft shop: a paid ride starts at the dock', flush=True)
 
     if room_plan:
         stage('Building the shuffled dungeons', 0.975)
@@ -667,6 +681,9 @@ def main():
                                                             digs_mod.SHELLS if dig_locs else (),
                                                             vanilla=not settings.get('shellsanity'))) or '(vanilla)',
           flush=True)
+    if apple_locs:  # (after the seashell spots: the same flow file)
+        print('apple trees:', ', '.join(apple_trees.apply(apple_locs, mods, out_dir, romfs, _uw_leb, _uw_ev, _ot,
+                                                           _uw_get, _uw_data)), flush=True)
     import keysanity_text  # (after every flow edit, digs / underwater too) a dungeon item outside its dungeon names it
     keysanity_text.apply(out_dir, romfs, result['placements'])
     if settings.get('enemy-minibosses'):  # the Field's walls for roaming mini-bosses (tools/rando/roam.py)
@@ -690,21 +707,30 @@ def main():
     print('bomb bag text:', bomb_bag_text.apply(out_dir, romfs, settings), flush=True)
     import powder_bag_text  # (same) found powder: "You found your Powder Bag!"
     print('powder bag text:', powder_bag_text.apply(out_dir, romfs, settings), flush=True)
+    import silent_pickups  # (the last flow edit) minor ground items: no item-get cutscene, a sound and a card instead
+    print('silent pickups: %d gives, %d native get flows' % silent_pickups.apply(out_dir, romfs), flush=True)
     import room_links  # (every room edit done: actors' links within each room must still be sound)
     problems = room_links.check(out_dir, _uw_leb, romfs)
     if problems:
         for pr in problems[:20]:
             print('room links:', pr, file=sys.stderr)
         sys.exit(f'room links broken in {len(problems)} place(s) - the game would crash loading them; first: {problems[0]}')
+    import quick_pickups  # (every flow edit done) ground items given without an event: Link doesn't stop for them
+    print('quick pickups:', quick_pickups.apply(out_dir, romfs), flush=True)
     with open(os.path.join(out_dir, 'settings.json'), 'w') as f:
         s = dict(settings)
         s['excluded-locations'] = sorted(s['excluded-locations'])
         s['absent-locations'] = sorted(s.get('absent-locations', ()))
         s['junk-locations'] = sorted(s.get('junk-locations', ()))
         s['escape-bottle'] = True  # (runtime/hle/escape.c: older seeds keep three plain bottles)
+        # the overworld door -> the dungeon it leads into (shuffle-dungeons; the tracker puts each dungeon's icon there)
+        s['dungeon-entrances'] = dict(result['placements'].get('dungeon-entrances') or {})
         s['hint-sheet'] = True  # (runtime/hle/hint_sheet.c: older seeds have no Hint Sheet)
         s['ghost-item'] = 'ghost' in pets  # (runtime/hle/pets.c: older seeds' Ghost follows Link)
         s['underwater-items'] = True  # (runtime: the sunken heart-piece actors don't hide for an owned heart piece)
+        s['silent-pickups'] = True  # (tools/rando/silent_pickups.py; runtime/hle/silent_pickups.c)
+        shells = sum(1 for v in result['placements'].values() if v == 'seashell')  # (the fly-in's "n / total": 50)
+        s['seashell-total'] = shells if 0 < shells <= 50 else 50
         json.dump(s, f, indent=1)
     print('flags.tsv:', seed_tables.write_flags(out_dir, _ot, romfs), flush=True)  # (reads settings.json)
     stage('Building the check tracker', 0.99)

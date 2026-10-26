@@ -11,8 +11,15 @@
 //     characters are the substitute's, so Chinese / Korean text can show missing glyphs.
 //     Standard's Japanese gothics are skipped when the game plays in Russian: Japanese fonts carry Cyrillic as
 //     full-width characters (JIS X 0208), every letter a square apart (issue #32) - Arial / DejaVu Sans then.
-//  4. Standard only: DejaVu Sans shipped with the app (third_party/fonts/DejaVu, free license), for systems with none
+//  4. Standard only, on Linux and any other platform without a known system font (not macOS / Windows), ahead of
+//     the OS's own: BIZ UDPGothic shipped with the app (third_party/fonts/BIZUDPGothic, SIL OFL), Morisawa's free
+//     font from the same universal-design gothic family as UD Shin Go. (Skipped for Russian like the other Japanese
+//     gothics.)
+//  5. Standard only: DejaVu Sans shipped with the app (third_party/fonts/DejaVu, free license), for systems with none
 //     of the above (Bazzite / Fedora Atomic have no DejaVu - issue #37).
+// On those same platforms a substitute (anything but the console's own files) gets the console font's OS/2 Windows
+// metrics, which the game sizes text by (match_switch_metrics): without that every substitute draws about 1.5x too
+// large. macOS and Windows keep Hiragino / Yu Gothic exactly as they are, at their current size (OS_FONTS_KNOWN).
 // .bfttf is the console's obfuscated TTF: 8-byte header (magic, size) then every u32 XORed with a fixed key (bfttf_decode).
 // .ttc collections get face 0 copied out as a standalone font (the game's font engine wants one sfnt).
 #include <stdlib.h>
@@ -21,6 +28,14 @@
 
 #include "../hle.h"
 #include "../paths.h"
+
+// macOS and Windows have system fonts known to work well (Hiragino / Yu Gothic): the OS's fonts first, untouched.
+// Everywhere else the bundled BIZ UDPGothic serves ahead of them and every substitute gets the console's metrics.
+#if defined(__APPLE__) || defined(_WIN32)
+#define OS_FONTS_KNOWN 1
+#else
+#define OS_FONTS_KNOWN 0
+#endif
 
 typedef struct { uint64_t addr, size; } Font;
 // SharedFontType: 0 Standard, 1 ChineseSimple, 2 ChineseSimpleExt, 3 ChineseTraditional, 4 Korean, 5 NintendoExt
@@ -43,21 +58,31 @@ static uint8_t *read_file(const char *path, size_t *len) {
 }
 
 // .bfttf -> TTF in place (returns the new length, 0 if it isn't one). Read as little-endian words: the first is
-// 0x7F9A0218 ^ key, the second the font's size ^ key, then the font itself, each word XORed with the key and stored
-// byte-swapped (issue #48: the console's own files; decoded without the swap they never matched)
+// 0x7F9A0218 ^ key, the second the font's size ^ key, then the font itself, each word XORed with the key. The words
+// come in either byte order: swapped (issue #48's files; decoded without the swap they never matched), or in the
+// font's own order (the font archives of a firmware dump, e.g. from an emulator's installed firmware). The magic word
+// says which.
 static size_t bfttf_decode(uint8_t *d, size_t len) {
     static const uint32_t KEY = 0x49621806, MAGIC = 0x7F9A0218;
     if (len < 12) return 0;
     uint32_t w0, w1;
     memcpy(&w0, d, 4);
     memcpy(&w1, d + 4, 4);
-    uint32_t size = w1 ^ KEY;
+    bool swap;
+    if ((w0 ^ KEY) == MAGIC) swap = true;
+    else if ((w0 ^ __builtin_bswap32(KEY)) == __builtin_bswap32(MAGIC)) swap = false;
+    else return 0;
+    uint32_t key = swap ? KEY : __builtin_bswap32(KEY);
+    uint32_t size = w1 ^ key;
+    if (!swap) size = __builtin_bswap32(size);
     size_t words = ((size_t)size + 3) & ~(size_t)3;  // (the last word is padded)
-    if ((w0 ^ KEY) != MAGIC || size < 4 || words > len - 8) return 0;
+    if (size < 4 || words > len - 8) return 0;
     for (size_t i = 0; i < words; i += 4) {
         uint32_t w;
         memcpy(&w, d + 8 + i, 4);
-        put32(d + i, w ^ KEY);  // (big-endian: the font's own byte order)
+        w ^= key;
+        if (swap) put32(d + i, w);  // (big-endian: the font's own byte order)
+        else memcpy(d + i, &w, 4);
     }
     uint32_t ver = be32(d);
     return ver == 0x00010000u || ver == 0x4F54544Fu || ver == 0x74727565u ? size : 0;  // TrueType / 'OTTO' / 'true'
@@ -132,6 +157,30 @@ static bool font_has(const uint8_t *f, size_t len, uint32_t cp) {
 // lacked it (issue #45). A substitute without them is passed over for the next one.
 static bool font_usable(const uint8_t *f, size_t len) { return font_has(f, len, 0x20) && font_has(f, len, 0x25A1); }
 
+// The game's font engine sizes a font by its OS/2 usWinAscent + usWinDescent: 1.5 em for the console's UD Shin Go
+// (1158 + 378 of 1024 units) against the usual 1.0 em, so a substitute draws about 1.5x too large. Give it the console
+// font's values; its text then matches the console's size (checked against the real font on the file select screen).
+static void match_switch_metrics(uint8_t *d, size_t len) {
+    if (len < 12) return;
+    unsigned ntab = (unsigned)d[4] << 8 | d[5];
+    if (12 + 16 * (size_t)ntab > len) return;
+    const uint8_t *head = NULL;
+    uint8_t *os2 = NULL;
+    for (unsigned i = 0; i < ntab; i++) {
+        const uint8_t *e = d + 12 + 16 * i;
+        uint32_t off = be32(e + 8), tlen = be32(e + 12);
+        if (off > len || tlen > len - off) continue;
+        if (!memcmp(e, "head", 4) && tlen >= 20) head = d + off;
+        if (!memcmp(e, "OS/2", 4) && tlen >= 78) os2 = d + off;
+    }
+    if (!head || !os2) return;
+    unsigned upem = (unsigned)head[18] << 8 | head[19];
+    if (!upem) return;
+    unsigned asc = (1158 * upem + 512) / 1024, desc = (378 * upem + 512) / 1024;
+    os2[74] = (uint8_t)(asc >> 8), os2[75] = (uint8_t)asc;    // usWinAscent
+    os2[76] = (uint8_t)(desc >> 8), os2[77] = (uint8_t)desc;  // usWinDescent
+}
+
 static int load_one_checked(const char *path, Font *ft, bool check);
 static int load_one(const char *path, Font *ft) { return load_one_checked(path, ft, false); }
 static int load_one_checked(const char *path, Font *ft, bool check) {
@@ -139,7 +188,8 @@ static int load_one_checked(const char *path, Font *ft, bool check) {
     uint8_t *d = read_file(path, &len);
     if (!d) return 0;
     size_t n = strlen(path);
-    if (n > 6 && !strcasecmp(path + n - 6, ".bfttf")) {
+    bool console_font = n > 6 && !strcasecmp(path + n - 6, ".bfttf");
+    if (console_font) {
         len = bfttf_decode(d, len);
         if (!len) { LOG("[pl] %s: not a valid .bfttf\n", path); free(d); return 0; }
     } else if (len >= 4 && !memcmp(d, "ttcf", 4)) {
@@ -150,6 +200,7 @@ static int load_one_checked(const char *path, Font *ft, bool check) {
         d = f0;
         len = l2;
     }
+    if (!console_font && !OS_FONTS_KNOWN) match_switch_metrics(d, len);  // (a .ttf of the console's own: already so)
     if (check && !font_usable(d, len)) {
         LOG("[pl] %s: no glyph for a space or \"\u25A1\" (U+25A1) - skipped\n", path);
         free(d);
@@ -205,15 +256,22 @@ static void load_fonts(void) {
     static const char *const *const chains[N_FONT_TYPES] = {std, zh_cn, zh_cn_ext, zh_tw, ko, ext};
     extern const char *settings_language(void);
     bool cyrillic = !strcmp(settings_language(), "ru");
+    char bundled[1100];
     for (int t = 0; t < N_FONT_TYPES; t++) {
         if (env) load_one(env, &fonts[t]);  // (a forced font: it is what the player asked for, in any language)
         for (size_t i = 0; !fonts[t].addr && chains[t][i]; i++) {
             const char *f = chains[t][i];
+            bool own = strncmp(f, "fonts/", 6) == 0;  // (the console's own files: as they are)
+            // Standard, before the OS's fonts where none is known: the bundled BIZ UDPGothic (a Japanese gothic
+            // too: not for Russian)
+            if (!OS_FONTS_KNOWN && t == F_STD && !own && !cyrillic && i && strncmp(chains[t][i - 1], "fonts/", 6) == 0 &&
+                rt_resource("BIZUDPGothic-Regular.ttf", "third_party/fonts/BIZUDPGothic/BIZUDPGothic-Regular.ttf", bundled, sizeof bundled) &&
+                load_one_checked(bundled, &fonts[t], true))
+                break;
             if (t == F_STD && cyrillic && (strstr(f, "/System/Library/Fonts/ヒラギノ") || strstr(f, "YuGoth"))) continue;
-            load_one_checked(f, &fonts[t], strncmp(f, "fonts/", 6) != 0);  // (the console's own files: as they are)
+            load_one_checked(f, &fonts[t], !own);
         }
     }
-    char bundled[1100];
     if (!fonts[F_STD].addr && rt_resource("DejaVuSans.ttf", "third_party/fonts/DejaVu/DejaVuSans.ttf", bundled, sizeof bundled))
         load_one_checked(bundled, &fonts[F_STD], true);
     if (!fonts[F_STD].addr)  // (only a broken install: the app ships DejaVu Sans)

@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,10 +18,13 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/sysinfo.h>
 #include <sys/ucontext.h>
+#include <sys/utsname.h>
 #include <time.h>
 #include <unistd.h>
 
+#include "../paths.h"
 #include "../platform.h"
 #include "posix_log.h"
 
@@ -105,6 +109,96 @@ void plat_write_tracking_off(const char *why) {
     g_pagemap = g_uffd = -1;
 }
 
+// ---- soft page write tracking: mprotect + SIGSEGV, where the kernel's can't run (LARECOMP_SOFT_WRITE_TRACKING=0: off)
+// The guest heap as driver memory (exec.c guest_heap_dmabuf: RADV) is no anonymous memory, so userfaultfd can't watch
+// it; there a query instead protects the pages it covered read-only, and the CPU's first write to one faults:
+// crash_handler (soft_fault) records the page and gives it its write access back. The GPU's own mapping of the memory
+// is not the CPU's page table, so the GPU never notices. Only pages a query covered ever fault, and each at most once
+// between two queries. The OS's own writes (file reads into the heap) would fail on a protected page instead of
+// faulting: plat_os_write unprotects first.
+// Page states: 0 never protected (not ours), 1 protected, 2 being given back, 3 writable again (was ours).
+enum { SOFT_NONE, SOFT_ARMED, SOFT_RELEASING, SOFT_OPEN };
+static _Atomic uint8_t *g_soft_state, *g_soft_written;  // one byte per 4K page of [g_soft_lo, g_soft_hi)
+static uint64_t g_soft_lo, g_soft_hi;
+static _Atomic uint64_t g_soft_faults, g_soft_queries, g_soft_protects;
+#define SOFT_PAGE 4096ull
+
+void plat_soft_write_tracking(uint64_t lo, uint64_t hi) {
+    const char *e = getenv("LARECOMP_SOFT_WRITE_TRACKING");
+    if ((e && !atoi(e)) || g_soft_state) return;
+    uint64_t n = (hi - lo) / SOFT_PAGE;
+    g_soft_state = calloc(n, 1), g_soft_written = calloc(n, 1);  // (untouched parts of these cost nothing either)
+    if (!g_soft_state || !g_soft_written) { free((void *)g_soft_state), free((void *)g_soft_written); g_soft_state = NULL; return; }
+    g_soft_lo = lo, g_soft_hi = hi;
+    fprintf(stderr, "[plat] soft page write tracking on (mprotect + SIGSEGV) over %llx-%llx\n", (unsigned long long)lo,
+            (unsigned long long)hi);
+}
+
+// Give page p its write access back and count it written (the fault handler and plat_os_write). False: not ours.
+static bool soft_release(uint64_t p) {
+    uint8_t st = SOFT_ARMED;
+    if (atomic_compare_exchange_strong(&g_soft_state[p], &st, SOFT_RELEASING)) {
+        atomic_store(&g_soft_written[p], 1);  // (before the page opens: a query that sees it open sees it written)
+        mprotect((void *)(uintptr_t)(g_soft_lo + p * SOFT_PAGE), SOFT_PAGE, PROT_READ | PROT_WRITE);
+        atomic_store(&g_soft_state[p], SOFT_OPEN);
+        atomic_fetch_add(&g_soft_faults, 1);
+        return true;
+    }
+    while (st == SOFT_RELEASING) st = atomic_load(&g_soft_state[p]);  // (another thread opens it: the write retries)
+    return st == SOFT_OPEN;  // (opened by another thread meanwhile: retry; SOFT_NONE: never ours, a real fault)
+}
+
+static bool soft_fault(uint64_t fa) {
+    if (!g_soft_state || fa < g_soft_lo || fa >= g_soft_hi) return false;
+    return soft_release((fa - g_soft_lo) / SOFT_PAGE);
+}
+
+void plat_os_write(uint64_t addr, uint64_t size) {
+    if (!g_soft_state || !size || addr >= g_soft_hi || addr + size <= g_soft_lo) return;
+    uint64_t a = addr < g_soft_lo ? g_soft_lo : addr, b = addr + size > g_soft_hi ? g_soft_hi : addr + size;
+    for (uint64_t p = (a - g_soft_lo) / SOFT_PAGE; p <= (b - 1 - g_soft_lo) / SOFT_PAGE; p++)
+        if (atomic_load(&g_soft_state[p]) == SOFT_ARMED) soft_release(p);
+}
+
+// plat_written_pages over soft tracking: protect the range's open pages first, then take the written marks, so a write
+// between the two is either already marked or faults after the protection.
+static int soft_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max) {
+    if (addr < g_soft_lo || addr + size > g_soft_hi || max <= 0) return -1;
+    uint64_t first = (addr - g_soft_lo) / SOFT_PAGE, last = (addr + size - 1 - g_soft_lo) / SOFT_PAGE;
+    for (uint64_t p = first; p <= last;) {  // runs of pages not protected: one mprotect each
+        uint8_t st = atomic_load(&g_soft_state[p]);
+        if (st == SOFT_ARMED || st == SOFT_RELEASING) { p++; continue; }
+        uint64_t q = p;
+        while (q <= last && (st = atomic_load(&g_soft_state[q])) != SOFT_ARMED && st != SOFT_RELEASING) q++;
+        for (uint64_t i = p; i < q; i++) atomic_store(&g_soft_state[i], SOFT_ARMED);
+        if (mprotect((void *)(uintptr_t)(g_soft_lo + p * SOFT_PAGE), (q - p) * SOFT_PAGE, PROT_READ)) {
+            static int warned;
+            if (warned++ < 5)
+                fprintf(stderr, "[plat] soft tracking: mprotect %llx +%llu pages failed: %s\n",
+                        (unsigned long long)(g_soft_lo + p * SOFT_PAGE), (unsigned long long)(q - p), strerror(errno));
+        }
+        atomic_fetch_add(&g_soft_protects, 1);
+        p = q;
+    }
+    int n = 0;
+    for (uint64_t p = first; p <= last; p++)
+        if (atomic_load(&g_soft_written[p]) && atomic_exchange(&g_soft_written[p], 0)) {
+            if (n < max) pages[n] = g_soft_lo + p * SOFT_PAGE;
+            n++;
+        }
+    uint64_t q = atomic_fetch_add(&g_soft_queries, 1);
+    static uint64_t last_log;
+    uint64_t now = plat_now_ns();
+    if (now - last_log > 5000000000ull) {
+        fprintf(stderr, "[plat] soft tracking, last 5 s: %llu queries, %llu protects, %llu faults\n",
+                    (unsigned long long)q, (unsigned long long)atomic_exchange(&g_soft_protects, 0),
+                    (unsigned long long)atomic_exchange(&g_soft_faults, 0));
+        atomic_store(&g_soft_queries, 0);
+        last_log = now;
+    }
+    return n < max ? n : max;
+}
+
 // ---- guest address space
 // Everything readable/writable from the start, like macOS: the guest maps at 4K granularity, and untouched pages
 // cost nothing (MAP_NORESERVE: the 12 GB window doesn't count against overcommit).
@@ -129,6 +223,7 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
 int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, uint64_t *page) {
+    if (g_soft_state) { *page = SOFT_PAGE; return soft_written_pages(addr, size, pages, max); }
     if (g_pagemap < 0 || addr < g_wt_lo || addr + size > g_wt_hi || max <= 0) return -1;
     WtRegion v[64];
     uint64_t at = addr, end = addr + size;
@@ -188,6 +283,7 @@ void plat_thread_realtime(uint64_t period_ns) {
     if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) == 0) return;
     setpriority(PRIO_PROCESS, (id_t)gettid(), -10);  // (per thread on Linux; fails quietly without CAP_SYS_NICE)
 }
+int plat_thread_realtime_check(uint64_t period_ns) { (void)period_ns; return -1; }
 
 // ---- process
 // Started from a desktop (the AppImage) there is no terminal: stdout / stderr go to lasrecomp.log in the data folder
@@ -197,12 +293,7 @@ static char g_log_path[1024];
 static void log_to_file_without_terminal(void) {
     if (isatty(STDERR_FILENO)) return;
     char dir[900];
-    const char *env = getenv("LARECOMP_DATA_ROOT"), *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
-    struct stat st;
-    if (env && *env) snprintf(dir, sizeof dir, "%s", env);
-    else if (stat("extracted", &st) == 0 && S_ISDIR(st.st_mode)) return;  // dev mode: wherever stderr goes already
-    else if (xdg && *xdg == '/') snprintf(dir, sizeof dir, "%s/lasrecomp", xdg);
-    else snprintf(dir, sizeof dir, "%s/.local/share/lasrecomp", home && *home ? home : "/tmp");
+    if (!rt_data_root_early(dir, sizeof dir)) return;  // dev mode: wherever stderr goes already
     for (char *c = dir + 1; *c; c++)
         if (*c == '/') { *c = 0; mkdir(dir, 0755); *c = '/'; }
     mkdir(dir, 0755);
@@ -223,8 +314,68 @@ static void require_cpu(void) {
 static void require_cpu(void) {}
 #endif
 
+// "key=value" / "key\t: value" lines: the value of the first line starting with key (quotes and spaces trimmed)
+static bool kv_line(const char *line, const char *key, char sep, char *out, size_t n) {
+    size_t k = strlen(key);
+    if (strncmp(line, key, k)) return false;
+    const char *p = line + k;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p++ != sep) return false;
+    while (*p == ' ' || *p == '\t' || *p == '"') p++;
+    snprintf(out, n, "%s", p);
+    for (size_t l = strlen(out); l && (out[l - 1] == '\n' || out[l - 1] == '"' || out[l - 1] == ' '); l--) out[l - 1] = 0;
+    return true;
+}
+
+void plat_system_info(PlatSysInfo *si) {
+    // the OS: /etc/os-release (the host's, also inside an AppImage; SteamOS: NAME="SteamOS", VERSION_ID), the kernel
+    char pretty[96] = "", name[64] = "", ver[48] = "", line[512];
+    FILE *f = fopen("/etc/os-release", "r");
+    if (!f) f = fopen("/usr/lib/os-release", "r");
+    for (; f && fgets(line, sizeof line, f);) {
+        if (!pretty[0]) kv_line(line, "PRETTY_NAME", '=', pretty, sizeof pretty);
+        if (!name[0]) kv_line(line, "NAME", '=', name, sizeof name);
+        if (!ver[0]) kv_line(line, "VERSION_ID", '=', ver, sizeof ver);
+    }
+    if (f) fclose(f);
+    char os[160];
+    if (pretty[0] && (!ver[0] || strstr(pretty, ver))) snprintf(os, sizeof os, "%s", pretty);
+    else if (pretty[0] || name[0]) snprintf(os, sizeof os, "%s %s", pretty[0] ? pretty : name, ver);
+    else snprintf(os, sizeof os, "Linux");
+    struct utsname u;
+    if (uname(&u) == 0) snprintf(si->os, sizeof si->os, "%.80s (%s, kernel %.32s)", os, u.machine, u.release);
+    else snprintf(si->os, sizeof si->os, "%.80s", os);
+    // the CPU: x86 "model name"; ARM boards often have none - the device tree's model then (e.g. "Raspberry Pi 5")
+    // cores: distinct (physical id, core id) pairs; threads: the processors online
+    si->threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    enum { MAXC = 1024 };
+    static int seen[MAXC];
+    int nseen = 0, phys = 0;
+    f = fopen("/proc/cpuinfo", "r");
+    for (char v[128]; f && fgets(line, sizeof line, f);) {
+        if (!si->cpu[0] && kv_line(line, "model name", ':', si->cpu, sizeof si->cpu)) continue;
+        if (kv_line(line, "physical id", ':', v, sizeof v)) phys = atoi(v);
+        else if (kv_line(line, "core id", ':', v, sizeof v)) {
+            int key = phys * 4096 + atoi(v), i = 0;
+            while (i < nseen && seen[i] != key) i++;
+            if (i == nseen && nseen < MAXC) seen[nseen++] = key;
+        }
+    }
+    if (f) fclose(f);
+    si->cores = nseen ? nseen : si->threads;
+    if (!si->cpu[0] && (f = fopen("/proc/device-tree/model", "r"))) {
+        size_t n = fread(si->cpu, 1, sizeof si->cpu - 1, f);
+        si->cpu[n] = 0;  // (NUL-terminated in the file already)
+        fclose(f);
+    }
+    struct sysinfo s;
+    if (sysinfo(&s) == 0) si->ram = (uint64_t)s.totalram * s.mem_unit;
+    si->package = getenv("APPIMAGE") ? "AppImage" : NULL;  // (set by the AppImage runtime; its value is a path: not logged)
+}
+
 void plat_init(void) {
     log_to_file_without_terminal();
+    raise_open_file_limit();
     require_cpu();
 }
 
@@ -335,6 +486,7 @@ static void crash_handler(int sig, siginfo_t *si, void *ctx) {
     uint64_t pc = (uint64_t)uc->uc_mcontext.gregs[REG_RIP], sp = (uint64_t)uc->uc_mcontext.gregs[REG_RSP], lr = 0;
     if (sig != SIGSEGV || (fa & ~0xFFFull) != (sp & ~0xFFFull)) lr = *(uint64_t *)(uintptr_t)sp;
 #endif
+    if (sig == SIGSEGV && soft_fault(fa)) return;  // (soft page write tracking: the write retries on an open page)
     if (rt_fault_watch(fa, pc)) return;
     char what[32];
     snprintf(what, sizeof what, "signal %d", sig);
@@ -392,9 +544,10 @@ int plat_proc_wait(PlatProc p, bool block) {
 
 static int rm_entry(const char *path, const struct stat *sb, int flag, struct FTW *ftw) {
     (void)sb, (void)flag, (void)ftw;
-    return remove(path);
+    return remove(path) == 0 || errno == ENOENT ? 0 : -1;  // (gone already: e.g. a ._ file macOS removed with its folder on exFAT)
 }
 bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPTH | FTW_PHYS) == 0; }
+bool plat_onedrive_synced(const char *dir) { (void)dir; return false; }
 
 // End the process at once, skipping the library teardown: as on Windows, the GPU driver's threads crashed in exit()
 // while the game's threads still submitted work.

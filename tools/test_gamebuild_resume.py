@@ -39,6 +39,7 @@ extern "C" bool rt_dev_mode() { return false; }
 extern "C" uint64_t plat_now_ns() { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 extern "C" void plat_sleep_until_ns(uint64_t t) { auto now=plat_now_ns(); if(t>now)std::this_thread::sleep_for(std::chrono::nanoseconds(t-now)); }
 extern "C" intptr_t plat_spawn(const char *const *a,const char *l,bool append) { return start_cb(a,l,append); }
+extern "C" intptr_t plat_spawn_no_cfg(const char *const *a,const char *l,bool append,unsigned long *e) { if(e)*e=0; return start_cb(a,l,append); }
 extern "C" int plat_proc_wait(intptr_t p,bool block) { return wait_cb(p,block); }
 extern "C" void plat_proc_kill(intptr_t p) { kill_cb(p); }
 '''
@@ -64,7 +65,7 @@ with tempfile.TemporaryDirectory() as temporary:
         (resources/'runtime'/name).write_text('/* fixture header */\n')
     (resources/'tools/gamelib_entry.c').write_text('int cache_entry(void) { return 0; }\n')
     (resources/'runtime/hle/hle_symbols.txt').write_text('fixture\n')
-    main = b'fixture main'
+    main = b'NSO0' + bytes(0x3c) + bytes.fromhex('0123456789abcdef') + bytes(0x18) + b'fixture main'  # (the build ID: the library id)
     (game/'exefs/main').write_bytes(main)
     (game/'exefs/sdk').write_bytes(b'fixture sdk')
     generator = tmp/'generator.py'; generator.write_text(GENERATOR)

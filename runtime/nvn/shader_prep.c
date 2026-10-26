@@ -213,9 +213,10 @@ static const char *rec_path(void) {
     return p;
 }
 
-bool shader_rec_recording(void) { return rec_path() != NULL; }
+bool shader_rec_recording(void) { return rec_path() != NULL || shader_seen_on(); }
 
 void shader_rec_note(const ShaderRec *r) {
+    shader_seen_note(r);  // (the player's own list: queued, written off this thread)
     const char *path = rec_path();
     if (!path) return;
     char line[2048];
@@ -505,6 +506,16 @@ static const char shipped_list[] =
 #include "shader_variants.inc"
     ;
 
+const char *shader_prep_shipped_list(void) { return shipped_list; }
+
+// The game files' shaders as one id (order-independent): another game version has another
+static uint64_t idx_game_id(void) {
+    uint64_t g = idx_n;
+    for (size_t i = 0; i < idx_cap; i++)
+        if (idx_tab[i].hash) g += (idx_tab[i].hash ^ (idx_tab[i].hash >> 31)) * 0x9E3779B97F4A7C15ull;
+    return g ? g : 1;
+}
+
 static double ms_now(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -536,8 +547,11 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
     } else list = strdup(shipped_list);
     if (!list || !*list) { free(list); LOG("[shader] preparation: no variant list\n"); return false; }
     if (!renderer_prepare_begin()) { free(list); LOG("[shader] preparation: no GPU device yet\n"); return false; }
+    uint64_t seen_game;
+    char *seen = shader_seen_read(&seen_game);  // (the player's own list: after the shipped one)
     int total = 0;
     for (char *p = list; *p; p++) total += *p == '\n';
+    for (char *p = seen; p && *p; p++) total += *p == '\n';
     if (progress) progress(0, total + 1);
     if (!idx_n) {
         idx_dir(romfs, 0);
@@ -546,19 +560,44 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         idx_nso(main_nso);
     }
     double t_idx = ms_now() - t0;
+    if (idx_n) {  // (the player's list of other game files - none yet, or an update: only what this game has)
+        uint64_t game = idx_game_id();
+        char *keep = NULL;
+        if (seen && seen_game != game) {
+            size_t n = 0;
+            keep = calloc(1, strlen(seen) + 1);
+            for (char *line = seen, *next; *line; line = next) {
+                next = strchr(line, '\n');
+                size_t l = next ? (size_t)(next - line) : strlen(line);
+                next = next ? next + 1 : line + l;
+                char one[2048];
+                ShaderRec r;
+                if (l >= sizeof one) continue;
+                memcpy(one, line, l), one[l] = 0;
+                if (!shader_rec_parse(one, &r) || !idx_find(r.vs) || (r.kind == 'G' && !idx_find(r.fs))) continue;
+                memcpy(keep + n, line, l), n += l, keep[n++] = '\n';
+            }
+            free(seen);
+            seen = strdup(keep);
+        }
+        shader_seen_prep_done(game, keep);
+        free(keep);
+    }
     FILE **files = calloc((size_t)idx_nfiles + 1, sizeof *files);
-    int done = 0, prepared = 0, missing = 0, failed = 0;
-    for (char *line = list, *next; *line && !(cancel && *cancel); line = next) {
+    int done = 0, prepared = 0, missing = 0, failed = 0, prepared_seen = 0;
+    for (int own = 0; own < 2; own++)  // the shipped list, then the player's own
+    for (char *line = own ? seen : list, *next; line && *line && !(cancel && *cancel); line = next) {
         next = strchr(line, '\n');
         if (next) *next++ = 0;
         else next = line + strlen(line);
         ShaderRec r;
         if (!shader_rec_parse(line, &r)) continue;
+        if (own && !getenv("LARECOMP_SHADER_LIST") && shader_seen_shipped(line)) continue;  // (prepared already)
         const IdxEnt *ev = idx_find(r.vs), *ef = r.kind == 'G' ? idx_find(r.fs) : NULL;
         ShaderBlob bv = {0}, bf = {0};
         uint8_t *dv = ev ? blob_read(ev, &bv, files) : NULL, *df = ef ? blob_read(ef, &bf, files) : NULL;
         if (!dv || (r.kind == 'G' && !df)) missing++;
-        else if (renderer_prepare(&r, &bv, &bf)) prepared++;
+        else if (renderer_prepare(&r, &bv, &bf)) *(own ? &prepared_seen : &prepared) += 1;
         else failed++;
         free(dv);
         free(df);
@@ -574,8 +613,9 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
     for (int i = 0; i < idx_nfiles; i++) if (files[i]) fclose(files[i]);
     free(files);
     free(list);
-    LOG("[shader] prepared %d, not found %d%s%s (%d failed; index %zu shaders in %.0f ms, total %.0f ms)\n", prepared,
-        missing, cancel && *cancel ? ", " : "", cancel && *cancel ? "skipped" : "", failed, idx_n, t_idx, ms_now() - t0);
+    free(seen);
+    LOG("[shader] prepared %d + %d seen before, not found %d%s%s (%d failed; index %zu shaders in %.0f ms, total %.0f ms)\n",
+        prepared, prepared_seen, missing, cancel && *cancel ? ", " : "", cancel && *cancel ? "skipped" : "", failed, idx_n, t_idx, ms_now() - t0);
     return true;
 }
 

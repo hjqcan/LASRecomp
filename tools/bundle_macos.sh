@@ -15,7 +15,7 @@ APP="build/LAS Recomp.app"
 DEPS=$PWD/build/deps
 BUNDLE_ID=$(sed -n 's/^#define RT_BUNDLE_ID "\(.*\)"/\1/p' runtime/paths.h)
 VERSION=$(sed -n 's/^#define LARECOMP_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
-# CFBundleShortVersionString must be digits: beta_<n> -> 0.9.<n>, v1.2.3 -> 1.2.3
+# CFBundleShortVersionString must be digits: beta_<n> -> 0.9.<n>, beta_<n>.<m> -> 0.9.<n>.<m>, v1.2.3 -> 1.2.3
 case "$VERSION" in
     beta_*) VERSION="0.9.${VERSION#beta_}" ;;
     v*) VERSION="${VERSION#v}" ;;
@@ -46,7 +46,7 @@ cp docs/icon/icon.icns "$C/Resources/icon.icns"
 cp docs/icon/icon_1024.png "$C/Resources/icon.png"  # (window / Dock icon at run time)
 cp third_party/fonts/Baloo2/Baloo2-SemiBold.ttf "$C/Resources/Baloo2-SemiBold.ttf"  # (start screen; OFL, README "License")
 cp third_party/fonts/Baloo2/OFL.txt "$C/Resources/Baloo2-OFL.txt"
-cp third_party/fonts/DejaVu/DejaVuSans.ttf "$C/Resources/DejaVuSans.ttf"  # (the game text's last-resort font)
+cp third_party/fonts/DejaVu/DejaVuSans.ttf third_party/fonts/DejaVu/DejaVuSans-Bold.ttf "$C/Resources/"  # (last-resort fonts)
 cp third_party/fonts/DejaVu/LICENSE "$C/Resources/DejaVu-LICENSE.txt"
 
 # ---- dylibs: copy every non-system dependency, recursively; point all references at @rpath/<name>

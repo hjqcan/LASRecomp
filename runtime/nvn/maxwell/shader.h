@@ -11,7 +11,7 @@
 //    maxwell_gmem_base. `readonly` unless the shader stores (needs vertexPipeline/fragmentStoresAndAtomics then);
 //    byte / short stores are atomicAnd + atomicOr on the containing word.
 //  - rscale table -> binding 18: `uniform RScale { vec4 rscale[65]; };` (std140, the MSL buffer 18 contents).
-//  - per-draw tint -> binding 19: `uniform Tint { vec4 ltint[2]; };` (fragment, when uses_tint).
+//  - per-draw tint -> binding 19: `uniform Tint { vec4 ltint[4]; };` (fragment, when uses_tint).
 //  - texture slot i (ShaderInfo.tex[i]) -> binding 32 + i, a combined image sampler: sampler1D/2D/3D/Cube/
 //    1DArray/2DArray/CubeArray, or its *Shadow variant when tex[i].shadow.
 //  - vertex inputs `layout(location=i) in vec4|ivec4|uvec4 a<i>;` (key->attr_kind); varyings: location i =
@@ -71,7 +71,7 @@ typedef struct {
                             // dispatch's storage buffers - when found, stores too (copied back after the dispatch).
                             // runtime/nvn/vulkan/exec.c
     bool uses_gmem_store;   // writes global memory (STG)
-    bool uses_tint;        // fragment: reads the per-draw tint (buffer 19, float4[2]) applied to color target 0
+    bool uses_tint;        // fragment: reads the per-draw tint (buffer 19, float4[4]) applied to color target 0
     uint16_t ssbo_read;     // storage buffer slots whose binding (address) the shader reads from the driver constants
                             // (c0 0x110 + 16 * i vertex, 0x510 + 16 * i fragment): the slots it actually uses
     bool uses_rscale;       // reads the resolution-scale table (fragment/compute buffer 18): float4 [0] = render
@@ -90,8 +90,13 @@ typedef struct {
 // (GLSL compute, Vulkan) the fast copy of a dispatch's storage buffers: its address table and its data
 #define GMAP_BUFFER_INDEX 20
 #define GFAST_BUFFER_INDEX 21
-#define GMAP_MAX 16  // ranges in the table (GMap { uvec4 gmap[GMAP_MAX + 1]; }: [i] = addr lo, addr hi, size, word offset;
-                     // [GMAP_MAX].x = count)
+#define GMAP_MAX 16  // ranges in the table (GMap { uvec4 gmap[GMAP_MAX + 1]; }: [i].x = heap offset, .y = size, .z = word
+                     // offset in GFast, .w = the bound bytes (from the entry's start: their first byte in the low 8 bits,
+                     // their end in words above); [GMAP_MAX].x = count, .y = the dispatch's stamp)
+// (GLSL compute) A store into table entry i's bound bytes also writes the dispatch's stamp to GFast word
+// GFAST_FLAG_WORD + i: the entries a dispatch stored into, read back by exec.c (gfast_flags_poll) and turned into storage
+// slots by the entry's slot bits (exec.c gmap_build) - which slots each program writes.
+#define GFAST_FLAG_WORD ((32u << 20) / 4 - 64u)
 extern uint64_t maxwell_gmem_base, maxwell_gmem_size;
 // (GLSL / Vulkan) The heap reaches shaders in chunks of 1 << maxwell_gmem_chunk_shift bytes in two cases:
 // - windows of one import where a storage buffer can't span the heap (issue #8) and lazy chunks aren't possible (or

@@ -50,13 +50,31 @@ static void end_all(void) {
     pthread_mutex_unlock(&g_plock);
 }
 
-static PlatProc spawn(char **argv, const char *log) {
+static PlatProc spawn_proc(char **argv, const char *log, bool generator) {
     pthread_mutex_lock(&g_plock);
-    PlatProc p = g_quitting ? 0 : plat_spawn((const char *const *)argv, log, false);
+    PlatProc p = 0;
+    if (!g_quitting) {
+#ifdef _WIN32
+        // The generator runs with Control Flow Guard off even when Windows forces it on for every program (#337)
+        if (generator) {
+            unsigned long error = 0;
+            p = plat_spawn_no_cfg((const char *const *)argv, log, false, &error);
+            static bool told;
+            if (p && !told) {
+                told = true;
+                if (!error) LOG("[gamebuild] generator started with Control Flow Guard off\n");
+                else LOG("[gamebuild] generator started normally: Control Flow Guard could not be turned off for it (error %lu)\n", error);
+            }
+        } else
+#endif
+        p = plat_spawn((const char *const *)argv, log, false);
+    }
+    (void)generator;
     if (p && g_nprocs < MAX_PROCS) g_procs[g_nprocs++] = p;
     pthread_mutex_unlock(&g_plock);
     return p;
 }
+static PlatProc spawn(char **argv, const char *log) { return spawn_proc(argv, log, false); }
 
 // plat_proc_wait without blocking, then forgotten once it has ended
 static int finished(PlatProc p) {
@@ -223,7 +241,7 @@ static void log_tail(const char *path, char *out, size_t n) {  // the last line 
 
 // A helper that failed (plat_proc_wait's r != 0): its log's last line for our log, and how it ended when that says
 // nothing or a signal ended it (the system killing it for memory writes nothing). A signal also gives the player why.
-static bool g_killed;
+static bool g_killed, g_cfg_stopped;
 static void helper_failed(const char *what, int r, const char *log, char *why, size_t why_size) {
     char last[300], how[120] = "";
     log_tail(log, last, sizeof last);
@@ -240,6 +258,11 @@ static void helper_failed(const char *what, int r, const char *log, char *why, s
         g_killed = true;
     } else
 #endif
+#ifdef _WIN32
+    if (r == PLAT_PROC_FAST_FAIL) {
+        snprintf(how, sizeof how, "exit status 0xC0000409 (a security check stopped it)");
+    } else
+#endif
     if (!last[0]) {
         snprintf(how, sizeof how, "exit status %d", r);
     }
@@ -247,6 +270,7 @@ static void helper_failed(const char *what, int r, const char *log, char *why, s
 }
 
 bool gamebuild_killed(void) { return g_killed; }
+bool gamebuild_cfg_stopped(void) { return g_cfg_stopped; }
 
 // ------------------------------------------------------------------ compiling
 typedef struct {
@@ -291,6 +315,8 @@ static void add_cflags(Args *a, const Tools *t) {
     }
 }
 
+static char g_full_id[GAMELIB_FULL_ID_SIZE];  // this build's library id (gamelib_full_id): GAMELIB_ID-<build ID>
+
 static PlatProc start_compile(const Tools *t, const Unit *u) {
     Args a = {0};
     compiler(&a, t);
@@ -298,7 +324,9 @@ static PlatProc start_compile(const Tools *t, const Unit *u) {
     char inc[1200];
     snprintf(inc, sizeof inc, "-I%s", t->inc);
     add(&a, inc);
-    add(&a, "-DGAMELIB_ID=\"" GAMELIB_ID "\"");
+    char id[GAMELIB_FULL_ID_SIZE + 32];
+    snprintf(id, sizeof id, "-DGAMELIB_ID=\"%s\"", g_full_id);
+    add(&a, id);
     add(&a, "-c");
     add(&a, u->src);
     add(&a, "-o");
@@ -313,7 +341,11 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     uint64_t t0 = plat_now_ns();
     static bool registered;
     if (!registered) registered = true, atexit(end_all);
-    g_killed = false;
+    g_killed = false, g_cfg_stopped = false;
+    if (!gamelib_full_id(game_dir, g_full_id, sizeof g_full_id)) {
+        snprintf(why, why_size, "the game files' exefs/main is missing or unreadable");
+        return false;
+    }
     Tools t;
     if (!find_tools(&t)) {
         snprintf(why, why_size, "the game code builder is missing from this copy of LAS Recomp");
@@ -328,7 +360,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     const char *headers[] = {"cpu.h", "simd.h", "simd_fp.h", "gamelib.h"};
     for (int i = 0; i < 4; ++i) snprintf(input_paths[i+2], sizeof input_paths[i+2], "%s" SEP "%s", t.inc, headers[i]);
     // Generator changes should rebuild only chunks whose C changed, as in the existing incremental builder.
-    // Compiler/header/flag changes invalidate every object; entry always rebuilds because it embeds GAMELIB_ID.
+    // Compiler/header/flag changes invalidate every object; entry always rebuilds because it embeds the library id.
     const char *inputs[] = {input_paths[2], input_paths[3], input_paths[4], input_paths[5], t.cc};
     // The compiler's contents identify it, so relocating the app does not discard reusable objects.
     snprintf(spec, sizeof spec, "LASBUILD3\n%s\n%s\n%s\nzig=%d pointer=%d%s%s\n", GAMELIB_BASE_ID,
@@ -392,7 +424,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         add(&a, base[i]);
         add(&a, g->out);
         if (i == 1) { add(&a, "--hle"); add(&a, t.hle); }
-        g->p = spawn(a.v, g->log);
+        g->p = spawn_proc(a.v, g->log, true);
         args_free(&a);
         if (!g->p) { snprintf(why, why_size, "the game code builder didn't start"); ok = false; }
     }
@@ -430,6 +462,9 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
                         snprintf(what, sizeof what, "generator (%s)", g->name);
                         snprintf(why, why_size, "the game code couldn't be prepared");
                         helper_failed(what, r, g->log, why, why_size);
+#ifdef _WIN32
+                        if (r == PLAT_PROC_FAST_FAIL) g_cfg_stopped = true;  // (#337)
+#endif
                         ok = false;
                     } else if (!build_cache_save_generation(cache, g->name, g->files, why, why_size)) {
                         ok = false;
@@ -568,7 +603,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
             ok = false;
         }
     }
-    if (ok) ok = build_cache_publish(cache, GAMELIB_NAME, GAMELIB_ID, why, why_size);
+    if (ok) ok = build_cache_publish(cache, GAMELIB_NAME, g_full_id, why, why_size);
     bool cancelled = !ok && o->cancelled && o->cancelled();
     if (!ok && !cancelled) build_cache_failed(cache);
     free(units.u);

@@ -12,9 +12,9 @@
 // least n copies; items the save shows directly). A step whose check has no known flag and whose item the save can't
 // show is passed over (never stuck on a hint the player already followed). All collected: the closing message.
 // Showing it: the entry is requested from event/Common.bfevfl the way the game requests its own GameOver event
-// (main+0xdaaf6c): the resource manager loads the flowchart (GA_EVENT_RES_LOAD, GA_EVENT_RES_WAIT, GA_EVENT_FLOW_HANDLE),
-// an event request for the entry name (GA_EVENT_REQUEST_NEW, GA_EVENT_REQUEST_PREPARE) goes to the event manager
-// (GA_EVENT_MGR, GA_EVENT_SUBMIT). The event holds Link while the box is up, like a signpost.
+// (main+0xdaaf6c): the resource manager loads the flowchart (GA(EVENT_RES_LOAD), GA(EVENT_RES_WAIT), GA(EVENT_FLOW_HANDLE)),
+// an event request for the entry name (GA(EVENT_REQUEST_NEW), GA(EVENT_REQUEST_PREPARE)) goes to the event manager
+// (GA(EVENT_MGR), GA(EVENT_SUBMIT)). The event holds Link while the box is up, like a signpost.
 //
 // Look: the Items page slot, the X / Y button and Tarin's hand-over show the dungeon map's icon / model tinted sky blue
 // (hint_sheet_icon_draw / hint_sheet_tint below; runtime/nvn/texpatch.c texpatch_hint_icon). Nothing in the item
@@ -35,7 +35,7 @@ extern int warp_busy(void);
 extern bool flags_ext_get(int idx);
 extern const char *souls_at(int i, int *kind, bool *owned);
 
-#define EVENT_FLAGS (GA_LIVE_SAVE + 0x5DC0)
+#define EVENT_FLAGS (GA(LIVE_SAVE) + 0x5DC0)
 #define OWNED_BIT 0x20  // PlayerStatus +0xa9 bit 5: the first bottle (inventory bit 13)
 #define SLOT 0xd        // its item slot (X / Y: PlayerStatus +0xa3 / +0xa2)
 #define HINT_SLOT_X 228.0f  // its Items page slot (pane translation, 1280x720 layout, y up: second of the bottom row)
@@ -141,8 +141,8 @@ static bool flag_set(int i) {
 
 // How many of `item` the save shows (the check tracker's reading, runtime/ui/tracker_overlay.mm), -1: it can't tell
 static int owned(const char *item) {
-    uint32_t items = LD32(GA_LIVE_SAVE + 0x5568), keyitems = LD32(GA_LIVE_SAVE + 0x556C);
-    uint8_t upg = LD8(GA_LIVE_SAVE + 0x555C), songs = LD8(GA_LIVE_SAVE + 0x555B);
+    uint32_t items = LD32(GA(LIVE_SAVE) + 0x5568), keyitems = LD32(GA(LIVE_SAVE) + 0x556C);
+    uint8_t upg = LD8(GA(LIVE_SAVE) + 0x555C), songs = LD8(GA(LIVE_SAVE) + 0x555B);
 #define B(v, i) ((int)(((v) >> (i)) & 1))
     if (!strcmp(item, "sword")) return B(items, 0) + (B(items, 0) && B(upg, 0));
     if (!strcmp(item, "shield")) return B(items, 1) + (B(items, 1) && B(upg, 1));
@@ -159,7 +159,7 @@ static int owned(const char *item) {
         {"wind-marimba", 11}, {"coral-triangle", 12}, {"evening-calm-organ", 13}, {"thunder-drum", 14}, {"mushroom", 15}};
     for (size_t i = 0; i < sizeof ki / sizeof *ki; i++)
         if (!strcmp(item, ki[i].n)) return B(keyitems, ki[i].bit);
-    if (!strcmp(item, "shell-sensor")) return LD8(GA_LIVE_SAVE + 0x556E) & 1;
+    if (!strcmp(item, "shell-sensor")) return LD8(GA(LIVE_SAVE) + 0x556E) & 1;
     if (!strcmp(item, "song-ballad")) return B(songs, 0);
     if (!strcmp(item, "song-mambo")) return B(songs, 1);
     if (!strcmp(item, "song-soul")) return B(songs, 2);
@@ -168,8 +168,8 @@ static int owned(const char *item) {
     if (!strcmp(item, "powder-capacity")) return B(upg, 3);
     if (!strcmp(item, "bomb-capacity")) return B(upg, 4);
     if (!strcmp(item, "arrow-capacity")) return B(upg, 5);
-    if (!strcmp(item, "golden-leaf")) return __builtin_popcount(LD8(GA_LIVE_SAVE + 0x5582) & 0x1F);
-    if (!strcmp(item, "seashell")) return __builtin_popcountll(LD64(GA_LIVE_SAVE + 0x5548) & ((1ull << 50) - 1));
+    if (!strcmp(item, "golden-leaf")) return __builtin_popcount(LD8(GA(LIVE_SAVE) + 0x5582) & 0x1F);
+    if (!strcmp(item, "seashell")) return __builtin_popcountll(LD64(GA(LIVE_SAVE) + 0x5548) & ((1ull << 50) - 1));
 #undef B
     static const struct { const char *tok, *flag; int slot; } trade[] = {
         {"yoshi-doll", "TradeYoshiDollGet", 1}, {"ribbon", "TradeRibbonGet", 2}, {"dog-food", "TradeDogFoodGet", 3},
@@ -179,7 +179,7 @@ static int owned(const char *item) {
         {"mermaid-scale", "TradeMermaidsScaleGet", 13}, {"magnifying-lens", "", 14}};
     for (size_t i = 0; i < sizeof trade / sizeof *trade; i++)
         if (!strcmp(item, trade[i].tok))
-            return LD8(GA_LIVE_SAVE + 0x555A) == trade[i].slot || flag_set(named_flag(trade[i].flag));
+            return LD8(GA(LIVE_SAVE) + 0x555A) == trade[i].slot || flag_set(named_flag(trade[i].flag));
     static const struct { const char *tok, *flag; } pets[] = {
         {"rooster", "unused0427"}, {"marin-companion", "unused0428"}, {"ghost", "unused0429"}};
     for (size_t i = 0; i < sizeof pets / sizeof *pets; i++)
@@ -251,28 +251,28 @@ static bool request_common_event(Cpu *c, const char *name) {
     uint64_t saved[31];
     memcpy(saved, c->x, sizeof saved);
     bool ok = false;
-    uint64_t res_mgr = LD64(GA_EVENT_RES_MGR), mgr = LD64(GA_EVENT_MGR);
+    uint64_t res_mgr = LD64(GA(EVENT_RES_MGR)), mgr = LD64(GA(EVENT_MGR));
     if (res_mgr && mgr) {
-        ST64(S + 0x00, GA_STRING_COMMON_FLOW);  // {"event/Common.bfevfl", 19}
+        ST64(S + 0x00, GA(STRING_COMMON_FLOW));  // {"event/Common.bfevfl", 19}
         ST64(S + 0x08, 19);
         c->x[0] = S + 0x60; c->x[1] = res_mgr; c->x[2] = S + 0x00;
-        guest_call(c, GA_EVENT_RES_LOAD);  // -> {pending load (shared), resource (shared)} at S+0x60
+        guest_call(c, GA(EVENT_RES_LOAD));  // -> {pending load (shared), resource (shared)} at S+0x60
         if (LD64(S + 0x60)) {  // (still loading: wait for it)
             c->x[0] = LD64(S + 0x60);
-            guest_call(c, GA_EVENT_RES_WAIT);
+            guest_call(c, GA(EVENT_RES_WAIT));
         }
         c->x[0] = S + 0x30; c->x[1] = S + 0x60;
-        guest_call(c, GA_EVENT_FLOW_HANDLE);  // -> flowchart handle (shared) at S+0x30
+        guest_call(c, GA(EVENT_FLOW_HANDLE));  // -> flowchart handle (shared) at S+0x30
         if (LD64(S + 0x30)) {
             ST64(S + 0x10, (uint64_t)(uintptr_t)names);
             ST64(S + 0x18, strlen(names));
             c->x[0] = S + 0x20; c->x[1] = S + 0x30; c->x[2] = S + 0x10;
-            guest_call(c, GA_EVENT_REQUEST_NEW);  // -> request (shared) at S+0x20
+            guest_call(c, GA(EVENT_REQUEST_NEW));  // -> request (shared) at S+0x20
             if (LD64(S + 0x20)) {
                 c->x[0] = LD64(S + 0x20);
-                guest_call(c, GA_EVENT_REQUEST_PREPARE);
+                guest_call(c, GA(EVENT_REQUEST_PREPARE));
                 c->x[0] = S + 0x50; c->x[1] = mgr; c->x[2] = S + 0x20;
-                guest_call(c, GA_EVENT_SUBMIT);  // -> (shared) at S+0x50
+                guest_call(c, GA(EVENT_SUBMIT));  // -> (shared) at S+0x50
                 ok = true;
             }
         }
@@ -280,7 +280,7 @@ static bool request_common_event(Cpu *c, const char *name) {
             (unsigned long long)LD64(S + 0x70), (unsigned long long)LD64(S + 0x30), (unsigned long long)LD64(S + 0x20));
         static const int ctrl[] = {0x58, 0x28, 0x38, 0x68, 0x78};  // (our references, released)
         for (int i = 0; i < 5; i++)
-            if (LD64(S + ctrl[i])) { c->x[0] = LD64(S + ctrl[i]); guest_call(c, GA_SP_RELEASE); }
+            if (LD64(S + ctrl[i])) { c->x[0] = LD64(S + ctrl[i]); guest_call(c, GA(SP_RELEASE)); }
     }
     memcpy(c->x, saved, sizeof saved);
     return ok;
@@ -321,7 +321,7 @@ RT_ON_RESET(hint_sheet_reset) {  // (seed switch: the next seed may differ)
 // LARECOMP_LOG_BOTTLE_PANES=1 logs every bottle icon's position (finding slots).
 bool hint_sheet_icon_draw(const float *ui, uint32_t ui_size) {
     if (!ui || ui_size < 24 * 4 || !hint_sheet_on()) return false;
-    uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+    uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
     if (!ps || !(LD8(ps + 0xa9) & OWNED_BIT)) return false;
     float x = ui[19], y = ui[23];
     static int logp = -1;
@@ -359,7 +359,7 @@ static void sky_blue(float tint[8], bool lit) {
 bool hint_sheet_tint(int kind, const float *ui, uint32_t ui_size, float tint[8]) {
     if (!hint_sheet_on()) return false;
     if (kind == 5) {
-        uint64_t ps = LD64(GA_PLAYER_STATUS_PTR);
+        uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
         if (!ps || (LD8(ps + 0xa9) & OWNED_BIT) || strcmp((const char *)(uintptr_t)ps, kTarinHouse)) return false;
         sky_blue(tint, true);
         return true;

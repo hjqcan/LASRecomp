@@ -12,6 +12,8 @@ The saved message shows only the file name. The adjacent **Show in Finder** / **
 
 The presentation and color paths are implemented for Vulkan and Metal.
 
+The beta_6 screen filter is applied before photo exposure and saturation. Photo controls remain responsive with the overlay cache enabled, and photos omit the run timer, pickup cards and tracker overlays as well as the photo panel.
+
 With the render queue enabled, photo state follows the frame actually being rendered. The game thread waits for that present during photo mode and reads an atomic hold flag; repeated presentations keep the controls responsive without advancing the game's frame counter. Outside photo mode, the normal rendering overlap is preserved. The photo test hooks count presentations, including repeats.
 
 ## Validation

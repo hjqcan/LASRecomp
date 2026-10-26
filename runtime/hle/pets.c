@@ -10,14 +10,15 @@
 // Flag indices come from rando/<seed>/flags.tsv (tools/rando/seed_tables.py).
 #include "../game_addresses.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../hle.h"
 #include "../rando.h"
 
 
-#define COMPANION (GA_LIVE_SAVE + 0x555D)
-#define FLAGS (GA_LIVE_SAVE + 0x5DC0)
+#define COMPANION (GA(LIVE_SAVE) + 0x555D)
+#define FLAGS (GA(LIVE_SAVE) + 0x5DC0)
 enum { PET_INDEX = 90, NPETS = 3 };
 enum { C_NONE, C_BOWWOW, C_MARIN, C_GHOST, C_ROOSTER };
 
@@ -87,7 +88,7 @@ int pets_ghost_state(void) {
     return flag_get("Ghost4_Clear") && flag_get("EighthClear");
 }
 
-// Companions the menu can call (found, story not past them), current one included: count, values in out[]
+// Companions the Items page's companion slot can call (found, story not past them), current one included: count, values in out[]
 int pets_callable(int out[5]) {
     int n = 0;
     for (int c = C_BOWWOW; c <= C_ROOSTER; c++)
@@ -96,8 +97,6 @@ int pets_callable(int out[5]) {
             out[n++] = c;
     return n;
 }
-
-const char *pets_name(int c) { return c >= 0 && c < 5 ? kComp[c].name : "?"; }
 
 static volatile int g_swap;  // a call to carry out on the game thread (pets_game_tick)
 
@@ -115,10 +114,10 @@ void pets_call(int c) {
 // The follower actor, swapped in place (no screen change). The game spawns the companion on a level load
 // (f_700085d980: the level's allow_companions config, then COMPANION_SPAWN); Link.LeaveCompanion (event action)
 // is COMPANION_LEAVE. The Player keeps the follower's shared_ptr at +0x1b98 / +0x1ba0.
-// GA_GAME_MGR: -> +0x4b8 Player*
-// GA_COMPANION_SPAWN: (x0 = shared_ptr out, x1 = Player): the save's companion by Link
-// GA_COMPANION_LEAVE: (x0 = Player): companion byte 0, the follower sent away
-// GA_PLAYER_STATUS_PTR: PlayerStatus*: current level name at +0 (+0x9d = COMPANION)
+// GA(GAME_MGR): -> +0x4b8 Player*
+// GA(COMPANION_SPAWN): (x0 = shared_ptr out, x1 = Player): the save's companion by Link
+// GA(COMPANION_LEAVE): (x0 = Player): companion byte 0, the follower sent away
+// GA(PLAYER_STATUS_PTR): PlayerStatus*: current level name at +0 (+0x9d = COMPANION)
 // (x0 = actor): actor vtable +0x58 (0); the base actor's vtable +0xa0 and a follower's own leave use it
 
 // the level's placed actors by key (the actor factory looks them up): unordered_map, first node at +0x10; node +0 next,
@@ -154,9 +153,21 @@ static bool companion_allowed(const char *lv, int c) {
 void pets_game_tick(Cpu *c) {
     extern int game_in_play(void);
     extern int inventory_items_cursor(void);
+    {   // (test) LARECOMP_TEST_COMPANION=<1 BowWow, 2 Marin, 3 Ghost, 4 Rooster>: that companion, two seconds into play
+        // in a level that allows one (set at the load it crashed: the player's actor wasn't up yet)
+        static int want_test = -1, ticks;
+        if (want_test < 0) { const char *e = getenv("LARECOMP_TEST_COMPANION"); want_test = e ? atoi(e) : 0; }
+        if (want_test > 0 && game_in_play()) {
+            uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
+            const char *lv = ps ? (const char *)(uintptr_t)ps : "";
+            if (*lv && companion_allowed(lv, want_test) && ++ticks > 120) {
+                *(volatile uint8_t *)(uintptr_t)COMPANION = (uint8_t)want_test; g_swap = 1; want_test = 0;
+            }
+        }
+    }
     if (!g_swap || !game_in_play() || inventory_items_cursor() >= 0) return;
     g_swap = 0;
-    uint64_t scene = LD64(GA_GAME_MGR), player = scene ? LD64(scene + 0x4b8) : 0, ps = LD64(GA_PLAYER_STATUS_PTR);
+    uint64_t scene = LD64(GA(GAME_MGR)), player = scene ? LD64(scene + 0x4b8) : 0, ps = LD64(GA(PLAYER_STATUS_PTR));
     if (!player || !ps) return;  // (the next level load spawns it)
     const char *lv = (const char *)(uintptr_t)ps;
     int want = pets_current();
@@ -168,10 +179,10 @@ void pets_game_tick(Cpu *c) {
         uint64_t actor = LD64(player + 0x1b98) - 0x2a8, ctrl = LD64(player + 0x1ba0);
         if (ctrl) ST64(ctrl + 8, LD64(ctrl + 8) + 1);
         c->x[0] = player;
-        guest_call(c, GA_COMPANION_LEAVE);
+        guest_call(c, GA(COMPANION_LEAVE));
         *(volatile uint8_t *)(uintptr_t)COMPANION = (uint8_t)want;  // (it cleared the byte)
         c->x[0] = actor;
-        guest_call(c, GA_ACTOR_KILL);
+        guest_call(c, GA(ACTOR_KILL));
         if (ctrl) ST64(ctrl + 8, LD64(ctrl + 8) - 1);
     }
     bool spawn = want != C_NONE && companion_allowed(lv, want);
@@ -181,19 +192,19 @@ void pets_game_tick(Cpu *c) {
         ST64(out, 0);
         ST64(out + 8, 0);
         c->x[0] = out, c->x[1] = player;
-        guest_call(c, GA_COMPANION_SPAWN);
+        guest_call(c, GA(COMPANION_SPAWN));
         uint64_t ctrl = LD64(out + 8);  // (drop the copy it hands back: the Player keeps its own reference)
         if (ctrl) ST64(ctrl + 8, LD64(ctrl + 8) - 1);
         c->sp = sp;
         // its idle copy placed by the level (BowWow chained at home, Marin wherever she stands): the level's layout
         // only leaves it out while it is the companion, so it goes now (the next area load places it again)
-        uint64_t me = LD64(player + 0x1b98) ? LD64(player + 0x1b98) - 0x2a8 : 0, map = LD64(GA_ACTOR_REGISTRY);
+        uint64_t me = LD64(player + 0x1b98) ? LD64(player + 0x1b98) - 0x2a8 : 0, map = LD64(GA(ACTOR_REGISTRY));
         int n = 0, killed = 0;
         for (uint64_t node = me && map ? LD64(map + 0x10) : 0; node && n < 8192; node = LD64(node), n++) {
             uint64_t a = LD64(node + 0x18);
             if (!a || a == me || LD64(a) != LD64(me)) continue;
             c->x[0] = a;
-            guest_call(c, GA_ACTOR_KILL);
+            guest_call(c, GA(ACTOR_KILL));
             killed++;
         }
         if (killed) LOG("[pets] %d idle copies of the new companion removed (%d level actors)\n", killed, n);

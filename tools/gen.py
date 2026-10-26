@@ -486,7 +486,9 @@ class Module:
         return out
 
 
-from patches import HOOKS, PATCHES
+# tools/patches.py, for the main module only (its sites are main addresses): loaded in main() once the game version
+# is known from the NSO's build ID (tools/game_addresses.py; an unknown build ID stops the generator)
+HOOKS, PATCHES = {}, {}
 
 import json as _json
 import os as _os
@@ -526,6 +528,17 @@ def main():
 
     t0 = time.time()
     m = Module(args.name, args.nso, args.base, args.simd)
+    if args.name == 'main':
+        global HOOKS, PATCHES
+        import game_addresses
+        try:
+            version = game_addresses.select_build_id(m.nso.build_id)
+        except game_addresses.UnknownGameVersion as e:
+            sys.exit(f'{args.name}: {e}')
+        import patches
+        HOOKS, PATCHES = patches.HOOKS, patches.PATCHES
+        label, build_id = game_addresses.VERSIONS[version]
+        print(f'{args.name}: game version {label} (build {build_id[:16]}), address table {version}', file=sys.stderr)
     starts = m.boundaries()
     hle = {}
     if args.hle and os.path.exists(args.hle):
@@ -643,6 +656,8 @@ def main():
         f.write('};\n')
         f.write(f'const uint64_t {args.name}_fn_count = {len(order)};\n')
         write_if_changed(os.path.join(args.outdir, f'{args.name}_table.c'), f.getvalue())
+    if args.name == 'main':  # (what this code was generated from: the Makefile's game code library id, GAMELIB_BUILD_ID)
+        write_if_changed(os.path.join(args.outdir, 'main_build_id.txt'), game_addresses.VERSIONS[version][1] + '\n')
     print(f'{args.name}: wrote {nchunks} chunks, {time.time() - t0:.0f}s total', file=sys.stderr)
 
 

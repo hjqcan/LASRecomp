@@ -66,6 +66,7 @@ static pthread_cond_t cv_work = PTHREAD_COND_INITIALIZER, cv_done = PTHREAD_COND
 static pthread_t thread;
 static _Atomic bool started;
 static _Atomic int on = -1;
+static _Atomic bool stopping, parked;  // (quitting: rq_stop) the thread is to stop / has stopped between items
 
 static void *run(void *arg);
 static _Atomic uint64_t render_cpu_ns;
@@ -142,9 +143,23 @@ static Watch *watch_self(void) {
     return w;
 }
 
+static _Atomic(const char *) r_longest_what;  // the render thread's longest watched wait since the last ask (slowframe.c)
+static _Atomic uint64_t r_longest_ns;
+uint64_t rq_render_longest(const char **what) {
+    *what = atomic_exchange(&r_longest_what, NULL);
+    return atomic_exchange(&r_longest_ns, 0);
+}
 void rq_watch(const char *what, uint64_t arg) {
     Watch *w = watch_self();
     if (!w) return;
+    if (!what && is_render) {  // (a section ends: the longest one is what a slow frame reports)
+        const char *was = atomic_load_explicit(&w->what, memory_order_relaxed);
+        uint64_t dur = plat_now_ns() - atomic_load_explicit(&w->since, memory_order_relaxed);
+        if (was && dur > atomic_load_explicit(&r_longest_ns, memory_order_relaxed)) {
+            atomic_store_explicit(&r_longest_ns, dur, memory_order_relaxed);
+            atomic_store_explicit(&r_longest_what, was, memory_order_relaxed);
+        }
+    }
     if (what) {
         atomic_store_explicit(&w->arg, arg, memory_order_relaxed);
         atomic_store_explicit(&w->since, plat_now_ns(), memory_order_relaxed);
@@ -189,7 +204,7 @@ static bool all_done(uint64_t a) { (void)a; return q_done == q_enq; }
 // (each waiter its own item: with one shared target, a waiter for a later item let one for an earlier item go on
 // before its list was translated, and the other way round)
 static bool item_done(uint64_t q) { return q_done >= q; }
-static bool has_work(uint64_t a) { (void)a; return q_done < q_enq; }
+static bool has_work(uint64_t a) { (void)a; return q_done < q_enq || atomic_load(&stopping); }
 
 static void lock_timed(void) {  // (LARECOMP_LOG_PACE: the game thread's time waiting for this lock)
     if (pthread_mutex_trylock(&lock) == 0) return;
@@ -233,6 +248,11 @@ static void *run(void *arg) {
     for (;;) {
         pthread_mutex_lock(&lock);
         wait_until(&cv_work, has_work, 0, false, NULL);
+        if (atomic_load(&stopping)) {  // quitting (rq_stop): no more GPU work from here on, nothing queued runs
+            atomic_store(&parked, true);
+            pthread_cond_broadcast(&cv_done);
+            for (;;) pthread_cond_wait(&cv_work, &lock);
+        }
         uint64_t q = q_done + 1;
         Item it = items[q % RQ_CAP];
         q_cur = q;
@@ -253,7 +273,7 @@ static void *run(void *arg) {
         case IT_FLUSH: { extern void renderer_flush(void); renderer_flush(); break; }
         }
         backend_pool_pop(pool);
-        uint64_t gs = renderer_submit_seq(), c1 = plat_thread_cpu_ns();
+        uint64_t gs = renderer_issued_seq(), c1 = plat_thread_cpu_ns();  // (its last submission; renderer_wait_seq waits for it)
         atomic_store_explicit(&render_cpu_ns, c1, memory_order_relaxed);  // (LARECOMP_LOG_PACE: pace.c)
         if (stats) {
             static uint64_t n[5], wall[5], cpu[5], items;
@@ -363,7 +383,7 @@ uint64_t rq_wait_item(uint64_t q) {
     lock_timed();
     if (q > q_enq) q = q_enq;
     wait_until(&cv_done, item_done, q, true, "fence (its list not translated yet)");
-    gs = q_done >= q ? gpu_seq_of[q % RQ_HIST] : renderer_submit_seq();  // (gave up: whatever is submitted)
+    gs = q_done >= q ? gpu_seq_of[q % RQ_HIST] : renderer_issued_seq();  // (gave up: whatever is queued)
     pthread_mutex_unlock(&lock);
     g_rq_wait_ns += plat_now_ns() - t0;
     return gs;
@@ -415,6 +435,26 @@ void rq_drain(void) {
     wait_until(&cv_done, all_done, 0, false, "drain (every queued item)");
     pthread_mutex_unlock(&lock);
     g_rq_wait_ns += plat_now_ns() - t0;
+}
+
+// Quitting: the thread finishes the item it runs and stops there (what is still queued never runs), so nothing
+// presents or submits while the process ends - exit()'s handlers and the libraries' destructors (Vulkan layers such
+// as the Steam overlay, #40) tear down under it otherwise. Waits up to 3 s for a thread stuck in the driver.
+bool rq_stopping(void) { return atomic_load_explicit(&stopping, memory_order_relaxed); }
+void rq_stop(void) {
+    atomic_store(&stopping, true);
+    if (atomic_load(&on) <= 0 || !atomic_load(&started) || pthread_equal(pthread_self(), thread)) return;
+    pthread_mutex_lock(&lock);
+    pthread_cond_broadcast(&cv_work);
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 3;
+    while (!atomic_load(&parked))
+        if (pthread_cond_timedwait(&cv_done, &lock, &ts) != 0 && !atomic_load(&parked)) {
+            LOG("[rq] quit: the render thread did not stop in 3 s (running item %llu)\n", (unsigned long long)q_cur);
+            break;
+        }
+    pthread_mutex_unlock(&lock);
 }
 
 void rq_flush(void) {

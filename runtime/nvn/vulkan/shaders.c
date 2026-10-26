@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 
 #include "shaders.h"
+#include "../screen_filter.h"
 
 void vk_shaders_init(void) {  // (compilers are per thread: check shaderc works at all)
     shaderc_compiler_t c = shaderc_compiler_initialize();
@@ -230,10 +231,10 @@ VkDescriptorSetLayout vk_set_layout(const VkBindingInfo *b, int n, uint32_t set,
 static const char *builtin_src(const char *name, int *stage) {
     if (!strcmp(name, "present.vert")) {
         *stage = STAGE_VERTEX;
-        // pv[0].x: flip (lower-left origin), pv[1]: uv crop (origin, size), pv[2]: exposure multiplier and saturation.
+        // pv[0].x: flip (lower-left origin), pv[1]: uv crop, pv[2]: exposure/saturation, pv[3]: screen filter.
         // Fullscreen triangle; Vulkan NDC y points down.
         return "#version 450\n"
-               "layout(push_constant) uniform P { vec4 a; vec4 crop; vec4 color; } pc;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 crop; } pc;\n"
                "layout(location = 0) out vec2 uv;\n"
                "void main() {\n"
                "  vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);\n"
@@ -246,11 +247,15 @@ static const char *builtin_src(const char *name, int *stage) {
         *stage = STAGE_FRAGMENT;
         return "#version 450\n"
                "layout(set = 0, binding = 0) uniform sampler2D t;\n"
+               "layout(push_constant) uniform F { layout(offset = 32) vec4 color; vec4 pf; };\n"
                "layout(location = 0) in vec2 uv;\n"
                "layout(location = 0) out vec4 o;\n"
-               "layout(push_constant) uniform P { vec4 a; vec4 crop; vec4 color; } pc;\n"
-               "void main() { vec3 c = texture(t, uv).rgb; float y = dot(c, vec3(0.2126,0.7152,0.0722));\n"
-               "  o = vec4(clamp(mix(vec3(y), c, pc.color.y) * pc.color.x, 0.0, 1.0), 1.0); }\n";
+               "void main() {\n"
+               "  vec3 c = texture(t, uv).rgb;\n"
+               SCREEN_FILTER_SRC("vec3")
+               "  float y = dot(c, vec3(0.2126,0.7152,0.0722));\n"
+               "  o = vec4(clamp(mix(vec3(y), c, color.y) * color.x, 0.0, 1.0), 1.0);\n"
+               "}\n";
     }
     // ---- decoded video, NV12 -> RGBA (exec.c vk_convert_nv12): limited range BT.601, as swscale did (the movies
     // declare no matrix). Fullscreen triangle; Vulkan NDC y points down, so uv = p.

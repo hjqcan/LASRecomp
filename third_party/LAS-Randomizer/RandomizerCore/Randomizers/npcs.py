@@ -80,7 +80,8 @@ def makeNpcChanges(npc, placements, settings):
         del npc['layoutConditions'][0]
         return
     
-    if npc['symbol'] == 'ObjTelephone': # since telephones swap tunics, make it so the Fairy Queen is talking
+    # (LARecomp: not with Treat Tunics as Upgrades, where the phones keep Ulrira's call - mod_generator.py)
+    if npc['symbol'] == 'ObjTelephone' and not settings.get('tunic-upgrades'): # since telephones swap tunics, make it so the Fairy Queen is talking
         npc['talk'] = {'personalSpace': 1.5, 'talkerLabel': 'NpcFairyQueen'}
         return
     

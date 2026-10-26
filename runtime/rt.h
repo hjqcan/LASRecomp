@@ -71,6 +71,8 @@ void rt_fatal_msg(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void rt_crash_fault(const char *what, uint64_t fa, uint64_t pc);
 void rt_crash_explain(char *out, size_t n, const char *log_path);
 extern int rt_romfs_files;
+extern uint64_t rt_romfs_bytes;  // (their sizes summed; game_romfs_bytes() is the right total)
+extern int rt_romfs_missing;     // the game's files not there by their own name and size (game_romfs_check_end)
 void crash_handler_install(void);  // per thread (alternate signal stack)
 
 // ---- kernel.c
