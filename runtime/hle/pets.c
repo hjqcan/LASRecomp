@@ -89,7 +89,7 @@ int pets_ghost_state(void) {
     return flag_get("Ghost4_Clear") && flag_get("EighthClear");
 }
 
-// Companions the menu can call (found, story not past them), current one included: count, values in out[]
+// Companions the Items page's companion slot can call (found, story not past them), current one included: count, values in out[]
 int pets_callable(int out[5]) {
     int n = 0;
     for (int c = C_BOWWOW; c <= C_ROOSTER; c++)
@@ -98,8 +98,6 @@ int pets_callable(int out[5]) {
             out[n++] = c;
     return n;
 }
-
-const char *pets_name(int c) { return c >= 0 && c < 5 ? kComp[c].name : "?"; }
 
 static volatile int g_swap;  // a call to carry out on the game thread (pets_game_tick)
 

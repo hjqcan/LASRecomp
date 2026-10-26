@@ -1,4 +1,4 @@
-// Keysanity: dungeon items found anywhere. The game's AddItem (main+0x7e18b0, Items.gsheet row ids) adds small
+// Keysanity: dungeon items found anywhere. The game's AddItem (main+0x7e18b0, Items.gsheet itemID ids) adds small
 // keys / Nightmare Key / map / compass / beak to the CURRENT dungeon only (outside one it does nothing). Seeds with
 // keysanity give them with a dungeon index (upstream LAS dev convention: 0-7 = Tail Cave..Turtle Rock, 9 = Color
 // Dungeon): this hook

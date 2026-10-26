@@ -291,13 +291,14 @@ void input_reset(void) {
 
 volatile int g_debug_frame_request;  // F9: dump the next frame's passes (build/pass_*.png) + draw log
 
-// Events a test pushes (LARECOMP_HOST_INPUT type: / sdlkey: / sdlpad: / mouse:) carry this device id: they go the whole way, menu first.
+// Events a test pushes (LARECOMP_HOST_INPUT type: / sdlkey: / sdlpad: / sdlaxis: / mouse:) carry this device id: they go the whole way, menu first.
 #define TEST_DEVICE 0x7E57u
 static bool test_event(const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP: return e->key.which == TEST_DEVICE;
     case SDL_EVENT_TEXT_INPUT: return e->text.windowID == TEST_DEVICE;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: return e->gbutton.which == TEST_DEVICE;
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION: return e->gaxis.which == TEST_DEVICE;
     case SDL_EVENT_MOUSE_MOTION: return e->motion.which == TEST_DEVICE;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP: return e->button.which == TEST_DEVICE;
     default: return false;
@@ -514,6 +515,8 @@ static _Atomic int32_t script_lx, script_ly, script_rx, script_ry;
 //   entry first like a player's typing; "{Escape}" (any SDL key name) presses that key. No ',' or ':' in <text>.
 // "frame:sdlpad:<button>:frames" / "frame:sdlkey:<key>:frames" hold a controller button / key as real events (down
 //   at frame, up `frames` later): they reach menus and the on-screen keyboard first, as a player's would.
+// "frame:sdlaxis:<axis>=<value>:frames" holds a controller axis (SDL name: righty, leftx...; raw units, -32768..32767,
+//   y down) as real events, back to 0 `frames` later.
 // "frame:mouse:<dx>/<dy>" moves the mouse by that many points, "frame:mouse:click" clicks it (real events).
 // "frame:shot:<name>" saves the window (game + menus) to build/<name>.png.
 // "frame:resize:<W>x<H>" resizes the window to W x H points (menu_apply_window_requests: the main thread).
@@ -565,6 +568,17 @@ static void test_push(uint64_t frame, unsigned long start, unsigned long len, co
     }
     if (!strcmp(dev, "sdlkey")) {
         if (frame == start || frame == start + len) push_key(SDL_GetScancodeFromName(arg), SDL_KMOD_NONE, frame == start);
+        return;
+    }
+    if (!strcmp(dev, "sdlaxis")) {  // <axis>=<value>, e.g. righty=24000: held for len frames, then back to 0
+        char an[32] = "";
+        int v = 0;
+        if ((frame != start && frame != start + len) || sscanf(arg, "%31[a-z]=%d", an, &v) != 2) return;
+        SDL_GamepadAxis ax = SDL_GetGamepadAxisFromString(an);
+        if (ax == SDL_GAMEPAD_AXIS_INVALID) return;
+        e.type = SDL_EVENT_GAMEPAD_AXIS_MOTION;
+        e.gaxis.which = TEST_DEVICE, e.gaxis.axis = (Uint8)ax, e.gaxis.value = (Sint16)(frame == start ? v : 0);
+        SDL_PushEvent(&e);
         return;
     }
     if (!strcmp(dev, "sdlpad")) {
@@ -621,7 +635,7 @@ static void host_test_frame(uint64_t frame) {
             unsigned long start = 0, len = 10;
             char dev[8] = "", name[400] = "";
             if (sscanf(tok, "%lu:%7[a-z]:%399[^:]:%lu", &start, dev, name, &len) < 3) continue;
-            if (!strcmp(dev, "type") || !strcmp(dev, "sdlpad") || !strcmp(dev, "sdlkey") || !strcmp(dev, "shot") ||
+            if (!strcmp(dev, "type") || !strcmp(dev, "sdlpad") || !strcmp(dev, "sdlaxis") || !strcmp(dev, "sdlkey") || !strcmp(dev, "shot") ||
                 !strcmp(dev, "resize") || !strcmp(dev, "mouse")) {
                 test_push(frame, start, len, dev, name);
                 continue;
@@ -790,6 +804,8 @@ static void fill_state(Cpu *c) {
       pot_bush_game_tick(c, renderer_present_count());
       extern void shell_spots_tick(Cpu *c, uint64_t frame);
       shell_spots_tick(c, renderer_present_count());
+      extern void apple_trees_tick(Cpu *c, uint64_t frame);
+      apple_trees_tick(c, renderer_present_count());
       extern void qol_tick(void);
       qol_tick();
       extern void run_timer_tick(void);

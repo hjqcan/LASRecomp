@@ -44,7 +44,7 @@ _RED = b'\x0e\x00\x00\x03\x00\x04\x00\xd9\x45\x6d\xff'  # colour tags: the game'
 _WHITE = b'\x0e\x00\x00\x03\x00\x04\x00\xed\xed\xed\xff'
 _PAGE = b'\x0e\x00\x00\x04\x00\x00\x00'
 
-JUNK = re.compile(r'^((pot-|dig-)?rupee-\d+|pot-heart|pot-arrows|pot-bombs|pot-powder|.*-trap|arrows?(-\d+)?|'
+JUNK = re.compile(r'^((pot-|dig-)?rupee-\d+|pot-heart|pot-arrows|pot-bombs|pot-powder|.*-trap|arrows?(-\d+)?|apple|green-apple|'
                   r'bombs?-\d+|powder-\d+|heart|fairy)$')
 
 
@@ -457,12 +457,14 @@ def place_phrase(step, dungeon_of, entered_via):
         if lv in LEVEL_DUNGEON:
             return 'in a pot ' + dungeon(dungeon_of.get(loc, LEVEL_DUNGEON[lv]))
         return f'in a pot in {_words(lv)}' + (f' ({area})' if area else '')
-    if loc.startswith(('bush-', 'dig-')):
+    if loc.startswith(('bush-', 'dig-', 'apple-tree-')):
         lm = step.get('landmark')
         if lm and lm.startswith(GENERIC) and area:
             lm += f' in {area}'
         if loc.startswith('bush-'):
             return f'under a bush by {lm}' if lm else f'under a bush in {area or "the wilds"}'
+        if loc.startswith('apple-tree-'):  # (Applesanity, tools/rando/apple_trees.py)
+            return f'in an apple tree by {lm}' if lm else f'in an apple tree in {area or "the wilds"}'
         return f'buried near {lm}' if lm else f'buried in {area or "the ground"}'
     if loc.endswith('-dig'):
         return f'buried in {area or "the ground"}'
@@ -523,6 +525,8 @@ def place_parts(step, dungeon_of, names, lang):
         return area, det('pot')
     if loc.startswith('bush-'):
         return area, det('bush')
+    if loc.startswith('apple-tree-'):
+        return area, det('apple')
     if loc.startswith('dig-') or loc.endswith('-dig'):
         return area, det('buried')
     for prefix, label in (('shop-', 'ToolShop'), ('trendy-prize', 'GameShop'), ('fishing-', 'FishingPond'),
@@ -753,7 +757,7 @@ def apply(out_dir, romfs, settings):
             event_tools.addEntryPoint(flow.flowchart, n)
             event_tools.createActionChain(flow.flowchart, n, [('Dialog', 'Show', {'message': f'System:{n}'})])
     event_tools.writeFlow(cp, flow)
-    if any(s['loc'].startswith(('bush-', 'dig-')) for s in steps_):  # (their nearest landmark)
+    if any(s['loc'].startswith(('bush-', 'dig-', 'apple-tree-')) for s in steps_):  # (their nearest landmark)
         from RandomizerCore.Tools import leb
         import bushes
         marks = landmarks(romfs, leb)
@@ -761,6 +765,10 @@ def apply(out_dir, romfs, settings):
         for st in steps_:
             m = re.match(r'^dig-(\d\d[A-P])-(\d+)$', st['loc'])
             spot = (m.group(1), int(m.group(2))) if m else bush_tile.get(st['loc'])
+            t = re.match(r'^apple-tree-(\d\d[A-P])-\d$', st['loc'])
+            if t:  # (the tile Link dashes into the tree from: apple_trees.py)
+                import apple_trees
+                spot = (t.group(1), apple_trees.STAND['Field_' + t.group(1)])
             if spot and spot[1] is not None:
                 st['landmark'] = nearest(marks, *tile_xz(*spot))
     step_names = names[:len(steps_)]

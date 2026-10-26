@@ -4,6 +4,11 @@
 
 static TitleProfile selected;
 static bool no_profile, gpu_fault, guest_fault;
+static bool las;
+bool title_is_las(void) { return las; }
+static GameVersion version={.key="v1_0_0"};
+const GameVersion *game_version(void) { return las ? &version : NULL; }
+uint64_t game_romfs_bytes(const GameVersion *v) { return v ? 100 : 0; }
 const TitleProfile *title_profile_current(void) { return no_profile ? NULL : &selected; }
 bool plat_module_name(uint64_t pc, char *out, size_t n) {
     if (!gpu_fault) return false;
@@ -48,6 +53,13 @@ int main(void) {
     gpu_fault = true; check(22, 22, NULL, "Your graphics driver crashed"); gpu_fault = false;
     guest_fault = true; check(22, 22, NULL, "The game crashed"); guest_fault = false;
     check(22, 22, "unclassified stop", "Multi stopped because of an error");
+    las = true; rt_romfs_bytes = 99;
+    check(3836, 3836, "unclassified stop", "game files are damaged or changed");
+    rt_romfs_bytes = 100; rt_romfs_missing = 1;
+    check(3836, 3836, "unclassified stop", "game files are damaged or changed");
+    las = false;
+    check(22, 22, "no function at 7001234000", "Game code is not supported yet");
+    rt_romfs_missing = 0;
     puts("PASS: adapter-aware crash explanations and existing failure categories");
     return 0;
 }

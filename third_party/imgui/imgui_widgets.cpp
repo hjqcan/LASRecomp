@@ -721,6 +721,7 @@ bool ImGui::ButtonBehavior(const ImRect& bb, ImGuiID id, bool* out_hovered, bool
     return pressed;
 }
 
+extern ImU32 GImGuiLasButtonText;  // (LAS Recomp: imgui.cpp)
 bool ImGui::ButtonEx(const char* label, const ImVec2& size_arg, ImGuiButtonFlags flags)
 {
     ImGuiWindow* window = GetCurrentWindow();
@@ -748,11 +749,16 @@ bool ImGui::ButtonEx(const char* label, const ImVec2& size_arg, ImGuiButtonFlags
     // Render
     const ImU32 col = GetColorU32((held && hovered) ? ImGuiCol_ButtonActive : hovered ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
     RenderNavCursor(bb, id);
+    GImGuiLasButtonText = 0;  // (LAS Recomp: the frame hook may give the label its own colour)
     RenderFrame(bb.Min, bb.Max, col, true, style.FrameRounding);
+    const ImU32 las_text = GImGuiLasButtonText;
+    GImGuiLasButtonText = 0;
+    if (las_text) PushStyleColor(ImGuiCol_Text, las_text);
 
     if (g.LogEnabled)
         LogSetNextTextDecoration("[", "]");
     RenderTextClipped(bb.Min + style.FramePadding, bb.Max - style.FramePadding, label, NULL, &label_size, style.ButtonTextAlign, &bb);
+    if (las_text) PopStyleColor();
 
     // Automatically close popups
     //if (pressed && !(flags & ImGuiButtonFlags_DontClosePopups) && (window->Flags & ImGuiWindowFlags_Popup))

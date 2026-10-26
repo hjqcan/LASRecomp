@@ -196,6 +196,10 @@ void rec_init(bool prof_on) {
     prof = prof_on;
     const char *e = getenv("LARECOMP_VK_RECORDER");
     int want = !e || atoi(e) != 0;
+    // ARM's Mali drivers: the GPU was lost a few seconds into the title screen with the recorder thread on (Mali-G610,
+    // #358) and ran fine with it off; LARECOMP_VK_RECORDER=1 still turns it on there
+    bool mali = g_vk.props.vendorID == 0x13B5;
+    if (mali && !e) want = 0;
     on = 0;
     if (want) {
         const char *mb = getenv("LARECOMP_VK_RECORDER_MB");
@@ -219,7 +223,8 @@ void rec_init(bool prof_on) {
         pthread_attr_destroy(&attr);
     }
     stats_init();
-    LOG("[vk] recorder thread %s%s\n", on ? "on" : "off", on && rec_wait_pipes() ? " (draws wait for their pipelines)" : "");
+    LOG("[vk] recorder thread %s%s\n", on ? "on" : "off", on && rec_wait_pipes() ? " (draws wait for their pipelines)" :
+        mali && !e ? " (Mali driver)" : "");
 }
 
 // ================================================================== waits

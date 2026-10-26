@@ -54,6 +54,21 @@ static void wt_init(uint64_t a,uint64_t b) { (void)a;(void)b; }
 static bool wt_register(uint64_t a,uint64_t b) { (void)a;(void)b;return true; }
 static void wt_off(const char *s) { (void)s; }
 '''
+        preamble += r'''
+#include <stdlib.h>
+#include <stdio.h>
+#include <errno.h>
+#include <stdatomic.h>
+#include <signal.h>
+static uint64_t plat_now_ns(void) { return 0; }
+'''
+        preamble += source[source.index('// ---- soft page write tracking:'):source.index('// ---- guest address space')]
+        preamble += r'''
+static void soft_handler(int sig, siginfo_t *info, void *context) {
+    (void)sig; (void)context;
+    if (!soft_fault((uintptr_t)info->si_addr)) abort();
+}
+'''
 harness = preamble + ''.join(function(n) for n in (
     'plat_reserve_guest', 'plat_reserve_guest_extra', 'plat_commit_physical',
     'plat_discard_physical', 'plat_reset_guest')) + r'''
@@ -90,6 +105,25 @@ int main(void) {
     assert(plat_reset_guest(lo,hi));
     assert(plat_commit_physical(lo+0x10000,0x1000));
     assert(*(uint64_t *)(uintptr_t)(lo+0x10000)==0);
+#ifdef __linux__
+    // A reboot replaces protected pages with writable ones. The next query must arm the new mapping.
+    struct sigaction action = {.sa_sigaction=soft_handler, .sa_flags=SA_SIGINFO};
+    sigemptyset(&action.sa_mask);
+    assert(!sigaction(SIGSEGV,&action,NULL));
+    plat_soft_write_tracking(lo,hi);
+    uint64_t pages[2];
+    volatile unsigned char *watched=(void *)(uintptr_t)lo;
+    assert(soft_written_pages(lo,4096,pages,2)==0);
+    *watched=1;
+    assert(soft_written_pages(lo,4096,pages,2)==1 && pages[0]==lo);
+    assert(plat_reset_guest(lo,lo+4096));
+    assert(soft_written_pages(lo,4096,pages,2)==0);
+    *watched=2;
+    assert(soft_written_pages(lo,4096,pages,2)==1 && pages[0]==lo);
+    plat_os_write(lo,4096);
+    *watched=3;
+    assert(soft_written_pages(lo,4096,pages,2)==1);
+#endif
     return 0;
 }
 '''

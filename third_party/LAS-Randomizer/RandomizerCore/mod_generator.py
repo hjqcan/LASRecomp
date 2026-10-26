@@ -129,7 +129,8 @@ class ModsProcess(QtCore.QThread):
             # if self.thread_active: self.makeShopChanges()
             
             if self.thread_active: self.makeOwlStatueChanges()
-            if self.thread_active: self.makeTelephoneChanges()
+            # LARecomp: with Treat Tunics as Upgrades both tunics stay owned, so the phones keep Ulrira's own call
+            if self.thread_active and not self.settings.get('tunic-upgrades'): self.makeTelephoneChanges()
 
             if self.thread_active: self.makeGeneralARCChanges()
             

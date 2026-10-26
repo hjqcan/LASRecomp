@@ -19,7 +19,17 @@ KObject *handle_get(uint32_t handle) {
     return handle>0x100 && handle<0x140 ? test_handles[handle-0x100] : NULL;
 }
 const char *g_romfs_dir;
-int rt_romfs_files;
+int rt_romfs_files, rt_romfs_missing;
+uint64_t rt_romfs_bytes;
+const GameVersion *game_version(void) { return NULL; }
+uint64_t game_romfs_bytes(const GameVersion *v) { return 0; }
+GameRomfsCheck *game_romfs_check_begin(const GameVersion *v) { return NULL; }
+bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size) { return true; }
+int game_romfs_check_end(GameRomfsCheck *c) { return 0; }
+bool game_romfs_exefs_copy(const char *root, const char *rel, uint64_t size) { return false; }
+#ifdef __linux__
+void plat_os_write(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
+#endif
 static TitleProfile profile = {.version="1.0.0"};
 const TitleProfile *title_profile_current(void) { return &profile; }
 bool title_content_validate(const TitleProfile *p,const char *root,bool image,int *count,char *why,size_t cap) { abort(); }

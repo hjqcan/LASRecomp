@@ -3,7 +3,7 @@
 - The maintained branch is `multi` and its public name is Multi. The repository remains `hjqcan/LASRecomp`, with `main` as the default. New release tags use `multi-beta*`; retain existing historical tags and internal filenames/data paths as documented in `docs/multi.md`.
 
 - `main` and `beta_5` mirror the corresponding `peiikai/LASRecomp` branches. Update them only by fast-forwarding to upstream. Do not put fork features on either branch.
-- `multi` is the maintained fork edition. Merge upstream `beta_5` updates into it; resolve conflicts by preserving the enhancements listed in `docs/multi.md` alongside upstream fixes.
+- `multi` is the maintained fork edition. Merge upstream `beta_6` updates into it; resolve conflicts by preserving the enhancements listed in `docs/multi.md` alongside upstream fixes.
 - Develop and commit ongoing work, including Z-A research, directly on `multi` by default. Merge official updates there too. Use temporary branches only when isolation is actually needed or for focused upstream PRs, and delete completed integration branches once their commits are on remote `multi`.
 - Do not reset `multi` to upstream, discard features rejected by upstream, or overwrite feature branches backing open PRs. Upstream submissions remain small, independent PRs against `beta_5` and follow the maintainer's scope requirements.
 - Public `multi` accepts already-extracted game folders only. Do not add game archive parsing/decompression, key-file handling, NCA decryption, or update-package application to source, helper bundles or UI. Preserve translated UI, version slots and experimental updated-version randomizer support; those fork features stay out of upstream PRs unless upstream changes its policy.

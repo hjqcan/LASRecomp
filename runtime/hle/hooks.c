@@ -49,7 +49,8 @@ void rt_owner_call_notify(Cpu *c, uint64_t obj);
     X(OWNER_CALL_NOTIFY_SITE) \
     X(FRAME_JOB_FINISH_SITE) \
     X(SHAPE_SIM_SITES_0) \
-    X(SHAPE_SIM_SITES_1)
+    X(SHAPE_SIM_SITES_1) \
+    X(EFFECT_BONE_SITE)
 enum {
 #define X(name) H_##name,
     HOOK_SITES(X)
@@ -155,6 +156,16 @@ int rt_hook(Cpu *c, uint64_t site) {
             LOG("[physx] shape %#llx changed (flags %#x) without a simulation object: update skipped (issue #314), from%s\n",
                 (unsigned long long)c->x[1], site == GA(SHAPE_SIM_SITES_0) ? (unsigned)LD32(c->x[19]) : 0u, where);
         }
+        return 2;
+    }
+    case H_EFFECT_BONE_SITE: {  // EFFECT_BONE_SITE - ldr x0, [x22, #0x50]: a bone-following effect's bone node (#349)
+        if (LD64(c->x[22] + 0x50)) return 0;
+        static int logged;  // (no node: its bone lookup found no model - the actor's own transform, the kind-0 path)
+        static uint64_t last;
+        if (c->x[22] != last && logged++ < 4)
+            LOG("[effect] emitter %#llx follows a bone its actor has no node for: placed at the actor (issue #349)\n",
+                (unsigned long long)c->x[22]);
+        last = c->x[22];
         return 2;
     }
     }

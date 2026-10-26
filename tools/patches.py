@@ -870,6 +870,15 @@ ACTOR_EVENT_SITE = A.ACTOR_EVENT_SITE
 # functions' own return): its simulation object, if one is made later, starts from the shape's current state.
 SHAPE_SIM_SITES = [A.SHAPE_SIM_SITES_0, A.SHAPE_SIM_SITES_1]
 
+# Issue #349 (a Chamber Stone from a Shellsanity rock in Ukuku Prairie: crash reading 0x8 in main+0xe44280): an
+# effect emitter that follows a bone of its actor's model (an effect descriptor of kind 1 - e.g. the glitter
+# ObjSinkingSword.drsb puts on the bone "root" of every SinkingSword item) keeps the bone's node at emitter +0x50, looked
+# up once when the emitter is made (main+0xe40bb0 -> main+0xe411b8). The lookup gives no node when the actor has no
+# model instance then (main+0xe51f20) and nothing checks it: each update (main+0xe44280) reads the bone's matrix
+# through it. The hook takes an emitter without its node down the kind-0 path instead (the actor's own transform),
+# so the effect plays where the item is.
+EFFECT_BONE_SITE = A.EFFECT_BONE_SITE
+
 # ---- hook sites: the instruction stays as it is; just before it the runtime's rt_hook (runtime/hle/hooks.c) is asked
 # what to do - 0 run it, 1 the hook did it all, 2.. jump to the site's first.. target (each a label in its function).
 # The game code they generate never changes when a hook's behaviour does: only a new site needs the game code
@@ -900,4 +909,5 @@ HOOKS = {
     OWNER_CALL_NOTIFY_SITE: (0x9100e2a0, (), 'add x0, x21, #0x38: owner-thread call done, the caller is waiting first'),
     SHAPE_SIM_SITES[0]: (0xaa0003f4, (A.SHAPE_SIM_SKIP_0,), 'mov x20, x0: a PhysX shape change, no update without its simulation object (#314)'),
     SHAPE_SIM_SITES[1]: (0xaa0003e1, (A.SHAPE_SIM_SKIP_1,), 'mov x1, x0: a PhysX shape change, no update without its simulation object (#314)'),
+    EFFECT_BONE_SITE: (0xf9402ac0, (A.EFFECT_BONE_SKIP,), 'ldr x0, [x22, #0x50]: a bone-following effect without its bone, at the actor instead (#349)'),
 }

@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,6 +109,96 @@ void plat_write_tracking_off(const char *why) {
     g_pagemap = g_uffd = -1;
 }
 
+// ---- soft page write tracking: mprotect + SIGSEGV, where the kernel's can't run (LARECOMP_SOFT_WRITE_TRACKING=0: off)
+// The guest heap as driver memory (exec.c guest_heap_dmabuf: RADV) is no anonymous memory, so userfaultfd can't watch
+// it; there a query instead protects the pages it covered read-only, and the CPU's first write to one faults:
+// crash_handler (soft_fault) records the page and gives it its write access back. The GPU's own mapping of the memory
+// is not the CPU's page table, so the GPU never notices. Only pages a query covered ever fault, and each at most once
+// between two queries. The OS's own writes (file reads into the heap) would fail on a protected page instead of
+// faulting: plat_os_write unprotects first.
+// Page states: 0 never protected (not ours), 1 protected, 2 being given back, 3 writable again (was ours).
+enum { SOFT_NONE, SOFT_ARMED, SOFT_RELEASING, SOFT_OPEN };
+static _Atomic uint8_t *g_soft_state, *g_soft_written;  // one byte per 4K page of [g_soft_lo, g_soft_hi)
+static uint64_t g_soft_lo, g_soft_hi;
+static _Atomic uint64_t g_soft_faults, g_soft_queries, g_soft_protects;
+#define SOFT_PAGE 4096ull
+
+void plat_soft_write_tracking(uint64_t lo, uint64_t hi) {
+    const char *e = getenv("LARECOMP_SOFT_WRITE_TRACKING");
+    if ((e && !atoi(e)) || g_soft_state) return;
+    uint64_t n = (hi - lo) / SOFT_PAGE;
+    g_soft_state = calloc(n, 1), g_soft_written = calloc(n, 1);  // (untouched parts of these cost nothing either)
+    if (!g_soft_state || !g_soft_written) { free((void *)g_soft_state), free((void *)g_soft_written); g_soft_state = NULL; return; }
+    g_soft_lo = lo, g_soft_hi = hi;
+    fprintf(stderr, "[plat] soft page write tracking on (mprotect + SIGSEGV) over %llx-%llx\n", (unsigned long long)lo,
+            (unsigned long long)hi);
+}
+
+// Give page p its write access back and count it written (the fault handler and plat_os_write). False: not ours.
+static bool soft_release(uint64_t p) {
+    uint8_t st = SOFT_ARMED;
+    if (atomic_compare_exchange_strong(&g_soft_state[p], &st, SOFT_RELEASING)) {
+        atomic_store(&g_soft_written[p], 1);  // (before the page opens: a query that sees it open sees it written)
+        mprotect((void *)(uintptr_t)(g_soft_lo + p * SOFT_PAGE), SOFT_PAGE, PROT_READ | PROT_WRITE);
+        atomic_store(&g_soft_state[p], SOFT_OPEN);
+        atomic_fetch_add(&g_soft_faults, 1);
+        return true;
+    }
+    while (st == SOFT_RELEASING) st = atomic_load(&g_soft_state[p]);  // (another thread opens it: the write retries)
+    return st == SOFT_OPEN;  // (opened by another thread meanwhile: retry; SOFT_NONE: never ours, a real fault)
+}
+
+static bool soft_fault(uint64_t fa) {
+    if (!g_soft_state || fa < g_soft_lo || fa >= g_soft_hi) return false;
+    return soft_release((fa - g_soft_lo) / SOFT_PAGE);
+}
+
+void plat_os_write(uint64_t addr, uint64_t size) {
+    if (!g_soft_state || !size || addr >= g_soft_hi || addr + size <= g_soft_lo) return;
+    uint64_t a = addr < g_soft_lo ? g_soft_lo : addr, b = addr + size > g_soft_hi ? g_soft_hi : addr + size;
+    for (uint64_t p = (a - g_soft_lo) / SOFT_PAGE; p <= (b - 1 - g_soft_lo) / SOFT_PAGE; p++)
+        if (atomic_load(&g_soft_state[p]) == SOFT_ARMED) soft_release(p);
+}
+
+// plat_written_pages over soft tracking: protect the range's open pages first, then take the written marks, so a write
+// between the two is either already marked or faults after the protection.
+static int soft_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max) {
+    if (addr < g_soft_lo || addr + size > g_soft_hi || max <= 0) return -1;
+    uint64_t first = (addr - g_soft_lo) / SOFT_PAGE, last = (addr + size - 1 - g_soft_lo) / SOFT_PAGE;
+    for (uint64_t p = first; p <= last;) {  // runs of pages not protected: one mprotect each
+        uint8_t st = atomic_load(&g_soft_state[p]);
+        if (st == SOFT_ARMED || st == SOFT_RELEASING) { p++; continue; }
+        uint64_t q = p;
+        while (q <= last && (st = atomic_load(&g_soft_state[q])) != SOFT_ARMED && st != SOFT_RELEASING) q++;
+        for (uint64_t i = p; i < q; i++) atomic_store(&g_soft_state[i], SOFT_ARMED);
+        if (mprotect((void *)(uintptr_t)(g_soft_lo + p * SOFT_PAGE), (q - p) * SOFT_PAGE, PROT_READ)) {
+            static int warned;
+            if (warned++ < 5)
+                fprintf(stderr, "[plat] soft tracking: mprotect %llx +%llu pages failed: %s\n",
+                        (unsigned long long)(g_soft_lo + p * SOFT_PAGE), (unsigned long long)(q - p), strerror(errno));
+        }
+        atomic_fetch_add(&g_soft_protects, 1);
+        p = q;
+    }
+    int n = 0;
+    for (uint64_t p = first; p <= last; p++)
+        if (atomic_load(&g_soft_written[p]) && atomic_exchange(&g_soft_written[p], 0)) {
+            if (n < max) pages[n] = g_soft_lo + p * SOFT_PAGE;
+            n++;
+        }
+    uint64_t q = atomic_fetch_add(&g_soft_queries, 1);
+    static uint64_t last_log;
+    uint64_t now = plat_now_ns();
+    if (now - last_log > 5000000000ull) {
+        fprintf(stderr, "[plat] soft tracking, last 5 s: %llu queries, %llu protects, %llu faults\n",
+                    (unsigned long long)q, (unsigned long long)atomic_exchange(&g_soft_protects, 0),
+                    (unsigned long long)atomic_exchange(&g_soft_faults, 0));
+        atomic_store(&g_soft_queries, 0);
+        last_log = now;
+    }
+    return n < max ? n : max;
+}
+
 // ---- guest address space
 static uint64_t g_guest_lo, g_guest_hi;
 // Everything readable/writable from the start, like macOS: the guest maps at 4K granularity, and untouched pages
@@ -159,6 +250,12 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
     if (mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED,
              -1, 0) != (void *)(uintptr_t)lo)
         return false;
+    // The replacement is writable: the next query must protect it again, even if the old pages were armed.
+    if (g_soft_state && lo < g_soft_hi && hi > g_soft_lo) {
+        uint64_t first = (lo > g_soft_lo ? lo - g_soft_lo : 0) / SOFT_PAGE;
+        uint64_t end = ((hi < g_soft_hi ? hi : g_soft_hi) - g_soft_lo) / SOFT_PAGE;
+        for (uint64_t p = first; p < end; p++) atomic_store(&g_soft_state[p], SOFT_NONE), atomic_store(&g_soft_written[p], 0);
+    }
     if (g_uffd >= 0 && !wt_register(lo, hi)) wt_off("register after reset");
     return true;
 }
@@ -166,6 +263,7 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
 int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, uint64_t *page) {
+    if (g_soft_state) { *page = SOFT_PAGE; return soft_written_pages(addr, size, pages, max); }
     if (g_pagemap < 0 || addr < g_wt_lo || addr + size > g_wt_hi || max <= 0) return -1;
     WtRegion v[64];
     uint64_t at = addr, end = addr + size;
@@ -428,6 +526,7 @@ static void crash_handler(int sig, siginfo_t *si, void *ctx) {
     uint64_t pc = (uint64_t)uc->uc_mcontext.gregs[REG_RIP], sp = (uint64_t)uc->uc_mcontext.gregs[REG_RSP], lr = 0;
     if (sig != SIGSEGV || (fa & ~0xFFFull) != (sp & ~0xFFFull)) lr = *(uint64_t *)(uintptr_t)sp;
 #endif
+    if (sig == SIGSEGV && soft_fault(fa)) return;  // (soft page write tracking: the write retries on an open page)
     if (rt_fault_watch(fa, pc)) return;
     char what[32];
     snprintf(what, sizeof what, "signal %d", sig);

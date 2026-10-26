@@ -72,7 +72,7 @@ with tempfile.TemporaryDirectory(prefix='gmem-') as tmp:
                 ns=f'case_{len(cases)}'
                 cases.append(ns)
                 code=f'namespace {ns} {{\nBuf gmem0_,gmem1_,gmem2_,gfast_;\nbool fast=false;\n'
-                code+='uint gfind(uint g){return fast?g/4:0xffffffffu;}\n'+helpers
+                code+='uint gfind(uint g){return fast?g/4:0xffffffffu;}\nuint gfindw(uint g){return gfind(g);}\n'+helpers
                 code+='void run(){for(bool use_fast : {false,true}) for(uint ga : {14u,15u,12u,36u,40u}){\n'
                 code+=f'fast=use_fast && {str(stage==5).lower()};\n'
                 code+='gmem0_.w={0x98765432u,0x98765433u,0x98765434u,0x98765435u};\n'

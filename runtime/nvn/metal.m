@@ -1314,6 +1314,8 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         extern void renderer_set_alloc_scale(float ax, float ay);
         renderer_set_alloc_scale((float)os.ax, (float)os.ay);
         renderer_set_scale((float)sx, (float)sy);
+        id<MTLTexture> scene = nil;  // (the game image as drawn, for the menu: menu_set_scene)
+        float scene_uv[4] = {0, 0, 1, 1};
         if (b && b->tex) {
             id<MTLTexture> src = raw_view(b->tex);
             // Dynamic: the image occupies the top-left part of the texture (its contents' scale over the allocation's)
@@ -1359,8 +1361,11 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
             [enc setFragmentTexture:src atIndex:0];
             [enc setFragmentSamplerState:present_sampler atIndex:0];
             [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            scene = src;
+            memcpy(scene_uv, crop, sizeof scene_uv);
         }
         [enc endEncoding];
+        menu_set_scene(scene, scene_uv);
         static long menu_at = -1;  // test hook: open the menu at this frame (LARECOMP_MENU_AT)
         if (menu_at < 0) menu_at = getenv("LARECOMP_MENU_AT") ? atol(getenv("LARECOMP_MENU_AT")) : 0;
         if (menu_at && (long)frame + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }

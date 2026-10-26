@@ -308,7 +308,7 @@ void warp_game_tick(Cpu *c) {
 }
 
 // ---- give item (game thread): main+0x7e18b0 = AddItem(itemId, count, index, autoEquip), the call behind the
-// Inventory.AddItemByKey event action (itemId = row of datasheets/Items.gsheet, e.g. 78 PanelDungeonPiece).
+// Inventory.AddItemByKey event action (itemId = the itemID field of datasheets/Items.gsheet, not the row: e.g. 114 PanelDungeonPiece, row 78).
 
 static int g_give_id, g_give_count, g_give_index;
 

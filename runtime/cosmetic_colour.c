@@ -37,14 +37,23 @@ void col_format(const CosColour *c, char *out, size_t n) {
     else snprintf(out, n, "%s", g_col_names[c->pick >= 0 && c->pick < N_COL ? c->pick : 0]);
 }
 
-int (*g_col_seed_pick)(int slot);
+int (*g_col_seed_pick)(int slot, uint32_t *rgb);
+
+static int seed_pick(const CosColour *c, int slot, uint32_t *rgb) {
+    if (c->pick != COL_DEFAULT || !g_col_seed_pick) return COL_DEFAULT;
+    uint32_t v = 0;
+    int p = g_col_seed_pick(slot, &v);
+    if (p > COL_DEFAULT && p < COL_RANDOM) v = g_col_rgb[p];
+    else if (p != COL_CUSTOM) return COL_DEFAULT;
+    if (rgb) *rgb = v & 0xFFFFFF;
+    return p;
+}
+
+bool col_seed_rgb(const CosColour *c, int slot, uint32_t *rgb) { return seed_pick(c, slot, rgb) != COL_DEFAULT; }
 
 int col_pick(const CosColour *c, int slot) {
-    if (c->pick == COL_DEFAULT && g_col_seed_pick) {
-        int p = g_col_seed_pick(slot);
-        if (p > COL_DEFAULT && p < COL_RANDOM) return p;
-    }
-    return c->pick;
+    int p = seed_pick(c, slot, NULL);
+    return p ? p : c->pick;
 }
 
 bool col_target(const CosColour *c, int slot, uint32_t *rgb) {
@@ -62,7 +71,8 @@ bool col_target(const CosColour *c, int slot, uint32_t *rgb) {
         *rgb = g_col_rgb[picks[slot]];
         return true;
     }
-    int p = col_pick(c, slot);  // (Default: the seed's colour, if it has one)
+    if (col_seed_rgb(c, slot, rgb)) return true;  // (Default: the seed's colour, if it has one)
+    int p = c->pick;
     if (p <= COL_DEFAULT || p >= COL_RANDOM) return false;
     *rgb = g_col_rgb[p];
     return true;

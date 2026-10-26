@@ -4400,6 +4400,17 @@ void renderer_reset(void) {
     @synchronized(g_ready_pipes) { [g_ready_pipes removeAllObjects]; }
     g_boot_gen++;
     [g_snap_copies removeAllObjects];
+    // storage snapshots: their copies live in guest memory, which the reboot wipes, so a kept entry would hand back
+    // zeroed data (blank names and death counts on the file select)
+    for (int i = 0; i < nwatch_pages; i++)
+        if (watch_pages[i].armed) plat_protect(watch_pages[i].page, PLAT_PAGE, PLAT_PROT_RW), watch_pages[i].armed = 0;
+    nwatch_pages = 0;
+    nrs = 0;
+    snap_ring_off = 0;
+    snap_gen++;
+    memset((void *)rs_cpu_wrote, 0, sizeof rs_cpu_wrote);
+    memset(rs_hit_inside, 0, sizeof rs_hit_inside);
+    memset(rs_store_frame, 0, sizeof rs_store_frame);
     memset(snap_tex, 0, sizeof snap_tex);
     memset(snap_ok, 0, sizeof snap_ok);
     for (int i = 0; i < 4; i++) { feedback_tex[i] = NULL; feedback_copy[i] = nil; }

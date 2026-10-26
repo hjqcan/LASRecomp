@@ -13,6 +13,7 @@ root = Path(__file__).resolve().parents[1]
 source = (root / 'runtime/nvn/vulkan/exec.c').read_text()
 defer = source[source.index('static uint64_t overlap_defer('):source.index('\nuint64_t renderer_fence_seq(')]
 snap = source[source.index('#define SNAP_HALF'):source.index('// (debug) LARECOMP_LOG_BINDS=1:')]
+gmap = source[source.index('// ---- gmap_build (tools/test_vulkan_overlap.py'):source.index('// ---- end gmap_build')]
 decide = source[source.index('#define VK_OVERLAP_DEFAULT'):source.index('static _Atomic uint64_t g_last_gpu_frame_ticks;')]
 assert 'VK_OVERLAP_DEFAULT 1' in decide, 'the default is on where the write watch is available (Beta 5)'
 assert 'static void snap_ring_import_tail(void);' in snap
@@ -110,6 +111,7 @@ static int track_off;  // (no tracking: -1)
 static uint8_t page_dirty[HEAP_MAX / 4096];
 static uint32_t page_gen[HEAP_MAX / 4096], pgen = 1;
 static unsigned looks;
+static uint64_t race_at, race_size, race_poke;  // (W14)
 static void cpu_wrote(uint64_t addr) { page_dirty[(addr - HEAP_BASE) / 4096] = 1; }
 static int pages_cpu_written(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now) {
     if (track_off) return -1;
@@ -123,6 +125,11 @@ static int pages_cpu_written(uint64_t addr, uint64_t size, uint32_t since, uint3
         if (page_gen[p] > since) w = 1;
     }
     *now = g;
+    if (race_at && addr == race_at && size == race_size) {  // (a game-thread store right after this look, before the hash)
+        heap_mem[race_poke - HEAP_BASE]++;
+        page_dirty[(race_poke - HEAP_BASE) / 4096] = 1;
+        race_at = 0;
+    }
     return w;
 }
 static bool userptr;
@@ -142,6 +149,14 @@ const char *game_level_name(void) { return level; }
 static uint64_t stat_snap_bytes, stat_snap_copies;
 ''' + snap + r'''
 static void snap_ring_import_tail(void) {}
+static int pages_seen_written(uint64_t addr, uint64_t size, uint32_t since) {  // (the stamps the looks left)
+    if (track_off) return -1;
+    for (uint64_t p = (addr - HEAP_BASE) / 4096; p < (addr - HEAP_BASE + size + 4095) / 4096; p++) if (page_gen[p] > since) return 1;
+    return 0;
+}
+static void gpu_wrote(uint64_t addr, uint64_t size) {  // (a dispatch's output: bytes change, no dirty bit)
+    for (uint64_t o = 0; o + 8 <= size; o += 256) heap_mem[addr - HEAP_BASE + o]++;
+}
 static bool heap_is_userptr(void) { return userptr; }
 static uint64_t ring_lo(void) { return HEAP_BASE + snap_base; }
 static bool in_ring(uint64_t a) { return a >= ring_lo() && a < ring_lo() + SNAP_RING; }
@@ -185,9 +200,13 @@ static void watch_tests(void) {
     level = "Beach";
     frame += 601;
     assert(snap_storage(C, 2048, true) == C && rs_tab[1].mode == RS_PLACE);
-    // W5. two ranges on one page (the light lists): a CPU write into one marks both
+    // W5. two ranges on one page (the light lists): a CPU write into one marks both - from their third look on (a
+    //     store on a shared page: the first two looks leave the GPU's first writes time to show)
     frame++;
     assert(snap_storage(B, 2048, true) == B && snap_storage(B2, 2048, true) == B2);
+    cpu_wrote(B2 + 8);
+    frame++;
+    assert(snap_storage(B, 2048, true) == B && snap_storage(B2, 2048, true) == B2 && rs_tab[2].mode == RS_PLACE);  // (not even noted)
     cpu_wrote(B2 + 16);
     frame++;
     assert(snap_storage(B, 2048, true) == B && snap_storage(B2, 2048, true) == B2);  // (noted)
@@ -214,6 +233,8 @@ static void watch_tests(void) {
     uint64_t F = HEAP_BASE + 0xA0000;
     frame++;
     assert(snap_storage(F, 2048, true) == F);
+    frame++;
+    assert(snap_storage(F, 2048, true) == F);  // (its second look: from the third on, a store on its shared page counts)
     uint32_t g;
     for (int i = 0; i < 2; i++) {  // (written in two frames, someone else looking first each time)
         cpu_wrote(F + 4);
@@ -251,7 +272,181 @@ static void watch_tests(void) {
     cpu_wrote(I);  // (a lone write 21 frames later: still not a rewrite)
     frame++;
     assert(snap_storage(I, 4096, true) == I && rs_tab[9].mode == RS_PLACE);
-    puts("PASS: write watch - in place + tracked, CPU writes that keep coming make a copy for good (a single one doesn't), no demotion on level / idle, GPU writes ignored, a shared page marks both, a page shared with a small parameter block doesn't, a prior write is consumed, draw reads copy, other lookers");
+    // W11 (#355). BowWow's skinning outputs as the first Linux log laid them out: eight 22048-byte outputs 224 bytes
+    //     apart, then (992 bytes on) four 3104-byte ones 224 bytes apart, which the GPU writes every frame, with
+    //     per-frame constants the CPU stores in the memory before, between and after them (no watched range there).
+    //     The outputs' bytes change on pages the CPU didn't touch: GPU outputs, and a store beside them doesn't copy
+    //     them. A store on a page wholly inside one, in two frames, still does.
+    uint64_t X = HEAP_BASE + 0x200000, O[8], T[4];
+    for (int i = 0; i < 8; i++) O[i] = X + 0x700 + (uint64_t)i * 0x5700;
+    for (int i = 0; i < 4; i++) T[i] = X + 0x2c800 + (uint64_t)i * 0xd00;
+    frame++;
+    for (int i = 0; i < 8; i++) assert(snap_storage(O[i], 22048, true) == O[i]);
+    for (int i = 0; i < 4; i++) assert(snap_storage(T[i], 3104, true) == T[i]);
+    for (int f = 0; f < 6; f++) {
+        cpu_wrote(X + 0x100);    // (before the first output, on its first page)
+        cpu_wrote(X + 0x2c500);  // (between the last 22048 output's tail and the first 3104 one, on both their pages)
+        cpu_wrote(X + 0x2f800);  // (after the last 3104 output, on its page)
+        if (f >= 1) {  // (the dispatch of the frame they were made in lands two frames later at most: the overlap)
+            for (int i = 0; i < 8; i++) gpu_wrote(O[i], 22048);
+            for (int i = 0; i < 4; i++) gpu_wrote(T[i], 3104);
+        }
+        frame++;
+        for (int i = 0; i < 8; i++) assert(snap_storage(O[i], 22048, true) == O[i]);
+        for (int i = 0; i < 4; i++) assert(snap_storage(T[i], 3104, true) == T[i]);
+    }
+    uint64_t got = 0;
+    for (int f = 0; f < 2; f++) { cpu_wrote(O[0] + 0x2000); frame++; got = snap_storage(O[0], 22048, true); }  // (a store inside output 0, in two frames)
+    assert(got != O[0]);
+    for (int i = 2; i < 8; i++) assert(snap_storage(O[i], 22048, true) == O[i]);
+    // W12. the light / exposure lists (32640, 32640, 2040, 2040: one allocation the CPU memcpys every frame), at any
+    //      offset in the page: all four are copied, also the small list whose only page it shares with other memory
+    for (uint64_t off = 0; off < 0x1000; off += 0x300) {
+        uint64_t L = HEAP_BASE + 0x300000 + off / 0x300 * 0x20000 + off, R[4] = {L, L + 0x8000, L + 0x10000, L + 0x10800};
+        const uint64_t Z[4] = {32640, 32640, 2040, 2040};
+        frame++;
+        for (int i = 0; i < 4; i++) assert(snap_storage(R[i], Z[i], true) == R[i]);
+        for (int f = 0; f < 3; f++) {  // (every frame: the small lists' shared page counts from their third look)
+            for (uint64_t p = L; p < L + 0x10800 + 2040; p += 1024) cpu_wrote(p);
+            gpu_wrote(R[2], 2040);  // (the exposure program writes the list too: never taken for an output, its page is never clean)
+            frame++;
+            for (int i = 0; i < 4; i++) snap_storage(R[i], Z[i], true);
+        }
+        for (int i = 0; i < 4; i++) assert(snap_storage(R[i], Z[i], true) != R[i]);
+    }
+    // W13 (#355, second log: Sale's house after the crane game). BowWow's buffers made again where the heap had room:
+    //     3104-byte ones 0x1800 apart (3040 bytes between them: no group), 22048-byte ones right after (gap 0) a 32768-byte
+    //     buffer draws read, which the CPU rewrites every frame, so their first page is the CPU's too. Addresses as in
+    //     the log (7283xxxxxx -> K + xxxxxx). Constants in the gaps dirty one page of each 3104-byte output every frame.
+    //     None of the outputs is copied; the draw buffers are (a draw's read); a 3104-byte buffer the CPU writes and
+    //     the GPU doesn't (an input: a bone palette) is still copied.
+    uint64_t K = HEAP_BASE + 0x400000 - 0xf0000;
+    const uint64_t t13[6] = {0xf8500, 0xf9d00, 0xfb500, 0xfcd00, 0xfe500, 0xffd00}, o13[2] = {0x123500, 0x187700}, d13[3] = {0x11b500, 0x17f700, 0x101500};
+    frame++;
+    for (int i = 0; i < 6; i++) assert(snap_storage(K + t13[i], 3104, true) == K + t13[i]);
+    for (int i = 0; i < 2; i++) assert(snap_storage(K + o13[i], 22048, true) == K + o13[i]);
+    for (int i = 0; i < 3; i++) assert(snap_storage(K + d13[i], 32768, false) != K + d13[i]);
+    uint64_t IN = K + 0x1c0f00;  // (the input, 0x...f00 like 72827b8f00: on two pages)
+    assert(snap_storage(IN, 3104, true) == IN);
+    for (int f = 0; f < 12; f++) {
+        for (int i = 0; i < 3; i++) for (uint64_t p = K + d13[i]; p < K + d13[i] + 32768; p += 1024) cpu_wrote(p);
+        cpu_wrote(K + 0xf9500), cpu_wrote(K + 0xfc500), cpu_wrote(K + 0xff500);  // (pages f9, fc, ff: one of each 3104's two)
+        cpu_wrote(IN + 0x40), cpu_wrote(IN + 0x200);
+        if (f >= 1) {
+            for (int i = 0; i < 6; i++) gpu_wrote(K + t13[i], 3104);
+            for (int i = 0; i < 2; i++) gpu_wrote(K + o13[i], 22048);
+        }
+        frame++;
+        for (int i = 0; i < 6; i++) assert(snap_storage(K + t13[i], 3104, true) == K + t13[i]);
+        for (int i = 0; i < 2; i++) assert(snap_storage(K + o13[i], 22048, true) == K + o13[i]);
+        for (int i = 0; i < 3; i++) assert(snap_storage(K + d13[i], 32768, false) != K + d13[i]);
+        got = snap_storage(IN, 3104, true);
+    }
+    assert(got != IN);
+    // W14 (review): a CPU store landing between a look and the part hashes changes the bytes of a part whose pages the
+    //     look saw clean. Asked again after the hash, it is the CPU's: the part is not taken for a GPU output, and the
+    //     store counts at the next look (with a second one, a copy).
+    uint64_t Q = HEAP_BASE + 0x600000 + 0x700;
+    frame++;
+    assert(snap_storage(Q, 22048, true) == Q);
+    int qi = -1;
+    for (int i = 0; i < nrs; i++) if (rs_tab[i].addr == Q) qi = i;
+    for (int f = 0; f < 3; f++) { frame++; assert(snap_storage(Q, 22048, true) == Q); }  // (past the new-range looks)
+    race_at = Q, race_size = 22048, race_poke = Q + 0x1000;  // (its inner pages, in the hashed first 4 KB)
+    frame++;
+    assert(snap_storage(Q, 22048, true) == Q && !race_at && rs_tab[qi].gpu_parts == 0);
+    frame++;
+    assert(snap_storage(Q, 22048, true) == Q && rs_tab[qi].gpu_parts == 0);  // (the raced store, seen at this look: noted)
+    cpu_wrote(Q + 0x1000);
+    frame++;
+    assert(snap_storage(Q, 22048, true) != Q && rs_tab[qi].mode == RS_COPY);  // (another: writes that keep coming)
+    // W15 (review): learning starts again when a range comes back after more than 8 frames, or on a new level - the
+    //     heap there may hold a CPU input now. A 3104-byte range learned GPU-written, unbound 20 frames, then written by
+    //     the CPU on a shared page every frame and no longer by the GPU: copied. Same after a level change.
+    for (int v = 0; v < 2; v++) {
+        uint64_t U = HEAP_BASE + 0x620000 + (uint64_t)v * 0x10000 + 0x500;
+        frame++;
+        assert(snap_storage(U, 3104, true) == U);
+        int ui = -1;
+        for (int i = 0; i < nrs; i++) if (rs_tab[i].addr == U) ui = i;
+        for (int f = 0; f < 4; f++) { gpu_wrote(U, 3104); frame++; assert(snap_storage(U, 3104, true) == U); }
+        assert(rs_tab[ui].gpu_parts);
+        if (v == 0) frame += 20; else { level = v == 1 ? "Lv01TailCave" : "Field"; frame++; }
+        for (int f = 0; f < 5; f++) { cpu_wrote(U + 0x40); frame++; got = snap_storage(U, 3104, true); }
+        assert(got != U && rs_tab[ui].mode == RS_COPY);
+    }
+    // W16 (review): GPU-written parts are learned one by one. A range whose first page part the GPU writes (a counter)
+    //     and whose last page the CPU writes is copied: only the first part's page is excused.
+    uint64_t V = HEAP_BASE + 0x660000 + 0x800;
+    frame++;
+    assert(snap_storage(V, 0x3000, true) == V);
+    int vi = -1;
+    for (int i = 0; i < nrs; i++) if (rs_tab[i].addr == V) vi = i;
+    for (int f = 0; f < 6; f++) {
+        heap_mem[V - HEAP_BASE + 8]++;  // (the GPU: its first page part)
+        cpu_wrote(V + 0x2f00);          // (the CPU: its last page)
+        frame++;
+        got = snap_storage(V, 0x3000, true);
+    }
+    assert(rs_tab[vi].gpu_parts == 1 && got != V && rs_tab[vi].mode == RS_COPY);
+    // W17 (#355 round 4): the GPU's report of which slots each program stores into (gfast flags) decides before the
+    //     page heuristic. Learning: a program without stores writes nothing; a slot is written once a dispatch stored
+    //     into it, read once 8 reported dispatches covering it didn't; unknown before.
+    const uint64_t CS1 = 0x72a8da0000ull, CS2 = 0x72e8f33e00ull;
+    assert(cs_slot_class(CS1, false, 6) == 0 && cs_slot_class(CS1, true, 6) == -1);
+    csw_note(CS1, 0x00EF, 0x00C0);  // (slots 0-3, 5, 6, 7 covered; 6 and 7 stored into)
+    assert(cs_slot_class(CS1, true, 6) == 1 && cs_slot_class(CS1, true, 7) == 1 && cs_slot_class(CS1, true, 0) == -1);
+    for (int i = 0; i < 7; i++) csw_note(CS1, 0x00EF, 0x00C0);
+    assert(cs_slot_class(CS1, true, 0) == 0 && cs_slot_class(CS1, true, 5) == 0 && cs_slot_class(CS1, true, 4) == -1);
+    for (int i = 0; i < 8; i++) csw_note(CS2, 0x00EF, 0x0087);  // (64-byte slots 0, 1, 2 and the 1552-byte 7 stored; 3 the palette, 5, 6 read)
+    csw_note(CS2, 0x00EF, 0x00C7);                             // (slot 6 stored into once, later: written from then on)
+    assert(cs_slot_class(CS2, true, 3) == 0 && cs_slot_class(CS2, true, 6) == 1 && cs_slot_class(CS2, true, 0) == 1);
+    // Outputs (written slots) beside CPU-rewritten memory on every page they have - the case no page heuristic can
+    // read: small outputs (64 / 160 bytes, an eye's) and a 3104-byte one, with no GPU byte change in the test either.
+    // None is copied. A palette in a read slot on such a page is copied (no new-range delay: the class is known).
+    uint64_t Y = HEAP_BASE + 0x700000;
+    const uint64_t so[3] = {Y + 0x740, Y + 0x2800, Y + 0x4500}, sz[3] = {64, 160, 3104};
+    uint64_t PAL = Y + 0x6400;
+    frame++;
+    snap_slot_class = 1;
+    for (int i = 0; i < 3; i++) assert(snap_storage(so[i], sz[i], true) == so[i]);
+    snap_slot_class = 0;
+    assert(snap_storage(PAL, 3104, true) == PAL);
+    for (int f = 0; f < 6; f++) {
+        for (uint64_t pg = Y; pg < Y + 0x8000; pg += 4096) cpu_wrote(pg + 0x10);  // (every page of the block, outside the ranges)
+        cpu_wrote(PAL + 0x40);
+        frame++;
+        snap_slot_class = 1;
+        for (int i = 0; i < 3; i++) assert(snap_storage(so[i], sz[i], true) == so[i]);
+        snap_slot_class = 0;
+        got = snap_storage(PAL, 3104, true);
+        if (f >= 1) assert(got != PAL);  // (writes in two looks: copied)
+    }
+    snap_slot_class = -1;
+    // A written range the CPU stores into on a page wholly its own is the CPU's too: copied (with a second store)
+    uint64_t WO = HEAP_BASE + 0x720000 + 0x700;
+    frame++;
+    snap_slot_class = 1;
+    assert(snap_storage(WO, 22048, true) == WO);
+    for (int f = 0; f < 2; f++) { cpu_wrote(WO + 0x1000); frame++; got = snap_storage(WO, 22048, true); }
+    assert(got != WO);
+    // The light / exposure lists with the exposure program storing into the small lists (written slots) and the big
+    // ones read: the CPU's memcpy of the allocation copies all four, at every page offset
+    for (uint64_t off = 0; off < 0x1000; off += 0x300) {
+        uint64_t L = HEAP_BASE + 0x740000 + off / 0x300 * 0x20000 + off, R[4] = {L, L + 0x8000, L + 0x10000, L + 0x10800};
+        const uint64_t Z[4] = {32640, 32640, 2040, 2040};
+        frame++;
+        for (int i = 0; i < 4; i++) { snap_slot_class = i < 2 ? 0 : 1; assert(snap_storage(R[i], Z[i], true) == R[i]); }
+        for (int f = 0; f < 2; f++) {
+            for (uint64_t pg = L; pg < L + 0x10800 + 2040; pg += 1024) cpu_wrote(pg);
+            gpu_wrote(R[2], 2040);
+            frame++;
+            for (int i = 0; i < 4; i++) { snap_slot_class = i < 2 ? 0 : 1; snap_storage(R[i], Z[i], true); }
+        }
+        for (int i = 0; i < 4; i++) { snap_slot_class = i < 2 ? 0 : 1; assert(snap_storage(R[i], Z[i], true) != R[i]); }
+    }
+    snap_slot_class = -1;
+    puts("PASS: write watch - in place + tracked, CPU writes that keep coming make a copy for good (a single one doesn't), no demotion on level / idle, GPU writes ignored, a shared page marks both, a page shared with a small parameter block doesn't, nor a store beside a GPU output on its shared pages (#355, both Linux layouts), learning: a store between look and hash, reuse after a gap / level, per part, the GPU's slot report (outputs never copied by neighbours' stores, inputs at once, the lists), the lists at any page offset, a prior write is consumed, draw reads copy, other lookers");
 }
 
 int main(int argc, char **argv) {
@@ -458,14 +653,133 @@ int main(int argc, char **argv) {
     puts("PASS: snapshots - probe / in place / copy, level and idle re-probes, exclusions, the two halves and their waits, per-frame pool reads without entries, GPU writes kept across a remake, eviction, heap growth, reboot");
 }
 '''
+# gmap_build: the fast-copy table and the store report's bit mapping. A store's report bit is the TABLE ENTRY it lands
+# in (translate.c gfindw: GFast word GFAST_FLAG_WORD + entry, only inside the entry's bound bytes, gmap[i].w); the
+# entry's slot bits (bit i = storage slot i of the dispatch) turn that into storage slots (gfast_flags_poll). gfindw is
+# mirrored here in C from the same table words; tools/test_vulkan_overlap.py's 'glsl' check pins its GLSL text.
+gmap_harness = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include "shader.h"
+''' + gmap + r'''
+static uint32_t tab[(GMAP_MAX + 1) * 4];
+// gfindw (translate.c), in C: the entry whose bound bytes hold heap offset g, -1 none (also -1: inside an entry's
+// 256-byte rounding but outside its bound bytes - the load path still finds it there, the report doesn't)
+static int gfindw(uint32_t g, int n) {
+    for (int i = 0; i < n; i++) {
+        uint32_t o = g - tab[i * 4];
+        if (g >= tab[i * 4] && o < tab[i * 4 + 1]) return (o >= (tab[i * 4 + 3] & 0xFFu) && (o >> 2) < (tab[i * 4 + 3] >> 8)) ? i : -1;
+    }
+    return -1;
+}
+static uint16_t slots_of_stores(const GmapEnt *r, int n, const uint32_t *g, int ng) {  // (gfast_flags_poll's mapping)
+    uint16_t w = 0;
+    for (int k = 0; k < ng; k++) { int e = gfindw(g[k], n); if (e >= 0) w |= r[e].slots; }
+    return w;
+}
+int main(void) {
+    const uint64_t B = 0x7281000000ull;  // (heap base in the logged addresses: offsets below)
+    GmapEnt r[16];
+    uint64_t used;
+    // BowWow's skinning program 72a8da0000 as dispatched (Mac / Linux logs): slots 0-3 66144-byte, 5 the 12-byte
+    // parameters, 6-7 22048-byte outputs. One entry per slot (none overlap), each with exactly its slot's bit.
+    uint64_t off[16] = {0}, size[16] = {0};
+    const uint64_t a1[8] = {0x7287c31b00, 0x7287c21800, 0x7287c11500, 0x7287c01200, 0, 0x7282e71900, 0x7282e46100, 0x7282e50f00};
+    const uint64_t z1[8] = {66144, 66144, 66144, 66144, 0, 12, 22048, 22048};
+    for (int i = 0; i < 8; i++) if (z1[i]) off[i] = a1[i] - B, size[i] = z1[i];
+    int n = gmap_build(off, size, 1ull << 40, (uint64_t)GFAST_FLAG_WORD * 4, r, tab, &used);
+    assert(n == 7);
+    for (int e = 0; e < n; e++) {
+        int s = __builtin_ctz(r[e].slots);
+        assert(r[e].slots == (1u << s) && r[e].xlo == off[s] && r[e].xhi == off[s] + size[s]);
+        assert(tab[e * 4] == (uint32_t)r[e].lo && (tab[e * 4 + 3] & 0xFF) == off[s] - r[e].lo && (tab[e * 4 + 3] >> 8) == (off[s] + size[s] - r[e].lo + 3) / 4);
+    }
+    assert(used <= (uint64_t)GFAST_FLAG_WORD * 4);
+    // stores into the two outputs report slots 6 and 7 (0xc0) - not the entry indexes (sorted by address: 1 and 2)
+    uint32_t st1[2] = {(uint32_t)(off[6] + 16), (uint32_t)(off[7] + 22048 - 4)};
+    assert(slots_of_stores(r, n, st1, 2) == 0xc0);
+    // a store past an output's last byte, in its 256-byte rounding, or between buffers: no slot
+    uint32_t st2[2] = {(uint32_t)(off[6] + 22048), (uint32_t)(off[7] - 4)};
+    assert(slots_of_stores(r, n, st2, 2) == 0);
+    // 72e8f33e00: 64-byte slots 0, 1, 2 and 6, the 3104-byte palette in 3, 8 bytes in 5, 1552 in 7. Its stores go to
+    // slots 0-2 (Windows' report 0x7): those bits and no other - the palette (3) and slot 7 stay unreported.
+    memset(off, 0, sizeof off), memset(size, 0, sizeof size);
+    const uint64_t a2[8] = {0x7273882740, 0x7273882940, 0x7273882b40, 0x7282e7b200, 0, 0x7282e7f800, 0x7273883540, 0x7282e7d400};
+    const uint64_t z2[8] = {64, 64, 64, 3104, 0, 8, 64, 1552};
+    const uint64_t B2 = 0x7240000000ull;
+    for (int i = 0; i < 8; i++) if (z2[i]) off[i] = a2[i] - B2, size[i] = z2[i];
+    n = gmap_build(off, size, 1ull << 40, (uint64_t)GFAST_FLAG_WORD * 4, r, tab, &used);
+    assert(n == 7);
+    uint32_t st3[3] = {(uint32_t)off[0], (uint32_t)(off[1] + 60), (uint32_t)(off[2] + 32)};
+    assert(slots_of_stores(r, n, st3, 3) == 0x7);
+    uint32_t st4[2] = {(uint32_t)(off[0] + 64), (uint32_t)(off[3] - 4)};  // (just past slot 0; just before the palette)
+    assert(slots_of_stores(r, n, st4, 2) == 0);
+    // two slots bound to overlapping bytes share an entry: a store there reports both
+    memset(off, 0, sizeof off), memset(size, 0, sizeof size);
+    off[2] = 0x10000, size[2] = 2040, off[9] = 0x10000 + 0x100, size[9] = 64;
+    n = gmap_build(off, size, 1ull << 40, (uint64_t)GFAST_FLAG_WORD * 4, r, tab, &used);
+    uint32_t st5[1] = {0x10100};
+    assert(n == 1 && r[0].slots == ((1u << 2) | (1u << 9)) && slots_of_stores(r, n, st5, 1) == ((1u << 2) | (1u << 9)));
+    // too many bytes for gfast (the flags sit above): no table
+    memset(size, 0, sizeof size);
+    off[0] = 0, size[0] = (uint64_t)GFAST_FLAG_WORD * 4 + 4;
+    assert(gmap_build(off, size, 1ull << 40, (uint64_t)GFAST_FLAG_WORD * 4, r, tab, &used) == -1);
+    puts("PASS: store report bits - one table entry per slot, a store reports its storage slot (BowWow's programs: 0xc0, 0x7), not padding or gaps, shared bytes report both slots, oversize falls back");
+}
+'''
+
+# the GLSL the translator emits for a compute store: gfindw at the store, gfind at the load, and gfindw's report
+glsl_driver = r'''
+#include <stdio.h>
+#include <string.h>
+#include "shader.h"
+#define PT (7ull << 16)
+int main(void) {
+    uint64_t p[16] = {0}, m = 0;
+    const uint64_t ins[] = {
+        0x0100000000000000ull | 0x10000ull << 20 | 0xFull << 12 | PT | 2,                     // MOV32I R2, 0x10000
+        0x0100000000000000ull | 0x72ull << 20 | 0xFull << 12 | PT | 3,                        // MOV32I R3, 0x72
+        0xeed0000000000000ull | 4ull << 48 | 1ull << 45 | PT | 2ull << 8 | 4,                 // LDG.E R4, [R2]
+        0xeed0000000000000ull | 1ull << 51 | 4ull << 48 | 1ull << 45 | 16ull << 20 | PT | 2ull << 8 | 4,  // STG.E [R2+16], R4
+        0};
+    for (const uint64_t *w = ins; *w; w++) { if (m % 4 == 0) p[m++] = 0; p[m++] = *w; }
+    if (m % 4 == 0) p[m++] = 0;
+    p[m++] = 0xe30000000007000full;  // EXIT
+    while (m % 4) p[m++] = 0x50b0000000070f00ull;
+    maxwell_gmem_base = 0x7200000000ull, maxwell_gmem_size = 0x400000000ull;
+    ShaderKey key = {0};
+    key.glsl = 1;
+    ShaderInfo *s = maxwell_translate((const uint8_t *)p, m * 8, STAGE_COMPUTE, &key);
+    if (!s->msl) { printf("translation failed: %s\\n", s->error); return 1; }
+    fputs(s->msl, stdout);
+    return 0;
+}
+'''
+
 with tempfile.TemporaryDirectory(prefix='vulkan-overlap-') as temporary:
     temporary = Path(temporary)
-    for name, harness in (('defer', defer_harness), ('decide', decide_harness), ('snap', snap_harness)):
+    nvn = root / 'runtime/nvn/maxwell'
+    cc = shlex.split(os.environ.get('CC', 'clang'))
+    gl = temporary / 'glsl_store.c'
+    gl.write_text(glsl_driver)
+    glexe = temporary / ('glsl_store.exe' if os.name == 'nt' else 'glsl_store')
+    subprocess.run(cc + ['-std=gnu11', '-O1', '-w', '-I', str(nvn), str(gl), str(nvn / 'translate.c'), '-o', str(glexe), '-lm'], check=True)
+    out = subprocess.run([str(glexe)], check=True, capture_output=True, text=True, timeout=30).stdout
+    flag = f'gfast_.w[{(32 << 20) // 4 - 64}u + i] = gmap[16].y;'
+    assert 'fw = ok ? gfindw(uint(ga))' in out and 'fw = ok ? gfind(uint(ga))' in out, 'the store looks up with gfindw, the load with gfind'
+    assert ('uint gfindw(uint g) { uint n = gmap[16].x; for (uint i = 0u; i < n; i++) { uint o = g - gmap[i].x; '
+            'if (g >= gmap[i].x && o < gmap[i].y) { if (o >= (gmap[i].w & 0xFFu) && (o >> 2) < (gmap[i].w >> 8)) ' + flag) in out, \
+        'gfindw reports table entry i (only inside its bound bytes) with the stamp: the mapping gmap_build / gfast_flags_poll read'
+    print('PASS: GLSL store report - gfindw at the store, gfind at the load, entry i flagged with the stamp inside its bound bytes')
+    for name, harness in (('defer', defer_harness), ('decide', decide_harness), ('snap', snap_harness), ('gmap', gmap_harness)):
         cfile = temporary / f'{name}.c'
         cfile.write_text(harness)
         exe = temporary / (f'{name}.exe' if os.name == 'nt' else name)
         subprocess.run(shlex.split(os.environ.get('CC', 'clang')) + ['-std=gnu11', '-O1', '-Wall', '-Wno-unused-function', '-Wno-unused-variable',
-                        str(cfile), '-o', str(exe)], check=True)
+                        '-I', str(nvn), str(cfile), '-o', str(exe)], check=True)
         env = dict(os.environ)
         env.pop('LARECOMP_OVERLAP_WATCH', None)
         if name == 'decide':  # default on with tracking, off without (unless forced), =0 off

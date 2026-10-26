@@ -34,9 +34,9 @@ Release 页面手动下载 Multi Beta 5.4；之后可正常检查 Multi 更新�
 
 ## Branch policy / 分支维护规则
 
-`main` and `beta_5` mirror upstream. `multi` merges upstream `beta_5` fixes and retains the fork's features. Features accepted upstream can use the upstream implementation after checking that no fork behavior is lost. Features upstream does not accept remain maintained here. Existing upstream PR branches are independent and are never rewritten as part of multi synchronization.
+`main` and `beta_5` mirror upstream. `multi` merges upstream `beta_6` updates and retains the fork's features. Features accepted upstream can use the upstream implementation after checking that no fork behavior is lost. Features upstream does not accept remain maintained here. Existing upstream PR branches are independent and are never rewritten as part of multi synchronization.
 
-`main`、`beta_5` 只同步官方同名分支；`multi` 持续合入官方 `beta_5` 更新，并保留我们自己的全部增强功能。官方不接受的功能继续在这里维护；官方接受的功能以最新官方实现为基础，核对兼容性后整合。同步和发布不会改写已提交 PR 的分支。
+`main`、`beta_5` 只同步官方同名分支；`multi` 持续合入官方 `beta_6` 更新，并保留我们自己的全部增强功能。官方不接受的功能继续在这里维护；官方接受的功能以最新官方实现为基础，核对兼容性后整合。同步和发布不会改写已提交 PR 的分支。
 
 ## Included enhancements
 
@@ -85,7 +85,7 @@ v1.1.0 随机化仍为实验功能，尚未验证完整通关和全部选项组�
 
 ## Repeatable release checks
 
-1. Merge upstream `beta_5` into `multi` and run the relevant CI checks. Preserve the fork features and independent PR branches.
+1. Merge upstream `beta_6` into `multi` and run the relevant CI checks. Preserve the fork features and independent PR branches.
 2. Build the runtime and both helpers from the same revision; apply `pe_no_cfg.py` to the Windows generator. Use `tools/package_multi_windows.py` to package only allowlisted files.
 3. Before publishing, check setup, cancel/resume, gameplay, audio, save/reopen and the changed features with compatible copied saves. Keep unsupported ports and experimental randomizer options clearly marked.
 4. Inspect the package contents and checksum, then publish it as a fork prerelease. Do not add per-run reports or machine-specific evidence to the repository.

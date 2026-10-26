@@ -1,5 +1,17 @@
 // English source keys and reviewed Simplified / Traditional Chinese display strings.
 // Add new entries here; unlisted languages and keys fall back to English.
+UI_TEXT("Applesanity", "苹果随机化", "蘋果隨機化")
+UI_TEXT("Each apple tree holds 3 items from the pool.", "每棵苹果树放置物品池中的 3 件物品。", "每棵蘋果樹放置物品池中的 3 件物品。")
+UI_TEXT("Your options", "当前选项", "目前選項")
+UI_TEXT("Seed ID: %s", "种子编号：%s", "種子編號：%s")
+UI_TEXT("Race mode. Seed hash: %s", "竞速模式。种子校验：%s", "競速模式。種子校驗：%s")
+UI_TEXT("Dungeon", "迷宫", "迷宮")
+UI_TEXT("Search", "搜索", "搜尋")
+UI_TEXT("Enemies", "敌人", "敵人")
+UI_TEXT("Screen", "画面", "畫面")
+UI_TEXT("Storage", "存储", "儲存")
+UI_TEXT("Game files damaged or changed", "游戏文件已损坏或被修改", "遊戲檔案已損壞或被修改")
+UI_TEXT("Copy your game files again, then choose that folder and set them up again.", "请重新复制游戏文件，然后选择该目录重新设置。", "請重新複製遊戲檔案，然後選擇該目錄重新設定。")
 UI_TEXT("Data folder", "数据目录", "資料目錄")
 UI_TEXT("Change...", "更改……", "變更……")
 UI_TEXT("Moving your data", "正在迁移数据", "正在搬移資料")

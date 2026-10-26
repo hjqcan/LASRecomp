@@ -25,9 +25,12 @@ extern const uint32_t g_col_rgb[N_COL];  // the named colours' targets (0 for De
 void col_parse(CosColour *c, const char *val);
 // c -> its larecomp.ini value (name, or #RRGGBB for Custom)
 void col_format(const CosColour *c, char *out, size_t n);
-// The randomizer seed's own cosmetics (seed option "Random cosmetics", runtime/cosmetics_seed.c): the palette colour
-// row `slot` takes while it is on Default (0: none - vanilla, or a seed without the option). NULL until set.
-extern int (*g_col_seed_pick)(int slot);
+// The randomizer seed's own cosmetics (seed option "Random cosmetics", runtime/cosmetics_seed.c): the colour row `slot`
+// takes while it is on Default: a palette colour, or COL_CUSTOM with *rgb (0: none - vanilla, or a seed without the
+// option). NULL until set.
+extern int (*g_col_seed_pick)(int slot, uint32_t *rgb);
+// The seed's own colour for row `slot` while it is on Default (0xRRGGBB); false: none
+bool col_seed_rgb(const CosColour *c, int slot, uint32_t *rgb);
 // The palette colour row `slot` shows: the player's choice, or the seed's while the row is on Default
 int col_pick(const CosColour *c, int slot);
 // The colour row `slot` should show now (0xRRGGBB); false: Default (the game's own look).

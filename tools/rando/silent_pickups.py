@@ -29,7 +29,7 @@ SILENT_BASE = 3000  # (runtime/hle/silent_pickups.c)
 CARD = ('HeartPiece', 'HeartContainer', 'Seashell')  # (the runtime's card)
 # the pickup sound (Audio.PlayOneshotSystemSE, the game's own system SEs): the small item / rupee / heart pickup sounds
 SE = {'HeartPiece': 'SE_SY_GET_ITEM', 'Seashell': 'SE_SY_GET_ITEM', 'HeartContainer': 'SE_SY_HEART_UP',
-      'Heart': 'SE_SY_HEART_RECOVERY'}
+      'Heart': 'SE_SY_HEART_RECOVERY', 'Apple': 'SE_SY_HEART_RECOVERY', 'GreenApple': 'SE_SY_HEART_RECOVERY'}
 SE_RUPEE = 'SE_SY_GET_RUPY'
 
 

@@ -39,6 +39,14 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi);
 int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, uint64_t *page);
 #ifdef __linux__
 void plat_write_tracking_off(const char *why);  // tracking off from now on (unless LARECOMP_WRITE_TRACKING=1)
+// Tracking of [lo, hi) by mprotect + SIGSEGV instead (memory the kernel's can't watch: the heap as driver memory);
+// LARECOMP_SOFT_WRITE_TRACKING=0: off
+void plat_soft_write_tracking(uint64_t lo, uint64_t hi);
+// The OS is about to write [addr, addr+size) (a file read into guest memory): pages soft tracking protected are opened
+// and count as written first (a write by the OS on a protected page would fail instead of faulting)
+void plat_os_write(uint64_t addr, uint64_t size);
+#else
+static inline void plat_os_write(uint64_t addr, uint64_t size) { (void)addr, (void)size; }
 #endif
 enum { PLAT_PROT_NONE = 0, PLAT_PROT_READ = 1, PLAT_PROT_RW = 3 };
 int plat_protect(uint64_t addr, uint64_t size, int prot);  // 0 on success
@@ -88,6 +96,12 @@ typedef intptr_t PlatProc;  // 0 = failed to start
 PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_log);
 int plat_proc_wait(PlatProc p, bool block);  // exit code, or -1 while still running (block = false)
 #define PLAT_PROC_SIGNALED 256               // + N: ended by signal N instead of exiting (not on Windows)
+#define PLAT_PROC_FAST_FAIL 512              // Windows: ended by a security check (0xC0000409, e.g. Control Flow Guard)
+#ifdef _WIN32
+// plat_spawn with Control Flow Guard off for the child (the generator: unicorn's longjmp fails CFG's check, #337).
+// *error: 0 = started that way; else why not (then it was started normally, or not at all if that failed too)
+PlatProc plat_spawn_no_cfg(const char *const argv[], const char *log_path, bool append_log, unsigned long *error);
+#endif
 void plat_proc_kill(PlatProc p);             // end it and what it started (then it's gone: no wait)
 bool plat_remove_tree(const char *dir);      // rm -rf
 // dir is synced by OneDrive (Windows: under a OneDrive folder, or a cloud file); false on other systems

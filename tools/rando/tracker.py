@@ -195,7 +195,10 @@ def name_checks(checks, romfs):
         b = boxes.get(a)
         where = direction((x - b[0]) / max(1.0, b[2] - b[0]), (z - b[1]) / max(1.0, b[3] - b[1])) if b else ''
         numbered = c['k'] in ('bush', 'dig', 'pot') and re.match(r'(bush|dig|pot)-', c['n'])
-        if numbered and c['k'] == 'pot' and c.get('lv') not in (None, 'Field'):
+        apple = re.match(r'apple-tree-\d\d[A-P]-(\d)$', c['n'])
+        if apple:
+            name = display_name(c['n'], 'apple', place, f'{where}, {apple.group(1)} of 3' if where else f'{apple.group(1)} of 3')
+        elif numbered and c['k'] == 'pot' and c.get('lv') not in (None, 'Field'):
             name = f"Pot in {house(c['lv'])}"
         elif numbered:
             name = display_name(c['n'], c['k'], place, where)
@@ -335,6 +338,13 @@ def build(seed_dir, romfs):
         shell_pos = {c[0]: (float(c[5]), float(c[7])) for c in rows
                      if c[3] == 'Field' and len(c) > 7 and re.match(r'-?[\d.]+$', c[5]) and re.match(r'-?[\d.]+$', c[7])}
         shell_flags = {c[0]: int(c[12]) for c in rows if len(c) > 12 and c[12].lstrip('-').isdigit()}
+    ap = os.path.join(seed_dir, 'apple_trees.tsv')  # (Applesanity: on the tree's screen, tools/rando/apple_trees.py)
+    if os.path.exists(ap):
+        rows = [c for c in (ln.rstrip('\n').split('\t') for ln in open(ap)) if len(c) > 7 and not c[0].startswith('#')]
+        shell_rooms_apples = {c[0]: (c[3], c[4]) for c in rows}
+        shell_pos.update({c[0]: (float(c[5]), float(c[7])) for c in rows})
+    else:
+        shell_rooms_apples = {}
     absent = set(settings.get('absent-locations', ()))  # (rooms the dungeon shuffle left out: not in the game)
     for name, v in logic.items():
         if v.get('type') != 'item' or name.startswith('starting-') or name in absent:
@@ -343,6 +353,8 @@ def build(seed_dir, romfs):
         room, level = lr.get('room'), lr.get('level')
         if not room and name in shell_rooms:  # (Secret Seashell spots: their room, tools/rando/seashell_spots.py)
             level, room = shell_rooms[name]
+        if not room and name in shell_rooms_apples:
+            level, room = shell_rooms_apples[name]
         g = -1
         cell = None
         dg = (None, None)

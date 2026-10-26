@@ -2,7 +2,8 @@
 
 Optional:
   --game KEY=FOLDER (repeatable, e.g. --game v1_0_0=extracted --game v1_0_1=/path/to/1.0.1): extracted game files of
-    that version. Every patch's instruction check and every hook word then runs on that version's main program, the
+    that version. Every RomFS file must be one of that version's (romfs_files.h), every patch's instruction check and
+    every hook word then runs on that version's main program, the
     randomizer's patch sites (tools/rando/patch_variants.json, and --seeds) must hold the same original bytes in every
     given version, the start screen's release label is checked, and with v1_0_0 and another version the committed
     tables must equal tools/version_map.py's output.
@@ -106,6 +107,7 @@ source = tmp/'addresses.c'
 source.write_text(r'''#include "game_addresses.h"
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 void rt_log(const char *fmt, ...) { va_list a; va_start(a, fmt); vfprintf(stderr, fmt, a); va_end(a); }
 static int hex(const char *s, uint8_t *id) {
@@ -132,6 +134,26 @@ if (argc == 3 && !strcmp(argv[1], "select")) {  // select <game folder>
     int ok = game_version_select(argv[2], why, sizeof why);
     printf("%d %s %s\n", ok, ok ? game_version()->key : "-", why);
     if (ok && GA(HAS_ITEM) != g_ga->HAS_ITEM) return 1;
+    return 0;
+}
+if ((argc == 3 || argc == 4) && !strcmp(argv[1], "romfs")) {
+    // romfs <build ID, "-": none> [game folder: copies of the game code at its romfs root are skipped], then
+    // "<size> <path>" lines on stdin
+    uint8_t id[20];
+    const GameVersion *v = hex(argv[2], id) ? game_version_by_build_id(id) : NULL;
+    GameRomfsCheck *c = game_romfs_check_begin(v);
+    char line[1100], path[1024];
+    unsigned long long size;
+    while (fgets(line, sizeof line, stdin)) {
+        if (sscanf(line, "%llu %1023[^\n]", &size, path) != 2) continue;
+        if (argc == 4 && game_romfs_exefs_copy(argv[3], path, size)) printf("copy %s\n", path);
+        else if (!game_romfs_check_file(c, path, size)) printf("odd %s %llu\n", path, size);
+    }
+    printf("missing %d\n", game_romfs_check_end(c));
+    return 0;
+}
+if (argc == 4 && !strcmp(argv[1], "hash")) {  // hash <path> <size>
+    printf("%016llx\n", (unsigned long long)game_romfs_hash(argv[2], strtoull(argv[3], NULL, 10)));
     return 0;
 }
 return 2;
@@ -170,6 +192,55 @@ assert native('select', g1)[:2] == ['1', 'v1_0_1']
 out = native('select', gx)
 assert out[0] == '0' and 'unsupported version' in ' '.join(out), out
 assert native('select', tmp/'missing')[0] == '0'
+
+# ---- the RomFS file check (runtime/game_addresses/romfs_files.h, from tools/romfs_files.py): hashes only
+import romfs_files  # noqa: E402
+entries = re.findall(r'^\{0x([0-9a-f]{16})ull, ([123])\},$', (TABLE_DIR/'romfs_files.h').read_text(), re.M)
+hashes = [int(h, 16) for h, _ in entries]
+assert hashes == sorted(set(hashes)), 'romfs_files.h: not sorted, or a hash twice'
+assert sum(int(m) & 1 for _, m in entries) == sum(int(m) >> 1 for _, m in entries) == 3836, 'romfs_files.h: file count'
+for rel, size in (('region_common/event/x.bfevfl', 2712), ('a', 0), ('b c/d.bin', 6232003695)):
+    assert int(native('hash', rel, size)[0], 16) == romfs_files.entry_hash(rel, size), rel
+
+
+def romfs_check(build_id, files, game=None):
+    out = subprocess.run([str(exe), 'romfs', build_id] + ([str(game)] if game else []),
+                         input=''.join(f'{n} {p}\n' for p, n in files), encoding='utf-8',
+                         capture_output=True, check=True).stdout.splitlines()
+    assert out[-1].startswith('missing '), out
+    return out[:-1], int(out[-1].split()[1])
+
+
+made_up = [('region_common/made_up.bin', 12), ('Ä/ü.bin', 3)]
+assert romfs_check('-', made_up) == ([], 0)  # (no version: no check)
+for key, (label, bid) in VERSIONS.items():
+    assert romfs_check(bid, made_up) == (['odd region_common/made_up.bin 12', 'odd Ä/ü.bin 3'], 3836), key
+
+# copies of the game code's six exefs files at the romfs root (#389: 3842 files) are skipped, only when each is the
+# same file as its exefs one; any other extra there is still odd
+EXEFS = ('main', 'main.npdm', 'rtld', 'sdk', 'subsdk0', 'subsdk1')
+gc = tmp/'gc'
+(gc/'exefs').mkdir(parents=True)
+(gc/'romfs/region_common').mkdir(parents=True)
+for i, name in enumerate(EXEFS):
+    data = bytes([i]) * (70000 * i + 5)  # (main.npdm etc. of several sizes, past one compare chunk)
+    (gc/'exefs'/name).write_bytes(data)
+    (gc/'romfs'/name).write_bytes(data)
+copies = [(name, (gc/'romfs'/name).stat().st_size) for name in EXEFS]
+bid0 = VERSIONS['v1_0_0'][1]
+assert romfs_check(bid0, copies, gc) == ([f'copy {n}' for n in EXEFS], 3836)
+assert romfs_check(bid0, copies) == ([f'odd {n} {z}' for n, z in copies], 3836)  # (no game folder: not checked)
+assert romfs_check('-', copies, gc) == ([f'copy {n}' for n in EXEFS], 0)
+(gc/'romfs/sdk').write_bytes(b'\xff' + (gc/'exefs/sdk').read_bytes()[1:])  # same size, other bytes
+(gc/'romfs/rtld').write_bytes((gc/'exefs/rtld').read_bytes() + b'!')  # longer
+(gc/'romfs/subsdk1').unlink()  # listed but not there
+(gc/'romfs/subsdk2').write_bytes((gc/'exefs/subsdk1').read_bytes())  # not one of the six names
+(gc/'romfs/region_common/main').write_bytes((gc/'exefs/main').read_bytes())  # not at the root
+(gc/'exefs/subsdk0').unlink()  # no exefs file to match
+others = [(n, (gc/'romfs'/n).stat().st_size if (gc/'romfs'/n).exists() else 9)
+          for n in ('sdk', 'rtld', 'subsdk1', 'subsdk2', 'region_common/main', 'subsdk0')]
+assert romfs_check(bid0, others + [('main', copies[0][1]), ('main', copies[0][1] + 1)], gc) == (
+    [f'odd {n} {z}' for n, z in others] + ['copy main', f'odd main {copies[0][1] + 1}'], 3836)
 
 # Same resource location used by tools/lasgen.spec in the frozen helper.
 bundled = tmp/'bundle/runtime/game_addresses'
@@ -236,6 +307,14 @@ for g in args.game:
     assert key in VERSIONS, f'--game {g}: unknown version {key}'
     games[key] = Path(folder)
 if games:
+    # every RomFS file is one of its version's, every one of them there
+    for key, folder in games.items():
+        files = romfs_files.romfs_files(folder/'romfs')
+        out, missing = romfs_check(VERSIONS[key][1], sorted(files.items()), folder)
+        copies = [line for line in out if line.startswith('copy ')]
+        assert out == copies and not missing, (key, out[:20], missing)
+        print(f'{key}: {len(files) - len(copies)} RomFS files, all the game\'s' +
+              (f' ({len(copies)} copies of the game code at the root, ignored)' if copies else ''))
     from nso import Nso
     images = {}
     for key, folder in games.items():

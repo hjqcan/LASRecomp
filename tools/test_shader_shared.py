@@ -74,6 +74,7 @@ thread_local Group *group;
 #define smem group->shared
 struct Memory { uint w[1024]{}; } gmem_, gfast_;
 static uint gfind(uint) { return 0xffffffffu; }
+static uint gfindw(uint g) { return gfind(g); }
 static int sx8(uint v) { return int(int8_t(v)); }
 static int sx16(uint v) { return int(int16_t(v)); }
 static uint atomicAdd(uint &v, uint x) { return std::atomic_ref<uint>(v).fetch_add(x); }

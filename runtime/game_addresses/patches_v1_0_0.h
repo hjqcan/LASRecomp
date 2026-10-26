@@ -109,6 +109,8 @@ GA_ADDR(SHAPE_SIM_SITES_0,                0x7001408de0)
 GA_ADDR(SHAPE_SIM_SITES_1,                0x7001408d80)
 GA_ADDR(SHAPE_SIM_SKIP_0,                 0x7001408e0c)
 GA_ADDR(SHAPE_SIM_SKIP_1,                 0x7001408d98)
+GA_ADDR(EFFECT_BONE_SITE,                 0x7000e44d78)
+GA_ADDR(EFFECT_BONE_SKIP,                 0x7000e443fc)
 
 // Multi research sites and canonical seed-layout boundaries.
 GA_ADDR(RESEARCH_RNG_STATE, 0x7001c341f8)

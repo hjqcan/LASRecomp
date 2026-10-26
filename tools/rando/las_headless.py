@@ -272,6 +272,14 @@ def main():
         dig_locs = digs_mod.add_to_logic(dig_tiles, logic_defs, item_defs)
         print('digs:', len(dig_locs), 'locations of', len(dig_tiles), 'dig tiles', flush=True)
 
+    apple_locs = {}
+    if settings.get('apples'):  # Applesanity: 3 checks in each overworld apple tree (tools/rando/apple_trees.py)
+        import apple_trees
+        import random as _rnd
+        apple_locs = apple_trees.add_to_logic(apple_trees.scan(romfs, leb), logic_defs, item_defs,
+                                              settings.get('traps', 'none'), _rnd.Random(f"{settings['seed']}-apples"))
+        print('apple trees:', len(apple_locs), 'locations', flush=True)
+
     import shopsanity
     import trendsanity
     for f in ('shopsanity.tsv', 'check_flags.tsv'):  # (appended to by both modules)
@@ -330,7 +338,8 @@ def main():
             lg = copy.deepcopy(logic_defs)
             n = el.apply_connector_logic(lg, ed, *cv, cextra) if cv[0] else 0
             # a bush / dig tile in a pocket (its door's screen, or its tiles on the screens beside it) needs it
-            for name, b in list(bush_locs.items()) + list(dig_locs.items()):
+            for name, b in list(bush_locs.items()) + list(dig_locs.items()) + \
+                    [(n, {'room': t['room'], 'tile': t['tile']}) for n, (t, _) in apple_locs.items()]:
                 pk = cv[0] and name in lg and pocket_at(b['room'], b.get('tile'))
                 if pk:
                     lg[name]['condition-basic'] = el._and(lg[name].get('condition-basic'), pk)
@@ -685,6 +694,9 @@ def main():
                                                             digs_mod.SHELLS if dig_locs else (),
                                                             vanilla=not settings.get('shellsanity'))) or '(vanilla)',
           flush=True)
+    if apple_locs:  # (after the seashell spots: the same flow file)
+        print('apple trees:', ', '.join(apple_trees.apply(apple_locs, mods, out_dir, romfs, _uw_leb, _uw_ev, _ot,
+                                                           _uw_get, _uw_data)), flush=True)
     import keysanity_text  # (after every flow edit, digs / underwater too) a dungeon item outside its dungeon names it
     keysanity_text.apply(out_dir, romfs, result['placements'])
     if settings.get('enemy-minibosses'):  # the Field's walls for roaming mini-bosses (tools/rando/roam.py)

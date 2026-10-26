@@ -56,6 +56,8 @@ bool research_io_begin(void) { abort(); }
 void research_io_end(int64_t n) { abort(); }
 void service_retain(Service *s) { ++s->refs; }
 void service_release(Service *s) { if (!--s->refs && s->on_close) s->on_close(s); }
+uint64_t rt_romfs_bytes;
+int rt_romfs_missing;
 const char *rando_seed_dir(void) { return NULL; }
 bool romfs_layout(const char *p, RomfsLayout *l, char *why, size_t n) { abort(); }
 bool rando_romfs_override(const char *p, char *out, size_t n) { abort(); }
@@ -67,6 +69,9 @@ void save_editor_file_read(const char *p, uint64_t a, int64_t o, int64_t n) {}
 void pace_hitch(const char *why) {}  // (runtime/nvn/pace.c: a save commit is a stall)
 static int notices;  // save-failed warnings shown (fs.c tells the player once per run)
 void plat_notice(const char *text) { notices++; }
+#ifdef __linux__
+void plat_os_write(uint64_t addr, uint64_t size) { (void)addr; (void)size; }  // (fs.c's file reads: no soft write tracking here)
+#endif
 #include "../runtime/game_addresses.h"
 static uint8_t live_save[0x6000];
 static GameAddrs test_ga = {  // the 1.0.0 table, with the live save in host memory
@@ -76,6 +81,12 @@ static GameAddrs test_ga = {  // the 1.0.0 table, with the live save in host mem
 #undef GA_ADDR
 };
 const GameAddrs *g_ga = &test_ga;
+const GameVersion *game_version(void) { return NULL; }
+uint64_t game_romfs_bytes(const GameVersion *v) { return 0; }
+GameRomfsCheck *game_romfs_check_begin(const GameVersion *v) { return NULL; }
+bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size) { return true; }
+int game_romfs_check_end(GameRomfsCheck *c) { return 0; }
+bool game_romfs_exefs_copy(const char *game_dir, const char *rel, uint64_t size) { return false; }
 __attribute__((constructor)) static void test_ga_init(void) { test_ga.LIVE_SAVE = (uintptr_t)live_save; }
 #include "../runtime/hle/flags_ext.c"
 Service *service_new(const char *name, ServiceHandler handler, void *state) {

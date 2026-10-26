@@ -25,7 +25,7 @@
 
 
 typedef struct { char level[40]; int col, row; char side; int own, partner, still; int tcol, trow; char tside; float depth;
-                 int pair; float height; } Jump;  // height: floor where Link lands (Chaos; <-90 = keep his)  // pair: Chaos doorway pair (both directions share it), -1 = a neighbour jump
+                 int pair; float height, lateral; } Jump;  // height: floor where Link lands (Chaos; <-90 = keep his)  // pair: Chaos doorway pair (both directions share it), -1 = a neighbour jump
 // Chaos dungeon map letters (runtime/ui/chaos_overlay.mm): a pair's letter shows once Link has walked through either
 // end - remembered in event flag CHAOS_FLAG_BASE + pair (extended flags, runtime/hle/flags_ext.c: saved per slot)
 #define CHAOS_FLAG_BASE 3800
@@ -51,9 +51,11 @@ static void load(void) {
         char cell[8], side[4], tcell[8], tside[4];
         j.depth = 0.9f;  // how far past the target edge Link lands (Chaos: further when the target has its own door)
         j.height = -100.0f;
-        int n = sscanf(line, "%39s %7s %3s %d %d %7s %3s %f %f", j.level, cell, side, &j.own, &j.partner, tcell, tside,
-                       &j.depth, &j.height);
-        if (n != 5 && n != 7 && n != 8 && n != 9) continue;
+        j.lateral = 0.0f;  // (10th column: Link lands this far along the edge from the partner's centre - where half
+                           // of a two-tile doorway's way in is a pit, #383; dungeon_gen.landing_depth)
+        int n = sscanf(line, "%39s %7s %3s %d %d %7s %3s %f %f %f", j.level, cell, side, &j.own, &j.partner, tcell, tside,
+                       &j.depth, &j.height, &j.lateral);
+        if (n != 5 && n != 7 && n != 8 && n != 9 && n != 10) continue;
         j.row = atoi(cell);  // "08C" -> row 8, column C
         j.col = cell[2] - 'A';
         j.side = side[0];
@@ -235,6 +237,12 @@ static void test_tick(uint64_t frame, uint64_t pc, const char *lv) {
                                 (unsigned long long)frame, pos[1]);
         arrived = false;
     }
+    // a fall after the jump (a pit at the landing, #383): the game respawns him in that room, so the cell alone would
+    // read as a pass
+    static int fell;
+    if (placed >= 0 && at >= 0 && g_jumps_fired && pos[1] < -1.0f && !fell++)
+        LOG("[doorjump-test] f%llu Link fell after the jump (y %.2f at %.2f, %.2f)\n", (unsigned long long)frame, pos[1],
+            pos[0], pos[2]);
     if (placed < 0 && (long)frame >= at && arrived) {
         // a doorway without a row (want >= 0): no jump, he walks on into the neighbour across the edge
         Jump plain = {0};
@@ -286,7 +294,7 @@ static void test_tick(uint64_t frame, uint64_t pc, const char *lv) {
         float x = pos[0], z = pos[2];
         int c = (int)floorf(x / 15.0f), r = (int)floorf(z / 12.0f) + 1;
         LOG("[doorjump-test] %s %c -> now in %02d%c (%.2f, %.2f), expected %02d%c: %s (%d jumps fired)\n", cell, side, r,
-            'A' + c, x, z, er, 'A' + ec, (r == er && c == ec) ? "PASS" : g_jumps_fired ? "FAIL-after-jump" : "FAIL",
+            'A' + c, x, z, er, 'A' + ec, (r == er && c == ec) ? (fell ? "FELL" : "PASS") : g_jumps_fired ? "FAIL-after-jump" : "FAIL",
             g_jumps_fired);
         at = -1;
     }
@@ -463,10 +471,10 @@ void doorjump_tick(uint64_t frame) {
         // just inside the target room's doorway on its side (for a neighbour: just past the shared edge)
         float tx0 = 15.0f * j->tcol, tz0 = 12.0f * (j->trow - 1);
         switch (j->tside) {
-        case 'E': nx = tx0 + 15.0f - across; nz = tz0 + j->partner * 0.75f; break;
-        case 'W': nx = tx0 + across; nz = tz0 + j->partner * 0.75f; break;
-        case 'S': nz = tz0 + 12.0f - across; nx = tx0 + j->partner * 0.75f; break;
-        default: nz = tz0 + across; nx = tx0 + j->partner * 0.75f; break;
+        case 'E': nx = tx0 + 15.0f - across; nz = tz0 + j->partner * 0.75f + j->lateral; break;
+        case 'W': nx = tx0 + across; nz = tz0 + j->partner * 0.75f + j->lateral; break;
+        case 'S': nz = tz0 + 12.0f - across; nx = tx0 + j->partner * 0.75f + j->lateral; break;
+        default: nz = tz0 + across; nx = tx0 + j->partner * 0.75f + j->lateral; break;
         }
         LOG("[doorjump] %s %02d%c %c: (%.2f, %.2f) -> %02d%c %c (%.2f, %.2f)\n", lv, row, 'A' + col, j->side, x, z,
             j->trow, 'A' + j->tcol, j->tside, nx, nz);

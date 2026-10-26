@@ -243,8 +243,7 @@ def main():
                         if count[(area, label)] > 1:
                             g[i] = (area, f'{label} #{count[(area, label)]}', lv, loc)
 
-    region_order = [r[0] for r in REGIONS] + ['Koholint']
-    groups[0].sort(key=lambda e: (region_order.index(e[0]), e[1]))
+    groups[0].sort(key=lambda e: (e[0].lower(), e[1]))  # (areas A-Z, as the user asked)
     groups[1].sort(key=lambda e: (e[0].lower(), e[1] != 'Entrance', e[1]))
     dorder = list(DUNGEONS.values())
     groups[2].sort(key=lambda e: (dorder.index(e[0]), e[1] != 'Entrance', e[1]))

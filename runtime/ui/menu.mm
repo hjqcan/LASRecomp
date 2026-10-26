@@ -18,6 +18,7 @@
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
 #include "pad_nav.h"
+#include "plastic.h"
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
 #else
@@ -27,6 +28,8 @@ extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.c
 // the window image's commands, or that buffer itself after the recorder caught up), then handed back
 extern "C" void *vk_overlay_begin(void *window_cmd);
 extern "C" void vk_overlay_end(void *window_cmd, void *cmd);
+extern "C" VkImageView g_vk_scene_view;  // (runtime/nvn/vulkan/exec.c: the game image drawn this frame)
+extern "C" float g_vk_scene_uv[4];
 #endif
 
 extern "C" {
@@ -50,7 +53,9 @@ extern "C" void cheats_draw(float scale);  // cheats.mm
 extern "C" void difficulty_draw(float scale);  // difficulty.mm
 void controls_tab_draw(float scale);  // controls_ui.mm
 bool controls_ui_took_back(void);
-bool rando_tab_took_back(void);  // rando_tab.mm: B went back from the Triforce hunt's count
+bool rando_tab_took_back(void);  // rando_tab.mm: B went back a step in the right column
+bool save_editor_took_back(void);  // save_editor.mm (the same)
+bool warp_tab_took_back(void);  // warp_tab.mm (the same)
 #include "../input_bind.h"
 #include "../paths.h"
 }
@@ -144,6 +149,24 @@ static std::atomic<bool> g_last_pad{false};
 static char g_kbd_text[96];
 static int g_kbd_max = 8;
 static bool capturing() { return g_open.load() || g_kbd.load() == 1 || photo_mode_active(); }
+// The game's name limit counts characters as the console's keyboard does, in UTF-16 units (a character past U+FFFF
+// takes two); the text is UTF-8. Cuts s after max_units of them, only between characters (a character left incomplete
+// - a cut inside it, or bytes that are no character - goes too, with the rest), and returns how many units are left.
+static int kbd_cut(char *s, int max_units) {
+    int units = 0;
+    for (unsigned char *p = (unsigned char *)s; *p;) {
+        int n = *p < 0x80 ? 1 : *p >= 0xc2 && *p <= 0xdf ? 2 : *p >= 0xe0 && *p <= 0xef ? 3 : *p >= 0xf0 && *p <= 0xf4 ? 4 : 0;
+        int i = 1;
+        while (i < n && (p[i] & 0xc0) == 0x80) i++;
+        if (i == n && n > 2 && ((*p == 0xe0 && p[1] < 0xa0) || (*p == 0xed && p[1] > 0x9f) || (*p == 0xf0 && p[1] < 0x90) ||
+                                (*p == 0xf4 && p[1] > 0x8f)))
+            n = 0;  // (overlong, a surrogate or past U+10FFFF: the game's UTF-8 conversion refuses those too)
+        int u = n == 4 ? 2 : 1;
+        if (!n || i < n || units + u > max_units) { *p = 0; break; }
+        units += u, p += n;
+    }
+    return units;
+}
 // The game gets no input while this is true (runtime/hle/input.c): menu or name entry up.
 extern "C" bool menu_input_captured(void) { return capturing(); }
 
@@ -233,6 +256,10 @@ bool menu_handle_event(const SDL_Event *e) {
             q.key = ImGuiKey_GamepadLStickUp; q.value = v < -0.3f ? -v : 0; push(q);
             q.key = ImGuiKey_GamepadLStickDown; q.value = v > 0.3f ? v : 0; push(q);
             break;
+        case SDL_GAMEPAD_AXIS_RIGHTY:  // (scrolls a right column of plain text: option_rows.mm)
+            q.key = ImGuiKey_GamepadRStickUp; q.value = v < 0 ? -v : 0; push(q);
+            q.key = ImGuiKey_GamepadRStickDown; q.value = v > 0 ? v : 0; push(q);
+            break;
         case SDL_GAMEPAD_AXIS_LEFT_TRIGGER: q.key = ImGuiKey_GamepadL2; q.value = v; push(q); break;
         case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: q.key = ImGuiKey_GamepadR2; q.value = v; push(q); break;
         default: break;
@@ -284,10 +311,18 @@ void menu_apply_window_requests(void *win) {
 
 // ------------------------------------------------------------------ render thread
 static bool g_inited;
+#ifdef __APPLE__
+static id<MTLTexture> g_scene;  // (menu_set_scene: this frame's game image, for the glare guard)
+static float g_scene_uv[4];
+void menu_set_scene(id<MTLTexture> tex, const float uv[4]) {
+    g_scene = tex;
+    memcpy(g_scene_uv, uv, sizeof g_scene_uv);
+}
+#endif
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
 static ImFont *g_font, *g_font_big;
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Baloo 2); everything else keeps g_font
-static int g_tab, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab)
+static int g_tab = -1000, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab; -1000: the first tab)
 static int g_focus_tab = -99;  // put the nav cursor on this tab next frame (-100: the selected one; -99: none)
 static int g_focus_frames;
 
@@ -334,6 +369,43 @@ static void style_init(void) {
     c[ImGuiCol_NavCursor] = gold;
     c[ImGuiCol_Separator] = ImVec4(0.30f, 0.36f, 0.30f, 1);
     c[ImGuiCol_TitleBg] = c[ImGuiCol_TitleBgActive] = c[ImGuiCol_WindowBg];
+}
+
+// The menus' parchment colours (plastic.h) over that, only while a menu is drawn: the overlays over the game (FPS
+// counter, run timer, trackers, cards) keep the look above. The pieces are the backgrounds - ImGui's own fills go clear
+// or take the theme's colours (frames, buttons and windows are pieces too while plastic_widgets is on: their colours
+// here only tell them apart).
+static void style_parchment(ImGuiStyle &s) {
+    ImVec4 *c = s.Colors;
+    const PlasticTheme &t = plastic_theme();
+    ImVec4 clear(0, 0, 0, 0), text = plastic_col(t.text);
+    c[ImGuiCol_WindowBg] = c[ImGuiCol_ChildBg] = clear;
+    c[ImGuiCol_PopupBg] = ImVec4(t.panel.x, t.panel.y, t.panel.z, 1);
+    c[ImGuiCol_Text] = text;
+    c[ImGuiCol_TextDisabled] = plastic_col(t.text_dim);
+    c[ImGuiCol_Border] = t.frame;
+    c[ImGuiCol_Button] = t.row;
+    c[ImGuiCol_ButtonHovered] = t.row_hot;
+    c[ImGuiCol_ButtonActive] = ImVec4(t.row_hot.x * 0.95f, t.row_hot.y * 0.95f, t.row_hot.z * 0.95f, 1);
+    c[ImGuiCol_Header] = ImVec4(t.tab.x, t.tab.y, t.tab.z, 1);
+    c[ImGuiCol_HeaderHovered] = ImVec4(t.row_hot.x, t.row_hot.y * 0.98f, t.row_hot.z, 1);
+    c[ImGuiCol_HeaderActive] = ImVec4(t.row_hot.x * 0.93f, t.row_hot.y * 0.93f, t.row_hot.z * 0.93f, 1);
+    c[ImGuiCol_FrameBg] = ImVec4(t.inset.x, t.inset.y, t.inset.z, 1);
+    c[ImGuiCol_FrameBgHovered] = ImVec4(t.inset.x, t.inset.y * 0.99f, t.inset.z * 0.98f, 1);
+    c[ImGuiCol_FrameBgActive] = ImVec4(t.inset.x * 0.99f, t.inset.y * 0.98f, t.inset.z * 0.97f, 1);
+    c[ImGuiCol_CheckMark] = t.row_sel;
+    c[ImGuiCol_SliderGrab] = t.frame;
+    c[ImGuiCol_SliderGrabActive] = t.row_sel;
+    c[ImGuiCol_PlotHistogram] = c[ImGuiCol_PlotHistogramHovered] = t.row_sel;
+    c[ImGuiCol_NavCursor] = clear;  // (the pieces show the cursor themselves)
+    c[ImGuiCol_Separator] = ImVec4(t.frame.x, t.frame.y, t.frame.z, 0.45f);
+    c[ImGuiCol_ScrollbarBg] = ImVec4(t.frame.x, t.frame.y, t.frame.z, 0.10f);
+    c[ImGuiCol_ScrollbarGrab] = ImVec4(t.frame_inner.x, t.frame_inner.y, t.frame_inner.z, 0.85f);
+    c[ImGuiCol_ScrollbarGrabHovered] = c[ImGuiCol_ScrollbarGrabActive] = t.frame;
+    c[ImGuiCol_TextSelectedBg] = ImVec4(t.row_sel.x, t.row_sel.y, t.row_sel.z, 0.35f);
+    c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.10f, 0.06f, 0.02f, 0.40f);
+    c[ImGuiCol_Tab] = c[ImGuiCol_TabHovered] = c[ImGuiCol_TabSelected] = clear;
+    s.ScrollbarRounding = 9;
 }
 
 
@@ -639,14 +711,15 @@ RT_ON_RESET(menu_reset) {
 }
 
 static void keyboard_draw(ImGuiIO &io, float scale) {
-    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 120));
+    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
+                                                  IM_COL32(0, 0, 0, (int)(plastic_theme().dim * 255)));
     float w = fminf(io.DisplaySize.x * 0.9f, 1100 * scale);
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(w, 0), ImGuiCond_Always);
     ImGui::Begin("##kbd", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                                     ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::PushFont(g_font_big);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", ui_tr("Enter your name"));
+    ImGui::TextColored(plastic_col(plastic_theme().title), "%s", ui_tr("Enter your name"));
     ImGui::PopFont();
     static bool was_open, was_pad;
     bool pad = g_last_pad.load(), appearing = !was_open || pad != was_pad;  // (switching device: focus the new one)
@@ -659,8 +732,8 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
                          ImGuiInputTextFlags_CallbackCharFilter,
                          [](ImGuiInputTextCallbackData *d) -> int { return d->EventChar < 0x20 ? 1 : 0; });
         ImGui::PopFont();
-        if ((int)strlen(g_kbd_text) > g_kbd_max) g_kbd_text[g_kbd_max] = 0;
-        ImGui::TextDisabled(ui_tr("Enter  confirm      Esc  cancel      (%d / %d)"), (int)strlen(g_kbd_text), g_kbd_max);
+        int units = kbd_cut(g_kbd_text, g_kbd_max);
+        ImGui::TextDisabled(ui_tr("Enter  confirm      Esc  cancel      (%d / %d)"), units, g_kbd_max);
     } else {  // controller: on-screen keyboard (osk.mm, shared with our menus' text fields)
         int r = osk_keys(g_kbd_text, sizeof g_kbd_text, g_kbd_max, appearing, scale, g_font_big);
         if (r) g_kbd = r > 0 ? 2 : 3;  // (Start / + confirms in menu_handle_event too)
@@ -685,6 +758,7 @@ extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, in
         uint64_t dt = SDL_GetTicks() - t0;
         if (dt < 16) SDL_Delay((uint32_t)(16 - dt));
     }
+    kbd_cut(g_kbd_text, g_kbd_max);  // (whatever entered it: typed, on-screen keys, the test hook)
     bool ok = g_kbd.load() == 2 && g_kbd_text[0];
     if (ok) snprintf(out, cap, "%s", g_kbd_text);
     g_kbd = 0;
@@ -797,83 +871,103 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     ImGuiWindow *root = ImGui::GetCurrentWindow()->RootWindow;
     static bool nav_in_page;  // (the frame before: the cursor on a control of the page - its child windows)
     if (nav_in_page && g.NavJustMovedToId && g.NavWindow == root && !any_popup) g_focus_tab = -100, g_focus_frames = 0;
-    if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_FittingPolicyScroll | ImGuiTabBarFlags_TabListPopupButton)) {
+    // The tabs: a row of our own pieces (the selected one orange), each a button the controller's cursor can stand on;
+    // the selected tab's page under them
+    if (g_tab_request != -2)
+        for (int k = 0; k < ntabs; k++)
+            if (tabs[k].id == g_tab_request && tabs[k].on) g_tab = tabs[k].id;
+    g_tab_request = -2;
+    if (!tabs[cur].on || tabs[cur].id != g_tab) {
+        bool found = false;
+        for (int k = 0; k < ntabs; k++) found |= tabs[k].id == g_tab && tabs[k].on;
+        if (!found) g_tab = tabs[cur].on ? tabs[cur].id : tabs[0].id;
+    }
+    {
+        const PlasticTheme &pt = plastic_theme();
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        float gap = 8 * scale, pad = 20 * scale, th = ImGui::GetFontSize() + 20 * scale;
+        float tw[16], text_w[16], total = 0, avail = ImGui::GetContentRegionAvail().x - 4 * scale;
+        for (int k = 0; k < ntabs; k++) text_w[k] = ImGui::CalcTextSize(ui_tr(tabs[k].name)).x, total += text_w[k] + (k ? gap : 0);
+        if (total + 2 * pad * ntabs > avail) pad = fmaxf((avail - total) / (2 * ntabs), 3 * scale);  // (a narrow window: tighter)
+        for (int k = 0; k < ntabs; k++) tw[k] = text_w[k] + 2 * pad;
+        float used_width = 0;
+        if (g_focus_tab == -1 && !prelaunch) g_focus_tab = 8;  // (no Prelaunch in game: Controls, the first tab)
         for (int k = 0; k < ntabs; k++) {
             const Tab &t = tabs[k];
-            ImGuiTabItemFlags f = g_tab_request == t.id && t.on ? ImGuiTabItemFlags_SetSelected : 0;
-            char lbl[160];
-            snprintf(lbl, sizeof lbl, prelaunch ? " %s ###tab%d" : "  %s  ###tab%d", ui_tr(t.name), t.id);  // (ten tabs: tighter, so none is cut short)
             ImGui::BeginDisabled(!t.on);  // (out of the game: Save Editor, Warp, Cheats)
-            // focus (controller / keyboard): the tab lights up a little with a gold bar along its bottom, instead of
-            // ImGui's outline (it sits 4 px outside the tab and the tab bar's clipping could cut its top off on macOS)
-            // (focused_tab: from the frame before - colours go in before the tab is drawn)
-            bool lit = focused_tab == t.id && ImGui::GetCurrentContext()->NavCursorVisible;
-            ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
-            if (lit) {
-                ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.19f, 0.27f, 0.22f, 1));
-                ImGui::PushStyleColor(ImGuiCol_TabHovered, ImVec4(0.19f, 0.27f, 0.22f, 1));
-            }
-            if (g_focus_tab == -1 && !prelaunch) g_focus_tab = 8;  // (no Prelaunch in game: Controls, the first tab)
+            if (k && used_width + gap + tw[k] <= avail) { ImGui::SameLine(0, gap); used_width += gap; }
+            else used_width = 0;
+            used_width += tw[k];
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            p.x += 2 * scale;
+            ImGui::SetCursorScreenPos(p);
+            ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));  // (the piece shows the cursor)
+            ImGui::PushID(t.id + 2);
+            bool clicked = ImGui::InvisibleButton("##tab", ImVec2(tw[k], th),
+                                                  ImGuiButtonFlags_EnableNav | ImGuiButtonFlags_PressedOnClick);
+            ImGui::PopID();
+            ImGui::PopStyleColor();
             bool focus_here = g_focus_tab == t.id || (g_focus_tab == -100 && t.id == g_tab);
-            bool open = ImGui::BeginTabItem(lbl, NULL, f);
-            ImGui::PopStyleColor(lit ? 3 : 1);
-            if (focus_here) {  // the controller's cursor starts on this tab (SetKeyboardFocusHere skips tabs: no tab stop)
+            if (focus_here) {  // the controller's cursor starts on this tab
                 ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
                 ImGui::SetNavCursorVisible(true);
                 // a few frames: the page's child window appearing makes ImGui pick its first widget once it's laid out
                 if (++g_focus_frames >= 4) g_focus_tab = -99, g_focus_frames = 0;
                 else g_focus_tab = t.id;
             }
-            if (lit) {
-                ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-                float h = 4 * scale > 2 ? 4 * scale : 2;
-                ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(a.x + 2, b.y - h), ImVec2(b.x - 2, b.y),
-                                                          IM_COL32(236, 194, 84, 255));  // (the menu's gold)
-            }
+            if (clicked && t.on) g_tab = t.id;
+            bool sel = t.id == g_tab;
+            bool lit = (ImGui::IsItemFocused() && g.NavCursorVisible) || ImGui::IsItemHovered();
+            ImVec4 col = sel ? pt.tab_sel : lit ? pt.row_mark : pt.tab;
+            if (sel && lit) col = ImVec4(col.x * 0.88f, col.y * 0.88f, col.z * 0.88f, col.w);  // (the cursor on it: deeper)
+            if (!t.on) col.w *= 0.45f;
+            plastic_add(dl, ImVec2(p.x, p.y + (sel ? 0 : 2 * scale)), ImVec2(p.x + tw[k], p.y + th - 2 * scale), 10 * scale, col,
+                        PK_PILL, (sel ? 7 : 4) * scale, sel ? 1.0f : 0.55f);
+            ImU32 tc = sel ? pt.text_sel : t.on ? pt.text : pt.text_dim;
+            ImVec2 ts(text_w[k], ImGui::GetFontSize());
+            dl->AddText(ImVec2(p.x + (tw[k] - ts.x) * 0.5f, p.y + (th - ts.y) * 0.5f - (sel ? 2 : 1) * scale), tc, ui_tr(t.name));
             if (ImGui::IsItemFocused()) focused_tab = t.id;
             else if (focused_tab == t.id) focused_tab = -99;
             ImGui::EndDisabled();
-            if (open) {
-                if (t.id != g_shown_tab) g_shown_tab = t.id, g_page_fresh = true, g_page_focus_next = false;
-                g_tab = t.id;
-                ImGui::Spacing();
-                ImGui::BeginChild("##page", ImVec2(0, 0), ImGuiChildFlags_None,  // (the rest of the window: no hint line)
-                                  ImGuiWindowFlags_NavFlattened);
-                if (g_page_focus_next) {  // (a page without option rows: its first control)
-                    g_page_focus_next = false;
-                    ImGui::SetKeyboardFocusHere();
-                    ImGui::SetNavCursorVisible(true);
-                }
-                switch (t.id) {
-                case -1: prelaunch(scale); break;
-                case 0: tab_display(); break;
-                case 1: tab_audio(); break;
-                case 2: save_backups_draw(scale, in_game); break;
-                case 3: rando_tab_draw(scale); break;
-                case 4: if (warp_tab_draw(scale)) set_open(false); break;
-                case 5: cheats_draw(scale); break;
-                case 6: difficulty_draw(scale); break;
-                case 7: tab_cosmetics(); break;
-                case 8: controls_tab_draw(scale); break;
-                case 9: tab_quit(scale, in_game); break;
-                case 10: photo_mode_tab(scale, in_game); break;
-                case 11: mods_draw(scale, in_game); break;
-                case 12: workshop_draw(scale, in_game); break;
-                case 13: performance_draw(scale, in_game); break;
-                }
-                static const char *scroll_test = getenv("LARECOMP_MENU_SCROLL");  // test hook: page scroll, 0..1
-                if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
-                // no enabled option row took the cursor: the page's first control, next frame (SetKeyboardFocusHere:
-                // the first item that takes the cursor, in order)
-                if (opt_focus_first_left() && down_from_tab) g_page_focus_next = true;
-                ImGui::EndChild();
-                ImGui::EndTabItem();
-            }
         }
-        g_tab_request = -2;
-        opt_focus_first_left();  // (no page drawn: nothing took it)
-        ImGui::EndTabBar();
     }
+    for (int k = 0; k < ntabs; k++) {
+        const Tab &t = tabs[k];
+        if (t.id != g_tab) continue;
+        if (t.id != g_shown_tab) g_shown_tab = t.id, g_page_fresh = true, g_page_focus_next = false;
+        ImGui::Dummy(ImVec2(0, 4 * scale));
+        ImGui::BeginChild("##page", ImVec2(0, 0), ImGuiChildFlags_None,  // (the rest of the window: no hint line)
+                          ImGuiWindowFlags_NavFlattened);
+        if (g_page_focus_next) {  // (a page without option rows: its first control)
+            g_page_focus_next = false;
+            ImGui::SetKeyboardFocusHere();
+            ImGui::SetNavCursorVisible(true);
+        }
+        switch (t.id) {
+        case -1: prelaunch(scale); break;
+        case 0: tab_display(); break;
+        case 1: tab_audio(); break;
+        case 2: save_backups_draw(scale, in_game); break;
+        case 3: rando_tab_draw(scale); break;
+        case 4: if (warp_tab_draw(scale)) set_open(false); break;
+        case 5: cheats_draw(scale); break;
+        case 6: difficulty_draw(scale); break;
+        case 7: tab_cosmetics(); break;
+        case 8: controls_tab_draw(scale); break;
+        case 9: tab_quit(scale, in_game); break;
+        case 10: photo_mode_tab(scale, in_game); break;
+        case 11: mods_draw(scale, in_game); break;
+        case 12: workshop_draw(scale, in_game); break;
+        case 13: performance_draw(scale, in_game); break;
+        }
+        static const char *scroll_test = getenv("LARECOMP_MENU_SCROLL");  // test hook: page scroll, 0..1
+        if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
+        // no enabled option row took the cursor: the page's first control, next frame (SetKeyboardFocusHere: the
+        // first item that takes the cursor, in order)
+        if (opt_focus_first_left() && down_from_tab) g_page_focus_next = true;
+        ImGui::EndChild();
+    }
+    opt_focus_first_left();  // (no page drawn: nothing took it)
     nav_in_page = g.NavWindow && g.NavWindow != g.NavWindow->RootWindow && g.NavWindow->RootWindow == root;
     // (checks: fresh presses only - a held key's repeats come faster than a check's few frames)
     bool down1 = down && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, false) ||
@@ -884,11 +978,22 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
         if (tabs[k].id == g_tab) focus_check(down1, up1, down, focused_tab, g_tab, tabs[k].name);
 }
 
+// The menu's look for a window of the start screen's (its game files window): until menu_style_end
+static ImGuiStyle g_style_saved;
+void menu_style_begin(float scale) {
+    g_style_saved = ImGui::GetStyle();
+    style_init();
+    style_parchment(ImGui::GetStyle());
+    ImGui::GetStyle().ScaleAllSizes(scale);
+}
+void menu_style_end(void) { ImGui::GetStyle() = g_style_saved; }
+
 void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, void (*prelaunch)(float)) {
     ImFont *f0 = g_font, *f1 = g_font_big;
     g_font = font, g_font_big = font_big;
     ImGuiStyle saved = ImGui::GetStyle();  // the menu's look (the start screen has its own style)
     style_init();
+    style_parchment(ImGui::GetStyle());
     ImGui::GetStyle().ScaleAllSizes(scale);
     tabs_body(scale, in_game, prelaunch);
     ImGui::GetStyle() = saved;
@@ -919,6 +1024,11 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool kbd = g_kbd.load() == 1;
     bool race = title_is_las() && race_overlay_wanted();  // (run timer, race seed hash: race_overlay.mm)
     bool flyin = title_is_las() && pickup_flyin_wanted() && !open;  // (a silent pickup's card)
+#ifdef __APPLE__
+    plastic_perf_note(cb, open);  // (LARECOMP_UI_PERF test only)
+#else
+    plastic_perf_note_vk(open);
+#endif
     if (!render_needed(open, kbd, inv, trk, trkd, chaos, race, flyin)) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         g_ov_same = 0;  // (shown again: built afresh first)
@@ -986,14 +1096,19 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
 #endif
     // spacing/rounding follow the output size too (style tuned for 1080 p)
-    static ImGuiStyle base;
+    // (the overlays' style, and the menu's: the parchment colours only while the menu / name entry is drawn)
+    static ImGuiStyle base, ov_style, menu_style;
     static float style_scale = -1;
     if (style_scale < 0) base = ImGui::GetStyle();
     if (fabsf(style_scale - scale) > 0.01f) {
-        ImGui::GetStyle() = base;
-        ImGui::GetStyle().ScaleAllSizes(scale);
+        ov_style = base;
+        ov_style.ScaleAllSizes(scale);
+        menu_style = base;
+        style_parchment(menu_style);
+        menu_style.ScaleAllSizes(scale);
         style_scale = scale;
     }
+    ImGui::GetStyle() = ov_style;
 #ifdef __APPLE__
     ImGui_ImplMetal_NewFrame(rp);
 #else
@@ -1019,9 +1134,14 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         inventory_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     }
 
+    if (open || kbd) {  // (the menu's colours; its windows, popups and buttons as plastic pieces)
+        ImGui::GetStyle() = menu_style;
+        plastic_widgets(true);
+    }
     if (open) {
         // dim the game behind the menu
-        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 110));
+        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
+                                                      IM_COL32(0, 0, 0, (int)(plastic_theme().dim * 255)));
         float w = fminf(io.DisplaySize.x * 0.9f, 1500 * scale), h = io.DisplaySize.y - 2 * 18 * scale;  // (all the height: a slim margin)
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
@@ -1032,23 +1152,11 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         // header as on the start screen's Settings: the title, and a close X in the corner (B / Esc too). ("Title
         // screen" - rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user 2026-10-11.)
         ImGui::PushFont(g_font_big);
-        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", ui_tr("Settings"));
+        ImGui::TextColored(plastic_col(plastic_theme().title), "%s", ui_tr("Settings"));
         ImGui::PopFont();
         {
             float bx = 44 * scale;
-            ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - bx);
-            ImVec2 p = ImGui::GetCursorScreenPos();
-            ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
-            bool close = ImGui::InvisibleButton("##close", ImVec2(bx, bx), ImGuiButtonFlags_EnableNav);
-            ImGui::PopStyleColor();
-            bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
-            ImU32 col = hot ? IM_COL32(236, 194, 84, 255) : IM_COL32(220, 216, 205, 255);
-            float m = bx * 0.3f, t = (hot ? 3.0f : 2.4f) * scale * 1.5f;
-            ImDrawList *dl = ImGui::GetWindowDrawList();
-            if (hot) dl->AddRectFilled(p, ImVec2(p.x + bx, p.y + bx), IM_COL32(255, 255, 255, 20), 8 * scale);
-            dl->AddLine(ImVec2(p.x + m, p.y + m), ImVec2(p.x + bx - m, p.y + bx - m), col, t);
-            dl->AddLine(ImVec2(p.x + bx - m, p.y + m), ImVec2(p.x + m, p.y + bx - m), col, t);
-            if (close) set_open(false);
+            if (plastic_close_corner(bx, scale)) set_open(false);
         }
 
         bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();  // (before the
@@ -1056,6 +1164,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         // B with nothing focused-deeper closes the menu (not the Esc / B that ends typing: typing is from the frame
         // before, so it's still true the frame a field lets go)
         if (!any_popup && !typing && !ui_text_busy() && !controls_ui_took_back() && !rando_tab_took_back() &&
+            !save_editor_took_back() && !warp_tab_took_back() &&
             ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
             (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
             set_open(false);
@@ -1068,13 +1177,26 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     if (photo_mode_active()) photo_mode_draw(scale);
     if (!open && !photo_mode_active() && workshop_overlay_wanted()) workshop_overlay(scale);
     if (kbd) keyboard_draw(io, scale);
+    plastic_widgets(false);
+    ImGui::GetStyle() = ov_style;
     ImGui::Render();
     g_text_busy = open && ui_text_busy();
+    // the pieces (and, the menu open over the game, the small copy of the game image they read): only with the menu or
+    // the name entry up
+    bool pieces = open || kbd;
 #ifdef __APPLE__
+    id<MTLTexture> scene = g_scene;
+    g_scene = nil;
+    if (pieces) plastic_frame_begin(dev, cb, target, open ? scene : nil, g_scene_uv, io.MousePos, scale);
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+    plastic_set_encoder(pieces ? enc : nil);
     ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
+    plastic_set_encoder(nil);
     [enc endEncoding];
 #else
+    if (pieces) {
+        plastic_frame_begin_vk(open ? (void *)g_vk_scene_view : NULL, g_vk_scene_uv, (float)tw, (float)th, io.MousePos, scale);
+    }
     // ImGui records its commands itself. Not into cmd, the window image's command buffer, while the recorder thread
     // (record.c) may still be recording it (one thread at a time on a command buffer and its pool: f054d8b, the device
     // loss entering Mabe Village), and without waiting for the recorder to catch up every frame either (a full drain:

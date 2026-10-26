@@ -24,6 +24,8 @@
 #include "../workshop.h"
 #include "../ipc.h"
 #include "../save_backup.h"
+#include "../platform.h"
+#include "../game_addresses.h"
 #include "../romfs_build.h"
 #include "../gameversion.h"
 #include "../game_profiles.h"
@@ -72,6 +74,7 @@ static uint64_t base_size(void) {
 
 // n bytes of the base image at off (past its end: zeros)
 static ssize_t base_pread(void *dst_, uint64_t n, uint64_t off) {
+    plat_os_write((uint64_t)(uintptr_t)dst_, n);
     if (g_base_fd >= 0) return pread(g_base_fd, dst_, n, (off_t)off);
     uint8_t *dst = dst_;
     memset(dst, 0, n);
@@ -95,6 +98,7 @@ static ssize_t base_pread(void *dst_, uint64_t n, uint64_t off) {
         uint64_t a = off > f->start ? off : f->start, b = end < f->start + f->size ? end : f->start + f->size;
         if (a >= b) continue;
         int fd = base_file_fd(i);
+        plat_os_write((uint64_t)(uintptr_t)(dst + (a - off)), b - a);
         if (fd <= 0 || pread(fd, dst + (a - off), b - a, (off_t)(a - f->start)) != (ssize_t)(b - a)) {
             pthread_mutex_unlock(&g_base_lock);
             LOG("[fs] can't read %s\n", f->path);
@@ -457,7 +461,33 @@ static void rom_index(void) {
     }
     if (ov_n) LOG("[fs] overlays: %d romfs files replaced\n", ov_n);
     if (ov_meta) { patches[npatches++] = (Patch){ov_meta_off, ov_meta_size, ov_meta}; }
-    rt_romfs_files = rom_nfiles;  // (the game's own: before a seed's added files; the crash dialog checks it)
+    // The game's own files (before a seed's added files; the crash dialog checks them), their sizes summed, and the
+    // files that aren't the game's named. Copies of the game code at the root (game_romfs_exefs_copy) are left out.
+    char game_dir[1100] = "";
+    size_t dl = g_romfs_dir ? strlen(g_romfs_dir) : 0;
+    if (dl > 6 && dl - 6 < sizeof game_dir && !strcmp(g_romfs_dir + dl - 6, "/romfs"))
+        memcpy(game_dir, g_romfs_dir, dl - 6), game_dir[dl - 6] = 0;
+    const GameVersion *version = title_is_las() ? game_version() : NULL;
+    GameRomfsCheck *check = game_romfs_check_begin(version);
+    int odd = 0, copies = 0;
+    rt_romfs_bytes = 0;
+    for (int i = 0; i < rom_nfiles; i++) {
+        if (version && game_dir[0] && game_romfs_exefs_copy(game_dir, rom_files[i].path, rom_files[i].size)) { copies++; continue; }
+        rt_romfs_bytes += rom_files[i].size;  // (the game's sizes, not a seed's)
+        if (!game_romfs_check_file(check, rom_files[i].path, rom_files[i].size) && odd++ < 20)
+            LOG("[fs] romfs: not one of the game's files: %s (%llu bytes)\n", rom_files[i].path,
+                (unsigned long long)rom_files[i].size);
+    }
+    rt_romfs_files = rom_nfiles - copies;
+    if (copies) LOG("[fs] romfs: %d %s of the game code at the root, ignored\n", copies, copies == 1 ? "copy" : "copies");
+    if (odd > 20) LOG("[fs] romfs: %d more files that aren't the game's\n", odd - 20);
+    int missing = game_romfs_check_end(check);
+    rt_romfs_missing = missing;
+    if (missing) LOG("[fs] romfs: %d of the game's files missing or changed\n", missing);
+    uint64_t want = game_romfs_bytes(version);
+    if (want && rt_romfs_bytes != want)
+        LOG("[fs] romfs: %llu bytes in %d files, this version's are %llu: damaged or changed game files\n",
+            (unsigned long long)rt_romfs_bytes, rt_romfs_files, (unsigned long long)want);
     add_new_files(h, dmeta, dsz, fsz);
     qsort(rom_files, rom_nfiles, sizeof *rom_files, rom_cmp);
     free(dmeta);
@@ -487,6 +517,7 @@ static ssize_t romfs_read(uint8_t *dst, uint64_t size, uint64_t off) {
                 if (want) {
                     pthread_mutex_lock(&g_ov_lock);
                     int fd = ov_file_fd(i);
+                    plat_os_write((uint64_t)(uintptr_t)(dst + done), want);
                     r = fd < 0 ? -1 : pread(fd, dst + done, want, (off_t)in);
                     if (fd >= 0 && r != (ssize_t)want && !ov[i].warned) {
                         LOG("[fs] ERROR: short read of randomizer file %s at %llu (%lld of %llu bytes, %s): zeros "
@@ -911,6 +942,7 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         if (!b || off < 0 || size < 0) { resp->result = MAKE_RESULT(2, 6001); break; }
         if ((uint64_t)size > b->size) size = (int64_t)b->size;
         if (f->dropped && f->fd < 0) { OUT(int64_t, 0) = 0; resp_size(resp, 8); break; }  // (nothing open: empty)
+        plat_os_write(b->addr, (uint64_t)size);
         ssize_t n = pread(f->fd, (void *)(uintptr_t)b->addr, (size_t)size, off);
         if (n < 0) resp->result = errno_result();
         if (n > 0 && !f->scratch && title_is_las() && strstr(f->path, "savedata")) {

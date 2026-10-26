@@ -181,6 +181,34 @@ static int write_glsl(const char *dir) {
             maxwell_free(s);
         }
     }
+    {   // (compute, GLSL) a load and a store through global memory: the fast-copy table lookups gfind / gfindw and the
+        // store report (exec.c gmap_build, gfast_flags_poll) - compiled and validated like the cases (#355)
+        const Case gc = {.name = "LDG / STG (fast-copy table, store report)",
+                         .insn = {mov32i(2, 0x10000), mov32i(3, 0x72),
+                                  0xeed0000000000000ull | 4ull << 48 | 1ull << 45 | PT_GUARD | 2ull << 8 | 4,  // LDG.E R4, [R2]
+                                  0xeed0000000000000ull | 1ull << 51 | 4ull << 48 | 1ull << 45 | 16ull << 20 | PT_GUARD | 2ull << 8 | 4,  // STG.E [R2+16], R4
+                                  0}};
+        uint64_t prog[16];
+        int m = program(&gc, prog);
+        uint64_t gb = maxwell_gmem_base, gs = maxwell_gmem_size;
+        maxwell_gmem_base = 0x7200000000ull, maxwell_gmem_size = 0x400000000ull;
+        ShaderKey key = {0};
+        key.glsl = 1;
+        ShaderInfo *s = maxwell_translate((const uint8_t *)prog, (size_t)m * 8, STAGE_COMPUTE, &key);
+        maxwell_gmem_base = gb, maxwell_gmem_size = gs;
+        fprintf(names, "%02d_comp %s\n", n, gc.name);
+        if (!s->msl || !strstr(s->msl, "gfindw(")) {
+            printf("FAIL %s: %s\n", gc.name, s->msl ? "no gfindw at the store" : s->error);
+            bad++;
+        } else {
+            snprintf(path, sizeof path, "%s/%02d_comp.comp", dir, n);
+            FILE *f = fopen(path, "w");
+            if (!f) { perror(path); return 2; }
+            fputs(s->msl, f);
+            fclose(f);
+        }
+        maxwell_free(s);
+    }
     fclose(names);
     printf("%d cases x 3 stages written to %s, %d translation failures\n", n, dir, bad);
     return bad != 0;

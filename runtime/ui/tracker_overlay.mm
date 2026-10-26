@@ -1853,7 +1853,9 @@ extern "C" void tracker_dungeon_draw(ImVec2 display, ImFont *font) {
         if (click) open_list(rbs[hover].cell), click = false;
     }
 
-    // the legend: left of the map paper, under the dungeon's name
+    // the legend: left of the map paper, at the bottom of the panel there. The game's floor buttons (up to Eagle's
+    // Tower's 4F..1F) stack down from under the dungeon's name and end by y 432 of 720; the panel ends at 624, over
+    // the line above the button prompts. Bottom-anchored, the tallest legend (168) still starts below the buttons.
     {
         std::vector<std::string> pills = dungeon_pills(dk);
         int found = 0;
@@ -1865,7 +1867,7 @@ extern "C" void tracker_dungeon_draw(ImVec2 display, ImFont *font) {
         bool letters = g_settings.chaos_letters != CHAOS_LETTERS_OFF && g_room_shuffle != "off" && !g_room_shuffle.empty() &&
                        g_room_shuffle != "coherent";
         float h = 16 * u + lh * pills.size() + (letters ? lh * (g_room_shuffle == "decoupled" ? 2 : 1) + 12 * u : 0);
-        ImVec2 a(ox + 62 * u, oy + 200 * u), z(ox + 62 * u + w, oy + 200 * u + h);  // (left of the paper, under the title)
+        ImVec2 a(ox + 62 * u, oy + 624 * u - h), z(ox + 62 * u + w, oy + 624 * u);
         parchment(dl, a, z, u);
         float y = a.y + 9 * u;
         for (auto &p : pills) {

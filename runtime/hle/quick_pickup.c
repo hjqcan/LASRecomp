@@ -64,9 +64,16 @@ static const Quick *find(const char *name, size_t len) {
 int rt_actor_event(Cpu *c) {
     static int off = -1;
     if (off < 0) off = getenv("LARECOMP_QUICK_PICKUPS") && !atoi(getenv("LARECOMP_QUICK_PICKUPS"));
-    if (off) return 0;
     uint64_t actor = LD64(c->x[20] + 0x58);
     if (!actor || LD64(actor) != GA(SINKING_SWORD_VTABLE)) return 0;
+    extern bool shell_spot_hung_actor(uint64_t actor);  // (Applesanity: an item hanging in its tree - shell_spots.c)
+    if (shell_spot_hung_actor(actor)) {
+        static uint64_t said;
+        if (said != actor) LOG("[quick] an item hanging in an apple tree: not picked up\n");
+        said = actor;
+        return 2;
+    }
+    if (off) return 0;
     uint64_t name = LD64(c->x[29] - 0x40), len = LD64(c->x[29] - 0x38);
     if (!name || !len || len > 47) return 0;
     const Quick *q = find((const char *)(uintptr_t)name, (size_t)len);

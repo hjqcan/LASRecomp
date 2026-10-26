@@ -29,6 +29,24 @@ Multi extends the upstream static recompilation runtime with game adapters, sepa
 
 Development on this branch is AI-assisted. Feature support and experimental limits are documented in the linked game guides.
 
+## System requirements
+
+These are the minimums during the beta and may change as development continues.
+
+**macOS:** any Apple Silicon Mac (M1 or newer) on macOS 15 or newer. Intel Macs aren't supported.
+
+**Windows and Linux:**
+
+| | Minimum |
+|---|---|
+| OS | Windows 10 or 11 (64-bit), or 64-bit Linux from about 2022 or newer (including the Steam Deck) |
+| CPU | x86-64 with AVX2 and FMA: Intel 4th gen (Haswell) or newer, or AMD Ryzen |
+| GPU | Vulkan 1.3 with an up-to-date driver, about as fast as a Switch or faster. For example: NVIDIA GTX 900 series or newer, AMD Radeon RX 400 series or Ryzen integrated graphics or newer, Intel Iris Xe or newer |
+| RAM | 8 GB (16 GB recommended) |
+| Disk | About 12 GB free for setup |
+
+Not supported: Intel UHD 600-series and older Intel integrated graphics, and anything slower than a Switch. Linux on ARM (aarch64) is experimental.
+
 ![Mabe Village in a 21:9 window: the unlocked aspect ratio shows more of the island](docs/ultrawide.jpg)
 
 > [!NOTE]
@@ -62,63 +80,55 @@ Known issues and their status are on the [GitHub issues page](https://github.com
 The gameplay and randomizer options below apply to Link's Awakening. Other games have their own adapter support and limits in [multi-game setup](docs/multi-game.md).
 
 **Runs natively**
-- **This is not emulation.** Runs natively on Windows, macOS and Linux using static recompilation of the Switch code.
-- Unlocked aspect ratio: wider (or taller) windows show more of the island, up to ultrawide; houses and dungeons
-  keep their framing. The original 16:9 framing is one option away.
-- Start screen: play vanilla or any randomizer seed, set up your own extracted game files, import fonts.
-  - Switch games use fonts built into the Switch operating system for some text. Sensible replacements are used by default, but you may optionally set up the Switch fonts for an authentic look. Switch fonts are Nintendo IP; you must provide them from your own hardware.
-- In-game overlay menu (F1, or Minus + Plus on a controller).
+- **This is not emulation.** It runs natively on Windows, macOS and Linux.
+- Works with the verified 1.0.0 and 1.1.0 executable builds.
+- Wider screens show more of the island, up to ultrawide. You can switch back to the original 16:9.
+- Higher resolutions, a "match your display" option and dynamic resolution, with MetalFX (Mac) or FSR 1 (Windows and Linux) upscaling and SMAA anti-aliasing.
+- Shaders are prepared ahead of time, so new areas don't stutter.
+- A start screen where you pick vanilla or a randomizer seed, set up your game files and choose your settings.
+- In-game menu: F1, or Minus + Plus on a controller.
+- Switch between vanilla and any randomizer seed without restarting.
+- Keyboard and controller support, with every button remappable. Button prompts match your controller (Xbox, PlayStation or Nintendo).
+- Controller rumble, and the light bar on PlayStation controllers shows Link's health.
+- Controllers that aren't recognised can be added with a mapping file (see [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB)).
+- Play in English, Japanese, Spanish, French, German, Italian, Dutch, Russian, Korean or Chinese (Simplified or Traditional).
+- Optional extras: 360-degree movement, blur removal, mirror mode, faster walking and hiding the Hero Mode icon.
+- Cosmetics: change Link's tunic, hair, skin and shield colours, the colour of the grass, leaves and sand (with season presets), give enemies random colours, or play with a Game Boy, Game Boy Color or grayscale filter.
 - [Photo mode](docs/photo-mode.md) (F2): freeze the scene, adjust framing/color and save a PNG (F12).
 - [Resource mods](docs/resource-mods.md): import a local replacement folder, inspect metadata and enable it with conflict checks.
-- Switch between vanilla and any randomizer seed without restarting the app.
-- Keyboard and controller support, with every button and key remappable (Controls tab / start screen Settings >
-  Controls; menus keep a fixed layout, so a remap can never lock you out).
-- Button prompts for your controller: Xbox or PlayStation icons in the game's own UI and text when SDL reports
-  that controller (or pick Nintendo / Xbox / PlayStation yourself); the icons follow your controller remapping.
-- A controller SDL doesn't recognise can be added with your own SDL mapping line (as in
-  [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB)) in `gamecontrollerdb.txt` in the data
-  folder (see "Where files live" below); the log names it once it works: `[input] gamepad: ...`.
-- Optional 360-degree movement, blur removal and a hidden Hero Mode icon.
 - Optional run timer, with LiveSplit support.
-- Raise or lower the internal resolution, match your display, or use dynamic resolution.
-- Upscaling: MetalFX on macOS, AMD FSR 1 on Windows and Linux.
 
 **Randomizer**
-- In-game seed generator.
-- Seed IDs for sharing seeds.
-- Separate saves for each seed.
-- Full item shuffle.
-- Trade Quest shuffle.
-- Disable Acorn and Piece of Power drops.
-- Bombs and Magic Powder shuffle.
-- Hookshot anything: the hookshot grabs onto any wall or object.
-- Environment Randomizer.
-- Enemy Randomizer, optionally with mini-bosses. More mini-bosses will be added over time.
-- Music Randomizer.
+- In-game seed generator, with seed IDs for sharing and separate saves for each seed.
+- Shuffles all items, the trade quest, bombs and Magic Powder.
+- Hint Sheet: every seed starts with one that points you to your next important item.
 - Escape Bottle: every seed starts with it. Use it to warp to the dungeon entrance, or to Marin and Tarin's house outside dungeons.
 - Pickup text says which dungeon a key or dungeon item belongs to.
-- Potsanity: every pot is a check. Unchecked pots are gold.
-- Bushsanity: every bush is a check. Unchecked bushes are gold.
-- Digsanity: every diggable tile on the overworld is a check, about 5,000 of them. Holes stay dug so you know where you've been.
-- Keysanity: keys for any dungeon can be anywhere.
-- Shopsanity: the shop's 6 items are checks. Buy them or steal them.
-- Trendsanity: every Trendy Game prize is a check.
-- Pets: companions are items in the pool.
-  - Rooster: helps with Feather checks.
-  - Marin: you need her to get into the desert, unless the desert is open.
-  - Ghost: find him to unlock his grave check.
-  - Switch or send away companions from the pause menu.
-- Boss souls: a boss won't appear until you find its soul.
-- Mini-boss souls: the same for mini-bosses.
+- Extra places items can hide:
+  - Potsanity: every pot. Unchecked pots are gold.
+  - Bushsanity: every bush. Unchecked bushes are gold.
+  - Digsanity: every diggable spot on the overworld, about 5,000. Holes stay dug.
+  - Shellsanity: every Secret Seashell hiding spot.
+  - Underwater items: sunken treasures you dive for.
+  - Shopsanity: the shop's items. Buy them or steal them.
+  - Trendsanity: every Trendy Game prize.
+  - Keysanity: keys for any dungeon can be anywhere.
+- Small items from bushes, pots and digging don't stop you with the item scene; important items still do.
+- Item placement is paced, so big seeds don't hand you every key item right away.
+- Pets: companions are items you find. The Rooster helps with Feather checks, Marin opens the desert, and the Ghost unlocks his grave. Switch or send them away from the pause menu.
+- Boss souls and mini-boss souls: a boss won't appear until you find its soul.
 - Triforce Hunt: collect Triforce pieces instead of waking the Wind Fish.
+- Enemy Randomizer: shuffles enemies, optionally with mini-bosses (including Shadow Link) on the overworld. Enemies can change every time you enter an area.
+- Hookshot anything: the hookshot grabs onto any wall or object.
+- Environment and music randomizers. Acorn and Piece of Power drops can be turned off.
 - Entrance Randomizer: shuffles dungeons, houses, caves and connectors, with a decoupled option.
 - Dungeon Room Shuffle: every dungeon is rebuilt from its own rooms each seed.
   - Coupled: going back through a door takes you back where you came from.
   - Decoupled: going back through a door takes you somewhere else.
   - Labyrinth (planned): doors can lead into other dungeons.
   - The map can show how rooms connect as you explore.
+- A tracker on the pause menu's map shows how many checks are left in each area and whether you can reach them.
 - The inventory screen shows your keys, dungeon items, trade items and souls for each dungeon.
-- Check tracker on the overworld map.
 - Race mode: the spoiler log stays locked until the credits, and the title screen shows a seed hash so racers can check they have the same seed.
 
 ## Building from source
@@ -235,6 +245,7 @@ cancelled builds keep the previous installed library until a replacement is read
 - **[@ky1vstar](https://github.com/ky1vstar)** - a much faster Linux ARM release build (#319)
 - **[@theb0rg](https://github.com/theb0rg)** - the fix for AMD integrated graphics on Windows (#335)
 - **[@gtf-dot](https://github.com/gtf-dot)** - the game-text font on Linux (#330)
+- **[@cfcosta](https://github.com/cfcosta)** - full speed on Linux AMD handhelds like the Steam Deck and ROG Ally (#392)
 
 Thanks also to everyone who reports issues and tests builds. Your logs and screenshots find most of the bugs.
 

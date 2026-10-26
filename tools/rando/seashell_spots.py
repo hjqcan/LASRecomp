@@ -72,11 +72,12 @@ def _rooms(romfs, leb, levels=None):
             yield level, os.path.basename(f)[:-4], leb.Room(fh.read())
 
 
-def _landing(romfs, leb, room, host, tree):
+def _landing(romfs, leb, room, host, tree, skip=(), ok=None):
     """Where the item of a tree (ObjTree / ObjPalmTree: the shell flies out of its crown) or a bomb hole (the shell pops
     out of it) lands - the runtime flies it there on the shell's arc, not where the shell itself would come down (a
     wall, water or the tree): the nearest free tile around (a tree stands on the corner of 2 x 2 tiles, a hole is
-    one), in front - toward the camera - first, at most 2 units above / below the host. None: none."""
+    one), in front - toward the camera - first, at most 2 units above / below the host. None: none.
+    skip: tiles (x, z) already taken; ok(tile 0-79): a tile allowed (apple_trees.py: 3 tiles in the tree's region)."""
     with open(os.path.join(romfs, 'region_common', 'level', 'Field', room + '.leb'), 'rb') as fh:
         r = leb.Room(fh.read(), edit_grid=True)
     m = re.match(r'Field_(\d\d)([A-P])$', room)
@@ -97,7 +98,7 @@ def _landing(romfs, leb, room, host, tree):
                     dx, dz = tx - (x0 + x1) / 2, tz - (z0 + z1) / 2
                     cands.append((ring, -dz, abs(dx), tx, tz))  # (nearest ring, then south, then centred)
     for _, _, _, tx, tz in sorted(cands):
-        if not (0 <= tx < 10 and 0 <= tz < 8) or (tx, tz) in taken:
+        if not (0 <= tx < 10 and 0 <= tz < 8) or (tx, tz) in taken or (tx, tz) in skip or (ok and not ok(tz * 10 + tx)):
             continue
         t = r.grid.tilesdata[tz * 10 + tx]
         if t.flags1['containscollision'] or t.flags3['iswaterlava'] or t.flags1['deepwaterlava'] \
@@ -105,6 +106,19 @@ def _landing(romfs, leb, room, host, tree):
             continue
         return ox + tx * 1.5 + 0.75, t.elevation, oz + tz * 1.5 + 0.75
     return None
+
+
+def landings(romfs, leb, room, host, n, ok=None, have=()):
+    """n different landing tiles around a tree (_landing, nearest first) besides those in `have`: [(x, y, z)]"""
+    out = list(have)
+    while len(out) < n:
+        skip = {(int((x - (ord(room[-1]) - 65) * 15.0) // 1.5), int((z - (int(room[-3:-1]) - 1) * 12.0) // 1.5))
+                for x, _, z in out}
+        spot = _landing(romfs, leb, room, host, True, skip, ok)
+        if not spot:
+            break
+        out.append(spot)
+    return out
 
 
 def scan(romfs, leb):
