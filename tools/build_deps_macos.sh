@@ -6,6 +6,9 @@
 #   VP8 / Opus / H.264 / AAC in WebM or MP4 - and swscale); keystone (for the seed generator helper);
 #   a relocatable CPython 3.12 (python-build-standalone, built for macOS 11+) that `make rando-helper` freezes.
 # Needs: Xcode command line tools, cmake. Each step is skipped when its output exists (delete build/deps/<x> to redo).
+# No path of this machine may end up in the shipped libraries: FFmpeg stores its configure line (with --prefix) in
+# them, so it is configured for a neutral prefix and installed into build/deps with DESTDIR; the CMake builds map
+# their source folder away (-ffile-prefix-map).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MIN=${MACOS_MIN:-15.0}
@@ -14,6 +17,8 @@ S=$P/src
 mkdir -p "$S" "$P/bin" "$P/lib"
 export MACOSX_DEPLOYMENT_TARGET=$MIN
 JOBS=$(sysctl -n hw.ncpu)
+NEUTRAL=/opt/las-recomp-deps  # (FFmpeg's --prefix: never used at run time, the dylibs load by @rpath)
+MAPFLAGS="-ffile-prefix-map=$S=deps-src"
 
 fetch() {  # url sha256 file
     [ -f "$S/$3" ] || curl -fsSL -o "$S/$3.part" "$1" && { [ -f "$S/$3" ] || mv "$S/$3.part" "$S/$3"; }
@@ -34,7 +39,7 @@ if [ ! -f "$P/lib/libSDL3.0.dylib" ]; then
     unpack SDL3-3.4.18.tar.gz sdl
     cmake -S "$S/sdl" -B "$S/sdl/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$P" \
           -DCMAKE_OSX_DEPLOYMENT_TARGET="$MIN" -DCMAKE_OSX_ARCHITECTURES=arm64 -DSDL_SHARED=ON -DSDL_STATIC=OFF \
-          -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_DOCS=OFF
+          -DCMAKE_C_FLAGS="$MAPFLAGS" -DCMAKE_OBJC_FLAGS="$MAPFLAGS" -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_DOCS=OFF
     cmake --build "$S/sdl/build" -j"$JOBS" && cmake --install "$S/sdl/build"
 fi
 
@@ -51,13 +56,15 @@ fi
 
 if [ ! -f "$P/lib/libavcodec.dylib" ]; then
     unpack ffmpeg-9.0.2.tar.xz ffmpeg
-    (cd "$S/ffmpeg" && ./configure --prefix="$P" --cc=clang --arch=arm64 --enable-shared --disable-static \
+    (cd "$S/ffmpeg" && ./configure --prefix="$NEUTRAL" --cc=clang --arch=arm64 --enable-shared --disable-static \
         --extra-cflags="-mmacosx-version-min=$MIN" --extra-ldflags="-mmacosx-version-min=$MIN" \
         --disable-autodetect --disable-programs --disable-doc --disable-network --disable-avdevice --disable-avfilter \
         --disable-swresample --disable-everything \
         --enable-protocol=file --enable-demuxer=matroska,mov \
         --enable-decoder=vp9,vp8,vorbis,opus,h264,aac --enable-parser=vp9,vp8,vorbis,opus,h264,aac \
-        --install-name-dir='@rpath' && make -j"$JOBS" && make install)
+        --install-name-dir='@rpath' && make -j"$JOBS" && rm -rf "$S/ffmpeg-root" && make install DESTDIR="$S/ffmpeg-root")
+    cp -R "$S/ffmpeg-root$NEUTRAL"/. "$P"/
+    sed -i '' "s|$NEUTRAL|$P|g" "$P"/lib/pkgconfig/lib{avformat,avcodec,avutil,swscale}.pc  # (pkg-config: the real place)
 fi
 
 if [ ! -f "$P/lib/libkeystone.dylib" ]; then
@@ -66,13 +73,21 @@ if [ ! -f "$P/lib/libkeystone.dylib" ]; then
     cmake -S "$S/keystone" -B "$S/keystone/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$P" \
           -DCMAKE_OSX_DEPLOYMENT_TARGET="$MIN" -DCMAKE_OSX_ARCHITECTURES=arm64 -DBUILD_SHARED_LIBS=ON \
           -DBUILD_LIBS_ONLY=ON -DLLVM_TARGETS_TO_BUILD="AArch64" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-          -DCMAKE_CXX_FLAGS="-Wno-everything" -DCMAKE_C_FLAGS="-Wno-everything"
+          -DCMAKE_CXX_FLAGS="-Wno-everything $MAPFLAGS" -DCMAKE_C_FLAGS="-Wno-everything $MAPFLAGS"
     cmake --build "$S/keystone/build" -j"$JOBS" && cmake --install "$S/keystone/build"
 fi
 
 if [ ! -x "$P/python/bin/python3.12" ]; then
     rm -rf "$P/python" && mkdir -p "$P/python"
     tar -xf "$S/cpython-3.12.14-20260924.tar.gz" -C "$P/python" --strip-components 1
+fi
+
+# no path of this machine inside a library (FFmpeg's configure line, source file names); not on CI (no one's paths)
+if [ "${CI:-}" != true ]; then
+    case "$(basename "$HOME")" in runner|runneradmin) path_guard_home=() ;; *) path_guard_home=(-e "$HOME") ;; esac
+    for f in "$P"/lib/*.dylib; do
+        [ -L "$f" ] || ! grep -qaF -e "$PWD" ${path_guard_home[@]+"${path_guard_home[@]}"} "$f" || { echo "$f holds a path of this machine"; exit 1; }
+    done
 fi
 
 echo "build/deps ready (macOS $MIN):"

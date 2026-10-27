@@ -73,12 +73,40 @@ def _or_into(node, extra):
     node['condition-basic'] = f'({c}) | ({extra})'
 
 
+# The raft shop's doorstep (Field_04P, LADXR outside_raft_house) is a dock walled off by water: the hookshot links it
+# with Tal Tal Heights both ways, swimming only goes down (LADXR). LAS's `rapids` lumps that dock together with the
+# Rapids Ride (the islands, the owl, the landing by the Armos maze), all reached on the raft - and the raft is only
+# there after paying inside the shop (#263: gate shut, no raft). With the shop's door shuffled, standing on the dock
+# no longer means the shop is at hand, so the dock gets its own region and the ride needs the shop's interior.
+RAFT_DOCK = 'raft-dock'
+RAFT_PATCHES = [
+    ('rapids', '(heights & hookshot) | ((river | (armos-maze & bracelet)) & cross-water)',
+     'inside-raft-shop | ((river | (armos-maze & bracelet)) & cross-water)'),
+    ('heights', '(wasteland & bracelet) | (taltal-river & cross-water) | (rapids & (hookshot | cross-water))',
+     f'(wasteland & bracelet) | (taltal-river & cross-water) | (rapids & (hookshot | cross-water)) | '
+     f'({RAFT_DOCK} & (hookshot | cross-water))'),
+]
+
+
+def _outer(d):
+    return RAFT_DOCK if d['id'] == 'raft-shop' else d['outer_region']
+
+
 def apply_logic(logic, doors, entry, exit_, extra_inside=None):
     """extra_inside: {vanilla door id: [(location, cond)]} for added locations (e.g. item pots) in interiors."""
     by_id = {d['id']: d for d in doors}
+    if 'raft-shop' in by_id:
+        for node, old, new in RAFT_PATCHES:
+            assert logic[node].get('condition-basic') == old, (node, logic[node].get('condition-basic'))
+            if node == 'rapids':  # (its other levels were written with the dock = the ride; never looser without)
+                for k in ('condition-advanced', 'condition-glitched', 'condition-hell', 'condition-trick'):
+                    logic[node].pop(k, None)
+            logic[node]['condition-basic'] = new
+        # (the raft-return cave goes from the landing up to the dock: rapids)
+        logic[RAFT_DOCK] = {'type': 'region', 'condition-basic': '(heights & hookshot) | rapids'}
     for d in doors:
         logic[f"door-{d['id']}"] = {'type': 'region',
-                                     'condition-basic': _and(d['outer_region'], d.get('outer_extra'), d.get('door_req'))}
+                                     'condition-basic': _and(_outer(d), d.get('outer_extra'), d.get('door_req'))}
     into = {}
     for d, t in entry.items():
         into.setdefault(t, []).append(d)
@@ -114,7 +142,7 @@ def apply_logic(logic, doors, entry, exit_, extra_inside=None):
     # leaving interior I through door c puts Link outside c (coupled: the door he came in by); past what blocks
     # that doorstep (exit_req: the rock at Mamu's cave, the bushes at the Trendy Game)
     for t, c in exit_.items():
-        region = by_id[c]['outer_region']
+        region = _outer(by_id[c])
         if region in logic and f'inside-{t}' in logic:
             _or_into(logic[region], _and(f'inside-{t}', by_id[c].get('exit_req')))
     return moved
@@ -141,15 +169,20 @@ POCKETS = {
     'outside-d6': ('pocket-outside-d6', None, ('river', 'flippers')),        # jump into the water
     'toadstool-clearing': ('pocket-toadstool-clearing', 'swamp & (feather | rooster)', None),  # (LADXR)
     'pothole-field': ('pothole', None, None),  # LAS region pothole = the field behind Richard's villa
+    # Armos island (the d6-connector's stairs, Field_10N): water all round. LAS gives the door to `river`, and river
+    # gives plains / armos-maze with no item, so a cave door placed there let the logic walk off the island (seed
+    # 5PVF6-Z6C03-5RKFX-EWVTZ-9DK10-0G156: Goponga cave -> island -> Hookshot, Animal Village without flippers)
+    'armos-island': ('pocket-armos-island', 'river & cross-water', ('river', 'cross-water')),
 }
 # pocket name -> {Field room: tiles}: the parts of a pocket on screens beside its door's own (pocket_screens: the door's
-# screen, whole), from the walkable area the door opens on (field_reach.areas; tools/test_field_regions.py checks it).
+# screen, whole - unless listed here too: Armos island is a corner of Field_10N), from the walkable area the door opens on (field_reach.areas; tools/test_field_regions.py checks it).
 # A bush / dig tile there stands in the pocket too: the toadstool clearing runs north from Field_06A into the bottom of
 # Field_05A and the edge of Field_05B (bush-05A-1, 5F5HF-AB703-...: only reached through the Quadruplets' house and the
 # river behind it in that seed, while the logic had it as plain woods); the Papahl ledge runs west into Field_02J.
 POCKET_TILES = {
     'toadstool-clearing': {'Field_05A': (52, 53, 54, 55, 56, 57, 58, 59, 62, 63, 64, 65, 66, 67, 68, 69, 72, 73, 74, 75),
                            'Field_05B': (50, 60)},
+    'armos-island': {'Field_10N': (12, 13, 14, 24)},  # (the island only: the rest of 10N is village / maze)
     'papahl-ledge': {'Field_02J': (5, 6, 10, 11, 12, 13, 14, 15, 16, 21, 24, 25, 26, 34, 35, 36, 37, 38, 39, 44, 45, 46,
                                    54)},
 }
@@ -196,14 +229,16 @@ def node_region(d):
 
 
 def pocket_screens(cdoors):
-    """Field room -> pocket region for the screens of pocket doors (the zone's file and its real GB screen)."""
+    """Field room -> pocket region for the screens of pocket doors (the zone's file and its real GB screen), except
+    a screen the pocket shares with other regions (its POCKET_TILES list the pocket's part)."""
     out = {}
     for d in cdoors:
         if d['pocket_region']:
-            out[d['field_room']] = d['pocket_region']
+            own = POCKET_TILES.get(d['pocket']['name'], {})
             g = int(str(d.get('gb_screen') or '-1'), 0)
-            if g >= 0:
-                out[f'Field_{g // 16 + 1:02d}{chr(65 + g % 16)}'] = d['pocket_region']
+            for room in [d['field_room']] + ([f'Field_{g // 16 + 1:02d}{chr(65 + g % 16)}'] if g >= 0 else []):
+                if room not in own:
+                    out[room] = d['pocket_region']
     return out
 
 
@@ -287,9 +322,9 @@ def apply_connector_logic(logic, ed, cdoors, entry, exit_, extra_inside=None):
     for t, c in exit_.items():
         dc = by_id[c]
         if dc['pocket_region']:
-            add(dc['pocket_region'], node_region(by_id[t]))
-        else:  # (a rock / gap between the door and its region blocks the way back too: outer_extra)
-            add(dc['outer_region'], _and(node_region(by_id[t]), dc.get('outer_extra')))
+            add(dc['pocket_region'], _and(node_region(by_id[t]), dc.get('exit_req')))
+        else:  # (a rock / gap between the door and its region blocks the way back too: outer_extra, exit_req)
+            add(dc['outer_region'], _and(node_region(by_id[t]), dc.get('outer_extra'), dc.get('exit_req')))
     for region, ts in terms.items():
         node = logic.setdefault(region, {'type': 'region'})
         c = node.get('condition-basic')

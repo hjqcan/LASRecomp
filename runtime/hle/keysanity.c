@@ -9,6 +9,8 @@
 // +0 small keys held, +1 bits: compass 0, map 1, beak 2, Nightmare Key 3.
 #include "../game_addresses.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "../hle.h"
 #include "../rando.h"
@@ -67,6 +69,36 @@ void rt_powder_flag_tick(void) {
     LOG("[pots] GetMagicPowder set without the Powder Bag: cleared\n");
 }
 
+// Key rings (tools/rando/key_rings.py): a small key with index RING_INDEX + d is dungeon d's ring, all of its keys
+// at once; their number per dungeon is the seed's settings.json "key-ring-sizes" ({"D1": 3, ...}, D0 = Color Dungeon).
+enum { RING_INDEX = 100 };
+static int g_ring_size[10] = {-1};  // by dungeon index (0-7 D1-D8, 9 Color Dungeon); [0] = -1: not read yet
+RT_ON_RESET(ring_reset) { g_ring_size[0] = -1; }
+
+static int ring_size(int d) {
+    if (g_ring_size[0] < 0) {
+        for (int i = 0; i < 10; i++) g_ring_size[i] = 0;
+        const char *dir = rando_seed_dir();
+        static char buf[1 << 16];
+        char p[512];
+        FILE *f = dir ? (snprintf(p, sizeof p, "%s/settings.json", dir), fopen(p, "rb")) : NULL;
+        if (f) {
+            size_t n = fread(buf, 1, sizeof buf - 1, f);
+            buf[n] = 0;
+            fclose(f);
+            const char *s = strstr(buf, "\"key-ring-sizes\"");
+            const char *end = s ? strchr(s, '}') : NULL;
+            for (int k = 0; s && end && k < 9; k++) {
+                char key[8];
+                snprintf(key, sizeof key, "\"D%d\"", k);
+                const char *q = strstr(s, key);
+                if (q && q < end) g_ring_size[k ? k - 1 : 9] = atoi(strchr(q, ':') + 1);
+            }
+        }
+    }
+    return g_ring_size[d];
+}
+
 // x0 item, x1 count, x2 index: returns 1 when handled (AddItem then returns at once)
 int rt_add_item(Cpu *c) {
     extern void rt_silent_add(Cpu *);  // silent_pickups.c: a silent pickup's index back to the real one (+ its fly-in)
@@ -79,6 +111,11 @@ int rt_add_item(Cpu *c) {
     if (index == REFILL_INDEX && (item == IT_BOMB || item == IT_POWDER || item == IT_ARROW)) return refill(c, item, count);
     extern int rt_pet_item(int n);  // pets.c: companions found as items (tools/rando/pets.py PET_INDEX 90)
     if (index >= 90 && index < 93) return rt_pet_item(index - 90);
+    if (item == IT_SMALL_KEY && index >= RING_INDEX && index < RING_INDEX + 10) {  // a key ring: all its keys
+        index -= RING_INDEX;
+        count = ring_size(index);
+        if (count <= 0) count = 1;
+    }
     if (index < 0 || index > 9 || index == 8) return 0;
     int rec = index == 9 ? 18 : 2 * index;
     uint8_t *r = (uint8_t *)(uintptr_t)(GA(LIVE_SAVE) + 0xE0 + 0x10 * rec);

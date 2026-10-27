@@ -27,30 +27,39 @@ const PlasticTheme &plastic_theme(void) {
     static bool init;
     if (!init) {
         init = true;
-        // parchment, in the colours of the game's item screen (pause menu): khaki paper in an olive frame with a gold
-        // inner edge, the selection a deep burnt orange (cream text: plain to see from the couch), action buttons the
-        // frame's olive (cream text), a muted red for Delete / warnings
-        t.panel = hex(0xE2D6B4, 0.98f);
-        t.inset = hex(0xEAE0C6, 0.96f);
-        t.frame = hex(0x5F5A33);
-        t.frame_inner = hex(0xAA9240);
-        t.row = hex(0xD8C8A0);
-        t.row_sel = hex(0x954A16);
-        t.row_mark = hex(0xE4C98F);  // (the category shown beside its list, the cursor elsewhere)
-        t.row_hot = hex(0x954A16);   // (ImGui's own buttons under the cursor: as the selection, cream text)
-        t.button = hex(0x58622A);
-        t.tab = hex(0xD3C39A);
-        t.tab_sel = hex(0x954A16);
-        t.text = hex32(0x3A2C16);
-        t.text_dim = hex32(0x6F6244);
-        t.text_sel = hex32(0xFFF3DC);
+        // the item screen's colours (pause menu): olive-brown paper in patches (the panel), in an olive frame with a
+        // khaki-gold inner edge; rows, buttons and tabs terracotta in a khaki-gold rim (cream text), the selection pale
+        // gold in a lighter gold rim (dark brown text), Delete / warnings a muted red. The terracotta is a little
+        // darker than the item screen's (#A57955) so cream text keeps 4.5:1.
+        t.panel = hex(0x433110, 0.98f);   // (the patches: panel <-> panel2, about #493812 on average)
+        t.panel2 = hex(0x4F4017, 0.98f);
+        t.inset = hex(0x3D3213, 0.96f);
+        t.frame = hex(0x4F5231);
+        t.frame_inner = hex(0xAA9B67);
+        t.row = hex(0x836044);
+        t.row_sel = hex(0xE5C589);
+        t.row_mark = hex(0x6E5220);  // (the category shown beside its list, the cursor elsewhere; a tab under the mouse)
+        t.row_hot = hex(0xE5C589);   // (ImGui's own buttons under the cursor: as the selection, dark text)
+        t.button = hex(0x836044);
+        t.danger = hex(0x8A3A2C);
+        t.tab = hex(0x75563B);
+        t.tab_sel = hex(0xE5C589);
+        t.ring = hex(0xAA9B67);
+        t.ring_sel = hex(0xECD78E);
+        t.text = hex32(0xFFF3DC);
+        t.text_dim = hex32(0xC9B691);
+        t.text_sel = hex32(0x3A2410);
         t.text_button = hex32(0xFFF3DC);
-        t.section = hex32(0x6C5A1E);
-        t.value = hex32(0x5A4A30);
-        t.value_changed = hex32(0x241A0C);
-        t.warn = hex32(0x8C3826);
-        t.title = hex32(0x6C5A1E);
-        t.arrow = hex32(0x7A6A32);
+        t.section = hex32(0xE5C589);
+        t.value = hex32(0xFFF3DC);
+        t.value_changed = hex32(0xFFEDB0);
+        t.warn = hex32(0xF2A48C);
+        t.title = hex32(0xECD78E);
+        t.arrow = hex32(0xF0DC9A);
+        t.ring_w = 4.0f;
+        t.pill_gloss = 0.18f;  // (a soft sheen: a bright one washed out the cream text)
+        t.edge = 0.08f;
+        t.mottle = 150.0f;
         t.dim = 0.62f;
         t.glare = 0.14f;
     }
@@ -63,7 +72,7 @@ struct PShape {
     float col[4];
     float col2[4];
     float p[4];  // radius, depth, gloss, kind
-    float q[4];  // ring width, -, -, -
+    float q[4];  // ring width, slab: patch size / pill: edge darkening, -, -
 };
 struct PFrame { float vp[2], mouse[2], scale, glare, has_bg, pad; };
 
@@ -88,6 +97,14 @@ float3 glare_guard(float3 col, float lum, float glare) {
     return col * mix((1.0 - glare) * float3(1.0, 0.975, 0.93), float3(1.0, 1.0, 1.0), k);  // (darker, still warm)
 }
 float piece_margin(Shape s) { return s.p.y * 2.6 + 3.0; }
+// soft value noise (the panel's patches)
+float hash2(float2 p) { return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453); }
+float vnoise(float2 p) {
+    float2 i = floor(p), f = fract(p);
+    float2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash2(i), b = hash2(i + float2(1.0, 0.0)), c = hash2(i + float2(0.0, 1.0)), d = hash2(i + float2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
 
 // premultiplied colour of the piece (and its shadow) at pixel px
 float4 shade(float2 px, Shape s, float2 mouse, float scale, float glare, float lum) {
@@ -159,6 +176,20 @@ float4 shade(float2 px, Shape s, float2 mouse, float scale, float glare, float l
     if (cov <= 0.0) return float4(0.0, 0.0, 0.0, sh > 0.002 ? sh : 0.0);
 
     if (kind == 3) base = mix(s.col2.rgb, s.col.rgb, smoothstep(-0.30, 0.05, u));  // (inner stripe, outer moulding)
+    float rim_line = 0.0;
+    if (kind == 0 && s.q.y > 0.0) {  // the panel in soft patches of col / col2
+        float2 pp = (px - s.rect.xy) / s.q.y;
+        float m = vnoise(pp) * 0.65 + vnoise(pp * 2.3 + float2(17.0, 5.0)) * 0.35;
+        base = mix(s.col.rgb, s.col2.rgb, smoothstep(0.2, 0.8, m));
+    }
+    float rimk = 0.0;
+    if (kind == 2 && w > 0.0) {  // a rim of col2 round the edge; inside it the fill darkens toward the rim (q.y)
+        float id = -d;
+        float inner = smoothstep(w, w + max(min(hs.x, hs.y) * 0.8, 1.0), id);
+        base *= 1.0 - s.q.y * (1.0 - inner);
+        rimk = 1.0 - smoothstep(w - 0.6 * px1, w + 0.6 * px1, id);
+        rim_line = 1.0 - smoothstep(0.0, 1.3 * px1, abs(id - w));
+    }
     float diff = max(dot(n, L), 0.0);
     float lf = 0.58 + 0.42 * diff / L.z;
     float3 col = base * lf;
@@ -192,10 +223,13 @@ float4 shade(float2 px, Shape s, float2 mouse, float scale, float glare, float l
     float2 dh = (px - hc2) / float2(1.0, 0.75);
     sheen += exp(-dot(dh, dh) / (R * R)) * (kind == 0 ? 0.05 : 0.10) * gloss;
     col = col + (1.0 - col) * sheen;
+    // the rim: its own colour, lit more evenly than the bevel it sits on (it reads all the way round)
+    if (rimk > 0.0) col = mix(col, s.col2.rgb * (0.80 + 0.30 * diff / L.z) + float3(spec, spec, spec), rimk);
     // a fine dark edge: the piece reads as a separate part
     float edge = 1.0 - smoothstep(0.0, 1.6 * px1, -d);
     if (kind == 3) edge = max(edge, 1.0 - smoothstep(0.0, 1.4 * px1, d + w));
     col *= 1.0 - 0.30 * edge;
+    col *= 1.0 - 0.22 * rim_line;  // (a fine line between a rim and its fill)
 
     col = glare_guard(col, lum, glare);
     float a = cov * alpha;
@@ -218,6 +252,7 @@ static PShape piece_px(const void *data) {
     PShape s = *(const PShape *)data;
     for (float &v : s.rect) v *= g_fbs;
     s.p[0] *= g_fbs, s.p[1] *= g_fbs, s.q[0] *= g_fbs;
+    if ((int)s.p[3] == PK_SLAB) s.q[1] *= g_fbs;  // (the patches' size)
     return s;
 }
 // the frame's values, from the target's size in pixels (mouse, scale: ImGui's units)
@@ -536,12 +571,21 @@ static void draw_cb(const ImDrawList *, const ImDrawCmd *cmd) {
 #endif
 
 void plastic_add(ImDrawList *dl, ImVec2 a, ImVec2 b, float radius, ImVec4 col, int kind, float depth, float gloss,
-                 ImVec4 col2, float ring) {
+                 ImVec4 col2, float ring, float extra) {
     if (b.x <= a.x || b.y <= a.y) return;
     PShape s = {{a.x, a.y, b.x, b.y}, {col.x, col.y, col.z, col.w}, {col2.x, col2.y, col2.z, col2.w},
-                {radius, depth, gloss, (float)kind}, {ring, 0, 0, 0}};
+                {radius, depth, gloss, (float)kind}, {ring, extra, 0, 0}};
     dl->AddCallback(draw_cb, &s, sizeof s);
     dl->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+}
+
+void plastic_pill(ImDrawList *dl, ImVec2 a, ImVec2 b, float radius, ImVec4 col, float depth, float gloss, float scale,
+                  bool lit) {
+    const PlasticTheme &t = plastic_theme();
+    ImVec4 ring = lit ? t.ring_sel : t.ring;
+    ring.w = col.w;  // (a faded piece: its rim too)
+    float w = fminf(t.ring_w * scale, (b.y - a.y) * 0.12f);
+    plastic_add(dl, a, b, radius, col, PK_PILL, depth, gloss * t.pill_gloss, ring, w, t.edge);
 }
 
 void plastic_panel(ImDrawList *dl, ImVec2 a, ImVec2 b, float scale) {
@@ -549,7 +593,8 @@ void plastic_panel(ImDrawList *dl, ImVec2 a, ImVec2 b, float scale) {
     float small = fminf(b.x - a.x, b.y - a.y) < 420 * scale ? 0.7f : 1.0f;  // (popups: a slimmer frame)
     float fw = 13 * scale * small, in = 7 * scale * small;
     dl->PushClipRectFullScreen();
-    plastic_add(dl, a, b, 26 * scale * small, t.panel, PK_SLAB, 14 * scale * small, 0.8f);
+    // (a soft sheen: the dark paper stays close to its own colour)
+    plastic_add(dl, a, b, 26 * scale * small, t.panel, PK_SLAB, 14 * scale * small, 0.3f, t.panel2, 0, t.mottle * scale);
     plastic_add(dl, ImVec2(a.x + in, a.y + in), ImVec2(b.x - in, b.y - in), 20 * scale * small, t.frame, PK_RING,
                 7 * scale * small, 1.0f, t.frame_inner, fw);
     dl->PopClipRect();
@@ -569,7 +614,7 @@ bool plastic_close_button(float bx, float scale) {
     ImGui::PopStyleColor();
     bool hot = ImGui::IsItemHovered() || (ImGui::IsItemFocused() && GImGui->NavCursorVisible);
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    plastic_add(dl, p, ImVec2(p.x + bx, p.y + bx), bx * 0.5f, hot ? t.row_sel : t.row, PK_PILL, 6 * scale, 1.0f);
+    plastic_pill(dl, p, ImVec2(p.x + bx, p.y + bx), bx * 0.5f, hot ? t.row_sel : t.row, 6 * scale, 1.0f, scale, hot);
     ImU32 col = hot ? t.text_sel : t.text;
     float m = bx * 0.32f, th = (hot ? 3.0f : 2.6f) * scale * 1.5f, dy = -1 * scale;
     dl->AddLine(ImVec2(p.x + m, p.y + m + dy), ImVec2(p.x + bx - m, p.y + bx - m + dy), col, th);
@@ -616,13 +661,13 @@ static bool frame_hook(ImDrawList *dl, const ImVec2 &a, const ImVec2 &b, ImU32 c
         ImVec4 c = hot ? t.row_hot : t.row;
         c.w *= ImGui::ColorConvertU32ToFloat4(col).w;  // (disabled: faded)
         if (hot) GImGuiLasButtonText = t.text_sel;  // (its label, drawn next: light on the dark piece)
-        plastic_add(dl, ImVec2(a.x + 1, a.y + 1), ImVec2(b.x - 1, b.y - 2 * scale), r, c, PK_PILL, (hot ? 6 : 4.5f) * scale,
-                    hot ? 1.0f : 0.7f);
+        plastic_pill(dl, ImVec2(a.x + 1, a.y + 1), ImVec2(b.x - 1, b.y - 2 * scale), r, c, (hot ? 6 : 4.5f) * scale,
+                     hot ? 1.0f : 0.7f, scale, hot);
         return true;
     }
     if (is(ImGuiCol_Header) || is(ImGuiCol_HeaderHovered) || is(ImGuiCol_HeaderActive)) {
         bool hot = !is(ImGuiCol_Header) || focus;
-        plastic_add(dl, a, b, r, hot ? t.row_mark : t.row, PK_PILL, 3.5f * scale, 0.6f);  // (pale: dark text stays)
+        plastic_pill(dl, a, b, r, hot ? t.row_mark : t.row, 3.5f * scale, 0.6f, scale, hot);  // (deep ochre: cream text stays)
         return true;
     }
     if (is(ImGuiCol_FrameBg) || is(ImGuiCol_FrameBgHovered) || is(ImGuiCol_FrameBgActive)) {

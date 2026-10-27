@@ -3,7 +3,7 @@
 
   python3 tools/test_field_regions.py                  the table itself (no game files, no packages needed)
   <rando venv python> tools/test_field_regions.py <romfs> [seed dir ...]
-                                                       + every bush / dig check of the game resolves to a reviewed
+                                                       + every bush / dig / rock check of the game resolves to a reviewed
                                                          region, its logic entry, hint area and tracker place agree;
                                                          a generated seed's logic.json / tracker.tsv / hint_steps.json
                                                          agree with the table (LARECOMP_ROMFS works as <romfs> too)
@@ -149,6 +149,13 @@ def test_game(romfs, seed_dirs):
             fail(f'{name}: hint area {v["spoiler-region"]} but the tracker place is {tracker.PLACE[place]!r}')
         n += 1
     print('game:', n, 'bush / dig checks resolve; logic region, hint area and tracker place agree')
+    import rocks  # (rocks: the table's region, or the reviewed one for a screen / border it lacks)
+    rl = rocks.add_to_logic(rocks.scan(romfs, leb), logic, items)
+    for name, r in rl.items():
+        want = rocks.BORDER.get(name) or rocks.SCREENS.get(r['room']) or fr.region_of(r['room'], r['tile'])
+        if logic[name]['region'] != want[0] or 'break-rock' not in (logic[name].get('condition-basic') or ''):
+            fail(f'{name}: logic {logic[name]["region"]} / {logic[name].get("condition-basic")}, table {want}')
+    print('game:', len(rl), 'rock checks resolve')
     test_pockets(romfs, leb, bl, dl)
     for sd in seed_dirs:
         test_seed(sd, bl, dl, zones)

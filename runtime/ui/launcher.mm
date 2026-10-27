@@ -2349,7 +2349,7 @@ extern "C" const char *launcher_run(const char *root) {
                     ImGui::Dummy(ImVec2(0, 14 * sc));
                     ImGui::PushTextWrapPos(0);
                     const PlasticTheme &pt = plastic_theme();
-                    ImGui::TextColored(failed ? plastic_col(pt.warn) : busy ? plastic_col(pt.title) : pt.button, "%s", ui_tr(job_line.c_str()));
+                    ImGui::TextColored(failed ? plastic_col(pt.warn) : busy ? plastic_col(pt.title) : plastic_col(pt.section), "%s", ui_tr(job_line.c_str()));
                     if (failed && !job_hint.empty())  // (what to do next, in the rows' own text colour)
                         ImGui::TextColored(plastic_col(pt.text), "%s", ui_tr(job_hint.c_str()));
                     ImGui::PopTextWrapPos();

@@ -6,19 +6,28 @@
 #include "imgui.h"
 
 struct PlasticTheme {
-    ImVec4 panel, inset, frame, frame_inner, row, row_sel, row_mark, row_hot, button, tab, tab_sel;
+    ImVec4 panel, panel2, inset, frame, frame_inner, row, row_sel, row_mark, row_hot, button, danger, tab, tab_sel;
+    ImVec4 ring, ring_sel;  // the rims round rows, buttons and tabs (ring_sel: on the selection)
     ImU32 text, text_dim, text_sel, text_button, section, value, value_changed, warn, title, arrow;
-    float dim;    // the game behind the menu: black at this alpha
-    float glare;  // over a dark scene the pieces come down by up to this much
+    float ring_w;   // a rim's width (design pixels)
+    float edge;     // rows, buttons and tabs darken toward their rim by this much
+    float pill_gloss;  // their gloss, scaled
+    float mottle;   // the panel's patches of panel / panel2: their size (design pixels; 0: a flat panel)
+    float dim;      // the game behind the menu: black at this alpha
+    float glare;    // over a dark scene the pieces come down by up to this much
 };
 const PlasticTheme &plastic_theme(void);
 static inline ImVec4 plastic_col(ImU32 c) { return ImGui::ColorConvertU32ToFloat4(c); }
 
 enum PlasticKind { PK_SLAB = 0, PK_INSET = 1, PK_PILL = 2, PK_RING = 3 };
 // a piece at [a, b] (pixels), drawn into dl at this point of its commands (so: under what's added after it).
-// depth: the bevel's width, and the drop shadow's reach; gloss 0..1; ring: the frame's width (PK_RING)
+// depth: the bevel's width, and the drop shadow's reach; gloss 0..1; ring: the frame's width (PK_RING) or a rim's in col2
+// (PK_PILL); extra: PK_PILL the fill's darkening toward the rim, PK_SLAB the size of its patches of col / col2 (pixels)
 void plastic_add(ImDrawList *dl, ImVec2 a, ImVec2 b, float radius, ImVec4 col, int kind, float depth, float gloss,
-                 ImVec4 col2 = ImVec4(0, 0, 0, 0), float ring = 0);
+                 ImVec4 col2 = ImVec4(0, 0, 0, 0), float ring = 0, float extra = 0);
+// a rounded row / button / tab in the theme's rim (lit: the selection's rim)
+void plastic_pill(ImDrawList *dl, ImVec2 a, ImVec2 b, float radius, ImVec4 col, float depth, float gloss, float scale,
+                  bool lit);
 // a big panel: the paper slab in its frame (the menu window, popups, the start screen's windows)
 void plastic_panel(ImDrawList *dl, ImVec2 a, ImVec2 b, float scale);
 // a well (recessed) - the panes, text fields

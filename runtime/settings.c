@@ -213,6 +213,10 @@ void settings_load(void) {
         else if (!strcmp(key, "timer_position")) g_settings.timer_pos = !strcmp(val, "right") ? TIMER_POS_RIGHT : TIMER_POS_LEFT;
         else if (!strcmp(key, "livesplit")) g_settings.livesplit = atoi(val) != 0;
         else if (!strcmp(key, "rando_options")) strlcpy(g_settings.rando_options, val, sizeof g_settings.rando_options);
+        else if (!strcmp(key, "rando_preset")) {  // (in order; past the cap: dropped)
+            for (int i = 0; i < RANDO_PRESETS_MAX; i++)
+                if (!g_settings.rando_presets[i][0]) { strlcpy(g_settings.rando_presets[i], val, sizeof g_settings.rando_presets[i]); break; }
+        }
         else if (!strcmp(key, "livesplit_host")) strlcpy(g_settings.livesplit_host, val, sizeof g_settings.livesplit_host);
         else if (!strcmp(key, "tunic")) col_parse(&g_settings.tunic, val);  // (colour rows: runtime/cosmetic_colour.c)
         else if (!strcmp(key, "hearts")) col_parse(&g_settings.hearts, val);
@@ -222,6 +226,7 @@ void settings_load(void) {
         else if (!strcmp(key, "leaves")) col_parse(&g_settings.leaves, val);
         else if (!strcmp(key, "grass")) col_parse(&g_settings.grass, val);
         else if (!strcmp(key, "sand")) col_parse(&g_settings.sand, val);
+        else if (!strcmp(key, "water")) col_parse(&g_settings.water, val);
         else if (!strcmp(key, "screen_filter")) {
             for (int i = 0; i < N_SCREEN_FILTERS; i++) if (!strcmp(val, k_screen_filter_keys[i])) g_settings.screen_filter = i;
         }
@@ -289,7 +294,8 @@ void settings_save(void) {
     static const struct { const char *key; const CosColour *c; } cols[] = {
         {"tunic", &g_settings.tunic}, {"hearts", &g_settings.hearts}, {"hair", &g_settings.hair},
         {"shield", &g_settings.shield}, {"skin", &g_settings.skin},
-        {"leaves", &g_settings.leaves}, {"grass", &g_settings.grass}, {"sand", &g_settings.sand}};
+        {"leaves", &g_settings.leaves}, {"grass", &g_settings.grass}, {"sand", &g_settings.sand},
+        {"water", &g_settings.water}};
     for (size_t i = 0; i < sizeof cols / sizeof *cols; i++) {
         char v[16];
         col_format(cols[i].c, v, sizeof v);
@@ -301,5 +307,7 @@ void settings_save(void) {
     fprintf(f, "rando_seed = %s\n", g_settings.rando_seed);
     fprintf(f, "game_profile = %s\n", game_profile_setting(g_settings.game_profile));
     if (g_settings.rando_options[0]) fprintf(f, "rando_options = %s\n", g_settings.rando_options);
+    for (int i = 0; i < RANDO_PRESETS_MAX; i++)
+        if (g_settings.rando_presets[i][0]) fprintf(f, "rando_preset = %s\n", g_settings.rando_presets[i]);
     fclose(f);
 }

@@ -14,13 +14,14 @@ EXE=${1:-build/mac15/lasrecomp}
 APP="build/Multi.app"
 DEPS=$PWD/build/deps
 BUNDLE_ID=$(sed -n 's/^#define RT_BUNDLE_ID "\(.*\)"/\1/p' runtime/paths.h)
-VERSION=$(sed -n 's/^#define LARECOMP_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
-# CFBundleShortVersionString must be digits: beta_<n> -> 0.9.<n>, beta_<n>.<m> -> 0.9.<n>.<m>, v1.2.3 -> 1.2.3
-case "$VERSION" in
-    beta_*) VERSION="0.9.${VERSION#beta_}" ;;
-    v*) VERSION="${VERSION#v}" ;;
-    test-*) VERSION="0.0.1" ;;  # (a test build: a valid bundle version, below every release)
-esac
+TAG=$(sed -n 's/^#define LARECOMP_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
+TEST_OF=$(sed -n 's/^#define LARECOMP_TEST_OF "\(.*\)"/\1/p' runtime/ui/launcher.mm)
+# CFBundleShortVersionString = the semantic version under the release tag (0.5.3), CFBundleVersion = a build number
+# that always goes up (503): tools/bundle_version.sh
+read -r VERSION BUILD_NUMBER <<EOF_V
+$(tools/bundle_version.sh "$TAG" "$TEST_OF")
+EOF_V
+[ -n "$BUILD_NUMBER" ] || { echo "no bundle version for $TAG"; exit 1; }
 HELPER=build/helper/rando-gen
 GEN_HELPER=build/helper/lasgen
 ZIG=build/zig
@@ -123,7 +124,7 @@ cat > "$C/Info.plist" <<EOF
     <key>CFBundleIconFile</key><string>icon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
-    <key>CFBundleVersion</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>LSMinimumSystemVersion</key><string>$MIN</string>
     <key>LSArchitecturePriority</key><array><string>arm64</string></array>
@@ -140,4 +141,10 @@ while read -r f; do [ "$f" = "$C/MacOS/lasrecomp" ] || codesign -f -s - "$f" 2>/
 codesign -f -s - "$APP"
 codesign --verify --strict "$APP"
 if find "$APP" -name 'lasgame*' | grep . >/dev/null; then echo "game code inside $APP"; exit 1; fi
+# no path of this machine inside (configure lines, debug paths, frozen Python's file names). Not on CI: its paths
+# name no one, and prebuilt wheels hold the CI runner's own (/Users/runner/...)
+if [ "${CI:-}" != true ]; then
+    case "$(basename "$HOME")" in runner|runneradmin) path_guard_home=() ;; *) path_guard_home=(-e "$HOME") ;; esac
+    if grep -rlaF -e "$PWD" ${path_guard_home[@]+"${path_guard_home[@]}"} "$APP"; then echo "^ these hold a path of this machine"; exit 1; fi
+fi
 echo "$APP: $(du -sh "$APP" | cut -f1), $(ls "$C/Frameworks" | wc -l | tr -d ' ') dylibs, macOS $MIN+"

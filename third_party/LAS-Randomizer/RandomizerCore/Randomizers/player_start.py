@@ -95,6 +95,12 @@ def makeStartChanges(flowchart, settings):
     
     if settings['boss-cutscenes']: # set boss cutscenes to have already been watched
         player_start_event_flags.extend(BOSS_FLAGS)
+
+    # (LARecomp: dungeon room shuffle - Eagle's Tower starts collapsed, tools/rando/eagle_tower.py)
+    if settings.get('dungeon-room-shuffle', 'off') not in ('off', None, False):
+        player_start_event_flags.extend(('TowerPillarBroken_L07_02B', 'TowerPillarBroken_L07_02C',
+                                         'TowerPillarBroken_L07_03B', 'TowerPillarBroken_L07_03C',
+                                         'TowerPillarBrokenAll', 'Lv7BrokenPillar'))
     # if settings['nag-meesages']: # set annoying one-time messages to not pop-up
     #     player_start_event_flags.extend(MESSAGE_FLAGS)
     

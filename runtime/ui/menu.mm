@@ -394,14 +394,14 @@ static void style_parchment(ImGuiStyle &s) {
     c[ImGuiCol_FrameBgHovered] = ImVec4(t.inset.x, t.inset.y * 0.99f, t.inset.z * 0.98f, 1);
     c[ImGuiCol_FrameBgActive] = ImVec4(t.inset.x * 0.99f, t.inset.y * 0.98f, t.inset.z * 0.97f, 1);
     c[ImGuiCol_CheckMark] = t.row_sel;
-    c[ImGuiCol_SliderGrab] = t.frame;
+    c[ImGuiCol_SliderGrab] = t.ring;
     c[ImGuiCol_SliderGrabActive] = t.row_sel;
     c[ImGuiCol_PlotHistogram] = c[ImGuiCol_PlotHistogramHovered] = t.row_sel;
     c[ImGuiCol_NavCursor] = clear;  // (the pieces show the cursor themselves)
-    c[ImGuiCol_Separator] = ImVec4(t.frame.x, t.frame.y, t.frame.z, 0.45f);
-    c[ImGuiCol_ScrollbarBg] = ImVec4(t.frame.x, t.frame.y, t.frame.z, 0.10f);
-    c[ImGuiCol_ScrollbarGrab] = ImVec4(t.frame_inner.x, t.frame_inner.y, t.frame_inner.z, 0.85f);
-    c[ImGuiCol_ScrollbarGrabHovered] = c[ImGuiCol_ScrollbarGrabActive] = t.frame;
+    c[ImGuiCol_Separator] = ImVec4(t.ring.x, t.ring.y, t.ring.z, 0.40f);
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0.22f);  // (a dark groove; the grab in the rims' khaki gold)
+    c[ImGuiCol_ScrollbarGrab] = ImVec4(t.ring.x, t.ring.y, t.ring.z, 0.85f);
+    c[ImGuiCol_ScrollbarGrabHovered] = c[ImGuiCol_ScrollbarGrabActive] = t.row_sel;
     c[ImGuiCol_TextSelectedBg] = ImVec4(t.row_sel.x, t.row_sel.y, t.row_sel.z, 0.35f);
     c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.10f, 0.06f, 0.02f, 0.40f);
     c[ImGuiCol_Tab] = c[ImGuiCol_TabHovered] = c[ImGuiCol_TabSelected] = clear;
@@ -559,7 +559,7 @@ extern "C" bool cosmetics_seed_on(void);  // runtime/cosmetics_seed.c
 static void tab_cosmetics(void) {
     opt_begin("##cosmetics", ImGui::GetFontSize() / 34);
     CosColour *rows[] = {&g_settings.tunic, &g_settings.hearts, &g_settings.hair, &g_settings.skin, &g_settings.shield,
-                         &g_settings.leaves, &g_settings.grass, &g_settings.sand};
+                         &g_settings.leaves, &g_settings.grass, &g_settings.sand, &g_settings.water};
     if (opt_button("Randomize all", "Every color below gets a random color."))
         for (CosColour *c : rows) c->pick = 1 + rand() % (COL_RANDOM - 1);  // (a named colour: shown as what it is)
     if (opt_button("Default all", "Everything on this page back to the game's own look.")) {
@@ -575,8 +575,8 @@ static void tab_cosmetics(void) {
     opt_colour("Body color", &g_settings.skin, COL_SLOT_SKIN, "Link's body color.");  // (larecomp.ini: skin)
     opt_colour("Shield color", &g_settings.shield, COL_SLOT_SHIELD, "The color of Link's shield.");
     opt_section("Overworld");
-    {   // Season: fills Leaves, Grass and Sand at once (palette: Orange 2, Gold 3, Pink 9, White 10); "Mixed" when
-        // they match none
+    {   // Season: fills Leaves, Grass and Sand at once (palette: Orange 2, Gold 3, Pink 9, White 10; Water stays out: it
+        // has no season, and white water would read as ice); "Mixed" when they match none
         static const char *const names[] = {"Spring", "Autumn", "Winter", "Cherry blossom", "Mixed"};
         static const int preset[4][3] = {{COL_DEFAULT, COL_DEFAULT, COL_DEFAULT}, {2, 3, 3}, {10, 10, 10},
                                          {9, COL_DEFAULT, COL_DEFAULT}};
@@ -597,6 +597,7 @@ static void tab_cosmetics(void) {
     opt_colour("Leaves color", &g_settings.leaves, COL_SLOT_LEAVES, "The overworld's tree leaves and bushes.");
     opt_colour("Grass color", &g_settings.grass, COL_SLOT_GRASS, "The overworld's grass.");
     opt_colour("Sand color", &g_settings.sand, COL_SLOT_SAND, "The beaches, the desert and the sandy south.");
+    opt_colour("Water color", &g_settings.water, COL_SLOT_WATER, "The sea, rivers, ponds, waterfalls and dungeon water.");
     opt_section("Enemies");
     {   // (Off in a seed with its own cosmetics: "Seed", its enemies are per seed)
         const char *modes[N_ENEMY_COLOUR_MODES];
@@ -921,8 +922,8 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             ImVec4 col = sel ? pt.tab_sel : lit ? pt.row_mark : pt.tab;
             if (sel && lit) col = ImVec4(col.x * 0.88f, col.y * 0.88f, col.z * 0.88f, col.w);  // (the cursor on it: deeper)
             if (!t.on) col.w *= 0.45f;
-            plastic_add(dl, ImVec2(p.x, p.y + (sel ? 0 : 2 * scale)), ImVec2(p.x + tw[k], p.y + th - 2 * scale), 10 * scale, col,
-                        PK_PILL, (sel ? 7 : 4) * scale, sel ? 1.0f : 0.55f);
+            plastic_pill(dl, ImVec2(p.x, p.y + (sel ? 0 : 2 * scale)), ImVec2(p.x + tw[k], p.y + th - 2 * scale), 10 * scale, col,
+                         (sel ? 7 : 4) * scale, sel ? 1.0f : 0.55f, scale, sel);
             ImU32 tc = sel ? pt.text_sel : t.on ? pt.text : pt.text_dim;
             ImVec2 ts(text_w[k], ImGui::GetFontSize());
             dl->AddText(ImVec2(p.x + (tw[k] - ts.x) * 0.5f, p.y + (th - ts.y) * 0.5f - (sel ? 2 : 1) * scale), tc, ui_tr(t.name));

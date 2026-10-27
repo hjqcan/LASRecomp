@@ -30,8 +30,11 @@ blocks inside the room), the exact enemies / switches behind each shutter, key c
 import json
 import os
 import re
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import rooms  # noqa: E402  (cell positions: Eagle's Tower's grid doesn't follow its names)
 
 LEVELS = {
     'Lv10ClothesDungeon': (0, 'color-dungeon'), 'Lv01TailCave': (1, 'tail-cave'), 'Lv02BottleGrotto': (2, 'bottle-grotto'),
@@ -48,16 +51,24 @@ MAX_TERMS = 48
 EXIT_REQ = {}  # catalog room -> frozenset of atoms leaving it needs (mini-boss souls: tools/rando/souls.py exit_req)
 
 
+# checks on a ledge that only their room's vanilla neighbour reaches (dungeon_gen.TIED / STAY keep the two together):
+# the check also needs that neighbour's cell - the way up is there (Face Shrine 08G's ramp, Key Cavern 03D's, Turtle
+# Rock 03E's), not in the check's own room
+LEDGE_VIA = {'D6-wizzrobes-ledge': 'Lv06FaceShrine_08G', 'D3-east-ledge': 'Lv03KeyCavern_03D',
+             'D8-northern-ledge': 'Lv08TurtleRock_03E'}
+
+
 # location subtypes LAS shuffles (shuffler.py: every other item location keeps its vanilla content)
 RANDOMIZED_SUBTYPES = ('chest', 'boss', 'enemy', 'drop', 'npc', 'standing', 'overworld-statue', 'dungeon-statue')
 
 
-def cell_pos(cell):  # '06C' -> (col 2, row 6)
-    return ord(cell[2]) - ord('A'), int(cell[:2])
+def cell_pos(cell, level=None):  # '06C' -> (col 2, row 6) (Eagle's Tower: its own grid, rooms.POSITIONS)
+    p = rooms.POSITIONS.get(level, {}).get(cell[:3])
+    return p if p else (ord(cell[2]) - ord('A'), int(cell[:2]))
 
 
-def cell_name(col, row):
-    return f'{row:02d}{chr(ord("A") + col)}'
+def cell_name(col, row, level=None):
+    return rooms.cell_name(level, col, row).rsplit('_', 1)[1] if level else f'{row:02d}{chr(ord("A") + col)}'
 
 
 # ---------------------------------------------------------------- conditions: parse, strip, print
@@ -212,8 +223,7 @@ def lock_flag(romfs, room, side):
         out = []
         try:
             r = leb.Room(open(_rooms._leb_path(romfs, room), 'rb').read())
-            col, row = cell_pos(room.rsplit('_', 1)[1])
-            x0, z0 = 15.0 * col, 12.0 * (row - 1)
+            x0, z0 = _rooms.cell_origin(room)
             for a in r.actors:
                 if a.type != 0xED:
                     continue
@@ -335,6 +345,29 @@ def stairs_links(romfs, level, cat=None):
     return sorted(set(links))
 
 
+def hole_links(romfs, level, cat):
+    """[(grid room, grid room it drops into)]: holes (AreaHoleLower) name a player start ('<room>' or '<room>_a'). Eagle's
+    Tower starts collapsed in room shuffle seeds (eagle_tower.py): 2F 04C's stairs lead to 04G (stairs_links finds it from
+    04G's side)."""
+    import sys
+    sys.path.insert(0, os.path.join(HERE, '..', '..', 'third_party', 'LAS-Randomizer'))
+    from RandomizerCore.Tools import leb
+    d = os.path.join(romfs, 'region_common', 'level', level)
+    out = []
+    for f in sorted(os.listdir(d)):
+        room = f[:-4]
+        if not f.endswith('.leb') or room not in cat:
+            continue
+        for a in leb.Room(open(os.path.join(d, f), 'rb').read()).actors:
+            ps = [p for p in a.parameters or () if isinstance(p, bytes) and p]  # (the first one is empty)
+            if a.name.decode(errors='ignore').startswith('AreaHoleLow') and ps:
+                t = ps[0].decode(errors='ignore')
+                t = t if t in cat else t.rsplit('_', 1)[0] if t.rsplit('_', 1)[0] in cat else None
+                if t and t != room:
+                    out.append((room, t))
+    return sorted(set(out))
+
+
 def rooms_neighbour(room, side):
     import rooms
     return rooms.neighbour(room, side)
@@ -343,7 +376,7 @@ def rooms_neighbour(room, side):
 def level_graph(cat, romfs, level, layout, jump_rows, openings):
     """{cell: [(cell, frozenset req)]} directed edges; lock count."""
     n = LEVELS[level][0]
-    pos = {cell_pos(c): c for c in layout}
+    pos = {cell_pos(c, level): c for c in layout}
     edges = {c: [] for c in layout}
     flags = set()  # distinct locks: one per 'opened' flag (a vanilla door's two halves share it)
     for cell, room in layout.items():
@@ -368,7 +401,7 @@ def level_graph(cat, romfs, level, layout, jump_rows, openings):
             edges[cell].append((target, req))
     for cell, room in layout.items():
         op = openings(cat, room)
-        c, r = cell_pos(cell)
+        c, r = cell_pos(cell, level)
         for side in 'NSWE':
             nb = pos.get((c + STEP[side][0], r + STEP[side][1]))
             if nb is None:
@@ -396,11 +429,24 @@ def level_graph(cat, romfs, level, layout, jump_rows, openings):
         bl = frozenset(f'LOCK|{n}|block{b}' for b in lock_blocks(romfs, room))
         if bl:
             edges[cell] = [(t, r | bl) for t, r in edges[cell]]
+    import dungeon_gen
+    where = {room: cell for cell, room in layout.items()}  # (LINK_LEVELS: stairs / hole rooms may have moved)
     for a, b in stairs_links(romfs, level, cat):
         ca, cb = a.rsplit('_', 1)[1], b.rsplit('_', 1)[1]
-        if layout.get(ca) == a and layout.get(cb) == b:  # (stairs rooms stay home)
+        if level in dungeon_gen.LINK_LEVELS:
+            ca, cb = where.get(a), where.get(b)
+            # (Eagle's Tower 04G: the stairs arrive boxed in by orange pegs - set them with 04C's crystal switch)
+            req = frozenset({'break-crystal'}) if {a, b} == {'Lv07EagleTower_04C', 'Lv07EagleTower_04G'} else frozenset()
+            if ca and cb:
+                edges[ca].append((cb, req))
+                edges[cb].append((ca, req))
+        elif layout.get(ca) == a and layout.get(cb) == b:  # (stairs rooms stay home)
             edges[ca].append((cb, frozenset()))
             edges[cb].append((ca, frozenset()))
+    if level in dungeon_gen.LINK_LEVELS:  # holes: one way down, into the room holding the landing spot
+        for a, b in hole_links(romfs, level, cat):
+            if where.get(a) and where.get(b):
+                edges[where[a]].append((where[b], frozenset()))
     for cell, room in layout.items():  # leaving a mini-boss room (not into its own unit): its soul (EXIT_REQ)
         if EXIT_REQ.get(room):
             edges[cell] = [(t, r if EXIT_REQ.get(layout.get(t)) == EXIT_REQ[room] else r | EXIT_REQ[room])
@@ -496,9 +542,9 @@ def apply(cat, romfs, layouts, jump_rows, logic_defs, item_defs, settings, extra
             rooms_at.setdefault(room, []).append((level, cell))
             for d in cat.get(room, {}).get('doors', []):
                 if len(d) > 3 and d[2] == 'bossdoor':  # the boss sits behind it
-                    c, r = cell_pos(cell)
+                    c, r = cell_pos(cell, level)
                     dc, dr = STEP[d[0]]
-                    boss_cell[level] = cell_name(c + dc, r + dr)
+                    boss_cell[level] = cell_name(c + dc, r + dr, level)
         edges, locks = level_graph(cat, romfs, level, layout, jump_rows, dungeon_gen.openings)
         start = dungeon_gen.ENTRANCES[level].rsplit('_', 1)[1]
         terms = reach_terms(edges, start, region)
@@ -641,6 +687,13 @@ def apply(cat, romfs, layouts, jump_rows, logic_defs, item_defs, settings, extra
             return f'({e}) & key-D{n}:{k}'
         reach = [with_blocks(p) for p in places if cell_expr.get(p)]
         ck = [cell_keys[p] for p in places if p in cell_keys]
+        via = LEDGE_VIA.get(loc)
+        if via and reach:  # (a ledge reached from its vanilla neighbour: that room's cell too)
+            ve = [cell_expr[p] for p in rooms_at.get(via, []) if cell_expr.get(p)]
+            reach = [f'({e}) & ({" | ".join(f"({x})" for x in ve)})' for e in reach] if ve else []
+            vk = [cell_keys[p] for p in rooms_at.get(via, []) if p in cell_keys]
+            if ck and vk:
+                ck = [max(min(ck), min(vk))]
         if ck:
             k = min(ck)
             bl = lock_blocks(romfs, room)
@@ -707,6 +760,22 @@ def apply(cat, romfs, layouts, jump_rows, logic_defs, item_defs, settings, extra
             else:
                 if len(ks) < total + dungeon_items(settings):  # (room for the Nightmare Key, Map, Compass, Beak too)
                     settings['room-logic-unfillable'] = f'{level}: {len(ks)} checks for {total + dungeon_items(settings)} dungeon items'
+    # a dungeon whose instrument the room graph can't reach (cut off from its entrance): never a beatable seed - the
+    # next layout instead (seen with Eagle's Tower, DevEaglePlay + dungeon items mcb: the whole tower unreachable)
+    lost = sorted(k for k in excluded if re.match(r'D\d-instrument$', k))
+    if lost and not settings.get('room-logic-unfillable'):
+        settings['room-logic-unfillable'] = 'unreachable ' + ', '.join(lost)
+    # Eagle's Tower (collapsed, eagle_tower.py): the boss is on the roof, up the stairs at the end of 02F's raised
+    # walkway (hookshot / rooster) - 02F has other doorways, so the room graph would let Link past the Nightmare door.
+    # Its checks need 03F (the Nightmare door's room: 02F / 03F / 03G / 02G stay together, dungeon_gen.STAY) and the key.
+    tower = cell_expr.get(('Lv07EagleTower', '03F')) if 'Lv07EagleTower' in layouts else None
+    if tower:
+        roof = f'({tower}) & nightmare-key-D7 & (hookshot | (rooster & bad-pets))'
+        for k in ('D7-instrument', 'D7-eagle'):
+            if k in logic_defs:
+                logic_defs[k]['condition-basic'] = f'{roof} & hookshot & kill-evil-eagle'
+                for lv_ in ('advanced', 'glitched', 'hell'):
+                    logic_defs[k].pop('condition-' + lv_, None)
     return (f'{len(layouts)} dungeons, {rewritten} checks rewritten, {unused} in unused rooms (excluded), '
             f'{fallback} without a room (vanilla condition), locks {dict(sorted(lock_count.items()))}')
 
@@ -738,8 +807,8 @@ def boss_door_ok(cat, romfs, level, layout, rows):
             allowed.add(cell)
         for d in cat.get(room, {}).get('doors', []):
             if len(d) > 3 and d[2] == 'bossdoor':
-                c, r = cell_pos(cell)
-                allowed.add(cell_name(c + STEP[d[0]][0], r + STEP[d[0]][1]))
+                c, r = cell_pos(cell, level)
+                allowed.add(cell_name(c + STEP[d[0]][0], r + STEP[d[0]][1], level))
     # beyond the boss arena (the instrument room, the Color Dungeon's reward room): reached through the arena
     todo = [c for c in allowed if c in behind]
     while todo:

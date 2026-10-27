@@ -102,7 +102,7 @@ while IFS=$'\t' read -r level cell side slot expect fl; do
     n=$((n + 1))
     [ $n -lt "$FIRST" ] && continue
     [ $n -ge $((FIRST + COUNT)) ] && break
-    case $level in Lv02*|Lv10*) ent=08C;; Lv03*) ent=08B;; Lv05*) ent=08H;; *) ent=08D;; esac  # dungeon_gen ENTRANCES
+    case $level in Lv02*|Lv10*) ent=08C;; Lv03*|Lv07*) ent=08B;; Lv05*) ent=08H;; *) ent=08D;; esac  # dungeon_gen ENTRANCES
     tools/fresh_save.sh "djtest_$JOB" >/dev/null 2>&1  # (per seed: suites of different seeds run in parallel)
     LARECOMP_DOORJUMP_TEST="3100:$cell:$side:$slot:$fl" LARECOMP_CHEATS=hearts LARECOMP_RANDO_SEED=$SEED \
     LARECOMP_SAVE_DIR="build/djtest_$JOB" LARECOMP_WINDOW=640x360 SHOT_ID="dj_$JOB" \

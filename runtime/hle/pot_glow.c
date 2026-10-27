@@ -17,8 +17,8 @@
 // GA(PLAYER_STATUS_PTR): PlayerStatus*: current level name at +0
 #define EVENT_FLAGS (GA(LIVE_SAVE) + 0x5DC0)  // live save: GlobalFlags bitfield (2048 bits)
 
-// bushes.tsv rows may add: cut flag, hidden item scale, full item scale, room file (and the item's record offset in it,
-// unused: see pot_regrow_tick)
+// bushes.tsv / rocks.tsv rows may add: cut flag, hidden item scale, full item scale, room file (and the item's record
+// offset in it, unused: see pot_regrow_tick)
 typedef struct { char level[40]; float x, y, z; int flag, cut; float small, full; char room[16]; } Pot;
 static Pot *g_pots;
 static int g_npots = -1;
@@ -35,10 +35,12 @@ static void load(void) {
     const char *dir = rando_seed_dir();
     if (!dir) return;
     int cap = 0;
-    // pots.tsv (potsanity) and bushes.tsv (bushsanity, flags 2048+: runtime/hle/flags_ext.c): same format
-    for (int k = 0; k < 2; k++) {
+    // pots.tsv (potsanity), bushes.tsv (bushsanity) and rocks.tsv (rocksanity; flags 2048+: runtime/hle/flags_ext.c):
+    // same format
+    static const char *const kFiles[] = {"pots.tsv", "bushes.tsv", "rocks.tsv"};
+    for (int k = 0; k < 3; k++) {
         char path[512];
-        snprintf(path, sizeof path, "%s/%s", dir, k ? "bushes.tsv" : "pots.tsv");
+        snprintf(path, sizeof path, "%s/%s", dir, kFiles[k]);
         FILE *f = fopen(path, "r");
         if (!f) continue;
         int n0 = g_npots;
@@ -51,7 +53,7 @@ static void load(void) {
             g_pots[g_npots++] = p;
         }
         fclose(f);
-        LOG("[pots] %d gold %s from %s\n", g_npots - n0, k ? "bushes" : "pots", path);
+        LOG("[pots] %d gold spots from %s\n", g_npots - n0, path);
     }
 }
 
@@ -134,7 +136,7 @@ bool pot_tint(const float *m, float tint[8], uint64_t mesh) {
     float sx = m[0] * m[0] + m[4] * m[4] + m[8] * m[8], sy = m[1] * m[1] + m[5] * m[5] + m[9] * m[9],
           sz = m[2] * m[2] + m[6] * m[6] + m[10] * m[10];
     if (fabsf(sx - 1) > 0.02f || fabsf(sy - 1) > 0.02f || fabsf(sz - 1) > 0.02f) return false;
-    bool upright = fabsf(m[0] - 1) <= 0.01f && fabsf(m[5] - 1) <= 0.01f && fabsf(m[10] - 1) <= 0.01f;
+    bool upright = fabsf(m[5] - 1) <= 0.01f;  // (rocks stand turned about y)
     float x = m[3], y = m[7], z = m[11];
     const Pot *hit = NULL;
     int lo = 0, hi = g_nlv;  // first pot with x >= x - 0.02
@@ -142,6 +144,7 @@ bool pot_tint(const float *m, float tint[8], uint64_t mesh) {
     for (int k = lo; k < g_nlv && upright && g_pots[g_lv_idx[k]].x <= x + 0.02f; k++) {  // standing on its spot
         const Pot *p = &g_pots[g_lv_idx[k]];
         if (fabsf(p->x - x) > 0.02f || fabsf(p->z - z) > 0.02f || fabsf(p->y - y) > 0.05f) continue;
+        if (p->cut >= 0 && flags_ext_get(p->cut)) continue;  // (lifted: its spot holds the item, not the rock)
         if (!unchecked(p)) return false;  // already checked
         hit = p;
         track(g_lv_idx[k], x, y, z, now, mesh);
@@ -151,8 +154,8 @@ bool pot_tint(const float *m, float tint[8], uint64_t mesh) {
         Track *t = &g_track[i];
         if (!t->seen || now - t->seen > 2 || !mesh || t->mesh != mesh || !unchecked(&g_pots[t->pot])) continue;
         if (strcmp(g_pots[t->pot].level, current_level())) { t->seen = 0; continue; }
-        float dx = t->x - x, dy = t->y - y, dz = t->z - z;
-        if (dx * dx + dy * dy + dz * dz > 0.25f * 0.25f) continue;
+        float dx = t->x - x, dy = t->y - y, dz = t->z - z, step = g_pots[t->pot].cut >= 0 ? 0.75f : 0.25f;
+        if (dx * dx + dy * dy + dz * dz > step * step) continue;  // (a rock goes up faster than a pot)
         hit = &g_pots[t->pot];
         t->x = x; t->y = y; t->z = z; t->seen = now;
     }
@@ -202,11 +205,15 @@ void pot_regrow_tick(uint64_t frame) {
 // size (pot_bush_game_tick). A bush cut when its room loads lets the item come with the room, full size.
 #define T_SINKING_SWORD 0x194
 #define BUSH_KEY_TAG 0x7Bu  // (tools/rando/bushes.py key_tag: the items' actor keys)
+#define ROCK_KEY_TAG 0x7Cu  // (tools/rando/rocks.py KEY_TAG: rocks work the same way, lifted instead of cut)
 #define SPAWN_INFO_SIZE 0x1c0  // spawn info: +0 key, +8 type, +0xc zone, +0x10 parameters, +0x180 position / rotation / scale
 static uint8_t **g_info;  // per spot: the skipped spawn of its item (bush not cut yet)
 static uint64_t *g_item;  // per spot: weak ref (control block) of the item we spawned
 static uint64_t g_spawn_scratch;
+static uint8_t *g_was;  // (LARECOMP_LOG_POTS: each spot's cut flag last frame)
 RT_ON_RESET(pot_bush_reset) {  // (the infos and refs were the old boot's)
+    free(g_was);
+    g_was = NULL;
     if (g_info)
         for (int i = 0; i < g_npots; i++) free(g_info[i]);
     free(g_info), free(g_item);
@@ -215,7 +222,8 @@ RT_ON_RESET(pot_bush_reset) {  // (the infos and refs were the old boot's)
 }
 
 bool rt_bush_item_skip(uint32_t type, uint64_t info) {
-    if (type != T_SINKING_SWORD || (LD64(info) >> 56) != BUSH_KEY_TAG) return false;
+    uint64_t tag = LD64(info) >> 56;
+    if (type != T_SINKING_SWORD || (tag != BUSH_KEY_TAG && tag != ROCK_KEY_TAG)) return false;
     if (g_npots < 0) load();
     if (g_npots <= 0) return false;
     const float *pos = (const float *)(uintptr_t)(info + 0x180);
@@ -272,7 +280,7 @@ static bool spawn_bush_item(Cpu *c, int i) {
             c->x[0] = ictrl;
             guest_call(c, GA(SP_RELEASE));
         }
-        LOG("[pots] bush %s cut: its item (flag %d) %s\n", p->room, p->flag, LD64(s) ? "spawned" : "failed to spawn");
+        LOG("[pots] %s cut / lifted: its item (flag %d) %s\n", p->room, p->flag, LD64(s) ? "spawned" : "failed to spawn");
         { extern void pace_hitch(const char *why);  // nvn/pace.c
           pace_hitch("an item spawn"); }
     }
@@ -282,6 +290,16 @@ static bool spawn_bush_item(Cpu *c, int i) {
 
 // game thread, once per frame (runtime/hle/input.c)
 void pot_bush_game_tick(Cpu *c, uint64_t frame) {
+    if (ENV("LARECOMP_LOG_POTS") && g_npots > 0 && frame % 4 == 0) {  // (debug: cut / lifted flags as they change)
+        if (!g_was) g_was = calloc((size_t)g_npots, 1);
+        uint8_t *was = g_was;
+        for (int i = 0; i < g_npots; i++) {
+            uint8_t now = g_pots[i].cut >= 0 && flags_ext_get(g_pots[i].cut);
+            if (now != was[i]) LOG("[pots] f%llu %s (%.2f, %.2f): flag %d %s\n", (unsigned long long)frame, g_pots[i].room,
+                                   g_pots[i].x, g_pots[i].z, g_pots[i].cut, now ? "set" : "cleared");
+            was[i] = now;
+        }
+    }
     if (!g_info || frame % 4) return;
     extern int game_in_play(void);
     if (!game_in_play()) return;

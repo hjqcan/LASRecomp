@@ -66,6 +66,15 @@ class Msbt:
             n, size = struct.unpack_from('<II', self.atr, 0)
             self.atr = struct.pack('<II', n + 1, size) + self.atr[8:8 + n * size] + b'\0' * size + self.atr[8 + n * size:]
 
+    def copy_attr(self, label, src):
+        """Give `label` the attribute record of `src` (who speaks, which box)."""
+        if self.atr is None:
+            return
+        n, size = struct.unpack_from('<II', self.atr, 0)
+        a, b = self.labels[label], self.labels[src]
+        rec = self.atr[8 + b * size:8 + (b + 1) * size]
+        self.atr = self.atr[:8 + a * size] + rec + self.atr[8 + (a + 1) * size:]
+
     def pack(self):
         # LBL1
         buckets = [[] for _ in range(self.slots)]

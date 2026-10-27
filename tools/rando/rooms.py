@@ -44,9 +44,50 @@ BLOCKERS = {0x100: 'blocked:block', 0x1aa: 'blocked:crystal', 0x1ab: 'blocked:cr
             0xf7: 'blocked:chest'}
 
 
+def _tower_positions():
+    """Eagle's Tower: its 10 x 10 grid (x 0-150, z 0-120) and file names that don't match positions. 2F = 01-04 A-D
+    (names match), 1F = files 05-08 A-D at rows 7-10, the post-collapse 3F = files 01-04 E-H at columns G-J, the
+    pre-collapse 3F = files 05-08 E-H at columns G-J, rows 7-10. The cells no room uses get names nothing else has:
+    columns E / F -> letters I / J (rows 01-10), rows 5 / 6 -> rows 09 / 10 (letters A-D, E-H by column)."""
+    pos = {}
+    for r in range(1, 9):
+        for c in range(8):
+            pos[f'{r:02d}{chr(65 + c)}'] = (c if c < 4 else c + 2, r if r <= 4 else r + 2)
+    for r in range(1, 11):
+        for c in (4, 5):
+            pos[f'{r:02d}{"IJ"[c - 4]}'] = (c, r)
+    for r in (5, 6):
+        for c in range(10):
+            if c not in (4, 5):
+                pos[f'{r + 4:02d}{chr(65 + (c if c < 4 else c - 2))}'] = (c, r)
+    return pos
+
+
+# levels whose cell names don't match their positions: {level: {'05A': (column, row), ...}} (rows from 1)
+POSITIONS = {'Lv07EagleTower': _tower_positions()}
+_NAMES = {lv: {p: n for n, p in v.items()} for lv, v in POSITIONS.items()}
+GRIDS = {'Lv07EagleTower': (10, 10)}
+# rooms no seed reaches: Eagle's Tower's pre-collapse 3F (files 05-08 E-H) - room shuffle seeds start with the tower
+# collapsed (eagle_tower.py). Not in the catalog: kept where they are, as the side-view rooms are.
+DEAD = {f'Lv07EagleTower_{c}' for c in ('05F', '05G', '06E', '06F', '06G', '06H', '07E', '07F', '07G', '07H', '08F',
+                                          '08G')}  # (its files; 05E is the collapse cutscene, side-view)  # columns, rows (others: dungeon_gen.COLS / ROWS, 8 x 8)
+
+
+def cell_pos(room):
+    """'Lv01TailCave_06C' -> (column 2, row 6): the cell's place on the level's grid (row 1 = z 0)."""
+    lv, rc = room.rsplit('_', 1)
+    p = POSITIONS.get(lv, {}).get(rc[:3])
+    return p if p else (ord(rc[2]) - ord('A'), int(rc[:2]))
+
+
+def cell_name(level, col, row):
+    n = _NAMES.get(level, {}).get((col, row))
+    return f'{level}_{n}' if n else f'{level}_{row:02d}{chr(ord("A") + col)}'
+
+
 def cell_origin(room):
-    rc = room.rsplit('_', 1)[1][:3]
-    return (ord(rc[2]) - ord('A')) * 15.0, (int(rc[:2]) - 1) * 12.0
+    c, r = cell_pos(room)
+    return c * 15.0, (r - 1) * 12.0
 
 
 def level_of(room):
@@ -146,10 +187,15 @@ STEP = {'N': (0, -1), 'S': (0, 1), 'W': (-1, 0), 'E': (1, 0)}
 
 def neighbour(room, side):
     lv, rc = room.rsplit('_', 1)
-    col, row = ord(rc[2]) - ord('A') + STEP[side][0], int(rc[:2]) + STEP[side][1]
+    if lv in POSITIONS and rc[:3] not in POSITIONS[lv]:
+        return None
+    c, r = cell_pos(room)
+    col, row = c + STEP[side][0], r + STEP[side][1]
+    if lv in GRIDS and not (0 <= col < GRIDS[lv][0] and 1 <= row <= GRIDS[lv][1]):
+        return None
     if not (0 <= col < 26 and 1 <= row <= 99):
         return None
-    return f'{lv}_{row:02d}{chr(ord("A") + col)}'
+    return cell_name(lv, col, row)
 
 
 def catalog(romfs):
@@ -160,7 +206,7 @@ def catalog(romfs):
     for lv in DUNGEONS:
         d = os.path.join(romfs, 'region_common', 'level', lv)
         for f in sorted(os.listdir(d)):
-            if f.endswith('.leb') and re.match(rf'{lv}_\d\d[A-Z]\.leb$', f):
+            if f.endswith('.leb') and re.match(rf'{lv}_\d\d[A-Z]\.leb$', f) and f[:-4] not in DEAD:
                 rm = load_room(romfs, f[:-4])
                 if rm:
                     out[rm.name] = rm

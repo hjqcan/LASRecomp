@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.join(ROOT, 'third_party', 'LAS-Randomizer'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from msbt import Msbt  # noqa: E402
+import key_rings  # noqa: E402
 
 # LAS item name prefix -> (Items.gsheet key, System.msbt get message)
 ITEMS = {'key-': ('SmallKey', 'GetSmallKey'), 'nightmare-key-': ('NightmareKey', 'GetBossKey'),
@@ -48,6 +49,9 @@ def used(placements):
     out = set()
     for loc, idx in placements.get('indexes', {}).items():
         item = placements.get(loc)
+        if isinstance(item, str) and item.startswith(key_rings.RING) and idx == key_rings.index_of(item):
+            out.add(('SmallKey', idx))  # (a key ring: its own message)
+            continue
         if not isinstance(item, str) or idx not in INDEXES:
             continue
         for prefix in sorted(ITEMS, key=len, reverse=True):  # (nightmare-key- before key-)
@@ -107,6 +111,7 @@ def _read(out_dir, romfs, rel):
 
 
 def write_messages(out_dir, romfs, combos):
+    import loc_text  # (it imports this module)
     n = 0
     for sysp in sorted(glob.glob(os.path.join(romfs, 'region*', '*', 'message', 'System.msbt'))):
         rel = os.path.relpath(sysp, romfs)
@@ -114,10 +119,15 @@ def write_messages(out_dir, romfs, combos):
         sysm = Msbt(_read(out_dir, romfs, rel))
         place = Msbt(_read(out_dir, romfs, rel.replace('System.msbt', 'Place.msbt'))).texts
         for key, idx in sorted(combos):
-            get, name = sysm.texts.get(GET_MSG[key]), place.get(place_label(idx))
+            ring = idx >= key_rings.RING_INDEX
+            get, name = sysm.texts.get(GET_MSG[key]), place.get(place_label(idx - key_rings.RING_INDEX if ring else idx))
             if get is None or name is None:
                 continue
-            sysm.set(entry(key, idx), compose(get, name, lang.endswith('en')))
+            if ring:
+                wait = next((r for k, g, r in reversed(_tokens(get)) if g == WAIT), b'')
+                sysm.set(entry(key, idx), key_rings.message(loc_text.lang_of(rel), name, wait))
+            else:
+                sysm.set(entry(key, idx), compose(get, name, lang.endswith('en')))
             n += 1
         out = os.path.join(out_dir, 'romfs', rel)
         os.makedirs(os.path.dirname(out), exist_ok=True)

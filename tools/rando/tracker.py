@@ -5,7 +5,7 @@
           region, condition (basic | advanced... per the seed's logic level), [pit]/[heavy] enemy variants
   checks  every item location: label, overworld map position (cell units: x = column 0..16, y = row 0..16),
           group (dungeon icon, -1 = its overworld screen), flag (GlobalFlags index that is set once collected,
-          -1 = unknown), kind (the tracker's filter: chest / heart / shell / boss / shop / bush / dig / pot / other),
+          -1 = unknown), kind (the tracker's filter: chest / heart / shell / boss / shop / bush / dig / pot / rock / other),
           area (LAS region), dungeon (D0..D8 it physically sits in now, '-') and its cell there ('05B', '-')
   groups  the dungeon icons: at the overworld door that leads into the dungeon (shuffle-dungeons follows LAS's
           dungeon-entrances), labelled by the dungeon reached there
@@ -62,6 +62,8 @@ def kind_of(name, v, shell_spots=()):
     """The tracker's filter kind of a check (one each). Shellsanity spots (shell_spots.tsv) count as seashells."""
     if name.startswith('bush-'):
         return 'bush'
+    if re.match(r'rock-\d\d[A-P]-', name):  # (not LAS's rock-maze)
+        return 'rock'
     if re.match(r'dig-\d\d[A-P]-\d\d$', name):
         return 'dig'
     if name.startswith('pot-') or re.match(r'D\d-pot-', name):
@@ -194,7 +196,7 @@ def name_checks(checks, romfs):
         place = PLACE[a] if 0 <= a < len(PLACE) else ''
         b = boxes.get(a)
         where = direction((x - b[0]) / max(1.0, b[2] - b[0]), (z - b[1]) / max(1.0, b[3] - b[1])) if b else ''
-        numbered = c['k'] in ('bush', 'dig', 'pot') and re.match(r'(bush|dig|pot)-', c['n'])
+        numbered = c['k'] in ('bush', 'dig', 'pot', 'rock') and re.match(r'(bush|dig|pot|rock)-', c['n'])
         apple = re.match(r'apple-tree-\d\d[A-P]-(\d)$', c['n'])
         if apple:
             name = display_name(c['n'], 'apple', place, f'{where}, {apple.group(1)} of 3' if where else f'{apple.group(1)} of 3')
@@ -358,8 +360,8 @@ def build(seed_dir, romfs):
         g = -1
         cell = None
         dg = (None, None)
-        if name.startswith('pot-') or re.match(r'D\d-pot-', name) or name.startswith('bush-'):
-            continue  # pots and bushes come from pots.tsv / bushes.tsv below
+        if name.startswith(('pot-', 'bush-')) or re.match(r'D\d-pot-|rock-\d\d[A-P]-', name):
+            continue  # pots, bushes and rocks come from pots.tsv / bushes.tsv / rocks.tsv below
         m = re.match(r'dig-(\d\d)([A-P])-(\d\d)$', name)
         if m:  # digsanity: on its screen; collected = flag 24576 + tile id (tools/rando/digs.py)
             row, col, tile = int(m.group(1)), ord(m.group(2)) - 65, int(m.group(3))
@@ -418,7 +420,9 @@ def build(seed_dir, romfs):
     tsv = os.path.join(seed_dir, 'pots.tsv')
     if os.path.exists(tsv):
         by_level = {}
-        for p in pots_mod.scan(romfs, leb):
+        import eagle_tower  # (room shuffle: the tower starts collapsed - 02E's pots are checks, 06E's aren't)
+        for p in pots_mod.scan(romfs, leb, eagle_tower.MISSABLE_ROOMS_COLLAPSED if eagle_tower.collapsed(settings)
+                               else pots_mod.MISSABLE_ROOMS):
             by_level.setdefault(p['level'], []).append(p)
         names = {}
         for lv, ps in by_level.items():
@@ -463,6 +467,22 @@ def build(seed_dir, romfs):
             cell = n and cell_of_field('Field_' + n.split('-')[1])
             if n in logic and cell:
                 checks.append({'n': n, 'x': cell[0], 'y': cell[1], 'g': -1, 'flag': int(fl), 'k': 'bush',
+                               'a': logic[n].get('region') or '', 'wx': float(x), 'wz': float(z)})
+    # rocksanity (rocks.tsv, the same rows): on the rock's Field screen (rock-<screen>-<n>)
+    tsv = os.path.join(seed_dir, 'rocks.tsv')
+    if os.path.exists(tsv):
+        import rocks as rocks_mod
+        names = {}
+        for r in rocks_mod.scan(romfs, leb):
+            a = next((a for a in room_file(r['room']).actors if a.key == r['key']), None)
+            if a:
+                names[(round(a.posX, 2), round(a.posZ, 2))] = rocks_mod.location_name(r)
+        for line in open(tsv):
+            lv, x, y, z, fl = line.split()[:5]
+            n = names.get((round(float(x), 2), round(float(z), 2)))
+            if n in logic:
+                cell = cell_of_field('Field_' + n.split('-')[1])
+                checks.append({'n': n, 'x': cell[0], 'y': cell[1], 'g': -1, 'flag': int(fl), 'k': 'rock',
                                'a': logic[n].get('region') or '', 'wx': float(x), 'wz': float(z)})
     for dk in sorted(set(DUNGEONS.values())):
         if any(c.get('d') == dk for c in checks):

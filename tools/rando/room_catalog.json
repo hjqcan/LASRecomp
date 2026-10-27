@@ -14658,6 +14658,133 @@
    532
   ]
  },
+ "Lv07EagleTower_01F": {
+  "openings": {
+   "N": [],
+   "S": [
+    10
+   ],
+   "W": [],
+   "E": [
+    6
+   ]
+  },
+  "heights": {
+   "N": [],
+   "S": [
+    0.0
+   ],
+   "W": [],
+   "E": [
+    null
+   ]
+  },
+  "tiles": {
+   "N": [],
+   "S": [
+    4,
+    5
+   ],
+   "W": [],
+   "E": [
+    2,
+    3
+   ]
+  },
+  "doors": [
+   [
+    "E",
+    3,
+    "shutter",
+    6
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_01F"
+  ],
+  "actors": [
+   "EnemyPeahat",
+   "MapStatic",
+   "ObjBeamos",
+   "ObjBladeTrap",
+   "ObjClosedDoor",
+   "ObjDungeonRoof",
+   "TagLight",
+   "TagTailorPla"
+  ],
+  "types": [
+   7,
+   239,
+   281,
+   293,
+   389,
+   435,
+   438,
+   449
+  ]
+ },
+ "Lv07EagleTower_01G": {
+  "openings": {
+   "N": [],
+   "S": [],
+   "W": [
+    6
+   ],
+   "E": []
+  },
+  "heights": {
+   "N": [],
+   "S": [],
+   "W": [
+    null
+   ],
+   "E": []
+  },
+  "tiles": {
+   "N": [],
+   "S": [],
+   "W": [
+    2,
+    3
+   ],
+   "E": []
+  },
+  "doors": [
+   [
+    "W",
+    3,
+    "shutter(mirror)",
+    6
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_01G"
+  ],
+  "actors": [
+   "AreaBeltConv",
+   "EnemyZolRed",
+   "MapStatic",
+   "ObjBeamos",
+   "ObjDungeonRoof",
+   "ObjHorseNeck",
+   "ObjTreasureBox",
+   "TagLight",
+   "TagSwitchChe",
+   "TagTailorPla"
+  ],
+  "types": [
+   28,
+   232,
+   247,
+   293,
+   389,
+   435,
+   438,
+   449,
+   457,
+   532
+  ]
+ },
  "Lv07EagleTower_02A": {
   "openings": {
    "N": [],
@@ -15019,6 +15146,304 @@
    438,
    449,
    628
+  ]
+ },
+ "Lv07EagleTower_02E": {
+  "openings": {
+   "N": [],
+   "S": [
+    7,
+    14
+   ],
+   "W": [],
+   "E": [
+    7
+   ]
+  },
+  "heights": {
+   "N": [],
+   "S": [
+    0.0,
+    null
+   ],
+   "W": [],
+   "E": [
+    null
+   ]
+  },
+  "tiles": {
+   "N": [],
+   "S": [
+    3,
+    6,
+    7
+   ],
+   "W": [],
+   "E": [
+    3
+   ]
+  },
+  "doors": [
+   [
+    "E",
+    3,
+    "blocked:crystal",
+    7
+   ],
+   [
+    "E",
+    3,
+    "blocked:crystal",
+    7
+   ],
+   [
+    "S",
+    7,
+    "shutter(mirror)",
+    14
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_02E",
+   "Lv07EagleTower_03E"
+  ],
+  "actors": [
+   "EnemyKuribo",
+   "EnemyPeahat",
+   "EnemySpark",
+   "MapStatic",
+   "ObjBeamos",
+   "ObjDungeonPot",
+   "ObjDungeonRoof",
+   "ObjLockBlock",
+   "ObjPurpleUne",
+   "TagLight",
+   "TagTailorPla"
+  ],
+  "types": [
+   7,
+   60,
+   61,
+   258,
+   293,
+   389,
+   423,
+   426,
+   435,
+   438,
+   449
+  ]
+ },
+ "Lv07EagleTower_02F": {
+  "openings": {
+   "N": [
+    10
+   ],
+   "S": [
+    6,
+    "w6-8"
+   ],
+   "W": [
+    7
+   ],
+   "E": []
+  },
+  "heights": {
+   "N": [
+    0.0
+   ],
+   "S": [
+    null,
+    1.5
+   ],
+   "W": [
+    null
+   ],
+   "E": []
+  },
+  "tiles": {
+   "N": [
+    4,
+    5
+   ],
+   "S": [
+    2,
+    3,
+    6,
+    7,
+    8
+   ],
+   "W": [
+    3
+   ],
+   "E": []
+  },
+  "doors": [
+   [
+    "W",
+    3,
+    "blocked:crystal",
+    7
+   ],
+   [
+    "W",
+    3,
+    "blocked:crystal",
+    7
+   ],
+   [
+    "S",
+    3,
+    "bossdoor(mirror)",
+    6
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_02F",
+   "Lv07EagleTower_03F",
+   "Lv07EagleTower_03G"
+  ],
+  "actors": [
+   "AreaHoleLowe",
+   "EnemyKuribo",
+   "MapStatic",
+   "ObjDungeonRoof",
+   "ObjPurpleUne",
+   "ObjSquareBlock",
+   "TagLight",
+   "TagTailorPla"
+  ],
+  "types": [
+   60,
+   256,
+   389,
+   426,
+   435,
+   438,
+   449,
+   509
+  ]
+ },
+ "Lv07EagleTower_02G": {
+  "openings": {
+   "N": [],
+   "S": [
+    10
+   ],
+   "W": [],
+   "E": []
+  },
+  "heights": {
+   "N": [],
+   "S": [
+    null
+   ],
+   "W": [],
+   "E": []
+  },
+  "tiles": {
+   "N": [],
+   "S": [
+    4,
+    5
+   ],
+   "W": [],
+   "E": []
+  },
+  "doors": [
+   [
+    "S",
+    5,
+    "shutter",
+    10
+   ],
+   [
+    "S",
+    5,
+    "shutter(mirror)",
+    10
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_02G"
+  ],
+  "actors": [
+   "AreaEventBox",
+   "ItemEveningC",
+   "MapStatic",
+   "ObjClosedDoor",
+   "ObjDungeonRoof",
+   "TagLight",
+   "TagTailorPla"
+  ],
+  "types": [
+   163,
+   239,
+   389,
+   401,
+   435,
+   438,
+   449
+  ]
+ },
+ "Lv07EagleTower_02H": {
+  "openings": {
+   "N": [],
+   "S": [
+    16
+   ],
+   "W": [],
+   "E": []
+  },
+  "heights": {
+   "N": [],
+   "S": [
+    null
+   ],
+   "W": [],
+   "E": []
+  },
+  "tiles": {
+   "N": [],
+   "S": [
+    7,
+    8
+   ],
+   "W": [],
+   "E": []
+  },
+  "doors": [
+   [
+    "S",
+    8,
+    "shutter(mirror)",
+    16
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_02H"
+  ],
+  "actors": [
+   "EnemySpark",
+   "MapStatic",
+   "ObjCrystalSw",
+   "ObjDungeonRoof",
+   "ObjSquareBlock",
+   "ObjTreasureBox",
+   "TagActivateC",
+   "TagLight",
+   "TagTailorPla"
+  ],
+  "types": [
+   61,
+   236,
+   247,
+   254,
+   256,
+   389,
+   435,
+   438,
+   449
   ]
  },
  "Lv07EagleTower_03A": {
@@ -15398,6 +15823,378 @@
    509
   ]
  },
+ "Lv07EagleTower_03E": {
+  "openings": {
+   "N": [
+    7,
+    14
+   ],
+   "S": [],
+   "W": [],
+   "E": [
+    7
+   ]
+  },
+  "heights": {
+   "N": [
+    0.0,
+    null
+   ],
+   "S": [],
+   "W": [],
+   "E": [
+    null
+   ]
+  },
+  "tiles": {
+   "N": [
+    3,
+    6,
+    7
+   ],
+   "S": [],
+   "W": [],
+   "E": [
+    3
+   ]
+  },
+  "doors": [
+   [
+    "N",
+    7,
+    "shutter",
+    14
+   ],
+   [
+    "E",
+    3,
+    "blocked:crystal",
+    7
+   ],
+   [
+    "E",
+    3,
+    "blocked:crystal",
+    7
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_02E",
+   "Lv07EagleTower_03E"
+  ],
+  "actors": [
+   "EnemyBubble",
+   "EnemyWizzrobe",
+   "MapStatic",
+   "ObjBeamos",
+   "ObjClosedDoor",
+   "ObjDungeonRoof",
+   "ObjOrangeUne",
+   "ObjSpikeTile",
+   "TagLight",
+   "TagTailorPla"
+  ],
+  "types": [
+   59,
+   183,
+   239,
+   283,
+   293,
+   389,
+   427,
+   435,
+   438,
+   449
+  ]
+ },
+ "Lv07EagleTower_03F": {
+  "openings": {
+   "N": [
+    6,
+    "w6-8"
+   ],
+   "S": [
+    3,
+    13
+   ],
+   "W": [
+    7
+   ],
+   "E": [
+    4,
+    "w4-6"
+   ]
+  },
+  "heights": {
+   "N": [
+    null,
+    1.5
+   ],
+   "S": [
+    0.0,
+    null
+   ],
+   "W": [
+    null
+   ],
+   "E": [
+    1.5,
+    0.0
+   ]
+  },
+  "tiles": {
+   "N": [
+    2,
+    3,
+    6,
+    7,
+    8
+   ],
+   "S": [
+    1,
+    6
+   ],
+   "W": [
+    3
+   ],
+   "E": [
+    1,
+    2,
+    4,
+    5,
+    6
+   ]
+  },
+  "doors": [
+   [
+    "N",
+    3,
+    "bossdoor",
+    6
+   ],
+   [
+    "S",
+    6,
+    "blocked:crystal",
+    13
+   ],
+   [
+    "W",
+    3,
+    "blocked:crystal",
+    7
+   ],
+   [
+    "S",
+    6,
+    "blocked:crystal",
+    13
+   ],
+   [
+    "W",
+    3,
+    "blocked:crystal",
+    7
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_02F",
+   "Lv07EagleTower_03F",
+   "Lv07EagleTower_03G"
+  ],
+  "actors": [
+   "EnemyKuribo",
+   "MapStatic",
+   "ObjBossDoor",
+   "ObjDungeonRoof",
+   "ObjOrangeUne",
+   "ObjPurpleUne",
+   "TagLight"
+  ],
+  "types": [
+   60,
+   238,
+   389,
+   426,
+   427,
+   435,
+   438
+  ]
+ },
+ "Lv07EagleTower_03G": {
+  "openings": {
+   "N": [
+    10
+   ],
+   "S": [
+    7
+   ],
+   "W": [
+    4,
+    "w4-6"
+   ],
+   "E": [
+    6
+   ]
+  },
+  "heights": {
+   "N": [
+    null
+   ],
+   "S": [
+    0.0
+   ],
+   "W": [
+    1.5,
+    0.0
+   ],
+   "E": [
+    null
+   ]
+  },
+  "tiles": {
+   "N": [
+    4,
+    5
+   ],
+   "S": [
+    3
+   ],
+   "W": [
+    1,
+    2,
+    4,
+    5,
+    6
+   ],
+   "E": [
+    2,
+    3
+   ]
+  },
+  "doors": [
+   [
+    "N",
+    5,
+    "shutter",
+    10
+   ],
+   [
+    "N",
+    5,
+    "shutter(mirror)",
+    10
+   ],
+   [
+    "E",
+    3,
+    "shutter(mirror)",
+    6
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_02F",
+   "Lv07EagleTower_03F",
+   "Lv07EagleTower_03G"
+  ],
+  "actors": [
+   "AreaEventBox",
+   "AreaUpstairs",
+   "MapStatic",
+   "ObjClosedDoor",
+   "ObjDungeonRoof",
+   "ObjSquareBlock",
+   "TagLight",
+   "TagPlayerStart",
+   "TagSwitchChe"
+  ],
+  "types": [
+   232,
+   239,
+   256,
+   389,
+   399,
+   401,
+   435,
+   438,
+   502
+  ]
+ },
+ "Lv07EagleTower_03H": {
+  "openings": {
+   "N": [
+    16
+   ],
+   "S": [],
+   "W": [
+    6
+   ],
+   "E": []
+  },
+  "heights": {
+   "N": [
+    null
+   ],
+   "S": [],
+   "W": [
+    null
+   ],
+   "E": []
+  },
+  "tiles": {
+   "N": [
+    7,
+    8
+   ],
+   "S": [],
+   "W": [
+    2,
+    3
+   ],
+   "E": []
+  },
+  "doors": [
+   [
+    "N",
+    8,
+    "shutter",
+    16
+   ],
+   [
+    "W",
+    3,
+    "shutter",
+    6
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_03H"
+  ],
+  "actors": [
+   "AreaEventBox",
+   "EnemyPiccolo",
+   "MapStatic",
+   "ObjClosedDoor",
+   "ObjDungeonRoof",
+   "ObjDungeonWa",
+   "TagHolocaust",
+   "TagLight",
+   "TagPlayerStart",
+   "TagTailorPla"
+  ],
+  "types": [
+   93,
+   239,
+   240,
+   243,
+   389,
+   399,
+   401,
+   435,
+   438,
+   449
+  ]
+ },
  "Lv07EagleTower_04A": {
   "openings": {
    "N": [
@@ -15729,6 +16526,1776 @@
    435,
    438,
    449
+  ]
+ },
+ "Lv07EagleTower_04F": {
+  "openings": {
+   "N": [
+    3,
+    13
+   ],
+   "S": [],
+   "W": [],
+   "E": [
+    10
+   ]
+  },
+  "heights": {
+   "N": [
+    0.0,
+    null
+   ],
+   "S": [],
+   "W": [],
+   "E": [
+    null
+   ]
+  },
+  "tiles": {
+   "N": [
+    1,
+    6
+   ],
+   "S": [],
+   "W": [],
+   "E": [
+    4,
+    5
+   ]
+  },
+  "doors": [
+   [
+    "E",
+    5,
+    "shutter",
+    10
+   ],
+   [
+    "N",
+    6,
+    "blocked:crystal",
+    13
+   ],
+   [
+    "N",
+    6,
+    "blocked:crystal",
+    13
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_04F"
+  ],
+  "actors": [
+   "EnemyBubble",
+   "EnemyPeahat",
+   "EnemyRope",
+   "MapStatic",
+   "ObjClosedDoor",
+   "ObjDungeonRoof",
+   "ObjPurpleUne",
+   "ObjSquareBlock",
+   "TagLight"
+  ],
+  "types": [
+   7,
+   37,
+   183,
+   239,
+   256,
+   389,
+   426,
+   435,
+   438
+  ]
+ },
+ "Lv07EagleTower_04G": {
+  "openings": {
+   "N": [
+    7
+   ],
+   "S": [],
+   "W": [
+    10
+   ],
+   "E": []
+  },
+  "heights": {
+   "N": [
+    0.0
+   ],
+   "S": [],
+   "W": [
+    null
+   ],
+   "E": []
+  },
+  "tiles": {
+   "N": [
+    3
+   ],
+   "S": [],
+   "W": [
+    4,
+    5
+   ],
+   "E": []
+  },
+  "doors": [
+   [
+    "W",
+    5,
+    "shutter(mirror)",
+    10
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_04G"
+  ],
+  "actors": [
+   "AreaDownstairs",
+   "EnemyHiploop",
+   "EnemyPeahat",
+   "ItemFeatherR",
+   "MapStatic",
+   "ObjDungeonRoof",
+   "ObjOrangeUne",
+   "TagLight",
+   "TagPlayerStart",
+   "TagTailorPla"
+  ],
+  "types": [
+   7,
+   64,
+   328,
+   389,
+   399,
+   427,
+   435,
+   438,
+   449,
+   503
+  ]
+ },
+ "Lv07EagleTower_05A": {
+  "openings": {
+   "N": [],
+   "S": [
+    3,
+    "w3-5"
+   ],
+   "W": [],
+   "E": [
+    "w3-6"
+   ]
+  },
+  "heights": {
+   "N": [],
+   "S": [
+    1.5,
+    0.0
+   ],
+   "W": [],
+   "E": [
+    0.0
+   ]
+  },
+  "tiles": {
+   "N": [],
+   "S": [
+    1,
+    3,
+    4,
+    5
+   ],
+   "W": [],
+   "E": [
+    3,
+    4,
+    5,
+    6
+   ]
+  },
+  "doors": [
+   [
+    "S",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "E",
+    4,
+    "blocked:crystal",
+    9
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_05A",
+   "Lv07EagleTower_05B",
+   "Lv07EagleTower_06A",
+   "Lv07EagleTower_07A",
+   "Lv07EagleTower_07D",
+   "Lv07EagleTower_08A",
+   "Lv07EagleTower_08B",
+   "Lv07EagleTower_08C",
+   "Lv07EagleTower_08D"
+  ],
+  "actors": [
+   "EnemyKirby",
+   "EnemyKuribo",
+   "MapStatic",
+   "ObjDungeonRoof",
+   "ObjOrangeUne",
+   "ObjTreasureBox",
+   "TagLight",
+   "TagTailorPla"
+  ],
+  "types": [
+   60,
+   63,
+   247,
+   389,
+   427,
+   435,
+   438,
+   449
+  ]
+ },
+ "Lv07EagleTower_05B": {
+  "openings": {
+   "N": [],
+   "S": [
+    5,
+    15
+   ],
+   "W": [
+    "w3-6"
+   ],
+   "E": []
+  },
+  "heights": {
+   "N": [],
+   "S": [
+    null,
+    null
+   ],
+   "W": [
+    0.0
+   ],
+   "E": []
+  },
+  "tiles": {
+   "N": [],
+   "S": [
+    2,
+    7
+   ],
+   "W": [
+    3,
+    4,
+    5,
+    6
+   ],
+   "E": []
+  },
+  "doors": [
+   [
+    "S",
+    2,
+    "blocked:crystal",
+    5
+   ],
+   [
+    "S",
+    7,
+    "blocked:crystal",
+    15
+   ],
+   [
+    "W",
+    4,
+    "blocked:crystal",
+    9
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_05A",
+   "Lv07EagleTower_05B",
+   "Lv07EagleTower_06A",
+   "Lv07EagleTower_07A",
+   "Lv07EagleTower_07D",
+   "Lv07EagleTower_08A",
+   "Lv07EagleTower_08B",
+   "Lv07EagleTower_08C",
+   "Lv07EagleTower_08D"
+  ],
+  "actors": [
+   "AreaUpstairs",
+   "EnemyPeahat",
+   "EnemyTail",
+   "MapStatic",
+   "ObjDungeonRoof",
+   "ObjOrangeUne",
+   "ObjPurpleUne",
+   "TagLight",
+   "TagPlayerStart",
+   "TagTailorPla"
+  ],
+  "types": [
+   7,
+   39,
+   389,
+   399,
+   426,
+   427,
+   435,
+   438,
+   449,
+   502
+  ]
+ },
+ "Lv07EagleTower_05C": {
+  "openings": {
+   "N": [],
+   "S": [],
+   "W": [],
+   "E": [
+    "w3-6"
+   ]
+  },
+  "heights": {
+   "N": [],
+   "S": [],
+   "W": [],
+   "E": [
+    0.0
+   ]
+  },
+  "tiles": {
+   "N": [],
+   "S": [],
+   "W": [],
+   "E": [
+    3,
+    4,
+    5,
+    6
+   ]
+  },
+  "doors": [],
+  "unit": [
+   "Lv07EagleTower_05C",
+   "Lv07EagleTower_05D",
+   "Lv07EagleTower_06D"
+  ],
+  "actors": [
+   "AreaUpstairs",
+   "EnemyPeahat",
+   "MapStatic",
+   "ObjBeamos",
+   "ObjDungeonRoof",
+   "TagLight",
+   "TagPlayerStart",
+   "TagTailorPla"
+  ],
+  "types": [
+   7,
+   293,
+   389,
+   399,
+   435,
+   438,
+   449,
+   502
+  ]
+ },
+ "Lv07EagleTower_05D": {
+  "openings": {
+   "N": [],
+   "S": [
+    4,
+    13,
+    17
+   ],
+   "W": [
+    "w3-6"
+   ],
+   "E": []
+  },
+  "heights": {
+   "N": [],
+   "S": [
+    0.0,
+    0.0,
+    1.5
+   ],
+   "W": [
+    0.0
+   ],
+   "E": []
+  },
+  "tiles": {
+   "N": [],
+   "S": [
+    1,
+    2,
+    6,
+    8
+   ],
+   "W": [
+    3,
+    4,
+    5,
+    6
+   ],
+   "E": []
+  },
+  "doors": [],
+  "unit": [
+   "Lv07EagleTower_05C",
+   "Lv07EagleTower_05D",
+   "Lv07EagleTower_06D"
+  ],
+  "actors": [
+   "EnemyKirby",
+   "EnemySpark",
+   "MapStatic",
+   "ObjBeamos",
+   "ObjDungeonOw",
+   "ObjDungeonRoof",
+   "ObjTreasureBox",
+   "TagLight",
+   "TagTailorPla"
+  ],
+  "types": [
+   61,
+   63,
+   247,
+   249,
+   293,
+   389,
+   435,
+   438,
+   449
+  ]
+ },
+ "Lv07EagleTower_06A": {
+  "openings": {
+   "N": [
+    3,
+    "w3-5"
+   ],
+   "S": [
+    3,
+    "w3-5"
+   ],
+   "W": [],
+   "E": [
+    5,
+    11
+   ]
+  },
+  "heights": {
+   "N": [
+    1.5,
+    0.0
+   ],
+   "S": [
+    1.5,
+    0.0
+   ],
+   "W": [],
+   "E": [
+    null,
+    null
+   ]
+  },
+  "tiles": {
+   "N": [
+    1,
+    3,
+    4,
+    5
+   ],
+   "S": [
+    1,
+    3,
+    4,
+    5
+   ],
+   "W": [],
+   "E": [
+    2,
+    5
+   ]
+  },
+  "doors": [
+   [
+    "E",
+    5,
+    "blocked:crystal",
+    11
+   ],
+   [
+    "N",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "S",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "E",
+    2,
+    "blocked:crystal",
+    5
+   ],
+   [
+    "N",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "E",
+    2,
+    "blocked:crystal",
+    5
+   ],
+   [
+    "E",
+    5,
+    "blocked:crystal",
+    11
+   ],
+   [
+    "N",
+    4,
+    "blocked:crystal",
+    9
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_05A",
+   "Lv07EagleTower_05B",
+   "Lv07EagleTower_06A",
+   "Lv07EagleTower_07A",
+   "Lv07EagleTower_07D",
+   "Lv07EagleTower_08A",
+   "Lv07EagleTower_08B",
+   "Lv07EagleTower_08C",
+   "Lv07EagleTower_08D"
+  ],
+  "actors": [
+   "MapStatic",
+   "ObjDungeonRoof",
+   "ObjOrangeUne",
+   "ObjPurpleUne",
+   "TagLight",
+   "TagPlayerStart",
+   "TagTailorPla"
+  ],
+  "types": [
+   389,
+   399,
+   426,
+   427,
+   435,
+   438,
+   449
+  ]
+ },
+ "Lv07EagleTower_06B": {
+  "openings": {
+   "N": [
+    5,
+    15
+   ],
+   "S": [
+    5,
+    15,
+    19
+   ],
+   "W": [
+    5,
+    11
+   ],
+   "E": [
+    5,
+    11,
+    15
+   ]
+  },
+  "heights": {
+   "N": [
+    null,
+    null
+   ],
+   "S": [
+    null,
+    null,
+    1.5
+   ],
+   "W": [
+    null,
+    null
+   ],
+   "E": [
+    null,
+    null,
+    1.5
+   ]
+  },
+  "tiles": {
+   "N": [
+    2,
+    7
+   ],
+   "S": [
+    2,
+    7,
+    9
+   ],
+   "W": [
+    2,
+    5
+   ],
+   "E": [
+    2,
+    5,
+    7
+   ]
+  },
+  "doors": [
+   [
+    "W",
+    5,
+    "blocked:crystal",
+    11
+   ],
+   [
+    "N",
+    2,
+    "blocked:crystal",
+    5
+   ],
+   [
+    "E",
+    5,
+    "blocked:crystal",
+    11
+   ],
+   [
+    "N",
+    7,
+    "blocked:crystal",
+    15
+   ],
+   [
+    "W",
+    2,
+    "blocked:crystal",
+    5
+   ],
+   [
+    "S",
+    2,
+    "blocked:crystal",
+    5
+   ],
+   [
+    "E",
+    2,
+    "blocked:crystal",
+    5
+   ],
+   [
+    "S",
+    7,
+    "blocked:crystal",
+    15
+   ],
+   [
+    "N",
+    2,
+    "blocked:crystal",
+    5
+   ],
+   [
+    "N",
+    7,
+    "blocked:crystal",
+    15
+   ],
+   [
+    "W",
+    5,
+    "blocked:crystal",
+    11
+   ],
+   [
+    "W",
+    2,
+    "blocked:crystal",
+    5
+   ],
+   [
+    "N",
+    2,
+    "blocked:crystal",
+    5
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_06B",
+   "Lv07EagleTower_06C",
+   "Lv07EagleTower_07B",
+   "Lv07EagleTower_07C"
+  ],
+  "actors": [
+   "ItemFeatherR",
+   "MapStatic",
+   "ObjDungeonRoof",
+   "ObjOrangeUne",
+   "ObjPurpleUne",
+   "TagLight",
+   "TagPlayerStart",
+   "TagTailorPla"
+  ],
+  "types": [
+   328,
+   389,
+   399,
+   426,
+   427,
+   435,
+   438,
+   449
+  ]
+ },
+ "Lv07EagleTower_06C": {
+  "openings": {
+   "N": [],
+   "S": [
+    10,
+    "w0-2"
+   ],
+   "W": [
+    5,
+    11,
+    15
+   ],
+   "E": [
+    5,
+    11
+   ]
+  },
+  "heights": {
+   "N": [],
+   "S": [
+    0.0,
+    1.5
+   ],
+   "W": [
+    null,
+    null,
+    1.5
+   ],
+   "E": [
+    0.0,
+    null
+   ]
+  },
+  "tiles": {
+   "N": [],
+   "S": [
+    0,
+    1,
+    2,
+    4,
+    5
+   ],
+   "W": [
+    2,
+    5,
+    7
+   ],
+   "E": [
+    2,
+    5
+   ]
+  },
+  "doors": [
+   [
+    "S",
+    5,
+    "blocked:crystal",
+    11
+   ],
+   [
+    "W",
+    5,
+    "blocked:crystal",
+    11
+   ],
+   [
+    "E",
+    5,
+    "blocked:crystal",
+    11
+   ],
+   [
+    "W",
+    2,
+    "blocked:crystal",
+    5
+   ],
+   [
+    "S",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "E",
+    5,
+    "blocked:crystal",
+    11
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_06B",
+   "Lv07EagleTower_06C",
+   "Lv07EagleTower_07B",
+   "Lv07EagleTower_07C"
+  ],
+  "actors": [
+   "EnemyLikeLike",
+   "EnemyStalfos",
+   "MapStatic",
+   "ObjDungeonRoof",
+   "ObjOrangeUne",
+   "ObjPurpleUne",
+   "TagLight",
+   "TagPlayerStart",
+   "TagTailorPla"
+  ],
+  "types": [
+   56,
+   58,
+   389,
+   399,
+   426,
+   427,
+   435,
+   438,
+   449
+  ]
+ },
+ "Lv07EagleTower_06D": {
+  "openings": {
+   "N": [
+    4,
+    13,
+    17
+   ],
+   "S": [
+    17
+   ],
+   "W": [
+    5,
+    11
+   ],
+   "E": []
+  },
+  "heights": {
+   "N": [
+    0.0,
+    0.0,
+    1.5
+   ],
+   "S": [
+    1.5
+   ],
+   "W": [
+    0.0,
+    null
+   ],
+   "E": []
+  },
+  "tiles": {
+   "N": [
+    1,
+    2,
+    6,
+    8
+   ],
+   "S": [
+    8
+   ],
+   "W": [
+    2,
+    5
+   ],
+   "E": []
+  },
+  "doors": [
+   [
+    "W",
+    5,
+    "blocked:crystal",
+    11
+   ],
+   [
+    "W",
+    5,
+    "blocked:crystal",
+    11
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_05C",
+   "Lv07EagleTower_05D",
+   "Lv07EagleTower_06D"
+  ],
+  "actors": [
+   "MapStatic",
+   "ObjCrystalSw",
+   "ObjDungeonRoof",
+   "ObjPurpleUne",
+   "ObjSpikeTile",
+   "TagLight",
+   "TagPlayerStart",
+   "TagTailorPla"
+  ],
+  "types": [
+   254,
+   283,
+   389,
+   399,
+   426,
+   435,
+   438,
+   449
+  ]
+ },
+ "Lv07EagleTower_07A": {
+  "openings": {
+   "N": [
+    3,
+    "w3-5"
+   ],
+   "S": [
+    3,
+    "w3-8"
+   ],
+   "W": [],
+   "E": [
+    7
+   ]
+  },
+  "heights": {
+   "N": [
+    1.5,
+    0.0
+   ],
+   "S": [
+    1.5,
+    0.0
+   ],
+   "W": [],
+   "E": [
+    0.0
+   ]
+  },
+  "tiles": {
+   "N": [
+    1,
+    3,
+    4,
+    5
+   ],
+   "S": [
+    1,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+   ],
+   "W": [],
+   "E": [
+    3
+   ]
+  },
+  "doors": [
+   [
+    "N",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "N",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "N",
+    4,
+    "blocked:crystal",
+    9
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_05A",
+   "Lv07EagleTower_05B",
+   "Lv07EagleTower_06A",
+   "Lv07EagleTower_07A",
+   "Lv07EagleTower_07D",
+   "Lv07EagleTower_08A",
+   "Lv07EagleTower_08B",
+   "Lv07EagleTower_08C",
+   "Lv07EagleTower_08D"
+  ],
+  "actors": [
+   "AreaUpstairs",
+   "MapStatic",
+   "ObjDungeonRoof",
+   "ObjOrangeUne",
+   "ObjPurpleUne",
+   "ObjTreasureBox",
+   "TagLight",
+   "TagPlayerStart",
+   "TagTailorPla"
+  ],
+  "types": [
+   247,
+   389,
+   399,
+   426,
+   427,
+   435,
+   438,
+   449,
+   502
+  ]
+ },
+ "Lv07EagleTower_07B": {
+  "openings": {
+   "N": [
+    5,
+    15,
+    19
+   ],
+   "S": [],
+   "W": [
+    7
+   ],
+   "E": [
+    2,
+    8
+   ]
+  },
+  "heights": {
+   "N": [
+    null,
+    null,
+    1.5
+   ],
+   "S": [],
+   "W": [
+    0.0
+   ],
+   "E": [
+    1.5,
+    0.0
+   ]
+  },
+  "tiles": {
+   "N": [
+    2,
+    7,
+    9
+   ],
+   "S": [],
+   "W": [
+    3
+   ],
+   "E": [
+    0,
+    1,
+    3,
+    4
+   ]
+  },
+  "doors": [
+   [
+    "E",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "N",
+    2,
+    "blocked:crystal",
+    5
+   ],
+   [
+    "E",
+    3,
+    "blocked:crystal",
+    7
+   ],
+   [
+    "N",
+    7,
+    "blocked:crystal",
+    15
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_06B",
+   "Lv07EagleTower_06C",
+   "Lv07EagleTower_07B",
+   "Lv07EagleTower_07C"
+  ],
+  "actors": [
+   "AreaCameraOf",
+   "EnemyGibdos",
+   "EnemySpark",
+   "MapStatic",
+   "ObjDungeonPot",
+   "ObjDungeonRoof",
+   "ObjOrangeUne",
+   "ObjPurpleUne",
+   "ObjSquareBlock",
+   "TagHolocaust",
+   "TagLight",
+   "TagTailorPla"
+  ],
+  "types": [
+   51,
+   61,
+   240,
+   256,
+   389,
+   423,
+   426,
+   427,
+   435,
+   438,
+   449,
+   584
+  ]
+ },
+ "Lv07EagleTower_07C": {
+  "openings": {
+   "N": [
+    10,
+    "w0-2"
+   ],
+   "S": [
+    10
+   ],
+   "W": [
+    2,
+    8
+   ],
+   "E": [
+    8
+   ]
+  },
+  "heights": {
+   "N": [
+    0.0,
+    1.5
+   ],
+   "S": [
+    0.0
+   ],
+   "W": [
+    1.5,
+    0.0
+   ],
+   "E": [
+    0.0
+   ]
+  },
+  "tiles": {
+   "N": [
+    0,
+    1,
+    2,
+    4,
+    5
+   ],
+   "S": [
+    4,
+    5
+   ],
+   "W": [
+    0,
+    1,
+    3,
+    4
+   ],
+   "E": [
+    3,
+    4
+   ]
+  },
+  "doors": [
+   [
+    "N",
+    5,
+    "blocked:crystal",
+    11
+   ],
+   [
+    "W",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "E",
+    3,
+    "blocked:crystal",
+    7
+   ],
+   [
+    "E",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "N",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "W",
+    3,
+    "blocked:crystal",
+    7
+   ],
+   [
+    "E",
+    3,
+    "blocked:crystal",
+    7
+   ],
+   [
+    "E",
+    4,
+    "blocked:crystal",
+    9
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_06B",
+   "Lv07EagleTower_06C",
+   "Lv07EagleTower_07B",
+   "Lv07EagleTower_07C"
+  ],
+  "actors": [
+   "MapStatic",
+   "ObjDungeonRoof",
+   "ObjInvisible",
+   "ObjOrangeUne",
+   "ObjPurpleUne",
+   "TagLight",
+   "TagPlayerStart",
+   "TagTailorPla"
+  ],
+  "types": [
+   389,
+   399,
+   426,
+   427,
+   435,
+   438,
+   449,
+   621
+  ]
+ },
+ "Lv07EagleTower_07D": {
+  "openings": {
+   "N": [
+    17
+   ],
+   "S": [
+    6,
+    12,
+    17
+   ],
+   "W": [
+    8
+   ],
+   "E": []
+  },
+  "heights": {
+   "N": [
+    1.5
+   ],
+   "S": [
+    0.0,
+    null,
+    1.5
+   ],
+   "W": [
+    0.0
+   ],
+   "E": []
+  },
+  "tiles": {
+   "N": [
+    8
+   ],
+   "S": [
+    2,
+    3,
+    5,
+    6,
+    8
+   ],
+   "W": [
+    3,
+    4
+   ],
+   "E": []
+  },
+  "doors": [
+   [
+    "S",
+    6,
+    "lock",
+    12
+   ],
+   [
+    "W",
+    3,
+    "blocked:crystal",
+    7
+   ],
+   [
+    "W",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "W",
+    3,
+    "blocked:crystal",
+    7
+   ],
+   [
+    "W",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "S",
+    6,
+    "lock(mirror)",
+    12
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_05A",
+   "Lv07EagleTower_05B",
+   "Lv07EagleTower_06A",
+   "Lv07EagleTower_07A",
+   "Lv07EagleTower_07D",
+   "Lv07EagleTower_08A",
+   "Lv07EagleTower_08B",
+   "Lv07EagleTower_08C",
+   "Lv07EagleTower_08D"
+  ],
+  "actors": [
+   "AreaUpstairs",
+   "EnemyGibdos",
+   "MapStatic",
+   "ObjBladeTrap",
+   "ObjDungeonRoof",
+   "ObjLockDoor",
+   "ObjOrangeUne",
+   "ObjPurpleUne",
+   "ObjSquareBlock",
+   "TagLight",
+   "TagPlayerStart"
+  ],
+  "types": [
+   51,
+   237,
+   256,
+   281,
+   389,
+   399,
+   426,
+   427,
+   435,
+   438,
+   502
+  ]
+ },
+ "Lv07EagleTower_08A": {
+  "openings": {
+   "N": [
+    3,
+    "w3-8"
+   ],
+   "S": [],
+   "W": [],
+   "E": [
+    "w2-4"
+   ]
+  },
+  "heights": {
+   "N": [
+    1.5,
+    0.0
+   ],
+   "S": [],
+   "W": [],
+   "E": [
+    0.0
+   ]
+  },
+  "tiles": {
+   "N": [
+    1,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+   ],
+   "S": [],
+   "W": [],
+   "E": [
+    2,
+    3,
+    4
+   ]
+  },
+  "doors": [],
+  "unit": [
+   "Lv07EagleTower_05A",
+   "Lv07EagleTower_05B",
+   "Lv07EagleTower_06A",
+   "Lv07EagleTower_07A",
+   "Lv07EagleTower_07D",
+   "Lv07EagleTower_08A",
+   "Lv07EagleTower_08B",
+   "Lv07EagleTower_08C",
+   "Lv07EagleTower_08D"
+  ],
+  "actors": [
+   "EnemyWizzrobe",
+   "MapStatic",
+   "ObjDungeonPot",
+   "ObjDungeonRoof",
+   "TagLight",
+   "TagPlayerStart",
+   "TagTailorPla"
+  ],
+  "types": [
+   59,
+   389,
+   399,
+   423,
+   435,
+   438,
+   449
+  ]
+ },
+ "Lv07EagleTower_08B": {
+  "openings": {
+   "N": [],
+   "S": [
+    10
+   ],
+   "W": [
+    "w2-4"
+   ],
+   "E": [
+    "w2-4"
+   ]
+  },
+  "heights": {
+   "N": [],
+   "S": [
+    0.0
+   ],
+   "W": [
+    0.0
+   ],
+   "E": [
+    0.0
+   ]
+  },
+  "tiles": {
+   "N": [],
+   "S": [
+    4,
+    5
+   ],
+   "W": [
+    2,
+    3,
+    4
+   ],
+   "E": [
+    2,
+    3,
+    4
+   ]
+  },
+  "doors": [],
+  "unit": [
+   "Lv07EagleTower_05A",
+   "Lv07EagleTower_05B",
+   "Lv07EagleTower_06A",
+   "Lv07EagleTower_07A",
+   "Lv07EagleTower_07D",
+   "Lv07EagleTower_08A",
+   "Lv07EagleTower_08B",
+   "Lv07EagleTower_08C",
+   "Lv07EagleTower_08D"
+  ],
+  "actors": [
+   "AreaLevelOpen",
+   "MapStatic",
+   "ObjCrystalSw",
+   "ObjDungeonRoof",
+   "ObjDungeonWa",
+   "TagLight",
+   "TagPlayerStart",
+   "TagTailorPla"
+  ],
+  "types": [
+   243,
+   254,
+   389,
+   399,
+   400,
+   435,
+   438,
+   449
+  ]
+ },
+ "Lv07EagleTower_08C": {
+  "openings": {
+   "N": [
+    10
+   ],
+   "S": [],
+   "W": [
+    "w2-4"
+   ],
+   "E": [
+    13,
+    "w2-4"
+   ]
+  },
+  "heights": {
+   "N": [
+    0.0
+   ],
+   "S": [],
+   "W": [
+    0.0
+   ],
+   "E": [
+    1.5,
+    0.0
+   ]
+  },
+  "tiles": {
+   "N": [
+    4,
+    5
+   ],
+   "S": [],
+   "W": [
+    2,
+    3,
+    4
+   ],
+   "E": [
+    2,
+    3,
+    4,
+    6
+   ]
+  },
+  "doors": [
+   [
+    "N",
+    3,
+    "blocked:crystal",
+    7
+   ],
+   [
+    "N",
+    4,
+    "blocked:crystal",
+    9
+   ],
+   [
+    "N",
+    5,
+    "blocked:crystal",
+    11
+   ],
+   [
+    "N",
+    6,
+    "blocked:crystal",
+    13
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_05A",
+   "Lv07EagleTower_05B",
+   "Lv07EagleTower_06A",
+   "Lv07EagleTower_07A",
+   "Lv07EagleTower_07D",
+   "Lv07EagleTower_08A",
+   "Lv07EagleTower_08B",
+   "Lv07EagleTower_08C",
+   "Lv07EagleTower_08D"
+  ],
+  "actors": [
+   "MapStatic",
+   "ObjBladeTrap",
+   "ObjDungeonRoof",
+   "ObjOrangeUne",
+   "ObjPurpleUne",
+   "ObjSpikeTile",
+   "ObjSquareBlock",
+   "TagLight",
+   "TagTailorPla"
+  ],
+  "types": [
+   256,
+   281,
+   283,
+   389,
+   426,
+   427,
+   435,
+   438,
+   449
+  ]
+ },
+ "Lv07EagleTower_08D": {
+  "openings": {
+   "N": [
+    6,
+    12,
+    17
+   ],
+   "S": [],
+   "W": [
+    13,
+    "w2-4"
+   ],
+   "E": []
+  },
+  "heights": {
+   "N": [
+    0.0,
+    null,
+    1.5
+   ],
+   "S": [],
+   "W": [
+    1.5,
+    0.0
+   ],
+   "E": []
+  },
+  "tiles": {
+   "N": [
+    2,
+    3,
+    5,
+    6,
+    8
+   ],
+   "S": [],
+   "W": [
+    2,
+    3,
+    4,
+    6
+   ],
+   "E": []
+  },
+  "doors": [
+   [
+    "N",
+    6,
+    "lock",
+    12
+   ],
+   [
+    "N",
+    6,
+    "lock(mirror)",
+    12
+   ]
+  ],
+  "unit": [
+   "Lv07EagleTower_05A",
+   "Lv07EagleTower_05B",
+   "Lv07EagleTower_06A",
+   "Lv07EagleTower_07A",
+   "Lv07EagleTower_07D",
+   "Lv07EagleTower_08A",
+   "Lv07EagleTower_08B",
+   "Lv07EagleTower_08C",
+   "Lv07EagleTower_08D"
+  ],
+  "actors": [
+   "EnemyBubble",
+   "EnemyLikeLike",
+   "ItemSmallKey",
+   "MapStatic",
+   "ObjDungeonRoof",
+   "ObjDungeonSt",
+   "ObjLockDoor",
+   "TagHolocaust",
+   "TagLight",
+   "TagPopChecker"
+  ],
+  "types": [
+   56,
+   169,
+   183,
+   219,
+   237,
+   240,
+   389,
+   435,
+   438,
+   441
   ]
  },
  "Lv08TurtleRock_01D": {

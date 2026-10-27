@@ -79,7 +79,7 @@ NAMES = {
     'woods-north-cave-loose': 'Forest north cave, item', 'woods-north-chest': 'Mysterious Forest, north chest',
     'woods-south-chest': 'Mysterious Forest, south chest', 'woods-west-dig': 'Mysterious Forest, west (dig)',
 }
-KIND_WORD = {'bush': 'Bush', 'dig': 'Dig spot', 'pot': 'Pot', 'apple': 'Apple tree'}
+KIND_WORD = {'bush': 'Bush', 'dig': 'Dig spot', 'pot': 'Pot', 'apple': 'Apple tree', 'rock': 'Rock'}
 # interiors holding pots (potsanity), by level
 HOUSES = {'MarinTarinHouse': "Marin and Tarin's house", 'DrWrightHouse': "Mr. Write's house",
           'MadamHouse': "Madam MeowMeow's house", 'QuadupletHouse': "the quadruplets' house",

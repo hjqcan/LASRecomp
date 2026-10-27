@@ -197,18 +197,18 @@ static int row(const char *label, const std::string &value, bool changed, const 
         if (dh > g_desc_max) g_desc_max = dh;
     }
 
-    // the row: a plastic pill; selected (cursor or mouse), it stands up in the selection colour (text_sel). Actions
-    // are buttons (text_button), warnings red ones.
+    // the row: a plastic pill in its rim; selected (cursor or mouse), it stands up in the selection colour (text_sel).
+    // Actions are buttons (text_button), warnings red ones (a red row too: a duplicate binding).
     ImDrawList *dl = ImGui::GetWindowDrawList();
     const PlasticTheme &pt = plastic_theme();
     float pad = 16 * g_scale, fs = ImGui::GetFontSize();
     bool sel = hov || foc, button = g_row_button;
     g_row_button = false;
-    ImVec4 col = sel ? pt.row_sel : mark ? pt.row_mark : button ? (warn ? plastic_col(pt.warn) : pt.button) : pt.row;
-    if (off) col = sel ? pt.row_mark : ImVec4(col.x, col.y, col.z, col.w * 0.5f);  // (greyed out, the cursor on it: pale)
+    ImVec4 col = sel ? pt.row_sel : mark ? pt.row_mark : warn ? pt.danger : button ? pt.button : pt.row;
+    if (off) col = sel ? pt.row_mark : ImVec4(col.x, col.y, col.z, col.w * 0.5f);  // (greyed out, the cursor on it: ochre)
     float dep = (sel ? 7 : button ? 6 : 3.5f) * g_scale;
-    plastic_add(dl, ImVec2(p.x + 3 * g_scale, p.y + 1 * g_scale), ImVec2(p.x + w - 8 * g_scale, p.y + h - 3 * g_scale),
-                h * 0.5f, col, PK_PILL, dep, sel || button ? 1.0f : 0.6f);
+    plastic_pill(dl, ImVec2(p.x + 3 * g_scale, p.y + 1 * g_scale), ImVec2(p.x + w - 8 * g_scale, p.y + h - 3 * g_scale),
+                 h * 0.5f, col, dep, sel || button ? 1.0f : 0.6f, g_scale, sel && !off);
     float lpad = h * 0.66f;  // (the label clear of the pill's rounded end)
     std::string t = upper ? ui_tr(label) : label;
     if (upper)
@@ -241,7 +241,7 @@ static int row(const char *label, const std::string &value, bool changed, const 
     }
     if (!value.empty()) {
         float vw = ImGui::CalcTextSize(value.c_str()).x, vx = right - vw;
-        ImU32 vc = off ? pt.text_dim : light ? on_col : warn ? pt.warn : changed ? pt.value_changed : pt.value;
+        ImU32 vc = off ? pt.text_dim : light ? on_col : changed ? pt.value_changed : pt.value;
         dl->AddText(ImVec2(vx, ty), vc, value.c_str());
     }
     if (dup) ImGui::PopID();
@@ -510,10 +510,9 @@ void opt_list_end(void) {
     float w = ImGui::GetContentRegionAvail().x, y = p.y + 6 * g_scale;
     const PlasticTheme &pt = plastic_theme();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    dl->AddLine(ImVec2(p.x + 4 * g_scale, y), ImVec2(p.x + w - 4 * g_scale, y),
-                ImGui::ColorConvertFloat4ToU32(ImVec4(pt.frame.x, pt.frame.y, pt.frame.z, 0.35f)), 1.5f * g_scale);
+    dl->AddLine(ImVec2(p.x + 4 * g_scale, y), ImVec2(p.x + w - 4 * g_scale, y), IM_COL32(0, 0, 0, 110), 1.5f * g_scale);
     dl->AddLine(ImVec2(p.x + 4 * g_scale, y + 1.5f * g_scale), ImVec2(p.x + w - 4 * g_scale, y + 1.5f * g_scale),
-                IM_COL32(255, 255, 255, 150), 1.2f * g_scale);
+                ImGui::ColorConvertFloat4ToU32(ImVec4(pt.ring.x, pt.ring.y, pt.ring.z, 0.45f)), 1.2f * g_scale);
     ImGui::Dummy(ImVec2(0, 14 * g_scale));
 }
 

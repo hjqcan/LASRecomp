@@ -1,7 +1,7 @@
 // The randomizer seed's own cosmetics (Randomizer tab "Random cosmetics", seed option "random-cosmetics"): a seed
 // made with it has its own set, picked from its seed (the same every time it's played): a fully random colour (any
-// hue, saturation and brightness) for each of the tunic, hearts, hair, skin, shield, leaves, grass and sand, and enemy
-// colours "per seed" (the screen filter stays off: it isn't a colour). Only while that seed is being played (never in vanilla), and only for
+// hue, saturation and brightness) for each of the tunic, hearts, hair, skin, shield, leaves, grass, sand and water, and
+// enemy colours "per seed" (the screen filter stays off: it isn't a colour). Only while that seed is being played (never in vanilla), and only for
 // Cosmetics rows left on Default / Off: whatever the player chose in the Cosmetics tab wins.
 #include <pthread.h>
 #include <stdio.h>

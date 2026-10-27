@@ -19,6 +19,7 @@
 // Each recolouring option (one per Cosmetics row; dropping one = removing its line and its file)
 extern const RecolourOption g_recolour_link;  // hair / shield colours (recolour_link.c)
 extern const RecolourOption g_recolour_seasons;  // leaves / grass colours (recolour_seasons.c)
+extern const RecolourOption g_recolour_water;  // water colour (recolour_water.c)
 extern const RecolourOption g_recolour_enemies;  // random enemy colours (recolour_enemies.c)
 // LARECOMP_RECOLOUR_NAMES=1 (test): every albedo map of the overworld's files is recognised too (class RECOLOUR_NAMED,
 // never tinted), so LARECOMP_LOG_RECOLOUR_AT can name what each draw samples
@@ -53,6 +54,7 @@ static void named_sources(void) {  // Field.bntx and every actor's file
 static const RecolourOption *g_options[] = {
     &g_recolour_link,
     &g_recolour_seasons,
+    &g_recolour_water,
     &g_recolour_enemies,
     NULL,
     NULL,
@@ -171,7 +173,7 @@ static int scan_file(const RecolourOption *o, int src) {
 }
 
 static void load(void) {
-    if (getenv("LARECOMP_RECOLOUR_NAMES")) named_sources(), g_options[3] = &g_recolour_named;
+    if (getenv("LARECOMP_RECOLOUR_NAMES")) named_sources(), g_options[4] = &g_recolour_named;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     for (int k = 0; g_options[k]; k++) {

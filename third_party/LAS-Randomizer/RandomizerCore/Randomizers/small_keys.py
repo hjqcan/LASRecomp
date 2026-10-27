@@ -7,7 +7,8 @@ def writeKeyEvent(flowchart, item_key, item_index, room):
     """Adds a new entry point to the SmallKey event flow for each key room, and inserts an ItemGetAnimation to it"""
     
     # If item is SmallKey/NightmareKey/Map/Compass/Beak/Rupee, add to inventory without any pickup animation
-    if item_key[:3] in ['Sma', 'Nig', 'Dun', 'Com', 'Sto', 'Rup']:
+    # [LAS Recomp] a key ring (index 100+, tools/rando/key_rings.py) shows its get and message
+    if item_key[:3] in ['Sma', 'Nig', 'Dun', 'Com', 'Sto', 'Rup'] and not (isinstance(item_index, int) and 100 <= item_index < 110):
         item_event = event_tools.createActionChain(flowchart, None, [
             ('Inventory', 'AddItemByKey', {'itemKey': item_key, 'count': 1, 'index': item_index, 'autoEquip': False})
         ], None)

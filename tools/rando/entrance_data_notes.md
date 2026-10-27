@@ -67,6 +67,12 @@ The header of the YAML defines `outer_region`, `outer_extra`, `pocket`, `door_re
   - `angler-tunnel` (d4 connector)
   - `plains`, which absorbs the west Martha's Bay shore through bay-cliff-cave
   - item `mad-batter-bay` (bay-batter-tunnel)
+- **Doorsteps walled off from their region** (2026-10-25 audit, after seed 5PVF6-Z6C03-5RKFX-EWVTZ-9DK10-0G156). Leaving a shuffled door gives Link its `outer_region`, so that region must be walkable from the doorstep with no item. Where it is not:
+  - `d6-connector-east` stands on Armos island, water all round: pocket `armos-island` (cross-water in and out; LADXR `d6_armos_island`). It was `river`, and river gives plains and the Armos maze for free.
+  - `graveyard-cave-west` is inside the ghost grave's rock ring: `exit_req: bracelet`.
+  - `armos-fairy`, `southern-face-shrine`, `armos-maze-cave`: LAS `armos-maze` assumes the Bracelet (its rocks split the maze and close it off from the village), so `exit_req: bracelet`. The fairy's doorstep is also only left by lifting rocks or swimming (LADXR `armos_fairy_entrance`).
+  - `raft-shop`: the doorstep is a dock (hookshot to Tal Tal Heights both ways, swim down only), and LAS `rapids` also means the Rapids Ride, which needs the paid raft. With the shop shuffled the door stands in `raft-dock` and `rapids` needs the shop's interior (`entrance_logic.RAFT_PATCHES`).
+  - Checked and fine: the other pooled doors (their doorstep reaches the region's other doors / locations with no item, or the region's own condition already names the item), against the Field tile grid (`field_reach`) and LADXR's outside locations.
 - **Types:**
   - `single` covers all one-exit interiors, including LADXR's `dummy`, `trade`, `water`, `insanity` and `start` types. These are recorded as `ladxr_type`, so you can rebuild LADXR-style pools.
   - Water entrances are flagged `water: true`. The player exits them swimming, so don't mix them with land doors without a fix.

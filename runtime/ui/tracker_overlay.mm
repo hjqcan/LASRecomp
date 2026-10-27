@@ -130,7 +130,7 @@ extern "C" void input_note_rstick(int32_t ry) { (void)ry; }  // (runtime/hle/inp
 namespace {  // file-local types (spoiler_view.mm also has a Node)
 enum Op : int32_t { OP_AND = -1, OP_OR = -2, OP_NOT = -3 };  // >= 0: push token (id | count << 20)
 struct Node { std::string name; int type; int id, region; std::vector<int32_t> cond, pit, heavy, trick; bool has_trick; };
-enum Kind { K_CHEST, K_HEART, K_SHELL, K_BOSS, K_SHOP, K_OTHER, K_BUSH, K_DIG, K_POT, K_N };
+enum Kind { K_CHEST, K_HEART, K_SHELL, K_BOSS, K_SHOP, K_OTHER, K_BUSH, K_DIG, K_POT, K_ROCK, K_N };
 struct Check {
     std::string name, area;
     float x, y;
@@ -145,8 +145,8 @@ enum { T_REGION, T_ITEM, T_ROOM, T_INTERACTION, T_ENEMY, T_TRICK, T_FOLLOWER };
 enum St { ST_LOGIC, ST_TRICK, ST_NEEDS, ST_DONE };  // best first
 }  // namespace
 
-static const char *const kKindTok[K_N] = {"chest", "heart", "shell", "boss", "shop", "other", "bush", "dig", "pot"};
-// filter bits: kinds 0..8, then the two switches
+static const char *const kKindTok[K_N] = {"chest", "heart", "shell", "boss", "shop", "other", "bush", "dig", "pot", "rock"};
+// filter bits: kinds 0..9, then the two switches
 enum { F_IN_LOGIC = 1 << 16, F_HIDE_DONE = 1 << 17 };
 static const int kDefaultFilters = F_IN_LOGIC | (1 << K_CHEST) | (1 << K_HEART) | (1 << K_SHELL) | (1 << K_BOSS) | (1 << K_SHOP) |
                                    (1 << K_OTHER);
@@ -204,6 +204,7 @@ static std::vector<int32_t> compile(const char *c) {
 static int kind_of_name(const std::string &n) {  // (a tracker.tsv from before kinds: by name)
     if (!n.compare(0, 5, "bush-")) return K_BUSH;
     if (!n.compare(0, 4, "dig-")) return K_DIG;
+    if (!n.compare(0, 5, "rock-") && n.size() > 5 && isdigit((unsigned char)n[5])) return K_ROCK;  // (not rock-maze)
     if (!n.compare(0, 4, "pot-") || (n.size() > 7 && n[0] == 'D' && !n.compare(2, 5, "-pot-"))) return K_POT;
     return K_OTHER;
 }
@@ -583,6 +584,7 @@ static std::string item_name(int id, int cnt) {
     for (auto &x : names) if (t == x.tok) s = x.name;
     // (in-game wording: the list already names the dungeon; a soul by its owner, "Moldorm's soul")
     if (s.empty() && !t.compare(0, 4, "key-")) return cnt > 1 ? std::to_string(cnt) + " small keys" : "a small key";
+    else if (s.empty() && !t.compare(0, 8, "keyring-")) return "key ring";
     else if (s.empty() && !t.compare(0, 14, "nightmare-key-")) return "Nightmare Key";
     else if (s.empty() && !t.compare(0, 5, "soul-")) {
         std::string n = t.substr(5);
@@ -1002,14 +1004,15 @@ static int filters(void) { return g_settings.tracker_filters >= 0 ? g_settings.t
 static void set_filters(int f) { g_settings.tracker_filters = f; settings_save(); }
 
 static const char *kind_label(int k) {
-    static const char *const l[K_N] = {"Chests", "Heart pieces", "Seashells", "Bosses", "Shops", "Other", "Bushes", "Digs", "Pots"};
+    static const char *const l[K_N] = {"Chests", "Heart pieces", "Seashells", "Bosses", "Shops", "Other", "Bushes", "Digs", "Pots",
+                                       "Rocks"};
     int kind;
     bool owned;
     if (k == K_BOSS && souls_at(0, &kind, &owned)) return "Souls";  // (boss / mini-boss fights: their souls)
     return l[k];
 }
 static const char *kind_one(int k) {
-    static const char *const l[K_N] = {"Chest", "Heart piece", "Seashell", "Boss", "Shop", "Item", "Bush", "Dig", "Pot"};
+    static const char *const l[K_N] = {"Chest", "Heart piece", "Seashell", "Boss", "Shop", "Item", "Bush", "Dig", "Pot", "Rock"};
     return l[k];
 }
 

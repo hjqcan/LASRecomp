@@ -15,6 +15,8 @@ import copy
 import random
 import traceback
 
+CHEST_LOOK = None  # [LAS Recomp] chest looks: location (None = Dampe's panel chests) -> model file (chest_looks.py)
+
 
 
 class ModsProcess(QtCore.QThread):
@@ -179,6 +181,8 @@ class ModsProcess(QtCore.QThread):
 
         chest_rooms = {}
         chest_rooms.update(data.CHEST_ROOMS)
+        if CHEST_LOOK:  # [LAS Recomp] every chest names its model, size unchanged
+            chest_rooms.update(data.PANEL_CHEST_ROOMS)
 
         # CAMC Pre-Checks
         if self.settings['chest-aspect'] == 'camc':
@@ -231,7 +235,7 @@ class ModsProcess(QtCore.QThread):
                     if actor.name.startswith(b'ObjTreasureBox'):
                         room_data.setChestContent(
                             actor.parameters[1].decode("utf-8"), actor.parameters[2],
-                            chest_size=1.0, chest_model=data.CHEST_TEXTURES['default'])
+                            chest_size=1.0, chest_model=CHEST_LOOK(None) if CHEST_LOOK else data.CHEST_TEXTURES['default'])
                 self.writeFile(f'{data.PANEL_CHEST_ROOMS[room]}.leb', room_data)
                 continue
 
@@ -265,6 +269,8 @@ class ModsProcess(QtCore.QThread):
             model = data.CHEST_TEXTURES['default'] if self.settings['chest-aspect'] == 'camc' else None
             if self.settings['chest-aspect'] == 'camc' and item_chest_type is not None:
                 model = data.CHEST_TEXTURES[item_chest_type]
+            if CHEST_LOOK:
+                size, model = 1.0, CHEST_LOOK(room)
 
             if room == 'taltal-5-chest-puzzle':
                 for i in range(5):
