@@ -219,7 +219,7 @@ static void load(void) {
     if (!f) return;
     static char line[16384];
     while (fgets(line, sizeof line, f)) {
-        line[strcspn(line, "\n")] = 0;
+        line[strcspn(line, "\r\n")] = 0;  // (Windows seeds: the generator writes CRLF, read here in binary mode)
         std::vector<char *> c;
         for (char *s = line, *t; (t = strsep(&s, "\t"));) c.push_back(t);
         if (c[0][0] == 'S' && c.size() >= 2) g_seed_settings.push_back(tok(c[1]));

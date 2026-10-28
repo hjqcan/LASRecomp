@@ -377,6 +377,27 @@ static const char *builtin_src(const char *name, int *stage) {
     }
     // ---- post passes before the present (Video tab "Anti-aliasing" / "Upscaler"): exec.c vk_present_draw.
     // Each draws a fullscreen triangle into an image the size of its output; push constants: two vec4.
+    // Depth copy that upsamples (exec.c depth_upsample_draw): bilinear depth from the source region. a.xy = the
+    // destination rectangle's origin, a.zw = source texels per destination pixel; b.xy / b.zw = the source region's
+    // first / last texel. Texel fetches: depth formats need no linear-filter support this way.
+    if (!strcmp(name, "depthup.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } p;\n"
+               "void main() {\n"
+               "  vec2 s = p.b.xy + (gl_FragCoord.xy - p.a.xy) * p.a.zw - 0.5;\n"
+               "  vec2 fl = floor(s);\n"
+               "  vec2 f = s - fl;\n"
+               "  ivec2 lo = ivec2(p.b.xy), hi = ivec2(p.b.zw);\n"
+               "  ivec2 i0 = clamp(ivec2(fl), lo, hi), i1 = clamp(ivec2(fl) + ivec2(1), lo, hi);\n"
+               "  float d00 = texelFetch(t, i0, 0).r;\n"
+               "  float d10 = texelFetch(t, ivec2(i1.x, i0.y), 0).r;\n"
+               "  float d01 = texelFetch(t, ivec2(i0.x, i1.y), 0).r;\n"
+               "  float d11 = texelFetch(t, i1, 0).r;\n"
+               "  gl_FragDepth = mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);\n"
+               "}\n";
+    }
     if (!strcmp(name, "post.vert")) {
         *stage = STAGE_VERTEX;
         return "#version 450\n"

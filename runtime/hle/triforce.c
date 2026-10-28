@@ -41,6 +41,7 @@ static void load(void) {
     FILE *f = fopen(p, "r");
     if (!f) return;
     while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;  // (Windows seeds: CRLF lines, read in binary mode)
         char k[16];
         int v;
         Spot *sp = &g_spots[g_nspots];

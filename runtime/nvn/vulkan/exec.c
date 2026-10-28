@@ -6685,6 +6685,8 @@ static void depth_blit_via_color(VkCommandBuffer cb, TexBackend *s, TexBackend *
     rec_CmdCopyBufferToImage(cb, buf, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
 }
 
+static bool depth_upsample_draw(VkCommandBuffer cb, TexBackend *s, TexBackend *d, uint32_t slv, uint32_t sly, int sx, int sy,
+                                int sw, int sh, uint32_t dlv, uint32_t dly, int dx, int dy, int dw, int dh);
 static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t flags) {
     snap_reason = "tex2tex"; snapshots_invalidate(NULL);
     NvnTexture *st_ = (NvnTexture *)(uintptr_t)src->tex, *dt = (NvnTexture *)(uintptr_t)dst->tex;
@@ -6768,6 +6770,12 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     if (depth && s->format != d->format) return;
     static int via_color = -1;  // LARECOMP_VK_DEPTH_BLIT_VIA_COLOR=1: always (tests on GPUs that can blit depth)
     if (via_color < 0) via_color = getenv("LARECOMP_VK_DEPTH_BLIT_VIA_COLOR") ? atoi(getenv("LARECOMP_VK_DEPTH_BLIT_VIA_COLOR")) : 0;
+    // an upsampling depth copy interpolates (as metal.m / renderer.m do: issue #356); LARECOMP_DEPTH_UP_NEAREST=1: as before
+    static int up_nearest = -1;
+    if (up_nearest < 0) up_nearest = getenv("LARECOMP_DEPTH_UP_NEAREST") != NULL;
+    if (title_is_las() && depth && !up_nearest && (sa & da & VK_IMAGE_ASPECT_DEPTH_BIT) && (dw > sw || dh > sh) &&
+        depth_upsample_draw(cb, s, d, slv, sly, sx0, sy0, sw, sh, dlv, dly, dx0, dy0, dw, dh))
+        return;
     if (depth && (sa & da & VK_IMAGE_ASPECT_DEPTH_BIT) && (via_color || !depth_blit_ok(d->format) || !depth_blit_ok(s->format))) {
         dl_note("  depth blit via colour %p lv%u (%d,%d %dx%d) -> %p lv%u (%d,%d %dx%d)", (void *)s->image, slv, sx0, sy0, sw, sh,
                 (void *)d->image, dlv, dx0, dy0, dw, dh);
@@ -6966,22 +6974,25 @@ static VkImageView raw_view(TexBackend *b) {
 static VkPipelineLayout post_layout;
 static VkDescriptorSetLayout post_set_layout;
 
+static void post_layout_init(void) {  // (post passes and depth_upsample_draw: up to three inputs, 32 bytes of constants)
+    if (post_layout) return;
+    VkDescriptorSetLayoutBinding b[3];
+    for (uint32_t i = 0; i < 3; i++)
+        b[i] = (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
+    VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 3, .pBindings = b};
+    VK_CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &li, NULL, &post_set_layout));
+    VkPushConstantRange r = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32};
+    VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                     .pSetLayouts = &post_set_layout, .pushConstantRangeCount = 1, .pPushConstantRanges = &r};
+    VK_CHECK(vkCreatePipelineLayout(g_vk.dev, &ci, NULL, &post_layout));
+}
+
 // kind: 0 a plain post pass; 1 SMAA edges also writing stencil 1 where they draw, 2 SMAA weights only where the
 // stencil is 1 (g_vk.smaa_stencil; dsfmt: the stencil format)
 static VkPipeline post_pipeline_kind(const char *fs, int kind, VkFormat dsfmt) {
     static struct { const char *fs; int kind; VkFormat f; VkPipeline p; } cache[16];
     for (int i = 0; i < 16; i++) if (cache[i].p && cache[i].fs == fs && cache[i].kind == kind && cache[i].f == dsfmt) return cache[i].p;
-    if (!post_layout) {
-        VkDescriptorSetLayoutBinding b[3];
-        for (uint32_t i = 0; i < 3; i++)
-            b[i] = (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
-        VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 3, .pBindings = b};
-        VK_CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &li, NULL, &post_set_layout));
-        VkPushConstantRange r = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32};
-        VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
-                                         .pSetLayouts = &post_set_layout, .pushConstantRangeCount = 1, .pPushConstantRanges = &r};
-        VK_CHECK(vkCreatePipelineLayout(g_vk.dev, &ci, NULL, &post_layout));
-    }
+    post_layout_init();
     VkPipelineShaderStageCreateInfo stages[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
          .module = vk_builtin_shader("post.vert"), .pName = "main"},
@@ -7169,6 +7180,104 @@ static void post_pass_ex(VkCommandBuffer cb, const char *fs, const VkImageView *
     fullscreen_vertex_bind(cb);
     rec_CmdDraw(cb, 3, 1, 0, 0);
     rec_CmdEndRendering(cb);
+}
+
+// Depth copy that upsamples (copy_texture): a fullscreen draw writing bilinear depth (depthup.frag) into the destination
+// rectangle; stencil is kept. Nearest copies (blit / via colour) made stairs of sloped ground when the guest-sized AO
+// depth (textures.c tex_guest_sized_ao) comes from a scaled pyramid of lower resolution: dark horizontal lines in the
+// game's ambient occlusion (issue #356, 25% in a window). A placeholder colour attachment, as game passes get on Intel
+// (a depth-only pass crashed the UHD 630's driver). False: the copy falls back to the nearest paths.
+static bool depth_upsample_draw(VkCommandBuffer cb, TexBackend *s, TexBackend *d, uint32_t slv, uint32_t sly, int sx, int sy,
+                                int sw, int sh, uint32_t dlv, uint32_t dly, int dx, int dy, int dw, int dh) {
+    if (s->samples != 1 || d->samples != 1 || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return false;
+    static VkPipeline pipes[4];
+    static VkFormat fmts[4];
+    VkFormat df = d->format;
+    bool sten = (d->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) != 0;
+    VkPipeline pipe = VK_NULL_HANDLE;
+    int slot = -1;
+    for (int i = 0; i < 4; i++) {
+        if (pipes[i] && fmts[i] == df) { pipe = pipes[i]; break; }
+        if (!pipes[i] && slot < 0) slot = i;
+    }
+    if (!pipe) {  // (before the rendering begins, as post_pass_ex)
+        if (slot < 0) return false;
+        post_layout_init();
+        VkPipelineShaderStageCreateInfo stages[2] = {
+            {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
+             .module = vk_builtin_shader("post.vert"), .pName = "main"},
+            {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+             .module = vk_builtin_shader("depthup.frag"), .pName = "main"}};
+        VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                     .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+        VkPipelineViewportStateCreateInfo vs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1,
+                                                .scissorCount = 1};
+        VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                     .polygonMode = VK_POLYGON_MODE_FILL, .lineWidth = 1};
+        VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                                   .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+        VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0};
+        VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                                   .attachmentCount = 1, .pAttachments = &cba};
+        VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                                                    .depthTestEnable = VK_TRUE, .depthWriteEnable = VK_TRUE,
+                                                    .depthCompareOp = VK_COMPARE_OP_ALWAYS};
+        VkDynamicState dyn[3] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        uint32_t ndyn = 2;
+        fullscreen_vertex_dyn(dyn, &ndyn, 3);
+        VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = ndyn,
+                                               .pDynamicStates = dyn};
+        VkFormat cf = VK_FORMAT_R8_UNORM;
+        VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1,
+                                            .pColorAttachmentFormats = &cf, .depthAttachmentFormat = df,
+                                            .stencilAttachmentFormat = sten ? df : VK_FORMAT_UNDEFINED};
+        VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri, .stageCount = 2,
+                                           .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia,
+                                           .pViewportState = &vs, .pRasterizationState = &rs, .pMultisampleState = &ms,
+                                           .pDepthStencilState = &ds, .pColorBlendState = &cbs, .pDynamicState = &dy,
+                                           .layout = post_layout};
+        if (vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &pipe) != VK_SUCCESS) return false;
+        pipes[slot] = pipe; fmts[slot] = df;
+        LOG("[vk] upsampling depth copies interpolate (format %d)\n", df);
+    }
+    static const VkComponentMapping id = {0};
+    VkImageView src = vk_image_view(s, VK_IMAGE_VIEW_TYPE_2D, s->format, slv, 1, sly, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT);
+    VkImageView dst = vk_image_view(d, VK_IMAGE_VIEW_TYPE_2D, d->format, dlv, 1, dly, 1, id, d->aspect);
+    uint32_t lw = level_extent(d->width, dlv), lh = level_extent(d->height, dlv);
+    VkImageView col = vk_dummy_color_view(lw, lh, 1);
+    if (!src || !dst || !col) return false;
+    vk_full_barrier(cb);
+    VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = col,
+                                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                    .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE};
+    VkRenderingAttachmentInfo da = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = dst,
+                                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                    .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{dx, dy}, {(uint32_t)dw, (uint32_t)dh}},
+                          .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca, .pDepthAttachment = &da,
+                          .pStencilAttachment = sten ? &da : NULL};
+    rec_CmdBeginRendering(cb, &ri);
+    VkDescriptorSet set = vk_alloc_set(post_set_layout);
+    VkDescriptorImageInfo ii = {vk_default_sampler(false), src, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 1,
+                              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
+    rec_UpdateDescriptorSets(1, &w);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, post_layout, 0, 1, &set, 0, NULL);
+    VkViewport vp = {(float)dx, (float)dy, (float)dw, (float)dh, 0, 1};
+    VkRect2D sc = {{dx, dy}, {(uint32_t)dw, (uint32_t)dh}};
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &sc);
+    float pc[8] = {(float)dx, (float)dy, (float)sw / (float)dw, (float)sh / (float)dh,
+                   (float)sx, (float)sy, (float)(sx + sw - 1), (float)(sy + sh - 1)};
+    rec_CmdPushConstants(cb, post_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
+    fullscreen_vertex_bind(cb);
+    rec_CmdDraw(cb, 3, 1, 0, 0);
+    rec_CmdEndRendering(cb);
+    ss_forget();  // (the next game draw binds its own pipeline and state)
+    vk_full_barrier(cb);
+    return true;
 }
 
 // The view the present samples: the game image, or its anti-aliased / upscaled version. ow x oh: the whole image's

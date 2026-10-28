@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "../rqueue.h"
+#include "../../title_profile.h"
 #include "vk.h"
 #include "record.h"
 #include "../astc.h"
@@ -194,6 +195,15 @@ void renderer_texture_fraction(NvnTexture *t, float *fx, float *fy) {
 }
 uint64_t renderer_present_count(void);
 
+// The game's ambient occlusion stays at the Switch's size (issue #356): see metal.m tex_guest_sized_ao.
+static bool tex_guest_sized_ao(const NvnTexture *t) {
+    if (!title_is_las()) return false;
+    static int off = -1;
+    if (off < 0) off = getenv("LARECOMP_AO_SCALED") != NULL;
+    if (off) return false;
+    return t->format == 0x1 || (t->format == 0x35 && t->width <= 480);  // R8 unorm / D24S8, 16:9 (checked by the caller)
+}
+
 static bool tex_scalable(const NvnTexture *t, bool render_target) {
     static int off = -1;  // (per texture lookup: cached)
     if (off < 0) off = getenv("LARECOMP_NO_SCALE") != NULL;
@@ -203,7 +213,8 @@ static bool tex_scalable(const NvnTexture *t, bool render_target) {
     // pass to a smaller rectangle, which then becomes a visible lighting/occlusion boundary.
     if (t->target != 1 || t->samples > 1 || (!(t->flags & 8) && !render_target) || t->width < 32 || t->height < 16) return false;
     float a = (float)t->width / (float)t->height;
-    return a > 1.74f && a < 1.81f;
+    if (!(a > 1.74f && a < 1.81f)) return false;  // 16:9 (1920x1080 and its fractions, 704x396, 60x33...)
+    return !tex_guest_sized_ao(t);
 }
 
 bool renderer_texture_first_write(NvnTexture *t) {

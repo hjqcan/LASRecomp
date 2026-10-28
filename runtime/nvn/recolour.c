@@ -20,9 +20,10 @@
 extern const RecolourOption g_recolour_link;  // hair / shield colours (recolour_link.c)
 extern const RecolourOption g_recolour_seasons;  // leaves / grass colours (recolour_seasons.c)
 extern const RecolourOption g_recolour_water;  // water colour (recolour_water.c)
+extern const RecolourOption g_recolour_buildings;  // fence / wall / house colours (recolour_buildings.c)
 extern const RecolourOption g_recolour_enemies;  // random enemy colours (recolour_enemies.c)
-// LARECOMP_RECOLOUR_NAMES=1 (test): every albedo map of the overworld's files is recognised too (class RECOLOUR_NAMED,
-// never tinted), so LARECOMP_LOG_RECOLOUR_AT can name what each draw samples
+// LARECOMP_RECOLOUR_NAMES=1 (test): every albedo map of the overworld's files and map models is recognised too (class
+// RECOLOUR_NAMED, never tinted), so LARECOMP_LOG_RECOLOUR_AT can name what each draw samples
 enum { RECOLOUR_NAMED = 15 };
 static int named(int source, const char *t) {
     (void)source;
@@ -31,22 +32,26 @@ static int named(int source, const char *t) {
 }
 static bool named_tint(int cls, float t[8]) { (void)cls, (void)t; return false; }
 static RecolourOption g_recolour_named = {"names (test)", NULL, 0, RECOLOUR_NAMED, RECOLOUR_NAMED, named_tint};
-static void named_sources(void) {  // Field.bntx and every actor's file
-    static RecolourSource src[1024];
-    static char paths[1024][96];
+static void named_sources(void) {  // Field.bntx, every actor's file and every map model's (houses, caves)
+    enum { MAXN = 4096 };
+    static RecolourSource src[MAXN];
+    static char paths[MAXN][96];
     int n = 0;
     src[n++] = (RecolourSource){"region_common/map/Field.bntx", named};
-    char dir[1200];
-    snprintf(dir, sizeof dir, "%s/region_common/actor", g_romfs_dir ? g_romfs_dir : "extracted/romfs");
-    DIR *d = opendir(dir);
-    for (struct dirent *e; d && (e = readdir(d)) && n < 1024;) {
-        size_t l = strlen(e->d_name);
-        if (l < 7 || l > 70 || strcmp(e->d_name + l - 6, ".bfres")) continue;
-        snprintf(paths[n], sizeof paths[n], "region_common/actor/%s", e->d_name);
-        src[n] = (RecolourSource){paths[n], named};
-        n++;
+    static const char *const dirs[] = {"actor", "map"};
+    for (int k = 0; k < 2; k++) {
+        char dir[1200];
+        snprintf(dir, sizeof dir, "%s/region_common/%s", g_romfs_dir ? g_romfs_dir : "extracted/romfs", dirs[k]);
+        DIR *d = opendir(dir);
+        for (struct dirent *e; d && (e = readdir(d)) && n < MAXN;) {
+            size_t l = strlen(e->d_name);
+            if (l < 7 || l > 70 || strcmp(e->d_name + l - 6, ".bfres")) continue;
+            snprintf(paths[n], sizeof paths[n], "region_common/%s/%s", dirs[k], e->d_name);
+            src[n] = (RecolourSource){paths[n], named};
+            n++;
+        }
+        if (d) closedir(d);
     }
-    if (d) closedir(d);
     g_recolour_named.sources = src;
     g_recolour_named.nsources = n;
 }
@@ -55,6 +60,7 @@ static const RecolourOption *g_options[] = {
     &g_recolour_link,
     &g_recolour_seasons,
     &g_recolour_water,
+    &g_recolour_buildings,
     &g_recolour_enemies,
     NULL,
     NULL,
@@ -173,7 +179,7 @@ static int scan_file(const RecolourOption *o, int src) {
 }
 
 static void load(void) {
-    if (getenv("LARECOMP_RECOLOUR_NAMES")) named_sources(), g_options[4] = &g_recolour_named;
+    if (getenv("LARECOMP_RECOLOUR_NAMES")) named_sources(), g_options[5] = &g_recolour_named;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     for (int k = 0; g_options[k]; k++) {

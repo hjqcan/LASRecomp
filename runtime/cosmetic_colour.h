@@ -1,7 +1,7 @@
-// The Cosmetics tab's colour rows (tunic, hearts, hair, skin, shield, leaves, grass, sand, water) share one palette:
-// Default (the game's own), twelve named colours, Random and Custom (any colour, from a colour picker; saved as
-// #RRGGBB). Each row recolours its thing so that its typical colour becomes the chosen one, keeping the shading
-// (col_mapping).
+// The Cosmetics tab's colour rows (tunic, hearts, hair, skin, shield, leaves, grass, sand, water, fences, walls,
+// houses) share one palette: Default (the game's own), twelve named colours, Random and Custom (any colour, from a
+// colour picker; saved as #RRGGBB). Each row recolours its thing so that its typical colour becomes the chosen one,
+// keeping the shading (col_mapping).
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
@@ -16,7 +16,8 @@ typedef struct CosColour {
 
 // Which row (Random picks a colour per row, again whenever the row is set to Random)
 enum { COL_SLOT_TUNIC, COL_SLOT_HEARTS, COL_SLOT_HAIR, COL_SLOT_SKIN, COL_SLOT_SHIELD, COL_SLOT_LEAVES, COL_SLOT_GRASS,
-       COL_SLOT_SAND, COL_SLOT_WATER, COL_SLOTS };  // (new rows at the end: a seed's own colours stay per slot)
+       COL_SLOT_SAND, COL_SLOT_WATER, COL_SLOT_FENCES, COL_SLOT_WALLS, COL_SLOT_HOUSES,
+       COL_SLOTS };  // (new rows at the end: a seed's own colours stay per slot)
 
 extern const char *const g_col_names[N_COL];
 extern const uint32_t g_col_rgb[N_COL];  // the named colours' targets (0 for Default / Random / Custom)

@@ -51,6 +51,8 @@ jobs:
           cmake --install sdl-build
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp DEPS="$HOME/sdl3"
+      - name: Menu sound installation isolation
+        run: DEPS="$HOME/sdl3" python3 tools/test_menu_sfx.py
       - name: Opus service regression tests
         run: python3 tools/test_hwopus.py
       - name: Random-byte service regression tests
@@ -172,6 +174,8 @@ jobs:
         run: brew install sdl3 ffmpeg opus
       - name: App builds
         run: make -j"$(sysctl -n hw.ncpu)" build/lasrecomp
+      - name: Menu sound installation isolation
+        run: python3 tools/test_menu_sfx.py
       - name: Opus service regression tests
         run: python3 tools/test_hwopus.py
       - name: Random-byte service regression tests
@@ -251,6 +255,26 @@ jobs:
       - name: Shader translator instruction semantics
         run: tools/test_translate_ops.sh
 
+      - name: macOS launch smoke-test regressions
+        run: python3 tools/test_macos_app_smoke.py
+      # Exercise make app's pinned libraries and rewritten load paths, not the Homebrew-linked build above.
+      - name: macOS app dependencies cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/deps
+            !build/deps/src
+          key: deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build_deps_macos.sh') }}
+      - name: Finished macOS app
+        run: |
+          brew install ninja
+          make deps
+          make rando-helper && make gen-helper
+          tools/fetch_zig.sh
+          make -j"$(sysctl -n hw.ncpu)" app
+      - name: Finished macOS app launches (dynamic-library loading)
+        run: python3 tools/smoke_macos_app.py "build/Multi.app"
+
   windows:
     runs-on: windows-2022
     defaults:
@@ -276,6 +300,8 @@ jobs:
             vulkan-memory-allocator:p
       - name: App builds
         run: make -j"$(nproc)" build/lasrecomp.exe
+      - name: Menu sound installation isolation
+        run: python3 tools/test_menu_sfx.py
       - name: Opus service regression tests
         run: clang -std=gnu11 -O1 -Wall -Wextra -Werror -pthread tools/test_hwopus.c -lopus -o build/test-hwopus.exe && build/test-hwopus.exe
       - name: Build cache and resume tests

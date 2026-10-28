@@ -56,6 +56,7 @@ static void load(void) {
     FILE *f = fopen(p, "r");
     if (!f) return;
     while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;  // (Windows seeds: CRLF lines, read in binary mode)
         Soul *s = &g_souls[g_nsouls];
         Wall *w = &g_walls[g_nwalls];
         char cells[160];

@@ -3926,8 +3926,20 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
             dd.depthWriteEnabled = YES;
             always = [dev newDepthStencilStateWithDescriptor:dd];
         }
-        static id<MTLSamplerState> dnear;
-        if (!dnear) dnear = [dev newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
+        // An upsampling copy (a source of lower resolution, as the guest-sized AO depth gets from the scaled pyramid
+        // below 0.5x: runtime/nvn/metal.m tex_guest_sized_ao) interpolates: nearest made stairs of the ground's
+        // slope that the ambient occlusion shaded as dark horizontal lines (issue #356, 25% in a window).
+        // Downsampling stays nearest (the game's own choice of samples). LARECOMP_DEPTH_UP_NEAREST=1 (A/B): nearest.
+        static id<MTLSamplerState> dnear, dlin;
+        static int up_nearest = -1;
+        if (up_nearest < 0) up_nearest = getenv("LARECOMP_DEPTH_UP_NEAREST") != NULL;
+        if (!dnear) {
+            MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+            dnear = [dev newSamplerStateWithDescriptor:sd];
+            sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
+            dlin = [dev newSamplerStateWithDescriptor:sd];
+        }
+        bool up = title_is_las() && !up_nearest && (dw > sw || dh > sh);
         id<MTLTexture> sdepth = s;
         if (s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 || s.pixelFormat == MTLPixelFormatDepth24Unorm_Stencil8)
             sdepth = [s newTextureViewWithPixelFormat:s.pixelFormat];
@@ -3937,7 +3949,7 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
         [e setViewport:(MTLViewport){dx0, dy0, dw, dh, 0, 1}];
         [e setVertexBytes:r length:16 atIndex:0];
         [e setFragmentTexture:sdepth atIndex:0];
-        [e setFragmentSamplerState:dnear atIndex:0];
+        [e setFragmentSamplerState:up ? dlin : dnear atIndex:0];
         [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [e endEncoding];
         stat_passes++;

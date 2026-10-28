@@ -39,7 +39,7 @@ NAMES = {
     'kanalet-final-guard': 'Kanalet Castle: last guard', 'kanalet-kill-room': 'Kanalet Castle: fight room',
     'kanalet-mad-bomber': 'Kanalet Castle: Mad Bomber', 'kanalet-moat-north': 'Kanalet moat, north (sunken)',
     'kanalet-moat-south': 'Kanalet moat, south (sunken)', 'kanalet-south-cave': 'Cave south of Kanalet Castle',
-    'kiki': 'Kiki the monkey', 'lanmola': 'Lanmola (Yarna Desert)', 'mabe-bushes': 'Bushes in Mabe Village',
+    'kiki': 'Kiki the monkey', 'lanmola': 'Lanmola (Yarna Desert)', 'mabe-bushes': 'Seashell bush in Mabe Village',
     'mabe-well': 'Mabe Village well', 'mad-batter-bay': "Mad Batter, Martha's Bay",
     'mad-batter-taltal': 'Mad Batter, Tal Tal', 'mad-batter-woods': 'Mad Batter, Mysterious Forest',
     'mamasha': 'Mamasha (trade)', 'mamu': 'Mamu (song)', 'manbo': 'Manbo (song)', 'marin': 'Marin (song)',

@@ -5,6 +5,8 @@
 #include "../runtime/nvn/vulkan/textures.c"
 
 VkG g_vk;
+static bool las;
+bool title_is_las(void) { return las; }
 static uintptr_t next_image = 1;
 static unsigned creates, blits, clears;
 static VkImageBlit last_blit;
@@ -50,18 +52,18 @@ VKAPI_ATTR VkResult VKAPI_CALL vmaCreateImage(VmaAllocator a, const VkImageCreat
 }
 VKAPI_ATTR void VKAPI_CALL vmaDestroyImage(VmaAllocator a, VkImage i, VmaAllocation m) { (void)a; (void)i; (void)m; }
 VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice d, VkImageView v, const VkAllocationCallbacks *a) { (void)d; (void)v; (void)a; }
-VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier2(VkCommandBuffer c, const VkDependencyInfo *d) { (void)c; (void)d; }
-VKAPI_ATTR void VKAPI_CALL vkCmdClearDepthStencilImage(VkCommandBuffer c, VkImage i, VkImageLayout l,
+void rec_CmdPipelineBarrier2(VkCommandBuffer c, const VkDependencyInfo *d) { (void)c; (void)d; }
+void rec_CmdClearDepthStencilImage(VkCommandBuffer c, VkImage i, VkImageLayout l,
     const VkClearDepthStencilValue *v, uint32_t n, const VkImageSubresourceRange *r) {
     (void)c; (void)i; (void)l; (void)r; assert(n == 1 && v->depth == 0 && v->stencil == 0); clears++;
 }
-VKAPI_ATTR void VKAPI_CALL vkCmdClearColorImage(VkCommandBuffer c, VkImage i, VkImageLayout l,
+void rec_CmdClearColorImage(VkCommandBuffer c, VkImage i, VkImageLayout l,
     const VkClearColorValue *v, uint32_t n, const VkImageSubresourceRange *r) {
     (void)c; (void)i; (void)l; (void)r; assert(n == 1);
     for (unsigned j=0; j<4; j++) assert(v->uint32[j] == 0);
     clears++;
 }
-VKAPI_ATTR void VKAPI_CALL vkCmdBlitImage(VkCommandBuffer c, VkImage s, VkImageLayout sl,
+void rec_CmdBlitImage(VkCommandBuffer c, VkImage s, VkImageLayout sl,
     VkImage d, VkImageLayout dl, uint32_t n, const VkImageBlit *r, VkFilter f) {
     (void)c; (void)sl; (void)dl;
     assert(s != d && n == 1 && f == VK_FILTER_NEAREST); last_blit = *r; blits++;
@@ -71,6 +73,15 @@ static NvnTexture screen(uint32_t fmt, uint32_t flags) {
     return (NvnTexture){.target=1, .format=fmt, .flags=flags, .width=960, .height=540, .depth=1, .levels=1};
 }
 int main(void) {
+    // LAS keeps AO at guest size; the same format must still scale in other games.
+    NvnTexture ao = screen(1, 8), ao_depth = screen(0x35, 8);
+    ao.width = ao_depth.width = 480; ao.height = ao_depth.height = 270;
+    las = true;
+    assert(!tex_scalable(&ao, true) && !tex_scalable(&ao_depth, true));
+    NvnTexture full_depth = screen(0x35, 8);
+    assert(tex_scalable(&full_depth, true));
+    las = false;
+    assert(tex_scalable(&ao, true) && tex_scalable(&ao_depth, true));
     renderer_set_alloc_scale(2.0f/3, 2.0f/3);
     renderer_set_scale(2.0f/3, 2.0f/3);
     // The ACNH half-size depth attachment and its uncompressed AO/light buffers must match.

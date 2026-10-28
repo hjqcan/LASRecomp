@@ -227,6 +227,9 @@ void settings_load(void) {
         else if (!strcmp(key, "grass")) col_parse(&g_settings.grass, val);
         else if (!strcmp(key, "sand")) col_parse(&g_settings.sand, val);
         else if (!strcmp(key, "water")) col_parse(&g_settings.water, val);
+        else if (!strcmp(key, "fences")) col_parse(&g_settings.fences, val);
+        else if (!strcmp(key, "walls")) col_parse(&g_settings.walls, val);
+        else if (!strcmp(key, "houses")) col_parse(&g_settings.houses, val);
         else if (!strcmp(key, "screen_filter")) {
             for (int i = 0; i < N_SCREEN_FILTERS; i++) if (!strcmp(val, k_screen_filter_keys[i])) g_settings.screen_filter = i;
         }
@@ -295,7 +298,8 @@ void settings_save(void) {
         {"tunic", &g_settings.tunic}, {"hearts", &g_settings.hearts}, {"hair", &g_settings.hair},
         {"shield", &g_settings.shield}, {"skin", &g_settings.skin},
         {"leaves", &g_settings.leaves}, {"grass", &g_settings.grass}, {"sand", &g_settings.sand},
-        {"water", &g_settings.water}};
+        {"water", &g_settings.water}, {"fences", &g_settings.fences}, {"walls", &g_settings.walls},
+        {"houses", &g_settings.houses}};
     for (size_t i = 0; i < sizeof cols / sizeof *cols; i++) {
         char v[16];
         col_format(cols[i].c, v, sizeof v);

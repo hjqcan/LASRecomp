@@ -14,6 +14,8 @@
 
 extern "C" {
 #include "../cosmetic_colour.h"
+#include "../input_bind.h"
+#include "../menu_sfx.h"
 }
 #include "option_rows.h"
 #include "localization.h"
@@ -173,6 +175,7 @@ static int row(const char *label, const std::string &value, bool changed, const 
     g_next_disabled = g_next_mark = g_next_warn = g_next_own = false;
     bool hov = ImGui::IsItemHovered(), foc = ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible;
     int step = clicked && !off ? 2 : 0;
+    if (clicked && off) menu_sfx_play(MENU_SFX_BEEP);  // (greyed out: can't change)
     g_held = false;
     if (foc && !off) {
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft) || ImGui::IsKeyPressed(ImGuiKey_GamepadLStickLeft) ||
@@ -237,7 +240,7 @@ static int row(const char *label, const std::string &value, bool changed, const 
         const ImVec2 pts[] = {ImVec2(right - cw, cy - cw * 1.1f), ImVec2(right, cy), ImVec2(right - cw, cy + cw * 1.1f)};
         dl->AddPolyline(pts, 3, ac, 0, 2.6f * g_scale);
         right -= cw + fs * 0.55f;
-        if (step == 1) step = 2;  // (Right opens it too)
+        if (step == 1) step = 2, menu_sfx_play(MENU_SFX_DECIDE);  // (Right opens it too)
     }
     if (!value.empty()) {
         float vw = ImGui::CalcTextSize(value.c_str()).x, vx = right - vw;
@@ -249,9 +252,16 @@ static int row(const char *label, const std::string &value, bool changed, const 
     return step;
 }
 
+// a value stepped with left / right: the cursor sound (A / click: menu_sfx_frame's decide)
+static void step_sfx(int step) {
+    if (step == 1 || step == -1) menu_sfx_play(MENU_SFX_CURSOR);
+}
+
 bool opt_toggle(const char *label, bool *v, bool def, const char *desc) {
-    g_lr_row = true;
-    if (!row(label, ui_tr(*v ? "On" : "Off"), *v != def, desc)) return false;  // (any step flips it)
+    g_lr_row = true;  // (left / right flip it)
+    int step = row(label, ui_tr(*v ? "On" : "Off"), *v != def, desc);
+    if (!step) return false;  // (any step flips it)
+    step_sfx(step);
     *v = !*v;
     return true;
 }
@@ -263,6 +273,7 @@ bool opt_choice(const char *label, int *v, const char *const *names, int n, int 
     int nv = cur + (step == 2 ? 1 : step);
     nv = wrap ? (nv + n) % n : nv < 0 ? 0 : nv >= n ? n - 1 : nv;
     if (nv == cur) return false;
+    step_sfx(step);
     *v = nv;
     return true;
 }
@@ -274,7 +285,9 @@ bool opt_slider(const char *label, float *v, float lo, float hi, float step, flo
     if (!s) return false;
     float eps = step * 0.01f, n = roundf(*v / step) * step + (s == 2 ? step : s * step);
     if (s == 2 && n > hi + eps) n = lo;  // (A / click past the top wraps to the bottom; left / right stop at the ends)
-    *v = n < lo ? lo : n > hi ? hi : n;
+    n = n < lo ? lo : n > hi ? hi : n;
+    if (fabsf(n - *v) > eps) step_sfx(s);
+    *v = n;
     return true;
 }
 
@@ -290,6 +303,7 @@ bool opt_int(const char *label, int *v, int lo, int hi, int step, int def, const
     if (s == 2 && n > hi) n = lo;  // (A / click past the top wraps; left / right stop at the ends)
     n = n < lo ? lo : n > hi ? hi : n;
     if (n == *v) return false;
+    step_sfx(s);
     *v = n;
     return true;
 }
@@ -543,3 +557,37 @@ static int g_collect_indent;  // (the pane's indent, kept while the rows are rea
 void opt_collect_begin(std::vector<OptLine> *out) { g_collect = out, g_collect_indent = g_indent, g_indent = 0; }
 bool opt_collecting(void) { return g_collect != NULL; }
 void opt_collect_end(void) { g_collect = NULL, g_indent = g_collect_indent; }
+
+// The menu's sounds this frame (menu_sfx.h): what the controller's cursor and the presses did. Value steps, greyed-out
+// rows (above), tab switches and the menu opening / closing (menu.mm) play theirs where they happen.
+static ImGuiID g_tab_ids[16];  // (the menu tabs drawn this frame)
+static int g_ntab_ids;
+extern "C" void menu_sfx_tab_item(void) {
+    if (g_ntab_ids < 16) g_tab_ids[g_ntab_ids++] = ImGui::GetItemID();
+}
+static bool is_tab(ImGuiID id) {
+    for (int i = 0; i < g_ntab_ids; i++)
+        if (g_tab_ids[i] == id) return true;
+    return false;
+}
+
+extern "C" void menu_sfx_frame(bool back_ok) {
+    ImGuiContext &g = *ImGui::GetCurrentContext();
+    static ImGuiContext *ctx;  // (the start screen's and the game's overlay are two)
+    static ImGuiID last;
+    if (ctx != &g) ctx = &g, last = 0;
+    int cap = -1;
+    bind_capture_active(&cap, NULL, NULL);
+    if (!ui_text_busy() && cap < 0) {
+        if (back_ok && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
+            menu_sfx_play(MENU_SFX_CANCEL);
+        else if (g.NavActivatePressedId || (ImGui::IsMouseClicked(0) && g.HoveredId))
+            menu_sfx_play(is_tab(g.NavActivatePressedId ? g.NavActivatePressedId : g.HoveredId) ? MENU_SFX_TAB
+                                                                                                : MENU_SFX_DECIDE);
+        else if (g.NavCursorVisible && g.NavId && last && g.NavId != last)
+            menu_sfx_play(MENU_SFX_CURSOR);
+    }
+    last = g.NavId;
+    g_ntab_ids = 0;
+    menu_sfx_idle_check();
+}

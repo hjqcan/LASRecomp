@@ -178,6 +178,8 @@ static void teardown(void) {
 static void boot(const char *root) {
     char why[512];
     if (!title_profile_select(root,why,sizeof why)) FATAL("%s\n",why);
+    extern void menu_sfx_set_game_dir(const char *dir);
+    menu_sfx_set_game_dir(root);
     if (!acnh60_boot(root,why,sizeof why)) FATAL("%s\n",why);
     if (!kernel_memory_configure(title_profile_current()->system_resource_size))
         FATAL("cannot configure this game's virtual memory reservation\n");
@@ -323,6 +325,15 @@ int main(int argc, char **argv) {
         printf("%s\n", shortcut); return 0;
     }
     if (skip_launcher && !gamelib_present(root)) skip_launcher = false;
+    if (getenv("LARECOMP_MENU_SFX_TEST")) {  // (test: the menu sounds loaded now, each logged)
+        extern void menu_sfx_set_game_dir(const char *dir);
+        extern void menu_sfx_load_now(void);
+        char why[512];
+        if (title_profile_select(root, why, sizeof why)) {
+            menu_sfx_set_game_dir(root);
+            menu_sfx_load_now();
+        }
+    }
     for (bool title = !skip_launcher;;) {
         if (title && no_launcher) {
             fprintf(stderr, "[main] LARECOMP_NO_LAUNCHER is set: not showing the start screen - exiting\n");

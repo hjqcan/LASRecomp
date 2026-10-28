@@ -114,6 +114,7 @@ static bool enabled(void) {
     char line[1024];
     int n = 0, items = 0;
     while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;  // (Windows seeds: CRLF lines, read in binary mode)
         if (line[0] == '#') continue;
         char *col[11], *save = NULL;
         int nc = 0;

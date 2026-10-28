@@ -59,6 +59,7 @@ extern "C" {
 #include "romfs_build.h"
 #include "settings.h"
 #include "input_bind.h"
+#include "menu_sfx.h"
 #include "nvn/shader_prep.h"
 void save_backups_set_game_root(const char *root);
 void rando_set_game_root(const char *root);
@@ -1624,6 +1625,7 @@ extern "C" const char *launcher_run(const char *root) {
     rando_set_game_root(root);
     mods_set_game_root(root);
     g_start_screen = 1;
+    menu_sfx_set_game_dir(root);
     static bool update_checked;  // (once per launch, not again after a "Title screen" reboot)
     if (!update_checked && !getenv("LARECOMP_NO_UPDATE_CHECK")) {
         update_checked = true;
@@ -1874,6 +1876,7 @@ extern "C" const char *launcher_run(const char *root) {
             save_backups_set_game_root(g_root.c_str());
             rando_set_game_root(g_root.c_str());
             mods_set_game_root(g_root.c_str());
+            menu_sfx_set_game_dir(g_root.c_str());
             game_layout_select((g_root + "/exefs/main").c_str());
             status = check_game_files(g_root);
         }
@@ -1890,6 +1893,7 @@ extern "C" const char *launcher_run(const char *root) {
             save_backups_set_game_root(g_root.c_str());
             rando_set_game_root(g_root.c_str());
             mods_set_game_root(g_root.c_str());
+            menu_sfx_set_game_dir(g_root.c_str());
             game_layout_select((g_root + "/exefs/main").c_str());
             status = check_game_files(g_root);
             seeds = list_seeds(); choices = {"Vanilla"}; choices.insert(choices.end(), seeds.begin(), seeds.end()); choice = 0;
@@ -1963,6 +1967,7 @@ extern "C" const char *launcher_run(const char *root) {
             // controller is connected
             if (SDL_HasGamepad()) io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
             ImGui::NewFrame();
+            const Page frame_page = page;  // (menu_sfx_frame: B on the main page does nothing)
 
             ImVec2 ds = io.DisplaySize;
             float s = ds.y / 720.0f;  // layout scale (fonts are built for ~2x)
@@ -2502,6 +2507,7 @@ extern "C" const char *launcher_run(const char *root) {
             osk_draw(g_font_menu, s * 0.7f);
             if (osk_up) plastic_widgets(false), menu_style_end();
             typed_before = ui_text_busy();
+            menu_sfx_frame(frame_page != MAIN);
 
             ImGui::Render();
 #ifdef __APPLE__

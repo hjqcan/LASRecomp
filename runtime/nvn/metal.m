@@ -17,6 +17,7 @@
 #include "nvn.h"
 #include "rqueue.h"
 #include "../game_addresses.h"
+#include "../title_profile.h"
 #include "renderer.h"
 #include "pace.h"
 #include "texpatch.h"
@@ -233,13 +234,30 @@ void renderer_get_scale(float *sx, float *sy) { *sx = g_rs_x; *sy = g_rs_y; }
 void renderer_set_scale(float sx, float sy) { g_rs_x = sx; g_rs_y = sy; }
 void renderer_set_alloc_scale(float ax, float ay) { g_al_x = ax; g_al_y = ay; }
 
+// The game's ambient occlusion (issue #356) stays at the Switch's size: its R8 targets (480x270 and the 240x135 blur)
+// and the quarter-size depth-stencil its pass tests against (480x270, made from the depth pyramid). The AO shader
+// takes its 4x4 sample-rotation pattern from the pixel position it works out from the guest size (uv / texel size), so
+// at a render scale other than 1 neighbouring pixels no longer get different rotations: at 25% every pixel got the
+// same one (bands of dark AO on flat ground that crawl as the camera moves: the "haze"), above 1 the pattern grows
+// past the game's 4x4 blur and is left as dither. At the guest size it is the Switch's AO at any resolution, and
+// cheap (a quarter of 1080p). The depth-stencil goes with it: Metal / Vulkan draw a pass only where all its
+// attachments are. LARECOMP_AO_SCALED=1 (A/B): scaled like the rest again.
+static bool tex_guest_sized_ao(const NvnTexture *t) {
+    if (!title_is_las()) return false;
+    static int off = -1;
+    if (off < 0) off = getenv("LARECOMP_AO_SCALED") != NULL;
+    if (off) return false;
+    return t->format == 0x1 || (t->format == 0x35 && t->width <= 480);  // R8 unorm / D24S8, 16:9 (checked by the caller)
+}
+
 static bool tex_scalable(const NvnTexture *t) {
     static int off = -1;  // (per texture lookup: cached)
     if (off < 0) off = getenv("LARECOMP_NO_SCALE") != NULL;
     if (off) return false;
     if (t->target != 1 || t->samples > 1 || !(t->flags & 8) || t->width < 32 || t->height < 16) return false;
     float a = (float)t->width / (float)t->height;
-    return a > 1.74f && a < 1.81f;  // 16:9 (1920x1080 and its fractions, 704x396, 60x33...)
+    if (!(a > 1.74f && a < 1.81f)) return false;  // 16:9 (1920x1080 and its fractions, 704x396, 60x33...)
+    return !tex_guest_sized_ao(t);
 }
 
 // First write this frame to a presented image while the output is reshaped: returns true once per frame.

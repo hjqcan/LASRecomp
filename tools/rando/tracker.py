@@ -13,8 +13,9 @@
           the map page shift of its floor (dungeon_map.tsv); door jumps / one-way doorways / room-shuffle letters are
           door_jumps.tsv, which the runtime already reads (runtime/hle/doorjump.c)
   settings  seed settings as logic tokens: S = on, F = off (a condition naming an off setting can't be met)
-Dungeon room shuffle: checks the layout leaves out (settings absent-locations) are not listed; a moved room's checks
-count for the dungeon it sits in now (settings dungeon-of, room_logic.py). Conditions are the seed's final logic.
+Excluded locations (junk only) are not listed, nor (dungeon room shuffle) checks the layout leaves out (settings
+absent-locations); a moved room's checks count for the dungeon it sits in now (settings dungeon-of, room_logic.py).
+Conditions are the seed's final logic.
 Each node also carries its condition with every logic level up to glitched ("trick logic": shown, never required).
 The runtime evaluates reachability from the live save's inventory (never from placements: no spoilers).
 """
@@ -33,6 +34,12 @@ LAS = os.path.join(ROOT, 'third_party', 'LAS-Randomizer')
 DUNGEONS = {'Lv01TailCave': 'D1', 'Lv02BottleGrotto': 'D2', 'Lv03KeyCavern': 'D3', 'Lv04AnglersTunnel': 'D4',
             'Lv05CatfishsMaw': 'D5', 'Lv06FaceShrine': 'D6', 'Lv07EagleTower': 'D7', 'Lv08TurtleRock': 'D8',
             'Lv10ClothesDungeon': 'D0'}
+# checks whose "collected" flag LAS's own event edits set (data.py; Tarin sets ShieldGet once he has handed his item
+# over, Tarin.bfevfl Event31): location -> data.py constant name, or the flag itself
+EVENT_FLAGS = {'tarin': 'ShieldGet', 'washed-up': 'BEACH_LOOSE_FLAG', 'woods-loose': 'WOODS_LOOSE_FLAG',
+               'dream-shrine-left': 'DREAM_SHRINE_FLAG', 'taltal-rooster-cave': 'ROOSTER_CAVE_FLAG',
+               'mermaid-cave': 'MERMAID_CAVE_FLAG', 'goriya-trader': 'GORIYA_FLAG', 'mamu': 'MAMU_FLAG',
+               'manbo': 'MANBO_FLAG'}
 LEVELS = {'basic': ['basic'], 'advanced': ['basic', 'advanced'], 'glitched': ['basic', 'advanced', 'glitched'],
           'hell': ['basic', 'advanced', 'glitched', 'hell'], 'none': ['basic']}
 
@@ -347,7 +354,9 @@ def build(seed_dir, romfs):
         shell_pos.update({c[0]: (float(c[5]), float(c[7])) for c in rows})
     else:
         shell_rooms_apples = {}
-    absent = set(settings.get('absent-locations', ()))  # (rooms the dungeon shuffle left out: not in the game)
+    # not checks: rooms the dungeon shuffle left out (not in the game) and excluded locations (junk only: fishing,
+    # Dampe... when not included, Seashell Mansion rewards past the seashell setting)
+    absent = set(settings.get('absent-locations', ())) | set(settings.get('excluded-locations', ()))
     for name, v in logic.items():
         if v.get('type') != 'item' or name.startswith('starting-') or name in absent:
             continue
@@ -395,6 +404,8 @@ def build(seed_dir, romfs):
         try:
             if name in check_flags:
                 pass
+            elif name in EVENT_FLAGS:
+                flag = flags.get(getattr(las_data, EVENT_FLAGS[name], EVENT_FLAGS[name]), -1)
             elif name in getattr(las_data, 'HEART_FLAGS', {}):
                 flag = flags.get(las_data.HEART_FLAGS[name], -1)
             elif name in underwater.SHELL_FLAGS:  # (the sunken seashells' own flags: tools/rando/underwater.py)
@@ -465,7 +476,7 @@ def build(seed_dir, romfs):
             lv, x, y, z, fl = line.split()[:5]  # (bushes.tsv rows may carry more: pots.write_tsv)
             n = names.get((round(float(x), 2), round(float(z), 2)))
             cell = n and cell_of_field('Field_' + n.split('-')[1])
-            if n in logic and cell:
+            if n in logic and n not in absent and cell:
                 checks.append({'n': n, 'x': cell[0], 'y': cell[1], 'g': -1, 'flag': int(fl), 'k': 'bush',
                                'a': logic[n].get('region') or '', 'wx': float(x), 'wz': float(z)})
     # rocksanity (rocks.tsv, the same rows): on the rock's Field screen (rock-<screen>-<n>)
@@ -480,7 +491,7 @@ def build(seed_dir, romfs):
         for line in open(tsv):
             lv, x, y, z, fl = line.split()[:5]
             n = names.get((round(float(x), 2), round(float(z), 2)))
-            if n in logic:
+            if n in logic and n not in absent:
                 cell = cell_of_field('Field_' + n.split('-')[1])
                 checks.append({'n': n, 'x': cell[0], 'y': cell[1], 'g': -1, 'flag': int(fl), 'k': 'rock',
                                'a': logic[n].get('region') or '', 'wx': float(x), 'wz': float(z)})
@@ -506,10 +517,10 @@ def build(seed_dir, romfs):
     out = {'settings': {k: 1 for k, v in settings.items() if v is True}, 'nodes': nodes, 'checks': checks,
            'groups': groups, 'rooms': rooms, 'logic': settings.get('logic', 'basic'),
            'off': sorted(k for k, v in settings.items() if v is False)}
-    with open(os.path.join(seed_dir, 'tracker.json'), 'w') as f:
+    with open(os.path.join(seed_dir, 'tracker.json'), 'w', newline='\n') as f:
         json.dump(out, f)
     # same data as tab-separated lines for the runtime (no JSON parser there)
-    with open(os.path.join(seed_dir, 'tracker.tsv'), 'w') as f:
+    with open(os.path.join(seed_dir, 'tracker.tsv'), 'w', newline='\n') as f:  # (LF on Windows too)
         f.write('V\t2\n')
         for k in out['settings']:
             f.write(f'S\t{k}\n')

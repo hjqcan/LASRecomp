@@ -138,6 +138,7 @@ static void load(void) {
     g_slots = calloc(MAXSLOT, sizeof *g_slots);
     char line[1024];
     while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;  // (Windows seeds: CRLF lines, read in binary mode)
         char *tab = strchr(line, '\t');
         if (line[0] == '#' || !tab) continue;
         *tab = 0;

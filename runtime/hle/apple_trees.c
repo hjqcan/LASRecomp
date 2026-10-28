@@ -79,6 +79,7 @@ static int load(void) {
         snprintf(path, sizeof path, "%s/apple_trees.tsv", dir ? dir : ".");
         FILE *f = dir ? fopen(path, "r") : NULL;
         while (f && fgets(line, sizeof line, f) && n < MAXROWS) {
+            line[strcspn(line, "\r\n")] = 0;  // (Windows seeds: CRLF lines, read in binary mode)
             if (line[0] == '#') continue;
             char *col[18], *save = NULL;
             int nc = 0;
