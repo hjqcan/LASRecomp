@@ -37,8 +37,8 @@ void weather_scene_vp(const float *vp, uint64_t frame) {
     g_cam_frame = frame, g_cam_view = false;
 }
 
-// LARECOMP_WEATHER=off|rain|snow|storm|blizzard|random (test): instead of the setting
-static int setting(void) {
+// LARECOMP_WEATHER=off|rain|snow|storm|blizzard|random (test): instead of the setting, and of a seed's own (-1: none)
+static int env_weather(void) {
     static int env = -2;
     if (env == -2) {
         const char *e = getenv("LARECOMP_WEATHER");
@@ -46,8 +46,9 @@ static int setting(void) {
         env = -1;
         for (int i = 0; e && i < 6; i++) if (!strcmp(e, k[i])) env = i;
     }
-    return env >= 0 ? env : g_settings.weather;
+    return env;
 }
+static int setting(void) { return env_weather() >= 0 ? env_weather() : g_settings.weather; }
 
 static uint32_t mix32(uint32_t h) {
     h ^= h >> 16; h *= 0x7FEB352Du; h ^= h >> 15; h *= 0x846CA68Bu; h ^= h >> 16;
@@ -64,7 +65,8 @@ int weather_current(void) {
     static uint64_t at;  // (the seed's pick: looked up once a second, it only changes with the seed)
     uint64_t now = (uint64_t)time(NULL);
     if (now != at) at = now, seed_on = cosmetics_seed_on(), seed_w = cosmetics_seed_weather();
-    if (seed_on) return seed_w;  // (a seed with its own cosmetics: its weather, over the setting - the row is locked)
+    if (seed_on && env_weather() < 0) return seed_w;  // (a seed with its own cosmetics: its weather, over the setting -
+                                                      // the row is locked)
     int s = setting();
     return s == WEATHER_RANDOM ? g_random : s;
 }
