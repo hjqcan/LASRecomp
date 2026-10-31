@@ -390,6 +390,9 @@ jobs:
       # (the branch stacks as arrays: the runtime's default on every GPU but Intel - shader.h maxwell_glsl_stack_vars)
       - name: Shader translator fuzz (GLSL, branch stacks as arrays)
         run: TT_STACK_ARRAYS=1 REF=HEAD tools/test_translate.sh 2000 "$(nproc)" glsl
+      # (no heap import: every stage through the address table, over copies - shader.h maxwell_gmem_mirror, #483)
+      - name: Shader translator fuzz (GLSL, guest memory through copies)
+        run: TT_GMEM_MIRROR=1 REF=HEAD tools/test_translate.sh 2000 "$(nproc)" glsl
       # (the heap in chunks: lazily imported on AMD APUs and Intel, windows where that isn't possible - shader.h maxwell_gmem_chunk_shift)
       - name: Shader translator fuzz (GLSL, guest heap in chunks)
         run: TT_GMEM_CHUNK_SHIFT=24 REF=HEAD tools/test_translate.sh 2000 "$(nproc)" glsl
