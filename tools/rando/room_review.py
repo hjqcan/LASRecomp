@@ -323,7 +323,7 @@ block). Numbers in a tile are its floor height where it differs from 0.</p>
   const queue = new Map(), busy = new Set();
   async function save(room) {
     const card = byId.get(room), msg = card.querySelector('.saved');
-    if (!db) { msg.textContent = 'Not saved: this view can\'t reach the review store.'; return; }
+    if (!db) { msg.textContent = 'Not saved: this view cannot reach the review store.'; return; }
     if (busy.has(room)) { queue.set(room, true); return; }
     busy.add(room);
     const st = state[room] || {};
