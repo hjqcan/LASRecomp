@@ -630,6 +630,7 @@ PASSAGE = [frozenset({'feather'})]  # side-view passages under the stairs (Face 
 FLOOR, SOLID, PIT, WATER = 'floor', 'solid', 'pit', 'water'
 _tiles_cache = {}
 _hook_tiles = {}  # room -> tiles with collision (room_tiles)
+ledge_drops = {}  # room -> {(ledge tile, (dr, dc))}: where Link jumps down (room_areas; the review page draws them)
 hook_targets = {}  # room -> tiles of the objects the hookshot latches onto (room_areas; the review page draws them)
 _areas_cache = {}
 
@@ -806,6 +807,8 @@ def room_areas(romfs, room):
                 land = (r + 2 * dr, c + 2 * dc)
                 if land in area and g[land][0] == FLOOR and g[land][1] is not None and g[land][1] <= ht - LEDGE:
                     add(a, area[land], [frozenset()])
+                    if area[land] != a:
+                        ledge_drops.setdefault(room, set()).add((u, (dr, dc)))
     # stairs on a raised spot: assumed climbable from where it drops to (Turtle Rock 04E's stairs platform - the only
     # way to 02H / 03H - shows no way up in the tile grid; up for review, rando_room_review)
     import rooms as _rooms

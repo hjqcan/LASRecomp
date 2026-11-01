@@ -80,6 +80,14 @@ def room_card(romfs, cat, room, stairs, inward):
     for r, c in sorted(rl.hook_targets.get(room, ())):
         if 0 <= r < 8 and 0 <= c < 10:
             svg.append(f'<circle cx="{c * T + T / 2}" cy="{r * T + T / 2}" r="{T * 0.28}" class="hook"/>')
+    for (r, c), (dr, dc) in sorted(rl.ledge_drops.get(room, ())):  # an arrow on the ledge tile, the way Link drops
+        cx, cy = c * T + T / 2, r * T + T / 2
+        tip = (cx + dc * T * 0.38, cy + dr * T * 0.38)
+        back = (cx - dc * T * 0.3, cy - dr * T * 0.3)
+        wing = [(tip[0] - dc * T * 0.3 + dr * T * 0.28, tip[1] - dr * T * 0.3 + dc * T * 0.28),
+                (tip[0] - dc * T * 0.3 - dr * T * 0.28, tip[1] - dr * T * 0.3 - dc * T * 0.28)]
+        svg.append(f'<path d="M{back[0]:.1f} {back[1]:.1f}L{tip[0]:.1f} {tip[1]:.1f}M{wing[0][0]:.1f} {wing[0][1]:.1f}'
+                   f'L{tip[0]:.1f} {tip[1]:.1f}L{wing[1][0]:.1f} {wing[1][1]:.1f}" class="ledge"/>')
     for x, z, kind in stairs:
         import rooms as _rooms
         ox, oz = _rooms.cell_origin(room)
@@ -174,19 +182,19 @@ TEMPLATE = '''<title>Dungeon Room Review</title>
 /* layout: a field manual - one dense card per room, map first, then what the logic reads from it */
 :root {
   --bg: #f3f4f1; --paper: #ffffff; --ink: #1d2320; --muted: #5d6762; --line: #d5dad6; --accent: #2f6f5e;
-  --wall: #8a918d; --pit: #2b2b2b; --lava: #d4572a; --water: #3f86c9; --door: #f1c232; --stair: #7c4dbd; --ok: #2f7a4a; --on: #ffffff;
+  --wall: #8a918d; --pit: #2b2b2b; --lava: #d4572a; --water: #3f86c9; --door: #f1c232; --stair: #7c4dbd; --ok: #2f7a4a; --on: #ffffff; --ledge: #c2185b;
   --a0: #cfe6d8; --a1: #f3d9b1; --a2: #cbd8f0; --a3: #efc6d3; --a4: #e2e6b4; --a5: #c9e8ea; --a6: #e0cff0; --a7: #f0e0c8;
   --f-body: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --bg: #151917; --paper: #1e2421; --ink: #e4e9e6; --muted: #9aa49f; --line: #333c37; --accent: #7cc4ad;
-  --wall: #4e5551; --pit: #050505; --lava: #e0703f; --water: #4d93d6; --door: #e6b520; --stair: #a77ee6; --ok: #3f9a62; --on: #0d110f;
+  --wall: #4e5551; --pit: #050505; --lava: #e0703f; --water: #4d93d6; --door: #e6b520; --stair: #a77ee6; --ok: #3f9a62; --on: #0d110f; --ledge: #ff6fa8;
   --a0: #2f4a3c; --a1: #5a4527; --a2: #2f3f5e; --a3: #5a3343; --a4: #4c5127; --a5: #285257; --a6: #45345a; --a7: #5a4a33;
   color-scheme: dark } }
 :root[data-theme="dark"] {
   --bg: #151917; --paper: #1e2421; --ink: #e4e9e6; --muted: #9aa49f; --line: #333c37; --accent: #7cc4ad;
-  --wall: #4e5551; --pit: #050505; --lava: #e0703f; --water: #4d93d6; --door: #e6b520; --stair: #a77ee6; --ok: #3f9a62; --on: #0d110f;
+  --wall: #4e5551; --pit: #050505; --lava: #e0703f; --water: #4d93d6; --door: #e6b520; --stair: #a77ee6; --ok: #3f9a62; --on: #0d110f; --ledge: #ff6fa8;
   --a0: #2f4a3c; --a1: #5a4527; --a2: #2f3f5e; --a3: #5a3343; --a4: #4c5127; --a5: #285257; --a6: #45345a; --a7: #5a4a33;
   color-scheme: dark }
 body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 14px; line-height: 1.45;
@@ -247,6 +255,7 @@ h4 { margin: 0 0 2px; font-size: 0.72rem; text-transform: uppercase; letter-spac
 .a4 { fill: var(--a4); } .a5 { fill: var(--a5); } .a6 { fill: var(--a6); } .a7 { fill: var(--a7); }
 .door { fill: none; stroke: var(--door); stroke-width: 2.5; }
 .stair { fill: var(--stair); }
+.ledge { fill: none; stroke: var(--ledge); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
 .hook { fill: none; stroke: var(--ink); stroke-width: 2; stroke-dasharray: 3 2; }
 .al { font: 600 10px var(--f-mono); fill: var(--ink); text-anchor: middle; opacity: 0.7; }
 .ht { font: 6px var(--f-mono); fill: var(--ink); opacity: 0.6; }
@@ -267,7 +276,7 @@ something with: more than one area, a pot door, stairs, or a warning. The other 
 block or statue standing in a doorway - never a plain wall. "Hookshot anything" seeds also count every wall.</p>
 <p>Ledges: Link jumps down only where a ledge tile (wall) stands between a higher floor and one at least a full
 step lower, as in Face Shrine 04D. A raised edge with no ledge tile (Tail Cave 05E's platform) is a wall. Those
-drops show as "jump down (one way)". Mark a room Wrong if one is listed where the game has no jump spot, or one is
+drops show as "jump down (one way)" and as a pink arrow on the ledge tile in the map. Mark a room Wrong if one is listed where the game has no jump spot, or one is
 missing.</p>
 <p>Check each map against the game. Room names are the vanilla cell (Face Shrine 04D is the room north of 05D's keyhole
 block). Numbers in a tile are its floor height where it differs from 0.</p>
@@ -280,6 +289,7 @@ block). Numbers in a tile are its floor height where it differs from 0.</p>
 <span><i class="sw" style="background:var(--water)"></i>deep water</span>
 <span><i class="sw" style="border:2.5px solid var(--door)"></i>doorway</span>
 <span><i class="sw" style="background:var(--stair);border-radius:50%"></i>stairs</span>
+<span><b style="color:var(--ledge)">→</b> ledge Link can jump down (arrow = the way he drops)</span>
 <span><i class="sw" style="border:2px dashed var(--ink);border-radius:50%"></i>hookshot target (chest, pot, block, statue, hook post)</span>
 <span>Accent border: room with more than one area</span>
 </div>
