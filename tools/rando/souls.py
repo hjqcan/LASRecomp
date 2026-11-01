@@ -170,8 +170,8 @@ def vanilla_gate(cat, romfs, logic_defs, levels, extra_locations=None):
     for lv in levels:
         layout = {k.rsplit('_', 1)[1]: k for k in cat if k.startswith(lv + '_')}
         edges, _ = room_logic.level_graph(cat, romfs, lv, layout, [], dungeon_gen.openings)
-        start = dungeon_gen.ENTRANCES[lv].rsplit('_', 1)[1]
-        terms = room_logic.reach_terms(edges, start, room_logic.LEVELS[lv][1])
+        start = room_logic.entrance_node(cat, romfs, lv, layout)
+        terms = room_logic.cell_terms(room_logic.reach_terms(edges, start, room_logic.LEVELS[lv][1]))
         gates = set().union(*room_logic.EXIT_REQ.values()) if room_logic.EXIT_REQ else set()
         need = {}
         for cell, ts in terms.items():
