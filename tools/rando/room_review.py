@@ -104,7 +104,13 @@ def room_card(romfs, cat, room, stairs, inward):
             drows.append(f'<li><b>{side}</b> {where}: {html.escape(what)}'
                          + (f' <span class="to">into {", ".join(nm[a] for a in sorted(ar))}</span>' if n > 1 else '')
                          + '</li>')
-    mrows = [f'<li>{nm[a]} → {nm[b]}: {html.escape(req_text(alts))}</li>' for a, b, alts in moves]
+    pairs = {(a, b) for a, b, _ in moves}
+
+    def move_text(a, b, alts):
+        if alts == [frozenset()] and (b, a) not in pairs:  # (one way, free: off a ledge or a doorway's step)
+            return 'jump down (one way)'
+        return req_text(alts)
+    mrows = [f'<li>{nm[a]} → {nm[b]}: {html.escape(move_text(a, b, alts))}</li>' for a, b, alts in moves]
     if n > 1:
         reached = {b for _, b, _ in moves} | {a for a in range(n) if any(a in rl.doorway_areas(romfs, room, s, sl)
                                                                           for s, lst in dungeon_gen.openings(cat, room).items()
@@ -259,6 +265,10 @@ save as you go and I read them straight from this page. "Worth a look" (the defa
 something with: more than one area, a pot door, stairs, or a warning. The other rooms are one open floor.</p>
 <p>Hookshot: it latches only onto the dashed-ring objects (chests, pots, blocks, statues, hook posts) and a
 block or statue standing in a doorway - never a plain wall. "Hookshot anything" seeds also count every wall.</p>
+<p>Ledges: Link jumps down only where a ledge tile (wall) stands between a higher floor and one at least a full
+step lower, as in Face Shrine 04D. A raised edge with no ledge tile (Tail Cave 05E's platform) is a wall. Those
+drops show as "jump down (one way)". Mark a room Wrong if one is listed where the game has no jump spot, or one is
+missing.</p>
 <p>Check each map against the game. Room names are the vanilla cell (Face Shrine 04D is the room north of 05D's keyhole
 block). Numbers in a tile are its floor height where it differs from 0.</p>
 </header>
