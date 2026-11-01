@@ -29,6 +29,12 @@ DOOR_WORDS = {'lock': 'locked door', 'bossdoor': 'Nightmare Key door', 'shutter'
               'potdoor': 'pot door', 'oneway': 'one-way door', 'blocked:water': 'water', 'blocked:crystal': 'crystal',
               'blocked:block': 'block', 'blocked:statue': 'statue', 'blocked:chest': 'chest'}
 T = 22  # px per tile
+# the reviewer's verdict on one room (or one dungeon's stairs list); saved by the page script to db reviews/<id>
+FEEDBACK = ('<div class="fb"><div class="verdict" role="group" aria-label="Verdict">'
+            '<button type="button" data-v="ok">Right</button><button type="button" data-v="wrong">Wrong</button>'
+            '<button type="button" data-v="unsure">Unsure</button></div>'
+            '<textarea rows="2" placeholder="What is actually in this room? (optional)"></textarea>'
+            '<span class="saved" aria-live="polite"></span></div>')
 
 
 def req_text(alts):
@@ -104,14 +110,17 @@ def room_card(romfs, cat, room, stairs, inward):
                                                                         for x, z, _ in stairs)]
         if lone:
             flags.append(f'area {", ".join(lone)}: no doorway, stairs or crossing reaches it')
+    look = n > 1 or flags or any('potdoor' in rl.own_doors(cat, room, sd, sl)
+                                 for sd, lst in dungeon_gen.openings(cat, room).items() for sl, _, _ in lst) or stairs
     unit = cat.get(room, {}).get('unit', [room])
     utext = (' · part of ' + ', '.join(u.rsplit('_', 1)[1] for u in unit)) if len(unit) > 1 else ''
-    return (f'<article class="room{" multi" if n > 1 else ""}" id="{html.escape(room)}">'
+    return (f'<article class="room{" multi" if n > 1 else ""}" id="{html.escape(room)}" data-room="{html.escape(room)}"'
+            f' data-look="{1 if look else 0}" data-flag="{1 if flags else 0}">'
             f'<header><h3>{cell}</h3><span class="meta">{n} area{"s" if n != 1 else ""}{utext}</span></header>'
             + ''.join(svg) +
             ('<ul class="flags">' + ''.join(f'<li>{html.escape(f)}</li>' for f in flags) + '</ul>' if flags else '') +
             '<div class="cols"><div><h4>Doorways</h4><ul>' + (''.join(drows) or '<li>none</li>') + '</ul></div>'
-            '<div><h4>Crossings</h4><ul>' + (''.join(mrows) or '<li>none</li>') + '</ul></div></div></article>')
+            '<div><h4>Crossings</h4><ul>' + (''.join(mrows) or '<li>none</li>') + '</ul></div></div>' + FEEDBACK + '</article>')
 
 
 def main():
@@ -137,9 +146,10 @@ def main():
         multi += sum(1 for r in rooms_ if rl.room_areas(romfs, r)[1] > 1)
         key = lv.replace('Lv', 'd').lower()
         nav.append(f'<a href="#{key}">{NAMES.get(lv, lv)}</a>')
-        sections.append(f'<section id="{key}"><h2>{NAMES.get(lv, lv)}</h2>'
-                        f'<details class="links"><summary>Stairs ({len(links)} one-way hops)</summary><ul>'
-                        + ''.join(sorted(set(links))) + '</ul></details>'
+        sections.append(f'<section id="{key}"><h2>{NAMES.get(lv, lv)} <span class="prog"></span></h2>'
+                        f'<div class="room stairs" data-room="stairs-{lv}" data-look="1" data-flag="0">'
+                        f'<h4>Stairs and passages ({len(links)} one-way hops)</h4><ul class="slinks">'
+                        + ''.join(sorted(set(links))) + '</ul>' + FEEDBACK + '</div>'
                         f'<div class="grid">{"".join(cards)}</div></section>')
     page = TEMPLATE.replace('{{NAV}}', ''.join(nav)).replace('{{SECTIONS}}', ''.join(sections)) \
         .replace('{{TOTAL}}', str(total)).replace('{{MULTI}}', str(multi))
@@ -155,19 +165,19 @@ TEMPLATE = '''<title>Dungeon Room Review</title>
 /* layout: a field manual - one dense card per room, map first, then what the logic reads from it */
 :root {
   --bg: #f3f4f1; --paper: #ffffff; --ink: #1d2320; --muted: #5d6762; --line: #d5dad6; --accent: #2f6f5e;
-  --wall: #8a918d; --pit: #2b2b2b; --lava: #d4572a; --water: #3f86c9; --door: #f1c232; --stair: #7c4dbd;
+  --wall: #8a918d; --pit: #2b2b2b; --lava: #d4572a; --water: #3f86c9; --door: #f1c232; --stair: #7c4dbd; --ok: #2f7a4a; --on: #ffffff;
   --a0: #cfe6d8; --a1: #f3d9b1; --a2: #cbd8f0; --a3: #efc6d3; --a4: #e2e6b4; --a5: #c9e8ea; --a6: #e0cff0; --a7: #f0e0c8;
   --f-body: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --bg: #151917; --paper: #1e2421; --ink: #e4e9e6; --muted: #9aa49f; --line: #333c37; --accent: #7cc4ad;
-  --wall: #4e5551; --pit: #050505; --lava: #e0703f; --water: #4d93d6; --door: #e6b520; --stair: #a77ee6;
+  --wall: #4e5551; --pit: #050505; --lava: #e0703f; --water: #4d93d6; --door: #e6b520; --stair: #a77ee6; --ok: #3f9a62; --on: #0d110f;
   --a0: #2f4a3c; --a1: #5a4527; --a2: #2f3f5e; --a3: #5a3343; --a4: #4c5127; --a5: #285257; --a6: #45345a; --a7: #5a4a33;
   color-scheme: dark } }
 :root[data-theme="dark"] {
   --bg: #151917; --paper: #1e2421; --ink: #e4e9e6; --muted: #9aa49f; --line: #333c37; --accent: #7cc4ad;
-  --wall: #4e5551; --pit: #050505; --lava: #e0703f; --water: #4d93d6; --door: #e6b520; --stair: #a77ee6;
+  --wall: #4e5551; --pit: #050505; --lava: #e0703f; --water: #4d93d6; --door: #e6b520; --stair: #a77ee6; --ok: #3f9a62; --on: #0d110f;
   --a0: #2f4a3c; --a1: #5a4527; --a2: #2f3f5e; --a3: #5a3343; --a4: #4c5127; --a5: #285257; --a6: #45345a; --a7: #5a4a33;
   color-scheme: dark }
 body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 14px; line-height: 1.45;
@@ -187,8 +197,27 @@ nav a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); o
 .sw { width: 14px; height: 14px; border-radius: 2px; display: inline-block; }
 section { display: grid; gap: 14px; }
 h2 { font-size: 1.4rem; margin: 0; border-bottom: 2px solid var(--ink); padding-bottom: 4px; }
-.links summary { cursor: pointer; color: var(--muted); }
-.links ul { columns: 3 220px; font-family: var(--f-mono); font-size: 0.8rem; }
+.slinks { columns: 3 220px; font-family: var(--f-mono); font-size: 0.8rem; }
+.room.stairs { border-color: var(--stair); }
+.fb { display: grid; gap: 6px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.verdict { display: flex; gap: 6px; }
+.verdict button { flex: 1; font: 600 0.8rem var(--f-body); padding: 6px 4px; border-radius: 3px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.verdict button:focus-visible, .fb textarea:focus-visible, .bar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.verdict button[aria-pressed="true"][data-v="ok"] { background: var(--ok); border-color: var(--ok); color: var(--on); }
+.verdict button[aria-pressed="true"][data-v="wrong"] { background: var(--lava); border-color: var(--lava); color: var(--on); }
+.verdict button[aria-pressed="true"][data-v="unsure"] { background: var(--door); border-color: var(--door); color: #1d2320; }
+.fb textarea { font: 0.82rem var(--f-body); background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 3px; padding: 5px 6px; resize: vertical; width: 100%; box-sizing: border-box; }
+.saved { font-size: 0.72rem; color: var(--muted); min-height: 1em; }
+.room[data-v="ok"] { border-color: var(--ok); } .room[data-v="wrong"] { border-color: var(--lava); border-width: 2px; }
+.room[data-v="unsure"] { border-color: var(--door); }
+.bar { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 0.85rem; }
+.bar button { font: 600 0.8rem var(--f-body); padding: 5px 10px; border-radius: 99px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--paper); color: var(--ink); }
+.bar button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.status { color: var(--muted); }
+.prog { font: 400 0.85rem var(--f-mono); color: var(--muted); }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .room { background: var(--paper); border: 1px solid var(--line); border-radius: 4px; padding: 10px; display: grid;
   gap: 8px; align-content: start; min-width: 0; }
@@ -221,6 +250,9 @@ h4 { margin: 0 0 2px; font-size: 0.72rem; text-transform: uppercase; letter-spac
 <p>Every dungeon grid room as the room-shuffle logic reads it from the game's tile data: {{TOTAL}} rooms, {{MULTI}} of
 them split into more than one area. Each letter is an area Link walks around in freely. Crossings say what gets him
 from one area to another; anything not listed is treated as impossible. Doorways show which area they open into.</p>
+<p>Mark each room <b>Right</b>, <b>Wrong</b> or <b>Unsure</b>, and say what's really there in the box. Answers
+save as you go and I read them straight from this page. "Worth a look" (the default) shows the rooms the logic does
+something with: more than one area, a pot door, stairs, or a warning. The other rooms are one open floor.</p>
 <p>Check each map against the game. Room names are the vanilla cell (Face Shrine 04D is the room north of 05D's keyhole
 block). Numbers in a tile are its floor height where it differs from 0.</p>
 </header>
@@ -235,8 +267,110 @@ block). Numbers in a tile are its floor height where it differs from 0.</p>
 <span>Accent border: room with more than one area</span>
 </div>
 <nav>{{NAV}}</nav>
+<div class="bar" role="group" aria-label="Show">
+<span>Show:</span>
+<button type="button" data-f="look" aria-pressed="true">Worth a look</button>
+<button type="button" data-f="todo" aria-pressed="false">Not reviewed</button>
+<button type="button" data-f="wrong" aria-pressed="false">Marked wrong / unsure</button>
+<button type="button" data-f="all" aria-pressed="false">All rooms</button>
+<span class="status" id="status">Connecting to saved reviews…</span>
+</div>
 {{SECTIONS}}
 </div>
+<script>
+(() => {
+  const cards = [...document.querySelectorAll('[data-room]')];
+  const byId = new Map(cards.map(c => [c.dataset.room, c]));
+  const state = {};  // room -> {v, note}
+  let filter = 'look', db = null;
+  const status = document.getElementById('status');
+  let pref = null;
+  try { pref = localStorage.getItem('rr-filter'); } catch (e) {}
+  if (pref) filter = pref;
+
+  function paint(card) {
+    const st = state[card.dataset.room] || {};
+    if (st.v) card.dataset.v = st.v; else delete card.dataset.v;
+    card.querySelectorAll('.verdict button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === st.v)));
+    const ta = card.querySelector('textarea');
+    if (document.activeElement !== ta) ta.value = st.note || '';
+  }
+  function apply() {
+    document.querySelectorAll('.bar button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.f === filter)));
+    for (const c of cards) {
+      const st = state[c.dataset.room] || {};
+      const show = filter === 'all' || (filter === 'look' && c.dataset.look === '1')
+        || (filter === 'todo' && !st.v) || (filter === 'wrong' && (st.v === 'wrong' || st.v === 'unsure'));
+      c.hidden = !show;
+    }
+    document.querySelectorAll('section').forEach(sec => {
+      const cs = [...sec.querySelectorAll('[data-room]')];
+      const done = cs.filter(c => (state[c.dataset.room] || {}).v).length;
+      sec.querySelector('.prog').textContent = done + ' / ' + cs.length + ' reviewed';
+      sec.hidden = !cs.some(c => !c.hidden);
+    });
+    const all = cards.length, done = cards.filter(c => (state[c.dataset.room] || {}).v).length;
+    const wrong = cards.filter(c => (state[c.dataset.room] || {}).v === 'wrong').length;
+    if (db) status.textContent = done + ' of ' + all + ' reviewed · ' + wrong + ' wrong';
+  }
+  document.querySelector('.bar').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    filter = b.dataset.f;
+    try { localStorage.setItem('rr-filter', filter); } catch (err) {}
+    apply();
+  });
+
+  const queue = new Map(), busy = new Set();
+  async function save(room) {
+    const card = byId.get(room), msg = card.querySelector('.saved');
+    if (!db) { msg.textContent = 'Not saved: this view can\'t reach the review store.'; return; }
+    if (busy.has(room)) { queue.set(room, true); return; }
+    busy.add(room);
+    const st = state[room] || {};
+    try {
+      if (!st.v && !st.note) await db.doc('reviews/' + room).delete();
+      else await db.doc('reviews/' + room).set({ v: st.v || '', note: st.note || '', at: new Date().toISOString() });
+      msg.textContent = 'Saved';
+    } catch (err) { msg.textContent = 'Not saved: ' + (err && err.code || 'error'); }
+    busy.delete(room);
+    if (queue.delete(room)) save(room);
+  }
+  const timers = {};
+  for (const c of cards) {
+    const room = c.dataset.room;
+    c.querySelector('.verdict').addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b) return;
+      const st = state[room] = { ...(state[room] || {}) };
+      st.v = st.v === b.dataset.v ? '' : b.dataset.v;
+      paint(c); apply(); save(room);
+    });
+    const ta = c.querySelector('textarea');
+    ta.addEventListener('input', () => {
+      state[room] = { ...(state[room] || {}), note: ta.value };
+      c.querySelector('.saved').textContent = '…';
+      clearTimeout(timers[room]); timers[room] = setTimeout(() => save(room), 800);
+    });
+    ta.addEventListener('blur', () => { if (timers[room]) { clearTimeout(timers[room]); timers[room] = null; save(room); } });
+  }
+  apply();
+
+  const tmo = setTimeout(() => { if (!db) status.textContent = 'Saved reviews unavailable here: open the page on claude.ai, signed in.'; }, 10000);
+  (window.claude && claude.use ? claude.use('db') : Promise.resolve(null)).then(d => {
+    if (!d) { clearTimeout(tmo); status.textContent = 'Saved reviews unavailable here: open the page on claude.ai, signed in.'; return; }
+    db = d;
+    db.collection('reviews').onSnapshot(snap => {
+      clearTimeout(tmo);
+      for (const ch of snap.docChanges()) {
+        const id = ch.doc.id;
+        if (ch.type === 'removed') delete state[id];
+        else { const x = ch.doc.data() || {}; state[id] = { v: x.v || '', note: x.note || '' }; }
+        const card = byId.get(id); if (card) paint(card);
+      }
+      apply();
+    }, err => { clearTimeout(tmo); status.textContent = 'Could not load saved reviews (' + (err && err.code || 'error') + ').'; });
+  });
+})();
+</script>
 '''
 
 if __name__ == '__main__':
