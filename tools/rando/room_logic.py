@@ -619,11 +619,18 @@ JUMP = 'feather | (rooster & bad-pets)'
 LONG_JUMP = '(feather & boots) | (rooster & bad-pets)'
 FEATHER = [frozenset({'rs-jump'})]
 JUMPS = {1: FEATHER, 2: [frozenset({'rs-long-jump'})]}
-HOOK_REACH = 8  # tiles (hookshot_logic.py: 12 units) - pulled across pits / water to something solid behind the landing
-PASSAGE = FEATHER  # side-view passages under the stairs (Face Shrine 05D <-> 04F: a gap only the feather crosses)
+HOOK_REACH = 8  # tiles (hookshot_logic.py: 12 units) - pulled across pits / water to a target behind the landing
+# what the hookshot latches onto in standard play: objects, never a plain wall (runtime/hle/hookshot.c: a surface
+# without the target bit clinks off). Chests, pots, blocks, statues. With "hookshot anything" (HOOK_ANYTHING, set by
+# las_headless from the seed's settings) any solid tile.
+HOOK_TARGETS = ('ObjTreasureBox', 'ObjDungeonPot', 'ObjSquareBlock', 'ObjDungeonSt', 'ObjDungeonOw', 'ObjHookBridge')
+HOOK_ANYTHING = False
+PASSAGE = [frozenset({'feather'})]  # side-view passages under the stairs (Face Shrine 05D <-> 04F: a gap only the
+# feather crosses - the Rooster doesn't come into side-view rooms)
 FLOOR, SOLID, PIT, WATER = 'floor', 'solid', 'pit', 'water'
 _tiles_cache = {}
 _hook_tiles = {}  # room -> tiles with collision (room_tiles)
+hook_targets = {}  # room -> tiles of the objects the hookshot latches onto (room_areas; the review page draws them)
 _areas_cache = {}
 
 
@@ -701,7 +708,23 @@ def room_areas(romfs, room):
     if g is None:
         _areas_cache[room] = ({(r, c): 0 for r in range(8) for c in range(10)}, 1, [])
         return _areas_cache[room]
-    hook = set(_hook_tiles.get(room, ()))
+    solid = set(_hook_tiles.get(room, ()))  # every solid tile: what the shot stops at
+    hook = set()  # the ones it latches onto
+    import rooms as _rooms
+    from RandomizerCore.Tools import leb
+    try:
+        ox, oz = _rooms.cell_origin(room)
+        acts = leb.Room(open(_rooms._leb_path(romfs, room), 'rb').read()).actors
+    except (OSError, ValueError, KeyError):
+        acts = []
+    for x in acts:
+        if x.name.decode(errors='ignore').startswith(HOOK_TARGETS):
+            t = (int((x.posZ - oz) // 1.5), int((x.posX - ox) // 1.5))
+            hook.add(t)
+            solid.add(t)
+    hook_targets[room] = set(hook)
+    if HOOK_ANYTHING:
+        hook |= solid
     cat = _catalog()
     blockers = [(d[0], d[3]) for d in cat.get(room, {}).get('doors', [])
                 if len(d) > 3 and d[2].startswith('blocked:') and not d[2].endswith('(mirror)')]
@@ -715,6 +738,7 @@ def room_areas(romfs, room):
     for side, slot in blockers:  # a block / statue standing in a doorway: just off the grid, the hookshot catches it
         for t in _doorway_tiles(side, slot)[0]:
             hook.add((t[0] + STEP[side][1], t[1] + STEP[side][0]))
+            solid.add((t[0] + STEP[side][1], t[1] + STEP[side][0]))
     area = {}
     n = 0
     for t, (kind, _) in sorted(g.items()):
@@ -750,8 +774,9 @@ def room_areas(romfs, room):
             if u in area and area[u] != a:
                 if WATER in (kind, k2):  # into the water: swimming (out of it: free)
                     add(a, area[u], [frozenset({'flippers'})] if k2 == WATER else [frozenset()])
-                elif ht is not None and h2 is not None and ht > h2:  # a step down, no wall: drop (never back up)
-                    add(a, area[u], [frozenset()])
+                elif ht is not None and h2 is not None and ht > h2 and (r in (0, 7) or c in (0, 9)):
+                    add(a, area[u], [frozenset()])  # off a doorway tile at the room's edge, down into it (the
+                    # entrance's step in) - inside the room a raised edge is a wall (Tail Cave 05E's platform)
             if kind != FLOOR or ht is None:
                 continue
             gap = 0  # a jump: 1 or 2 tiles of pit / lava, landing on floor no higher
@@ -761,17 +786,20 @@ def room_areas(romfs, room):
             land = (r + dr * (gap + 1), c + dc * (gap + 1))
             if gap in JUMPS and land in area and g[land][0] == FLOOR and (g[land][1] or 0) <= ht + 0.3:
                 add(a, area[land], JUMPS[gap])
-            # the hookshot: it flies on (over pits, water, floor) to the first solid thing within reach and pulls Link
-            # to the tile before it - a crossing when that's floor of another area past a pit / water
+            # the hookshot: it flies on (over pits, water, floor) to the first solid thing within reach; a target pulls
+            # Link to the tile before it - a crossing when that's floor of another area past a pit / water
             over, i = False, 1
-            while i <= HOOK_REACH and (r + dr * i, c + dc * i) not in hook:
+            while i <= HOOK_REACH and (r + dr * i, c + dc * i) not in solid:
                 t = (r + dr * i, c + dc * i)
-                if t not in g and t not in hook:
+                if t not in g:
                     break
                 over |= t in g and g[t][0] in (PIT, WATER)
                 i += 1
             land = (r + dr * (i - 1), c + dc * (i - 1))
-            if over and i <= HOOK_REACH and (r + dr * i, c + dc * i) in hook and land in area and \
+            hit = (r + dr * i, c + dc * i)
+            if hit in g and g[hit][0] == FLOOR:  # an object standing on floor (Catfish's Maw 02E's hook post): Link
+                land = hit  # is pulled up against it, onto its tile
+            if over and i <= HOOK_REACH and hit in hook and land in area and \
                     g[land][0] == FLOOR:
                 add(a, area[land], [frozenset({'hookshot'})])
             if k2 == SOLID:  # a ledge: one tile of wall, then floor at least LEDGE lower

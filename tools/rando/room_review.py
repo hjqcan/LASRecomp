@@ -77,6 +77,9 @@ def room_card(romfs, cat, room, stairs, inward):
             tiles, _ = rl._doorway_tiles(side, slot)
             for r, c in tiles:
                 svg.append(f'<rect x="{c * T + 3}" y="{r * T + 3}" width="{T - 6}" height="{T - 6}" class="door"/>')
+    for r, c in sorted(rl.hook_targets.get(room, ())):
+        if 0 <= r < 8 and 0 <= c < 10:
+            svg.append(f'<circle cx="{c * T + T / 2}" cy="{r * T + T / 2}" r="{T * 0.28}" class="hook"/>')
     for x, z, kind in stairs:
         import rooms as _rooms
         ox, oz = _rooms.cell_origin(room)
@@ -238,6 +241,7 @@ h4 { margin: 0 0 2px; font-size: 0.72rem; text-transform: uppercase; letter-spac
 .a4 { fill: var(--a4); } .a5 { fill: var(--a5); } .a6 { fill: var(--a6); } .a7 { fill: var(--a7); }
 .door { fill: none; stroke: var(--door); stroke-width: 2.5; }
 .stair { fill: var(--stair); }
+.hook { fill: none; stroke: var(--ink); stroke-width: 2; stroke-dasharray: 3 2; }
 .al { font: 600 10px var(--f-mono); fill: var(--ink); text-anchor: middle; opacity: 0.7; }
 .ht { font: 6px var(--f-mono); fill: var(--ink); opacity: 0.6; }
 .sl { font: 600 9px var(--f-mono); fill: #fff; text-anchor: middle; }
@@ -253,6 +257,8 @@ from one area to another; anything not listed is treated as impossible. Doorways
 <p>Mark each room <b>Right</b>, <b>Wrong</b> or <b>Unsure</b>, and say what's really there in the box. Answers
 save as you go and I read them straight from this page. "Worth a look" (the default) shows the rooms the logic does
 something with: more than one area, a pot door, stairs, or a warning. The other rooms are one open floor.</p>
+<p>Hookshot: it latches only onto the dashed-ring objects (chests, pots, blocks, statues, hook posts) and a
+block or statue standing in a doorway - never a plain wall. "Hookshot anything" seeds also count every wall.</p>
 <p>Check each map against the game. Room names are the vanilla cell (Face Shrine 04D is the room north of 05D's keyhole
 block). Numbers in a tile are its floor height where it differs from 0.</p>
 </header>
@@ -264,6 +270,7 @@ block). Numbers in a tile are its floor height where it differs from 0.</p>
 <span><i class="sw" style="background:var(--water)"></i>deep water</span>
 <span><i class="sw" style="border:2.5px solid var(--door)"></i>doorway</span>
 <span><i class="sw" style="background:var(--stair);border-radius:50%"></i>stairs</span>
+<span><i class="sw" style="border:2px dashed var(--ink);border-radius:50%"></i>hookshot target (chest, pot, block, statue, hook post)</span>
 <span>Accent border: room with more than one area</span>
 </div>
 <nav>{{NAV}}</nav>

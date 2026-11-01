@@ -67,6 +67,10 @@ def main():
             fail(f'{fs}: climbs from the floor onto the raised strip at {t}')
     if moves_between(romfs, fs, (1, 1), (3, 1)) != [frozenset()]:
         fail(f'{fs}: the drop off the north-west strip is missing')
+    # Tail Cave 05E: the raised platform's edge is a wall - over the pit with the feather / Rooster, not a walk off
+    tc = 'Lv01TailCave_05E'
+    if set(moves_between(romfs, tc, (2, 2), (2, 6)) or ()) != set(feather):
+        fail(f'{tc}: platform -> east floor: {moves_between(romfs, tc, (2, 2), (2, 6))}, wanted the feather / Rooster')
     # pot doors: something thrown at them - an elephant needs the level 2 bracelet; bombs never do it
     if rl.throw_req(romfs, fs) != frozenset({'bracelet:2'}):
         fail(f'{fs}: pot door from this room: {rl.throw_req(romfs, fs)}, wanted bracelet:2')
@@ -75,14 +79,32 @@ def main():
     if rl.door_terms(['potdoor'], 6, throw=None) is not None:
         fail('a pot door with nothing to throw is passable')
 
+    # the hookshot: onto objects only (chests, pots, blocks, statues, hook posts), never a plain wall - unless the
+    # seed has "hookshot anything"
+    cm = 'Lv05CatfishsMaw_02E'
+    if moves_between(romfs, cm, (1, 7), (6, 3)) != [frozenset({'hookshot'})]:
+        fail(f'{cm}: the stairs ledge -> the chest floor by the hook post: {moves_between(romfs, cm, (1, 7), (6, 3))}')
+    bg = 'Lv02BottleGrotto_03C'
+    area, n, moves = rl.room_areas(romfs, bg)
+    if any(frozenset({'hookshot'}) in alts for _, _, alts in moves):
+        fail(f'{bg}: a hookshot crossing onto a plain wall')
+    rl.HOOK_ANYTHING = True
+    rl._areas_cache.clear()
+    area, n, moves = rl.room_areas(romfs, bg)
+    if not any(frozenset({'hookshot'}) in alts for _, _, alts in moves):
+        fail(f'{bg}: hookshot anything: no crossing onto the wall')
+    rl.HOOK_ANYTHING = False
+    rl._areas_cache.clear()
+
     # side-view passages: by where their rooms sit (Face Shrine: three passages, not one), each needing the feather
+    # (the Rooster doesn't come into side-view rooms)
     links = set(rl.stairs_links(romfs, 'Lv06FaceShrine', cat))
     want = {('Lv06FaceShrine_04F', 'Lv06FaceShrine_05D'), ('Lv06FaceShrine_05C', 'Lv06FaceShrine_08B'),
             ('Lv06FaceShrine_04B', 'Lv06FaceShrine_04H'), ('Lv06FaceShrine_04F', 'Lv06FaceShrine_06F')}
     if links != want:
         fail(f'Face Shrine stairs: {sorted(links)}')
     for a, _, b, _, alts in rl.stairs_ports(romfs, 'Lv06FaceShrine', cat):
-        if {a, b} != {'Lv06FaceShrine_04F', 'Lv06FaceShrine_06F'} and set(alts) != set(rl.PASSAGE):
+        if {a, b} != {'Lv06FaceShrine_04F', 'Lv06FaceShrine_06F'} and set(alts) != {frozenset({'feather'})}:
             fail(f'Face Shrine passage {a} -> {b}: {alts}')
 
     # the vanilla Face Shrine graph: from the entrance with what the RapidBowWow958 player had (no feather, no
@@ -97,7 +119,7 @@ def main():
     cells = {rl.cell_of(x) for x in reach(edges, start, frozenset(kit | keys))}
     if '04F' in cells and not {'05F', '06F'} & cells:
         fail('Face Shrine: 04F reached from 05D without the feather')
-    with_feather = {rl.cell_of(x) for x in reach(edges, start, frozenset(kit | keys | {'rs-jump'}))}
+    with_feather = {rl.cell_of(x) for x in reach(edges, start, frozenset(kit | keys | {'rs-jump', 'feather'}))}
     if not cells < with_feather:
         fail('Face Shrine: the feather reaches nothing more')
 
