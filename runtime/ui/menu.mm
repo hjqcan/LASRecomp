@@ -613,8 +613,8 @@ static void tab_cosmetics(void) {
                 g_settings.sand.pick == preset[i][2])
                 cur = i;
         int v = cur;
-        if (opt_choice("Season", &v, names, 5, 0, "Sets the leaves, grass and sand colors below.") && v != cur) {
-            if (v == 4) v = cur == 0 ? 3 : 0;  // (Mixed is never chosen: past the ends, back round)
+        // (Mixed is never chosen: it's there only while the colours match no season; Right stops at Cherry blossom)
+        if (opt_choice("Season", &v, names, cur == 4 ? 5 : 4, 0, "Sets the leaves, grass and sand colors below.") && v != cur) {
             g_settings.leaves.pick = preset[v][0];
             g_settings.grass.pick = preset[v][1];
             g_settings.sand.pick = preset[v][2];
