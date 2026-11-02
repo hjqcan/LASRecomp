@@ -63,7 +63,7 @@ static std::atomic<bool> g_text_busy{false};  // a text field / the on-screen ke
 static std::atomic<bool> g_want_fullscreen_apply{false};
 
 struct QEvent {
-    enum { KEY, ANALOG, MOUSE_POS, MOUSE_BUTTON, WHEEL, TEXT } kind;
+    enum { KEY, ANALOG, MOUSE_POS, MOUSE_BUTTON, WHEEL, TEXT, RELEASE_ALL } kind;
     ImGuiKey key;
     bool down;
     float value, x, y;
@@ -94,6 +94,9 @@ static void set_open(bool open) {
     menu_sfx_play(open ? MENU_SFX_OPEN : MENU_SFX_CLOSE);
     input_reset();  // nothing held while the menu had focus leaks into the game
     bind_capture_cancel();
+    // nor the other way round: the releases of what was held when it closed never reach the menu (it isn't capturing
+    // then), so it starts with nothing held - else the cursor kept scrolling, or a press went missing, on the next open
+    { QEvent q = {}; q.kind = QEvent::RELEASE_ALL; push(q); }
     if (open) {
         save_editor_on_open();
         static bool opened;  // the controller's cursor: the first tab (Controls) the first time this session, later the
@@ -464,6 +467,9 @@ static void drain_events(ImGuiIO &io) {
     std::vector<QEvent> ev;
     ev.swap(q_events);
     pthread_mutex_unlock(&q_lock);
+    // a rebind (Controls tab) takes every release while it waits: the confirm press that started it, a stick let go
+    static bool capture_was;
+    if (bind_capture_active(NULL, NULL, NULL) != capture_was) capture_was = !capture_was, ui_pad_release_all(io);
     for (const QEvent &q : ev) {
         switch (q.kind) {
         case QEvent::KEY: io.AddKeyEvent(q.key, q.down); break;
@@ -472,6 +478,7 @@ static void drain_events(ImGuiIO &io) {
         case QEvent::MOUSE_BUTTON: io.AddMouseButtonEvent(q.button, q.down); break;
         case QEvent::WHEEL: io.AddMouseWheelEvent(q.x, q.y); break;
         case QEvent::TEXT: io.AddInputCharactersUTF8(q.text); break;
+        case QEvent::RELEASE_ALL: ui_pad_release_all(io); break;
         }
     }
 }

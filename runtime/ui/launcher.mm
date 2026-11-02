@@ -1678,6 +1678,9 @@ extern "C" void launcher_run(const char *root) {
             page = MAIN;
             g_play_pending = true;
         }
+        // a rebind takes every release while it waits (menu.mm drain_events): nothing held when it starts or ends
+        static bool capture_was;
+        if (bind_capture_active(NULL, NULL, NULL) != capture_was) capture_was = !capture_was, ui_pad_release_all(io);
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             input_cursor_event(&e);  // (pad / key: the cursor hides; ImGui's backend leaves it so, below)

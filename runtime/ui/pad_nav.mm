@@ -1,6 +1,7 @@
 // Controller buttons into our ImGui menus: see pad_nav.h.
 #include "pad_nav.h"
 #include "i18n.h"
+#include "imgui_internal.h"  // (ImGuiKey_Gamepad_BEGIN / END)
 #include <atomic>
 #include "input_bind.h"
 #include "../settings.h"
@@ -35,6 +36,12 @@ ImGuiKey ui_pad_key(SDL_JoystickID which, Uint8 button, bool down) {
     }
     if (down) held[button] = k;
     return k;
+}
+
+void ui_pad_release_all(ImGuiIO &io) {
+    io.ClearEventsQueue();  // (presses / releases not applied yet: from before)
+    io.ClearInputKeys();
+    for (int k = ImGuiKey_Gamepad_BEGIN; k < ImGuiKey_Gamepad_END; k++) io.KeysData[k - ImGuiKey_NamedKey_BEGIN].AnalogValue = 0;
 }
 
 int ui_pad_family(void) { return input_menu_family(g_last_pad.load()) % 3; }

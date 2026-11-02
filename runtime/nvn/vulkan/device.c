@@ -1598,5 +1598,6 @@ int ui_run(void) {
         menu_apply_window_requests(window);
         input_rumble_poll();
         input_led_poll();
+        input_pad_poll();
     }
 }
