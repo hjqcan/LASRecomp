@@ -116,6 +116,12 @@ static int pages_cpu_written(uint64_t addr, uint64_t size, uint32_t since, uint3
 static const char *heap_tracking_reason(void);  // (why the heap has no page write tracking, for the log)
 static bool gmir_on(void);         // (shader global memory as copies: no heap import, issue #483)
 static void gmir_writeback(void);  // (... what the GPU stored, into guest memory)
+#ifdef __linux__
+static bool gmem_mprotect_broken;  // (exec.c guest heap: driver memory that page protection corrupts)
+#endif
+// The page the "is there write tracking?" probes query (a query may protect it): the top of the heap range, which
+// the game's heap never reaches - not HEAP_BASE, where the game's heap allocator keeps its header and lock.
+#define TRACK_PROBE_PAGE (HEAP_BASE + HEAP_MAX - 4096)
 static bool overlap_on(void) {
     static int on = -1;
     if (on < 0) {
@@ -126,8 +132,12 @@ static bool overlap_on(void) {
             LOG("[vk] GPU overlap off: shader global memory goes through copies here\n");
             return on;
         }
-        bool tracked = (!w || atoi(w) != 0) && pages_cpu_written(HEAP_BASE, 4096, 0, &g) >= 0;
+        bool tracked = (!w || atoi(w) != 0) && pages_cpu_written(TRACK_PROBE_PAGE, 4096, 0, &g) >= 0;
         if (e) on = atoi(e) != 0;
+#ifdef __linux__
+        else if (VK_OVERLAP_DEFAULT && !tracked && gmem_mprotect_broken) on = 1;  // (driver memory without page
+                                                                                  //  protection: the hash probe)
+#endif
         else if (VK_OVERLAP_DEFAULT && !tracked) {
             on = 0;
             LOG("[vk] GPU overlap off: no page write tracking on this system (%s); LARECOMP_GPU_OVERLAP=1 forces it on\n",
@@ -3116,7 +3126,7 @@ static bool watch_on(void) {
         const char *e = getenv("LARECOMP_OVERLAP_WATCH");
         uint32_t g;
         on = !e || atoi(e) != 0;
-        if (on && pages_cpu_written(HEAP_BASE, 4096, 0, &g) < 0) {
+        if (on && pages_cpu_written(TRACK_PROBE_PAGE, 4096, 0, &g) < 0) {
             on = 0;
             LOG("[vk] storage write watch off: no page write tracking%s (the hash probe instead)\n", heap_is_userptr() ? " over a userptr heap import" : "");
         } else LOG("[vk] storage write watch %s (compute-bound ranges copied once the OS's page write tracking sees a CPU write; no page protection)\n",
@@ -3743,6 +3753,7 @@ static bool gmem_import(uint64_t size) {
 #ifdef __linux__
 static bool gmem_dmabuf;  // the heap is the driver's memory mapped at HEAP_BASE
 static bool gmem_placed;  // ... by the driver (vkMapMemory2KHR, placed): unmapped through it at a reboot
+static uint32_t gmem_dmabuf_type;  // (its memory type)
 
 // The driver maps `mem` (HEAP_MAX, one allocation) at HEAP_BASE. NULL, or why not; HEAP_BASE is ordinary guest
 // memory again after a failure.
@@ -3789,10 +3800,14 @@ static void heap_unmap_placed(void) {
     gmem_placed = false;
 }
 
-static bool guest_heap_dmabuf(void) {
-    if (gmem_buf || !g_vk.dev || !(g_vk.dmabuf || g_vk.map_placed) || getenv("LARECOMP_VK_NO_GMEM")) return false;
+// Whether the heap is to be the driver's memory (gmir_on asks this before the heap is set up: no copies then)
+static bool heap_dmabuf_wanted(void) {
+    if (!g_vk.dev || !(g_vk.dmabuf || g_vk.map_placed) || getenv("LARECOMP_VK_NO_GMEM")) return false;
     const char *e = getenv("LARECOMP_VK_HEAP_DMABUF");
-    if (e ? !atoi(e) : !strstr(g_vk.props.deviceName, "RADV")) return false;
+    return e ? atoi(e) != 0 : strstr(g_vk.props.deviceName, "RADV") != NULL;
+}
+static bool guest_heap_dmabuf(void) {
+    if (gmem_buf || !heap_dmabuf_wanted()) return false;
     const uint64_t size = HEAP_MAX;
     VkPhysicalDeviceMemoryProperties mp;
     vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
@@ -3813,6 +3828,19 @@ static bool guest_heap_dmabuf(void) {
         LOG("[vk] heap as driver memory: the cached system memory heap (%llu MB) is smaller than the guest heap (%llu MB); "
             "trying it anyway\n", (unsigned long long)(largest >> 20), (unsigned long long)(size >> 20));
         type = largest_type;
+    }
+    // No cached coherent type (Mesa's PanVK on Mali: type 2 is HOST_VISIBLE | HOST_CACHED, not coherent): a cached one
+    // that isn't. heap_note_type then turns on the CPU cache maintenance (DC CVAC / CIVAC around the GPU's use, as for
+    // Arm's driver's host-pointer import). Cached matters: the game's CPU work runs in this memory, and its exclusive
+    // loads / stores (locks, atomics) fault on uncached memory (#483, the uncached heap: SIGBUS on the first ldaxr).
+    if (type < 0 && !largest) {
+        const VkMemoryPropertyFlags want_nc = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        for (uint32_t i = 0; i < mp.memoryTypeCount && type < 0; i++) {
+            if ((mp.memoryTypes[i].propertyFlags & want_nc) != want_nc) continue;
+            uint64_t hs = mp.memoryHeaps[mp.memoryTypes[i].heapIndex].size;
+            if (hs >= size) type = (int)i;
+        }
+        if (type >= 0) LOG("[vk] heap as driver memory: memory type %d, cached but not coherent (CPU cache maintenance)\n", type);
     }
     if (type < 0) {
         if (largest)  // (Steam Deck: a 3072 MB system heap)
@@ -3854,6 +3882,7 @@ static bool guest_heap_dmabuf(void) {
     VkResult r = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
     if (r != VK_SUCCESS) { LOG("[vk] heap as driver memory: allocation failed (%d)\n", r); vkDestroyBuffer(g_vk.dev, buf, NULL); return false; }
     heap_note_type((uint32_t)type);
+    gmem_dmabuf_type = (uint32_t)type;
     const char *why = NULL;
     if (placed) {
         why = vkBindBufferMemory(g_vk.dev, buf, mem, 0) != VK_SUCCESS ? "binding failed" : heap_map_placed(mem);
@@ -3943,6 +3972,9 @@ static const char *heap_tracking_reason(void) {  // (overlap_on: why there is no
 // The whole heap as one userptr import (not chunks) on AMD: each submission has amdgpu check all of its pages
 static bool heap_whole_userptr(void) { return gmem_userptr && !gc_lazy && g_vk.props.vendorID == 0x1002; }
 
+#ifdef __linux__
+#endif
+
 void backend_guest_heap_prepare(void) {
     gmem_userptr = false;
 #ifdef __linux__
@@ -3955,6 +3987,34 @@ void backend_guest_heap_prepare(void) {
     // refuses a range without userfaultfd write protection), so it's off there too
     if (gmem_dmabuf) {
         plat_write_tracking_off("the guest heap is driver memory");
+        // Soft tracking protects single pages: mprotect splits the mapping, and a split drops a huge page entry of a
+        // driver mapping, which then faults in again through the driver's handler - which on Linux 5.12+ GEM shmem
+        // drivers (drm_gem_shmem_fault: Panthor / PanVK) maps it from the wrong place in the buffer, counting the page
+        // from the split part's start: the game's data moved. So the heap never goes through that path: no huge pages,
+        // and every page mapped now, while nothing has touched it yet; mprotect then only changes the entries'
+        // permissions (and nothing here drops heap page entries later). About 2.5 s and 6.5 MB of page tables for
+        // 3.3 GB. LARECOMP_VK_HEAP_PREFAULT=0: not done.
+        const char *st = getenv("LARECOMP_SOFT_WRITE_TRACKING"), *pf = getenv("LARECOMP_VK_HEAP_PREFAULT");
+        if (!(st && !atoi(st)) && !(pf && !atoi(pf))) {
+            uint64_t t0 = SDL_GetTicksNS();
+            int r = madvise((void *)(uintptr_t)HEAP_BASE, HEAP_MAX, MADV_NOHUGEPAGE);
+            // Mapped without leaving the data in the CPU's caches: a line read now would stay stale once the GPU writes
+            // there (the memory is not coherent, and only the ranges known to be the GPU's are invalidated later).
+            // MADV_POPULATE_READ maps without reading; where the driver mapping refuses it (VM_PFNMAP), each page is
+            // touched and its line cleaned and invalidated at once.
+#ifndef MADV_POPULATE_READ
+#define MADV_POPULATE_READ 22
+#endif
+            bool populated = !r && madvise((void *)(uintptr_t)HEAP_BASE, HEAP_MAX, MADV_POPULATE_READ) == 0;
+            if (!r && !populated) {
+                volatile const uint8_t *h = (volatile const uint8_t *)(uintptr_t)HEAP_BASE;
+                for (uint64_t o = 0; o < HEAP_MAX; o += 4096) { (void)h[o]; plat_cache_op(HEAP_BASE + o, 64, true); }
+            }
+            LOG("[vk] heap as driver memory: every page mapped for soft tracking (%s), no huge pages%s (%llu ms)\n",
+                populated ? "MADV_POPULATE_READ" : "touched, its cache line cleaned and invalidated",
+                r ? " - madvise failed: soft tracking off" : "", (unsigned long long)((SDL_GetTicksNS() - t0) / 1000000));
+            if (r) { gmem_mprotect_broken = true; return; }
+        }
         plat_soft_write_tracking(HEAP_BASE, HEAP_BASE + HEAP_MAX);  // (no userptr: a protection change is the CPU's alone)
         return;
     }
@@ -4702,6 +4762,13 @@ static bool gmir_on(void) {
         if (!g_vk.dev) return false;  // (not decided before the device)
         const char *e = getenv("LARECOMP_VK_GMEM_MIRROR");
         on = !g_vk.host_import && !getenv("LARECOMP_VK_NO_GMEM") && (!e || atoi(e) != 0);
+#ifdef __linux__
+        if (on && heap_dmabuf_wanted()) {  // (the heap will be the driver's memory: shaders read it directly)
+            on = 0;
+            LOG("[vk] shader global memory: the heap as driver memory, no copies\n");
+            return on;
+        }
+#endif
         if (on) LOG("[vk] shader global memory: copies of the bound buffers (no host memory import here)\n");
         else if (!g_vk.host_import) LOG("[vk] shader global memory: no host memory import and no copies: reads return zero\n");
     }
@@ -5077,7 +5144,7 @@ static int pt_state = -1;  // 1: tracking, 0: none
 static bool pt_init(void) {
     if (pt_state >= 0) return pt_state;
     uint64_t pg = VC_PAGE, one;
-    int n = plat_written_pages(HEAP_BASE, VC_PAGE, &one, 1, &pg);  // (is there write tracking?)
+    int n = plat_written_pages(TRACK_PROBE_PAGE, VC_PAGE, &one, 1, &pg);  // (is there write tracking?)
     pt_state = n >= 0 && pg == VC_PAGE;
     if (!pt_state) { LOG("[vk] no page write tracking (%d, page %llu)\n", n, (unsigned long long)pg); return false; }
     vc_page_gen = calloc(HEAP_MAX / VC_PAGE, sizeof *vc_page_gen);
