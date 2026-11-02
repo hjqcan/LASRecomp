@@ -78,6 +78,11 @@ typedef struct {
                             // target scale, [1 + i] = allocation scale of texture i
     uint32_t local_mem;     // bytes of local memory
     uint32_t num_insts;
+    // (GLSL fragment, LARECOMP_VK_PUSH_CB=1) constant buffer words moved into push constants (pcw[k]: the word at byte
+    // push_off[k] of cbuf push_cb[k]): the most read, loops first - kept in fast uniform registers where a driver
+    // doesn't promote uniform buffer words itself (Mesa's PanVK)
+    uint8_t npush, push_cb[64];
+    uint16_t push_off[64];
     char error[256];        // set when translation fails
 } ShaderInfo;
 

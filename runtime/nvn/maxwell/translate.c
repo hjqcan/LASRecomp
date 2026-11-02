@@ -1979,12 +1979,61 @@ static bool glsl_early_tests(const Ctx *c) {
 }
 
 // Declarations + entry point around the (rewritten) body; mirrors the MSL assembly in maxwell_translate.
+// LARECOMP_VK_PUSH_CB=1 (fragment): the constant buffer words read most (statically indexed, cbufs 3+: the game's own;
+// a read inside a loop counts 8x per loop level) move into push constants, up to 64 words (PanVK's 256 bytes): fast
+// uniform registers instead of a uniform buffer load each (Mesa's PanVK keeps none of those in fast uniforms).
+static void push_promote(Ctx *c, Str *body) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("LARECOMP_VK_PUSH_CB"); on = e && atoi(e); }
+    if (!on || c->stage != STAGE_FRAGMENT || !body->buf || (maxwell_gmem_lazy && c->info->uses_gmem)) return;
+    enum { MAXW = 512 };
+    typedef struct { uint8_t cb; uint16_t off; uint64_t w; } PushWord;
+    PushWord words[MAXW];
+    int nw = 0, depth = 0;
+    const char *b = body->buf;
+    for (const char *p = b; *p; p++) {
+        if (!strncmp(p, "do {", 4)) depth++;
+        else if (!strncmp(p, "} while", 7) && depth) depth--;
+        int cb, row, col, len = 0;
+        if (p[0] == 'c' && p[1] == 'b' && (p == b || !((p[-1] >= 'a' && p[-1] <= 'z') || (p[-1] >= '0' && p[-1] <= '9') || p[-1] == '_')) &&
+            sscanf(p, "cb%d[%d][%d]%n", &cb, &row, &col, &len) == 3 && len && cb >= 3 && cb < 18 && col < 4 && row < 4096) {
+            uint16_t off = (uint16_t)(row * 16 + col * 4);
+            uint64_t w = 1;
+            for (int d = 0; d < depth && d < 6; d++) w *= 8;
+            int i = 0;
+            while (i < nw && !(words[i].cb == cb && words[i].off == off)) i++;
+            if (i == nw && nw < MAXW) words[nw++] = (PushWord){(uint8_t)cb, off, 0};
+            if (i < nw) words[i].w += w;
+            p += len - 1;
+        }
+    }
+    if (!nw) return;
+    for (int i = 1; i < nw; i++)  // (by weight, heaviest first)
+        for (int j = i; j > 0 && words[j].w > words[j - 1].w; j--) { PushWord t = words[j]; words[j] = words[j - 1]; words[j - 1] = t; }
+    int n = nw < 64 ? nw : 64;
+    Str o = {0};
+    for (const char *p = b; *p;) {
+        int cb, row, col, len = 0, k = -1;
+        if (p[0] == 'c' && p[1] == 'b' && (p == b || !((p[-1] >= 'a' && p[-1] <= 'z') || (p[-1] >= '0' && p[-1] <= '9') || p[-1] == '_')) &&
+            sscanf(p, "cb%d[%d][%d]%n", &cb, &row, &col, &len) == 3 && len) {
+            for (int i = 0; i < n; i++) if (words[i].cb == cb && words[i].off == row * 16 + col * 4) { k = i; break; }
+        }
+        if (k >= 0) { sp(&o, "pcw[%d]", k); p += len; }
+        else { sp(&o, "%c", *p); p++; }
+    }
+    free(body->buf);
+    *body = o;
+    c->info->npush = (uint8_t)n;
+    for (int i = 0; i < n; i++) c->info->push_cb[i] = words[i].cb, c->info->push_off[i] = words[i].off;
+}
+
 static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     ShaderInfo *info = c->info;
     const ShaderKey *key = c->key;
     int stage = c->stage;
     Str body = {0};
     glsl_rewrite(c, &body, c->body.buf ? c->body.buf : "");
+    push_promote(c, &body);
     if (info->uses_gmem && (info->cbuf_mask & (1u << GMEM_BUFFER_INDEX))) fail(c, "cbuf %d clashes with gmem", GMEM_BUFFER_INDEX);
     if (info->cbuf_mask >> 18) fail(c, "cbuf index out of range");
     for (int i = 0; i < info->ntex; i++)
@@ -2007,6 +2056,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if (!n) n = 1;
         sp(&s, "layout(std140, set = %d, binding = %d) uniform CB%d { uvec4 cb%d[%u]; };\n", set, i, i, i, n);
     }
+    if (info->npush) sp(&s, "layout(push_constant) uniform PC { uint pcw[%d]; };\n", info->npush);  // (push_promote)
     if (info->uses_gmem && !maxwell_gmem_chunk_shift) {
         sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
            c->uses_gmem_store ? "" : "readonly ");
