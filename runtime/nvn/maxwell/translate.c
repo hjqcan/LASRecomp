@@ -27,6 +27,7 @@ uint32_t maxwell_gmem_chunk_shift;  // 0: one buffer for the whole heap (GLSL; s
 bool maxwell_gmem_lazy;
 bool maxwell_gmem_fs_miss;
 bool maxwell_glsl_stack_vars = true;
+bool maxwell_gmem_mirror;  // (shader.h)
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
 int maxwell_dbg_reg;
@@ -1527,7 +1528,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                                                "uint(*(device ushort *)(gmem + ga))", "uint(int(*(device short *)(gmem + ga)))"};
         int nw = size == 5 ? 2 : size >= 6 ? 4 : 1;
         bool lazy_wide = c->glsl && maxwell_gmem_chunk_shift && maxwell_gmem_lazy && nw > 1;  // (one chunk check per access)
-        if (c->glsl && c->stage == STAGE_COMPUTE) {
+        if (c->glsl && (c->stage == STAGE_COMPUTE || maxwell_gmem_mirror)) {
             // Compute (Vulkan): the guest heap is host memory across PCIe on a discrete GPU, and a shader storing to
             // it in a loop crawls (the little chain chomps in Madam MeowMeow's house: ~4 ms a dispatch, ~0.07 ms without
             // the heap stores). The dispatch's storage buffers are copied to a device-local buffer (gfast_, address
@@ -1537,7 +1538,10 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             static const char *const gl_small[] = {
                 "(%s >> (uint(ga & 3ul) * 8u)) & 0xFFu", "uint(sx8(%s >> (uint(ga & 3ul) * 8u)))",
                 "(%s >> (uint(ga & 2ul) * 8u)) & 0xFFFFu", "uint(sx16(%s >> (uint(ga & 2ul) * 8u)))"};
-            sp(&c->body, "      uint fw = ok ? %s(uint(ga)) : 0xFFFFFFFFu;\n", store ? "gfindw" : "gfind");  // (a store: flags its range)
+            // (a store: flags its range; not with copies - nothing reads the flags)
+            sp(&c->body, "      uint fw = ok ? %s(uint(ga)) : 0xFFFFFFFFu;\n", store && !maxwell_gmem_mirror ? "gfindw" : "gfind");
+            // (copies: outside the table there is no heap to fall back to - reads are 0, stores are dropped)
+            const char *heap = maxwell_gmem_mirror ? "false" : "ok";
             if (!store) {
                 if (size < 4) {
                     if (d != RZ) {
@@ -1545,7 +1549,8 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                         snprintf(fast, sizeof fast, gl_small[size], "gfast_.w[fw]");
                         snprintf(slow, sizeof slow, gl_small[size], "GMR(uint(ga >> 2))");
                         c->reg_used[d] = 1;
-                        sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? %s : ok ? %s : 0u;\n", d, fast, slow);
+                        if (maxwell_gmem_mirror) sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? %s : 0u;\n", d, fast);
+                        else sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? %s : ok ? %s : 0u;\n", d, fast, slow);
                     }
                 } else if (lazy_wide) {
                     sp(&c->body, "      { uvec%d t = fw != 0xFFFFFFFFu ? uvec%d(", nw, nw);
@@ -1558,8 +1563,9 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                     for (int k = 0; k < nw; k++)
                         if (d != RZ && d + k < RZ) {
                             c->reg_used[d + k] = 1;
-                            sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? gfast_.w[fw + %du] : ok ? GMR(uint(ga >> 2) + %du) : 0u;\n",
-                               d + k, k, k);
+                            if (maxwell_gmem_mirror) sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? gfast_.w[fw + %du] : 0u;\n", d + k, k);
+                            else sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? gfast_.w[fw + %du] : ok ? GMR(uint(ga >> 2) + %du) : 0u;\n",
+                                    d + k, k, k);
                         }
                 }
             } else {
@@ -1570,7 +1576,8 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                     const char *bm = size < 2 ? "3ul" : "2ul";
                     sp(&c->body, "      if (ok) { uint sh = uint(ga & %s) * 8u; uint v = (%s & 0x%xu) << sh;\n", bm, R(d), m);
                     sp(&c->body, "        if (fw != 0xFFFFFFFFu) { atomicAnd(gfast_.w[fw], ~(0x%xu << sh)); atomicOr(gfast_.w[fw], v); }\n", m);
-                    sp(&c->body, "        else { GMAND(uint(ga >> 2), ~(0x%xu << sh)); GMOR(uint(ga >> 2), v); } }\n", m);
+                    if (maxwell_gmem_mirror) sp(&c->body, "      }\n");
+                    else sp(&c->body, "        else { GMAND(uint(ga >> 2), ~(0x%xu << sh)); GMOR(uint(ga >> 2), v); } }\n", m);
                 } else if (lazy_wide) {
                     for (int k = 0; k < nw; k++) sp(&c->body, "      if (fw != 0xFFFFFFFFu) gfast_.w[fw + %du] = %s;\n", k, R(d == RZ ? RZ : d + k));
                     sp(&c->body, "      if (fw == 0xFFFFFFFFu && ok) GMW%d(uint(ga >> 2), uvec%d(", nw, nw);
@@ -1578,8 +1585,8 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                     sp(&c->body, "));\n");
                 } else {
                     for (int k = 0; k < nw; k++)
-                        sp(&c->body, "      if (fw != 0xFFFFFFFFu) gfast_.w[fw + %du] = %s; else if (ok) GMW(uint(ga >> 2) + %du, %s);\n", k,
-                           R(d == RZ ? RZ : d + k), k, R(d == RZ ? RZ : d + k));
+                        sp(&c->body, "      if (fw != 0xFFFFFFFFu) gfast_.w[fw + %du] = %s; else if (%s) GMW(uint(ga >> 2) + %du, %s);\n", k,
+                           R(d == RZ ? RZ : d + k), heap, k, R(d == RZ ? RZ : d + k));
                 }
             }
         } else if (c->glsl) {  // 32-bit words (GMR / GMW / GMAND / GMOR: the prelude); sub-word accesses within the containing word
@@ -2074,7 +2081,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
            c->uses_gmem_store ? "" : "readonly ");
         sp(&s, "uint gfind(uint g) { uint n = gmap[%d].x; for (uint i = 0u; i < n; i++) { uint o = g - gmap[i].x; "
                "if (g >= gmap[i].x && o < gmap[i].y) return gmap[i].z + (o >> 2); } return 0xFFFFFFFFu; }\n", GMAP_MAX);
-        if (c->uses_gmem_store)  // (the stores' lookup: a store inside entry i's bound bytes - gmap[i].w, exec.c gmap_build -
+        if (c->uses_gmem_store && !maxwell_gmem_mirror)  // (the stores' lookup: a store inside entry i's bound bytes - gmap[i].w, exec.c gmap_build -
                                  //  writes the dispatch's stamp to GFast word GFAST_FLAG_WORD + i; the padding doesn't count)
             sp(&s, "uint gfindw(uint g) { uint n = gmap[%d].x; for (uint i = 0u; i < n; i++) { uint o = g - gmap[i].x; "
                    "if (g >= gmap[i].x && o < gmap[i].y) { if (o >= (gmap[i].w & 0xFFu) && (o >> 2) < (gmap[i].w >> 8)) "

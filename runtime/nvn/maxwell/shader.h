@@ -122,6 +122,10 @@ extern bool maxwell_gmem_fs_miss;
 // in the lit fragment shaders' light loop (#462), while Mali-G610 (libmali g29p1) never finished building the
 // variables form's pipelines (#526).
 extern bool maxwell_glsl_stack_vars;
+// (GLSL / Vulkan) No heap import (panvk, Honeykrisp: no VK_EXT_external_memory_host, issue #483): every stage reaches
+// its storage buffers through the address table (GMap / GFast, as compute does), which points into copies of the
+// guest memory they cover (vulkan/exec.c gmir_). Accesses outside the table read 0 and drop their stores.
+extern bool maxwell_gmem_mirror;
 // Lazy mode, vertex / fragment: the chunks under the draw's storage buffers (where the heap reads are) come as push
 // constants, GDirect { uvec4 gd[GMEM_DIRECT_MAX]; } (x = first word, y = words, 0: unused, z, w = device address), and
 // as storage buffers GDir<k> at GMEM_DIRECT_BINDING + k of the chunk set: an access in one is a compare and a plain
