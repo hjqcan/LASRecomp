@@ -3,8 +3,9 @@
 // map, the prep and half-resolution analysis, then the cover over the scene image. The shaders are renderer.m's sc_src
 // in GLSL, the same math. Differences: Vulkan has no framebuffer fetch, so the scene image's drawn area is copied first
 // and the passes read the copy; the scene stencil (the marks exec.c's draws write, bits 7 / 6 / 1-3) is read through
-// a stencil view; and Vulkan's framebuffer y runs down where Metal's NDC y runs up (a pixel's NDC y is uv.y * 2 - 1
-// here), so "down the screen" in the depth's rows is the other way round from renderer.m's.
+// a stencil view. The game's draws go through a negative-height viewport (exec.c's set_viewport: Metal's convention),
+// so the scene image's rows are Metal's and the shaders keep renderer.m's pixel <-> NDC y (1 - uv.y * 2) - not the
+// weather pass' (weather_vk.c: its own pass on the window image, y down).
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,7 +29,7 @@
 
 static const char *sc_common =
     "vec3 world_at(vec2 uv, float d) {\n"
-    "  vec2 m = vec2(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0);\n"  // (Vulkan: y down)
+    "  vec2 m = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);\n"  // (the scene's rows: Metal's, above)
     "  if (w.flags.x > 0.5) m.y = -m.y;\n"
     "  float z = (d - w.zr.x) / w.zr.y;\n"
     "  if (w.flags.y > 0.5) z = z * 2.0 - 1.0;\n"
@@ -37,7 +38,7 @@ static const char *sc_common =
     "  return wp.xyz / wp.w;\n"
     "}\n"
     "float sc_eye(vec2 uv, float d) {\n"
-    "  vec2 m = vec2(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0);\n"
+    "  vec2 m = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);\n"
     "  if (w.flags.x > 0.5) m.y = -m.y;\n"
     "  float z = (d - w.zr.x) / w.zr.y;\n"
     "  if (w.flags.y > 0.5) z = z * 2.0 - 1.0;\n"
@@ -172,8 +173,7 @@ static const char *half_fs =
     "  if (dot(n, cq.xyz / cq.w - p) < 0.0) n = -n;\n"
     "  float rough = saturate((0.9 - flat_) / 0.6);\n"
     "  float up = smoothstep(0.35, 0.85, n.y) * (1.0 - 0.45 * rough) * mix(0.6, 1.0, smoothstep(2.0, 4.5, float(nok)));\n"
-    // (down the screen in the depth's rows: the other way round from renderer.m's - Vulkan's y)
-    "  int down = int(rad * 1.5) * (w.flags.x > 0.5 ? 1 : -1);\n"
+    "  int down = int(rad * 1.5) * (w.flags.x > 0.5 ? -1 : 1);\n"  // (the depth's rows run up the screen when flipped)
     "  if (up < 0.999) {\n"
     "    float dh = p.y - sc_flat(q, mx, down);\n"
     "    up = max(up, smoothstep(-0.06, -0.02, dh) * (1.0 - smoothstep(0.05, 0.15, dh)));\n"
@@ -207,7 +207,7 @@ static const char *half_fs =
     "  }\n"
     "  if (k <= 0.0) { o = none; return; }\n"
     "  float side[3];\n"
-    "  ivec2 dirs[3] = ivec2[3](ivec2(-1, 0), ivec2(1, 0), ivec2(0, w.flags.x > 0.5 ? -1 : 1));\n"  // (behind: up the screen)
+    "  ivec2 dirs[3] = ivec2[3](ivec2(-1, 0), ivec2(1, 0), ivec2(0, w.flags.x > 0.5 ? 1 : -1));\n"  // (behind: up the screen)
     "  for (int s = 0; s < 3; s++) {\n"
     "    side[s] = 0.0;\n"
     "    for (int j = 3; j <= 15; j += 4) {\n"
