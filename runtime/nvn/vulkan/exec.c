@@ -26,6 +26,7 @@
 #include "../screen_filter.h"
 #include "../shader_prep.h"
 #include "../../settings.h"
+#include "../weather.h"
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 // (the guest heap for shaders in chunks: with the heap import below)
@@ -2772,6 +2773,8 @@ void vk_alias_stats(void) {
     stat_alias_made = stat_alias_renamed = stat_alias_partial = stat_alias_copied = 0;
 }
 
+static int sc_mark;  // (this draw writes the snow's stencil marks: snow_cover_check)
+
 // draws: attachments written (or a destination bound at all) end the aliases involved
 static void alias_draw_check(void) {
     if (!naliases) return;
@@ -2779,7 +2782,7 @@ static void alias_draw_check(void) {
         if (st.rt.color[i]) alias_before_write(st.rt.color[i], 0, "color target");
     NvnTexture *d = st.rt.depth;
     if (!d) return;
-    bool writes = (st.ds[0] && st.ds[1]) || (st.ds[3] && ((st.stencil_mask[0] | st.stencil_mask[1]) & 0xFF));
+    bool writes = (st.ds[0] && st.ds[1]) || (st.ds[3] && ((st.stencil_mask[0] | st.stencil_mask[1]) & 0xFF)) || sc_mark;  // (snow marks)
     bool is_dst = false;
     for (int i = 0; i < naliases; i++) is_dst |= aliases[i].dst == d;
     if (writes || is_dst) alias_before_write(d, 0, writes ? "depth write" : "dst bound");
@@ -6110,10 +6113,228 @@ static void prep_check(const PipeKey *k, uint64_t vh, uint64_t fh, const ShaderR
         k->prog->prep_vh ? "prepared" : "not prepared", progs, nprep, best ? diff : " (none)", line);
 }
 
+// ------------------------------------------------------------------ weather (runtime/nvn/weather.h; the pass:
+// weather_vk.c). As renderer.m: the scene's draws give the camera and the depth they draw into (wx_*), and right after
+// the scene composite into the window image the weather goes on it
+static bool wx_composite, wx_mirror, wx_dm1;
+static NvnTexture *wx_depth;
+static uint64_t wx_depth_frame;
+static float wx_zn, wx_zf;
+static void weather_encode(void);
+
+extern uint64_t renderer_exec_frame(void);
+bool vk_weather_probes(float out[WEATHER_PROBES]);  // weather_vk.c
+void vk_weather_pass(VkImageView color, VkFormat fmt, uint32_t w, uint32_t h, VkImageView depth, const WeatherFrame *wf,
+                     int parts, bool dbg);
+
+// right after the scene composite (its pass still open): renderer.m's weather_encode, the same checks and frame
+static void weather_encode(void) {
+    static long off = -1;  // (LARECOMP_WEATHER_SKIP=1: the weather computed but not drawn)
+    if (off < 0) off = getenv("LARECOMP_WEATHER_SKIP") ? atol(getenv("LARECOMP_WEATHER_SKIP")) : 0;
+    uint64_t frame = renderer_exec_frame();
+    weather_cycle_scene();  // (the weather cycle's clock runs while the game draws its scene)
+    NvnTexture *win = st.rt.ncolor ? st.rt.color[0] : NULL, *dep = wx_depth;
+    extern bool mirror_scene_size(uint32_t sw, uint32_t sh, uint32_t w, uint32_t h);
+    int why = off ? 1 : !win ? 2 : !dep ? 3 : wx_depth_frame != frame ? 4 : fabsf(wx_zf - wx_zn) < 1e-6f ? 5 :
+              !mirror_scene_size(dep->width, dep->height, win->width, win->height) ? 6 : 0;
+    static int wlog = -1, wlast = -1;  // LARECOMP_LOG_WEATHER=1 (test): why the renderer skips the weather, as that changes
+    if (wlog < 0) wlog = getenv("LARECOMP_LOG_WEATHER") != NULL;
+    if (wlog && why != wlast)
+        LOG("[weather] frame %llu renderer: %s (depth %ux%u window %ux%u)\n", (unsigned long long)frame,
+            (const char *const[]){"ok", "skip", "no window", "no depth", "depth from another frame", "depth range", "depth size"}[why],
+            dep ? dep->width : 0, dep ? dep->height : 0, win ? win->width : 0, win ? win->height : 0);
+    wlast = why;
+    if (why) return;
+    float wsx, wsy, dsx, dsy;
+    renderer_texture_scale(win, &wsx, &wsy);
+    renderer_texture_scale(dep, &dsx, &dsy);
+    TexBackend *cb_ = vk_tex(win, true), *db = vk_tex(dep, true);
+    VkImageView cv = vk_view(win, &st.rt.cview[0], st.rt.has_cview[0], true, TEXTYPE_2D);
+    VkImageView dv = vk_view(dep, NULL, false, false, TEXTYPE_2D);
+    VkFormat cf = pass_color[0];  // (the composite's pass is the open one)
+    if (!cb_ || !db || !cv || !dv || cf == VK_FORMAT_UNDEFINED) return;
+    WeatherFrame wf;
+    memset(&wf, 0, sizeof wf);
+    int cw = (int)lroundf(win->width * wsx), ch = (int)lroundf(win->height * wsy);
+    if (cw > (int)cb_->width) cw = (int)cb_->width;
+    if (ch > (int)cb_->height) ch = (int)cb_->height;
+    wf.screen[0] = (float)cw, wf.screen[1] = (float)ch;
+    wf.screen[2] = fminf((float)lroundf(dep->width * dsx), (float)db->width);
+    wf.screen[3] = fminf((float)lroundf(dep->height * dsy), (float)db->height);
+    wf.flags[0] = nvn_window_origin() == 0, wf.flags[1] = wx_dm1;
+    wf.flags[2] = wx_mirror;  // (the composite was drawn mirrored: mirror_draw)
+    wf.zr[0] = wx_zn, wf.zr[1] = wx_zf - wx_zn;
+    static uint64_t probe_frame;  // (the scene depth at the probe points, as last frame's particle draw wrote it)
+    float pd[WEATHER_PROBES];
+    bool have = probe_frame && frame - probe_frame < 4 && vk_weather_probes(pd);
+    if (!weather_frame(&wf, frame, have ? pd : NULL)) return;
+    static int dbg = -1;  // LARECOMP_WEATHER_DEBUG (test): 1 opaque red particles, 2 red poles standing on the ground
+    if (dbg < 0) dbg = getenv("LARECOMP_WEATHER_DEBUG") ? atoi(getenv("LARECOMP_WEATHER_DEBUG")) : 0;
+    if (dbg) {
+        wf.color[0] = 1, wf.color[1] = wf.color[2] = 0, wf.color[3] = 1, wf.shape[1] = 4;
+        if (dbg == 2) wf.flags[3] = 3, wf.count = 400, wf.splashes = 0;
+    }
+    static int parts = -1;  // LARECOMP_WEATHER_PARTS=<mask> (test): renderer.m's
+    if (parts < 0) parts = getenv("LARECOMP_WEATHER_PARTS") ? atoi(getenv("LARECOMP_WEATHER_PARTS")) : 63;
+    vk_end_pass();
+    st.rt_dirty = true;  // (the game's next draw opens its pass again)
+    ss_forget();         // (the weather's pass set its own pipeline and dynamic state)
+    vk_weather_pass(cv, cf, (uint32_t)cw, (uint32_t)ch, dv, &wf, parts, dbg != 0);
+    probe_frame = frame;
+}
+
+// ------------------------------------------------------------------ the snow on the ground (runtime/nvn/weather.h;
+// the passes: snow_vk.c). As renderer.m's snow_cover_check: while there is snow the scene's opaque draws write stencil
+// marks (sc_mark, sc_tree: draw_'s depth / stencil state), and the cover goes on right before the colour pass's first
+// blended draw (or the next pass, if none)
+static NvnTexture *sc_color, *sc_depth;  // the scene pass's targets this frame (while its opaque things are drawn)
+static float sc_vp[16], sc_zn, sc_zf;
+static bool sc_dm1;
+static int sc_tree;  // this draw: a tree shaken bare, its slot 1..6 (stencil bits 1-3), 7 a face tree, 0: none
+static int sc_mark;  // this draw: 0 as the game has it, 1 the level's model, 2 anything else, 3 grass and bushes
+static uint64_t sc_frame = ~0ull, sc_done = ~0ull;
+static uint32_t wx_scene_w, wx_scene_h;  // (the scene image the composite read: the scene pass's target size)
+bool vk_snow_pass(VkImage color_img, VkImageView color, VkFormat fmt, uint32_t cw, uint32_t ch, VkImageView depth,
+                  VkImageView stencil, SnowFrame *sf);  // snow_vk.c
+
+static int tex_class(NvnTexture *t) {  // (recolour.c's class of a texture the draw samples; 0: none)
+    const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
+    return b && b->tp > 0 ? recolour_class_of(b->tp - 1) : 0;
+}
+
+static void snow_cover_encode(void) {
+    static long off = -1;  // (LARECOMP_SNOW_SKIP=1: the cover not drawn)
+    if (off < 0) off = getenv("LARECOMP_SNOW_SKIP") ? atol(getenv("LARECOMP_SNOW_SKIP")) : 0;
+    SnowFrame sf;
+    memset(&sf, 0, sizeof sf);
+    if (off || !sc_color || !sc_depth || fabsf(sc_zf - sc_zn) < 1e-6f || !weather_snow_cover(&sf, sc_vp)) return;
+    float sx, sy, dsx, dsy;
+    renderer_texture_scale(sc_color, &sx, &sy);
+    renderer_texture_scale(sc_depth, &dsx, &dsy);
+    TexBackend *cb_ = vk_tex(sc_color, true), *db = vk_tex(sc_depth, true);
+    bool ok = cb_ && db && cb_->samples == 1 && db->samples == 1 && (db->aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
+    VkImageView cv = ok ? vk_view(sc_color, NULL, false, true, TEXTYPE_2D) : VK_NULL_HANDLE;
+    VkImageView dv = ok ? vk_view(sc_depth, NULL, false, false, TEXTYPE_2D) : VK_NULL_HANDLE;
+    VkImageView sv = ok ? vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, (VkComponentMapping){0},
+                                        VK_IMAGE_ASPECT_STENCIL_BIT) : VK_NULL_HANDLE;
+    static int nlog;  // LARECOMP_LOG_SNOW: why the cover isn't drawn (first few)
+    if ((!cv || !dv || !sv) && nlog++ < 5 && getenv("LARECOMP_LOG_SNOW"))
+        LOG("[snow] no cover: colour %p depth %p stencil %p\n", (void *)cv, (void *)dv, (void *)sv);
+    if (!cv || !dv || !sv) return;
+    int cw = (int)lroundf(sc_color->width * sx), ch = (int)lroundf(sc_color->height * sy);
+    if (cw > (int)cb_->width) cw = (int)cb_->width;
+    if (ch > (int)cb_->height) ch = (int)cb_->height;
+    sf.screen[0] = (float)cw, sf.screen[1] = (float)ch;
+    sf.screen[2] = fminf((float)lroundf(sc_depth->width * dsx), (float)db->width);
+    sf.screen[3] = fminf((float)lroundf(sc_depth->height * dsy), (float)db->height);
+    sf.flags[0] = nvn_window_origin() == 0, sf.flags[1] = sc_dm1;
+    sf.zr[0] = sc_zn, sf.zr[1] = sc_zf - sc_zn;
+    vk_end_pass();
+    st.rt_dirty = true;  // (the game's next draw opens its pass again: loads what this left)
+    ss_forget();         // (the snow's passes set their own pipeline and dynamic state)
+    if (vk_snow_pass(cb_->image, cv, cb_->format, (uint32_t)cw, (uint32_t)ch, dv, sv, &sf)) {
+        snap_reason = "snow cover";
+        snapshots_invalidate(sc_color);
+    }
+}
+
+// before each draw: renderer.m's snow_cover_check (the same tests; the comments there say why)
+static void snow_cover_check(CmdRec *r, bool indexed, Prog *pr) {
+    sc_mark = sc_tree = 0;
+    uint64_t frame = renderer_exec_frame();
+    if (sc_done == frame || !st.rt.depth) return;
+    bool scene = st.rt.ncolor && st.rt.color[0] && st.rt.color[0]->width == wx_scene_w &&
+                 st.rt.color[0]->height == wx_scene_h && st.rt.depth->format == 0x35;
+    bool blended = st.rt.ncolor && (st.color_state[0] & 1);
+    if (sc_frame == frame && (!scene || st.rt.color[0] != sc_color || blended || !st.ds[0])) {
+        static int nlog;
+        if (nlog++ < 5 && getenv("LARECOMP_LOG_SNOW"))
+            LOG("[snow] cover at frame %llu (scene %d, blended %d, depth test %d)\n", (unsigned long long)frame, scene, blended, st.ds[0]);
+        sc_done = frame;
+        snow_cover_encode();
+        return;
+    }
+    if (!weather_snow_on()) return;
+    uint64_t s4 = st.ubuf[0][4].addr ? st.ubuf[0][4].size : 0, inst = indexed ? r->x[6] : r->x[4];
+    bool level = (s4 == 912 || s4 == 928) && inst <= 1 && st.ubuf[0][1].addr && st.ubuf[0][1].size == 1024;
+    if (level && st.rt.ncolor) {  // (the water is part of the level's model: told by its maps)
+        enum { WC = 1024 };
+        static struct { uint64_t key; bool water, face; } wc[WC];
+        uint64_t key = ((uint64_t)(uintptr_t)pr * 0x9E3779B97F4A7C15ull ^ st.vbuf[0].addr) | 1;
+        uint32_t k = (uint32_t)(key ^ key >> 29) & (WC - 1);
+        if (wc[k].key != key) {
+            bool water = false, face = false;
+            for (int i = 0; i < pr->fi->ntex && !water; i++) {
+                int c = tex_class(shader_texture_object(1, &pr->fi->tex[i]));
+                water |= c == 32, face |= c == 26;  // (W_WATER; S_FACE: the face trees)
+            }
+            wc[k].key = key, wc[k].water = water, wc[k].face = face;
+        }
+        level = !wc[k].water;
+        if (wc[k].face) sc_tree = 7;
+    }
+    if (st.ds[0] && (st.ds[1] || (st.rt.ncolor && !blended)) && st.rt.depth->width == wx_scene_w &&
+        st.rt.depth->height == wx_scene_h && st.rt.depth->format == 0x35) {
+        enum { SIGS = 4096 };  // (a level draw the pre-pass left out takes no snow)
+        static uint64_t sig[SIGS], sig_at[SIGS];
+        uint64_t h = st.vbuf[0].addr * 0x9E3779B97F4A7C15ull;
+        for (int i = 0; i < 7; i++) h = (h ^ r->x[i]) * 0xBF58476D1CE4E5B9ull, h ^= h >> 31;
+        h |= 1;
+        uint32_t k = (uint32_t)(h ^ h >> 32) & (SIGS - 1);
+        if (!st.rt.ncolor) {
+            for (int n = 0; n < 16 && sig_at[k] == frame && sig[k] != h; n++) k = (k + 1) & (SIGS - 1);
+            sig[k] = h, sig_at[k] = frame;
+        } else if (level) {
+            bool found = false;
+            for (int n = 0; n < 16 && sig_at[k] == frame && !found; n++) found = sig[k] == h, k = (k + 1) & (SIGS - 1);
+            level = found;
+        }
+        sc_mark = level ? 1 : 2;
+        static uint64_t lvl_fs[64];  // (scenery drawn as actors with the level's own fragment shaders)
+        static int nlvl;
+        if (st.rt.ncolor && g_cur_fs_hash) {
+            int i = 0;
+            while (i < nlvl && lvl_fs[i] != g_cur_fs_hash) i++;
+            if (level && i == nlvl && nlvl < 64) lvl_fs[nlvl++] = g_cur_fs_hash;
+            else if (!level && i < nlvl && st.ubuf[0][4].addr && (st.ubuf[0][4].size == 1056 || st.ubuf[0][4].size == 1072))
+                sc_mark = 1;
+        }
+        if (st.rt.ncolor && !level) {  // (grass and bushes: a dusting; trees: their bonk slot; rocks, face trees)
+            enum { FC = 1024 };
+            static struct { uint64_t key; bool fol, tree, rock, face; } fc[FC];
+            uint64_t key = ((uint64_t)(uintptr_t)pr * 0x9E3779B97F4A7C15ull ^ st.vbuf[0].addr) | 1;
+            uint32_t k = (uint32_t)(key ^ key >> 29) & (FC - 1);
+            if (fc[k].key != key) {
+                bool fol = false, tree = false, rock = false, face = false;
+                for (int i = 0; i < pr->fi->ntex; i++) {
+                    int c = tex_class(shader_texture_object(1, &pr->fi->tex[i]));
+                    fol |= c == 18 || c == 23 || c == 24;  // (S_BUSH, S_LIME, S_LAWN)
+                    tree |= c == 16 || c == 17 || c == 22;  // (S_TREE, S_PALM, S_MYST)
+                    rock |= c == 27, face |= c == 26;  // (S_ROCK, S_FACE)
+                }
+                fc[k].key = key, fc[k].fol = fol, fc[k].tree = tree, fc[k].rock = rock, fc[k].face = face;
+            }
+            if (fc[k].fol || (sc_mark == 1 && !fc[k].tree && !fc[k].rock && !fc[k].face)) sc_mark = 3;
+            else if (sc_mark == 1 && fc[k].face) sc_tree = 7;
+            else if (sc_mark == 1 && fc[k].tree && st.ubuf[0][3].addr && st.ubuf[0][3].size == 144) {
+                const float *m = (const float *)(uintptr_t)st.ubuf[0][3].addr;
+                float pos[3] = {m[3], m[7], m[11]};
+                sc_tree = weather_snow_tree(pos);
+            }
+        }
+    }
+    if (!scene || !level || blended || !st.ds[0]) return;
+    sc_color = st.rt.color[0], sc_depth = st.rt.depth, sc_frame = frame;
+    memcpy(sc_vp, (const float *)(uintptr_t)st.ubuf[0][1].addr, sizeof sc_vp);
+    sc_zn = st.depth_range[0][0], sc_zf = st.depth_range[0][1], sc_dm1 = nvn_depth_mode() == 0;
+}
+
 static void draw_(CmdRec *r, bool indexed);
 static void draw(CmdRec *r, bool indexed) {
     PROF_T0();
+    wx_composite = wx_mirror = false;
     draw_(r, indexed);
+    if (wx_composite) weather_encode();
     PROF_ADD(prof_draw);
 }
 static uint64_t prof_tp_;
@@ -6138,11 +6359,14 @@ static void draw_(CmdRec *r, bool indexed) {
             st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height && pr->fi->ntex) {
             NvnTexture *t0 = shader_texture_object(1, &pr->fi->tex[0]);
             composite = t0 && mirror_scene_size(t0->width, t0->height, st.rt.color[0]->width, st.rt.color[0]->height);
+            if (composite) wx_scene_w = t0->width, wx_scene_h = t0->height;  // (the snow cover: the scene pass's size)
             extern void scene_size_log(bool composite, uint32_t sw, uint32_t sh, uint32_t w, uint32_t h);
             if (t0) scene_size_log(composite, t0->width, t0->height, st.rt.color[0]->width, st.rt.color[0]->height);
         }
+        wx_composite = composite;
         if (mirror_draw(composite)) {
             vkey.flip_x = fkey.flip_x = true;
+            wx_mirror = true;
             pr = get_program(st.program, &vkey, &fkey);
             if (!pr || atomic_load(&pr->state) != 1) { SKIP(!pr ? SK_NO_STAGES : atomic_load(&pr->state) == 2 ? SK_PROG_FAILED : SK_PROG_BUILDING); return; }
             g_mirror_w = (float)st.rt.color[0]->width;
@@ -6175,8 +6399,20 @@ static void draw_(CmdRec *r, bool indexed) {
         if (last_hash) widescreen_backdrop_seen(last_hash);
         extern void widescreen_scene_ubo(const float *u, uint64_t size);  // (the camera's view-projection)
         if (st.ubuf[0][5].addr) widescreen_scene_ubo((const float *)(uintptr_t)st.ubuf[0][5].addr, st.ubuf[0][5].size);
+        // (the weather: the camera, and the depth it draws into - renderer.m says why the level model's too)
+        bool into_scene = st.rt.ncolor && st.rt.color[0] && st.rt.depth && st.rt.depth->width >= 640 &&
+                          st.rt.color[0]->width == st.rt.depth->width && renderer_format_is_depth(st.rt.depth->format);
+        uint64_t s4 = st.ubuf[0][4].addr ? st.ubuf[0][4].size : 0;
+        bool cam = st.ubuf[0][5].addr && st.ubuf[0][5].size == 320,
+             level = !cam && into_scene && (s4 == 912 || s4 == 928) && st.ubuf[0][1].addr && st.ubuf[0][1].size == 1024;
+        if (cam) weather_scene_camera((const float *)(uintptr_t)st.ubuf[0][5].addr, st.ubuf[0][5].size, renderer_exec_frame());
+        if (level) weather_scene_vp((const float *)(uintptr_t)st.ubuf[0][1].addr, renderer_exec_frame());
+        if ((cam && st.rt.depth && st.rt.depth->width >= 640 && renderer_format_is_depth(st.rt.depth->format)) || level)
+            wx_depth = st.rt.depth, wx_depth_frame = renderer_exec_frame(), wx_zn = st.depth_range[0][0],
+            wx_zf = st.depth_range[0][1], wx_dm1 = nvn_depth_mode() == 0;
     }
     if (g_debug_frame) debug_draw(pr, r, indexed);
+    snow_cover_check(r, indexed, pr);  // (the snow on the ground: its stencil marks, the cover after the opaque draws)
     if (ct_on()) ct_draw(pr, "draw");
     alias_draw_check();
     resolve_feedback(pr);
@@ -6290,7 +6526,7 @@ static void draw_(CmdRec *r, bool indexed) {
     bool equal_tol = dop == VK_COMPARE_OP_EQUAL && tol;
     if (equal_tol) dop = VK_COMPARE_OP_LESS_OR_EQUAL;
     if (ss_need(SS_DOP, ss.dop == dop)) { ss.dop = dop; rec_CmdSetDepthCompareOp(cb, dop); }
-    bool sten = st.ds[3] && pass_stencil;
+    bool sten = (st.ds[3] || sc_mark) && pass_stencil;  // (snow: the marks, snow_cover_check)
     if (ss_need(SS_STEN, ss.sten == (VkBool32)sten)) { ss.sten = sten; rec_CmdSetStencilTestEnable(cb, sten); }
     if (sten) {
         uint32_t ops = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16;
@@ -6300,6 +6536,16 @@ static void draw_(CmdRec *r, bool indexed) {
             uint32_t v[7] = {stencil_op(o & 0xF), stencil_op((o >> 8) & 0xF), stencil_op((o >> 4) & 0xF),
                              compare_fn(f ? st.ds[4] >> 4 : st.ds[4] & 0xF), st.stencil_vmask[f] & 0xFF, st.stencil_mask[f] & 0xFF,
                              st.stencil_ref[f]};
+            if (!st.ds[3]) v[0] = v[1] = v[2] = VK_STENCIL_OP_KEEP, v[3] = VK_COMPARE_OP_ALWAYS, v[4] = 0xFF, v[5] = 0;
+            if (sc_mark) {  // (snow, as renderer.m: bits 7 / 6 / 1-3 too where it passes - the game's keep / zero /
+                // replace become a replace whose reference keeps the game's bits)
+                uint32_t p = v[1];
+                if (p == VK_STENCIL_OP_KEEP) v[5] = 0xCE;
+                else if (p == VK_STENCIL_OP_ZERO || p == VK_STENCIL_OP_REPLACE) v[5] |= 0xCE;
+                if (p == VK_STENCIL_OP_KEEP || p == VK_STENCIL_OP_ZERO || p == VK_STENCIL_OP_REPLACE) v[1] = VK_STENCIL_OP_REPLACE;
+                v[6] = (st.ds[3] && ((f ? ops >> 20 : ops >> 8) & 0xF) == 3 ? st.stencil_ref[f] & 0x31 : 0) |
+                       (sc_mark == 2 ? 0x80 : sc_mark == 3 ? 0x40 : 0) | (uint32_t)sc_tree << 1;
+            }
             if (!ss_need(f ? SS_SFACE1 : SS_SFACE0, !memcmp(v, ss.sface[f], sizeof v))) continue;
             memcpy(ss.sface[f], v, sizeof v);
             rec_CmdSetStencilOp(cb, face, (VkStencilOp)v[0], (VkStencilOp)v[1], (VkStencilOp)v[2], (VkCompareOp)v[3]);
