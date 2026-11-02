@@ -534,7 +534,45 @@ static void pb_log(void) {  // (vk_pipeline_cache_save: under its lock)
 }
 #endif
 
+bool g_shader_stats;
+__thread char g_stats_label[128];  // (the caller's: which shaders the pipeline is made of)
+static void log_pipeline_stats(VkPipeline p) {
+    PFN_vkGetPipelineExecutablePropertiesKHR props = (PFN_vkGetPipelineExecutablePropertiesKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetPipelineExecutablePropertiesKHR");
+    PFN_vkGetPipelineExecutableStatisticsKHR stats = (PFN_vkGetPipelineExecutableStatisticsKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetPipelineExecutableStatisticsKHR");
+    if (!props || !stats) return;
+    VkPipelineInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = p};
+    VkPipelineExecutablePropertiesKHR ep[8];
+    uint32_t ne = 8;
+    for (uint32_t i = 0; i < ne; i++) ep[i] = (VkPipelineExecutablePropertiesKHR){.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR};
+    if (props(g_vk.dev, &pi, &ne, ep) < 0) return;
+    for (uint32_t e = 0; e < ne; e++) {
+        VkPipelineExecutableInfoKHR ei = {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR, .pipeline = p, .executableIndex = e};
+        VkPipelineExecutableStatisticKHR st[32];
+        uint32_t ns = 32;
+        for (uint32_t i = 0; i < ns; i++) st[i] = (VkPipelineExecutableStatisticKHR){.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR};
+        if (stats(g_vk.dev, &ei, &ns, st) < 0) continue;
+        char line[1024];
+        int l = snprintf(line, sizeof line, "[stats] %s | %s:", g_stats_label, ep[e].name);
+        for (uint32_t i = 0; i < ns && l < (int)sizeof line - 48; i++) {
+            switch (st[i].format) {
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR: l += snprintf(line + l, sizeof line - l, " %s=%u", st[i].name, st[i].value.b32); break;
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR: l += snprintf(line + l, sizeof line - l, " %s=%lld", st[i].name, (long long)st[i].value.i64); break;
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR: l += snprintf(line + l, sizeof line - l, " %s=%llu", st[i].name, (unsigned long long)st[i].value.u64); break;
+            default: l += snprintf(line + l, sizeof line - l, " %s=%.3f", st[i].name, st[i].value.f64);
+            }
+        }
+        LOG("%s\n", line);
+    }
+}
+
 VkResult vk_create_graphics_pipeline(const VkGraphicsPipelineCreateInfo *ci, VkPipeline *out) {
+    if (g_shader_stats) {
+        VkGraphicsPipelineCreateInfo c = *ci;
+        c.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+        VkResult r = vkCreateGraphicsPipelines(g_vk.dev, VK_NULL_HANDLE, 1, &c, NULL, out);
+        if (r == VK_SUCCESS) log_pipeline_stats(*out);
+        return r;
+    }
 #ifdef VK_KHR_pipeline_binary
     if (pb.on) return pb_make(ci, false, out);
 #endif
@@ -542,6 +580,13 @@ VkResult vk_create_graphics_pipeline(const VkGraphicsPipelineCreateInfo *ci, VkP
 }
 
 VkResult vk_create_compute_pipeline(const VkComputePipelineCreateInfo *ci, VkPipeline *out) {
+    if (g_shader_stats) {
+        VkComputePipelineCreateInfo c = *ci;
+        c.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+        VkResult r = vkCreateComputePipelines(g_vk.dev, VK_NULL_HANDLE, 1, &c, NULL, out);
+        if (r == VK_SUCCESS) log_pipeline_stats(*out);
+        return r;
+    }
 #ifdef VK_KHR_pipeline_binary
     if (pb.on) return pb_make(ci, true, out);
 #endif
@@ -594,6 +639,9 @@ static void create_device(void) {
     bool placed_ext = has_ext(ep, ne, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
 #endif
 #endif
+    // LARECOMP_VK_SHADER_STATS=1: each pipeline's statistics from the driver (registers, spills, cycles: tuning shaders)
+    bool pexec_ext = getenv("LARECOMP_VK_SHADER_STATS") && atoi(getenv("LARECOMP_VK_SHADER_STATS")) &&
+                     has_ext(ep, ne, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
@@ -783,6 +831,14 @@ static void create_device(void) {
     g_vk.ssbo_chunks = h->fragmentStoresAndAtomics && h->vertexPipelineStoresAndAtomics && h->robustBufferAccess;
     b->shaderClipDistance = h->shaderClipDistance;
     if (!h->shaderInt64) LOG("[vk] warning: no shaderInt64 (64-bit address math in shaders)\n");
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR en_pexec = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR, .pipelineExecutableInfo = VK_TRUE};
+    if (pexec_ext) {
+        en_pexec.pNext = f.pNext, f.pNext = &en_pexec;
+        ext[n_ext++] = VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME;
+        g_shader_stats = true;
+        LOG("[vk] shader statistics on (LARECOMP_VK_SHADER_STATS): one [stats] line per pipeline stage, pipelines not cached\n");
+    }
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
                                   .queueCount = 1, .pQueuePriorities = &prio};
