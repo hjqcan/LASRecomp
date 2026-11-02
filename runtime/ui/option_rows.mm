@@ -289,7 +289,7 @@ bool opt_choice(const char *label, int *v, const char *const *names, int n, int 
     int step = row(label, names[cur], cur != def, desc, true, true);
     if (!step) return false;
     int nv = cur + (step == 2 ? 1 : step);
-    nv = wrap ? (nv + n) % n : nv < 0 ? 0 : nv >= n ? n - 1 : nv;
+    nv = wrap && step == 2 ? nv % n : nv < 0 ? 0 : nv >= n ? n - 1 : nv;
     if (nv == cur) return false;
     step_sfx(step);
     *v = nv;

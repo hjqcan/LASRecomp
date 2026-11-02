@@ -924,7 +924,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     int cur = 0;  // g_tab / g_tab_request hold ids
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
     if (!tabs[cur].on) cur = 0;
-    // L/R (or Q/E) switch tabs, skipping greyed-out ones (not while typing: Q / E are letters then, and the on-screen
+    // L/R (or Q/E) switch tabs, skipping greyed-out ones and stopping at the first / last (not while typing: Q / E are letters then, and the on-screen
     // keyboard has the controller)
     static const int cycle = getenv("LARECOMP_MENU_TAB_CYCLE") ? atoi(getenv("LARECOMP_MENU_TAB_CYCLE")) : 0;
     static int cycle_frames, cycle_i;  // (test) <frames>: each tab in turn, that many frames each (screenshot series)
@@ -936,9 +936,9 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     if (!any_popup && !typing) {
         int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
                  : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1 : 0;
-        if (step) {
-            int i = cur;
-            do i = (i + step + ntabs) % ntabs; while (!tabs[i].on);
+        int i = cur;
+        if (step) do i += step; while (i >= 0 && i < ntabs && !tabs[i].on);
+        if (step && i >= 0 && i < ntabs) {
             g_tab_request = tabs[i].id;
             // the cursor goes onto the new tab (left behind on the tab bar, A on it switched straight back - user
             // 2026-10-11; left in the old page, it stayed on a row that is gone, and Down went on from where that row

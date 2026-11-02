@@ -1864,8 +1864,8 @@ extern "C" void launcher_run(const char *root) {
                     sparkle(dl, ImVec2(play_at.x + w - h * 0.32f, play_at.y + h * 0.08f), h * 0.11f, k2 * 0.8f, -t * 0.8f);
                 }
                 ImGui::SetWindowFontScale(1.0f);
-                if (pressed && arrow && ImGui::IsMouseReleased(0)) {  // (a mouse click on an arrow: cycle)
-                    choice = (choice + arrow + (int)choices.size()) % (int)choices.size();
+                if (pressed && arrow && ImGui::IsMouseReleased(0)) {  // (a mouse click on an arrow: a step, to the ends)
+                    choice = std::max(0, std::min(choice + arrow, (int)choices.size() - 1));
                     pressed = false;
                 }
                 // first PLAY ever: the aspect ratio question, then how to reach our menu, then the game
@@ -1883,9 +1883,9 @@ extern "C" void launcher_run(const char *root) {
                 if (menu_tip(s)) play = true;
                 if (hov && status.empty()) {
                     if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft))
-                        choice = (choice + (int)choices.size() - 1) % (int)choices.size();
+                        choice = std::max(choice - 1, 0);
                     if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight))
-                        choice = (choice + 1) % (int)choices.size();
+                        choice = std::min(choice + 1, (int)choices.size() - 1);
                     // left / right are ours while PLAY is selected: ImGui's navigation would otherwise take them too,
                     // find nothing beside PLAY and scroll the window (PLAY loses its highlight, the cycling stops)
                     ImGuiID own = ImGui::GetID("##play_lr");

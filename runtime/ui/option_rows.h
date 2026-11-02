@@ -14,7 +14,8 @@
 void opt_begin(const char *id, float scale);
 void opt_section(const char *title);
 bool opt_toggle(const char *label, bool *v, bool def, const char *desc);
-// wrap: past the last value back to the first (and the other way); false: stops at the ends
+// left / right stop at the ends; A / a click on the row steps on, past the last value back to the first (wrap: false,
+// it stops there too)
 bool opt_choice(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap = true);
 // steps of `step` between lo and hi; fmt formats the value (e.g. "%gx")
 bool opt_slider(const char *label, float *v, float lo, float hi, float step, float def, const char *fmt, const char *desc);
