@@ -28,6 +28,8 @@ bool maxwell_gmem_lazy;
 bool maxwell_gmem_fs_miss;
 bool maxwell_glsl_stack_vars = true;
 bool maxwell_glsl_structured;  // static stacks + structured control flow by default (exec.c: Mali, Adreno)
+const uint8_t *maxwell_const_data;
+uint32_t maxwell_const_size;
 bool maxwell_gmem_mirror;  // (shader.h)
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
@@ -172,6 +174,17 @@ static const char *pred(Ctx *c, int p, bool neg, char *buf) {
 #define P(p, n) pred(c, (p), (n), alloca(16))
 
 static const char *cbuf_ref(Ctx *c, int idx, int64_t off, const char *dyn, char *buf) {
+    // c1, statically indexed (GLSL, LARECOMP_VK_INLINE_C1=1): the shader's own compiler constants never change, so the
+    // value itself instead of a uniform buffer load - which on Mesa's PanVK is a memory load every time (it keeps no
+    // uniform buffer words in the fast uniform registers, unlike ARM's driver), in the light loops too
+    static int inl = -1;
+    if (inl < 0) { const char *e = getenv("LARECOMP_VK_INLINE_C1"); inl = e && atoi(e); }
+    if (inl && c->glsl && idx == 1 && !dyn && maxwell_const_data && off >= 0 && (off & 3) == 0 && off + 4 <= (int64_t)maxwell_const_size) {
+        uint32_t v;
+        memcpy(&v, maxwell_const_data + off, 4);
+        sprintf(buf, "0x%08xu", v);
+        return buf;
+    }
     c->info->cbuf_mask |= 1u << idx;
     if (idx == 0) {  // a storage buffer binding: which slot (any, when indexed with a register)
         if (dyn) c->info->ssbo_read = 0xFFFF;
