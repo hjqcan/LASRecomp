@@ -1,9 +1,10 @@
 // The weather on Vulkan (runtime/nvn/weather.h; renderer.m's weather_encode is the Metal side, and the why): one pass
 // of its own on the window image right after the game's scene composite - the overcast / lightning fill, the rain
 // streaks or snow flakes, the splashes, a storm's leaves and lightning strike, the snow Link kicks up. The scene depth
-// is read as a texture. The shaders are renderer.m's wx_src in GLSL, the same math; the one difference is Vulkan's
-// framebuffer y (down, where Metal's NDC y is up): a pixel's NDC y is uv.y * 2 - 1 here, 1 - uv.y * 2 there. The clip
-// transform (flip y, depth -1..1, the depth range, mirrored) is the game's own on both, as its translated shaders do.
+// is read as a texture. The shaders are renderer.m's wx_src in GLSL, the same math: the pass draws through a
+// negative-height viewport as the game's draws do (exec.c's set_viewport: Metal's convention, NDC y up), so the window
+// image's and the scene depth's rows are Metal's and a pixel's NDC y is 1 - uv.y * 2 on both. The clip transform (flip
+// y, depth -1..1, the depth range, mirrored) is the game's own on both, as its translated shaders do.
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,7 +39,7 @@ static const char *wx_common =
     "  return c;\n"
     "}\n"
     "vec3 world_at(vec2 uv, float d) {\n"
-    "  vec2 m = vec2(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0);\n"  // (Vulkan: y down)
+    "  vec2 m = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);\n"
     "  if (w.flags.x > 0.5) m.y = -m.y;\n"
     "  float z = (d - w.zr.x) / w.zr.y;\n"
     "  if (w.flags.y > 0.5) z = z * 2.0 - 1.0;\n"
@@ -71,7 +72,7 @@ static const char *wx_common =
     "    vec2 m = c.xy / c.w;\n"
     "    if (any(greaterThan(abs(m), vec2(1.0)))) return false;\n"
     "    if (w.flags.x > 0.5) m.y = -m.y;\n"
-    "    uv = vec2(m.x * 0.5 + 0.5, m.y * 0.5 + 0.5);\n"  // (Vulkan: y down)
+    "    uv = vec2(m.x * 0.5 + 0.5, 0.5 - m.y * 0.5);\n"
     "    float d = dread(uvec2(uv * (w.screen.zw - 1.0)));\n"
     "    if (d >= 0.99999) return false;\n"
     "    s = world_at(uv, d);\n"
@@ -581,7 +582,7 @@ void vk_weather_pass(VkImageView color, VkFormat fmt, uint32_t w, uint32_t h, Vk
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {w, h}}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
     rec_CmdBeginRendering(cb, &ri);
-    VkViewport vp = {0, 0, (float)w, (float)h, 0, 1};
+    VkViewport vp = {0, (float)h, (float)w, -(float)h, 0, 1};  // (NDC y up: the game's own, the header says why)
     VkRect2D sc = {{0, 0}, {w, h}};
     rec_CmdSetViewport(cb, 0, 1, &vp);
     rec_CmdSetScissor(cb, 0, 1, &sc);
