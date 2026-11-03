@@ -122,6 +122,9 @@ extern "C" void difficulty_draw(float scale) {
     }
     if (opt_toggle("One-hit KO", &g_settings.diff_ohko, false, "One hit and Link is down, no matter how many hearts he has."))
         settings_save();
+    if (opt_toggle("Hide Hero Mode icon", &g_settings.hide_hero_icon, false,
+                   "Hides the Hero Mode emblem in the corner of the screen while playing a Hero Mode file."))
+        settings_save();
 
     // run timer / LiveSplit (runtime/hle/run_timer.c, runtime/livesplit.c, runtime/ui/race_overlay.mm)
     opt_section("Speedrun");

@@ -497,7 +497,6 @@
 {"SMAA", "SMAA"},
 {"Anti-aliasing", "アンチエイリアス"},
 {"Smooths jagged edges. SMAA keeps textures sharp and helps most at a lower internal resolution.", "ギザギザの輪郭をなめらかにします。SMAAはテクスチャをくっきり保ち、内部解像度が低いときに特に効果があります。"},
-{"Game", "ゲーム"},
 {"Remove blur", "ぼかしを消す"},
 {"Turns off the tilt-shift blur at the top and bottom of the screen.", "画面の上下にかかるミニチュア風のぼかしを消します。"},
 {"Hide Hero Mode icon", "辛口モードのアイコンを隠す"},
@@ -1487,6 +1486,7 @@
 {", ", "、"},
 {": ", "："},
 // not used any more
+{"Game", "ゲーム"},
 {"Keys", "カギ"},
 {"This seed picked your look. Commit to it!", "見た目はこのシードが決めました。これで行きましょう！"},
 {"Seed: %s", "シード: %s"},

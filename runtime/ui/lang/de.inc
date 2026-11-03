@@ -497,7 +497,6 @@
 {"SMAA", "SMAA"},
 {"Anti-aliasing", "Kantenglättung"},
 {"Smooths jagged edges. SMAA keeps textures sharp and helps most at a lower internal resolution.", "Glättet gezackte Kanten. SMAA hält Texturen scharf und hilft am meisten bei niedriger interner Auflösung."},
-{"Game", "Spiel"},
 {"Remove blur", "Unschärfe aus"},
 {"Turns off the tilt-shift blur at the top and bottom of the screen.", "Schaltet die Tilt-Shift-Unschärfe am oberen und unteren Bildrand ab."},
 {"Hide Hero Mode icon", "Heldenmodus-Symbol aus"},
@@ -1487,6 +1486,7 @@
 {", ", ", "},
 {": ", ": "},
 // not used any more
+{"Game", "Spiel"},
 {"Keys", "Schlüssel"},
 {"This seed picked your look. Commit to it!", "Dieser Seed hat deinen Look gewählt. Steh dazu!"},
 {"Seed: %s", "Seed: %s"},

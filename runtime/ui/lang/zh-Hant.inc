@@ -497,7 +497,6 @@
 {"SMAA", "SMAA"},
 {"Anti-aliasing", "反鋸齒"},
 {"Smooths jagged edges. SMAA keeps textures sharp and helps most at a lower internal resolution.", "讓鋸齒狀的邊緣變平滑。SMAA能保持材質清晰，在內部解析度較低時最有效。"},
-{"Game", "遊戲"},
 {"Remove blur", "移除模糊"},
 {"Turns off the tilt-shift blur at the top and bottom of the screen.", "關閉畫面上下方的移軸模糊效果。"},
 {"Hide Hero Mode icon", "隱藏英雄模式圖示"},
@@ -1487,6 +1486,7 @@
 {", ", "、"},
 {": ", "："},
 // not used any more
+{"Game", "遊戲"},
 {"Keys", "鑰匙"},
 {"This seed picked your look. Commit to it!", "這個種子已經決定了你的外觀。就這樣吧！"},
 {"Seed: %s", "種子：%s"},

@@ -497,7 +497,6 @@
 {"SMAA", "SMAA"},
 {"Anti-aliasing", "Сглаживание"},
 {"Smooths jagged edges. SMAA keeps textures sharp and helps most at a lower internal resolution.", "Сглаживает зубчатые края. SMAA сохраняет текстуры четкими и особенно помогает при низком внутреннем разрешении."},
-{"Game", "Игра"},
 {"Remove blur", "Убрать размытие"},
 {"Turns off the tilt-shift blur at the top and bottom of the screen.", "Отключает размытие «тилт-шифт» вверху и внизу экрана."},
 {"Hide Hero Mode icon", "Скрыть значок героя"},
@@ -1487,6 +1486,7 @@
 {", ", ", "},
 {": ", ": "},
 // not used any more
+{"Game", "Игра"},
 {"Keys", "Ключи"},
 {"This seed picked your look. Commit to it!", "Этот сид выбрал вам внешний вид. Смиритесь!"},
 {"Seed: %s", "Сид: %s"},

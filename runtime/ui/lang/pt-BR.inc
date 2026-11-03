@@ -498,7 +498,6 @@
 {"SMAA", "SMAA"},
 {"Anti-aliasing", "Anti-aliasing"},
 {"Smooths jagged edges. SMAA keeps textures sharp and helps most at a lower internal resolution.", "Suaviza bordas serrilhadas. O SMAA mantém as texturas nítidas e ajuda mais com uma resolução interna menor."},
-{"Game", "Jogo"},
 {"Remove blur", "Remover desfoque"},
 {"Turns off the tilt-shift blur at the top and bottom of the screen.", "Desativa o desfoque tilt-shift nas partes de cima e de baixo da tela."},
 {"Hide Hero Mode icon", "Ocultar ícone do Modo Herói"},
@@ -1488,6 +1487,7 @@
 {", ", ", "},
 {": ", ": "},
 // not used any more
+{"Game", "Jogo"},
 {"Keys", "Chaves"},
 {"This seed picked your look. Commit to it!", "Esta seed escolheu seu visual. Aceite!"},
 {"Seed: %s", "Seed: %s"},
