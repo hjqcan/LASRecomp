@@ -1036,28 +1036,39 @@ static void ip_mids(TexBackend *b, uint64_t frame) {
     // showed fewer - a virtual display (Parsec: 120 Hz reported, presents paced at 60) held each image two refreshes
     // and the game fell to its 30 fps mode. Learned from those frames, kept while the display reports the same rate.
     // In-betweens only from 100 Hz: never at the cost of the game's own 60.
-    static double hz_seen, hz_cap;
-    static int mids_last, settle;
+    // (gameplay only, three 30-frame checks in a row: a movie's or a load's hitch isn't the display.)
+    // LARECOMP_INTERP_HZ=<hz> (tests): that refresh rate, nothing learned.
+    static double hz_seen, hz_cap, hz_env = -1;
+    static int mids_last, settle, slow_checks;
+    if (hz_env < 0) hz_env = getenv("LARECOMP_INTERP_HZ") ? atof(getenv("LARECOMP_INTERP_HZ")) : 0;
     SDL_DisplayID did = SDL_GetDisplayForWindow(window);
     const SDL_DisplayMode *dm = did ? SDL_GetCurrentDisplayMode(did) : NULL;
     double hz = dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60;
-    if (hz != hz_seen) hz_seen = hz, hz_cap = 0, settle = 0;
-    if (mids_last > 0 && ++settle > 30) {  // (the interval settled with in-betweens being made)
+    if (hz != hz_seen) {
+        LOG("[interp] display %u: %.2f Hz (SDL)%s\n", (unsigned)did, hz, hz_env > 0 ? " - LARECOMP_INTERP_HZ overrides it" : "");
+        hz_seen = hz, hz_cap = 0, settle = slow_checks = 0;
+    }
+    if (hz_env > 0) hz = hz_env;
+    extern int game_in_play(void);      // hle/warp.c
+    extern bool world_on_screen(void);  // hle/mirror.c
+    if (hz_env <= 0 && mids_last > 0 && game_in_play() && world_on_screen() && ++settle >= 30) {  // (30 frames with in-betweens)
+        settle = 0;
         double expect = (mids_last + 1) * 1e9 / (hz_cap > 0 ? fmin(hz, hz_cap) : hz);
-        if (interval_ns > 1.3 * expect) {
+        slow_checks = interval_ns > 1.3 * expect ? slow_checks + 1 : 0;
+        if (slow_checks >= 3) {
             hz_cap = (mids_last + 1) * 1e9 / interval_ns;
-            settle = 0;
+            slow_checks = 0;
             static int nlog;
             if (nlog++ < 5) LOG("[interp] the display shows %.0f images a second, not %.0f: in-betweens for %.0f Hz\n", hz_cap, hz, hz_cap);
         }
     }
-    if (hz_cap > 0 && hz_cap < hz) hz = hz_cap;
+    if (hz_env <= 0 && hz_cap > 0 && hz_cap < hz) hz = hz_cap;
     // (counted for the game's own 60, not the measured interval: a game slowed to its 30 fps mode got more in-betweens,
     // which held it at 30)
     int mids = hz >= 100 ? (int)lround(hz / 60.0) - 1 : 0;
     if (mids > 3) mids = 3;
     if (mids < 1) { mids_last = 0; return; }
-    if (mids != mids_last) settle = 0;
+    if (mids != mids_last) settle = slow_checks = 0;
     mids_last = mids;
     if (!interp_replays_allowed(frame, total_frames, now)) return;
     if (!interp_replay_lock()) return;
