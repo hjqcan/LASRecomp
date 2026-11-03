@@ -28,6 +28,7 @@ bool maxwell_gmem_lazy;
 bool maxwell_gmem_fs_miss;
 bool maxwell_glsl_stack_vars = true;
 bool maxwell_glsl_structured;  // static stacks + structured control flow by default (exec.c: Mali, Adreno)
+bool maxwell_glsl_push;  // c1 inlined + push constants by default (exec.c: Mali)
 const uint8_t *maxwell_const_data;
 uint32_t maxwell_const_size;
 bool maxwell_gmem_mirror;  // (shader.h)
@@ -178,7 +179,7 @@ static const char *cbuf_ref(Ctx *c, int idx, int64_t off, const char *dyn, char 
     // value itself instead of a uniform buffer load - which on Mesa's PanVK is a memory load every time (it keeps no
     // uniform buffer words in the fast uniform registers, unlike ARM's driver), in the light loops too
     static int inl = -1;
-    if (inl < 0) { const char *e = getenv("LARECOMP_VK_INLINE_C1"); inl = e && atoi(e); }
+    if (inl < 0) { const char *e = getenv("LARECOMP_VK_INLINE_C1"); inl = e ? atoi(e) != 0 : maxwell_glsl_push; }
     if (inl && c->glsl && idx == 1 && !dyn && maxwell_const_data && off >= 0 && (off & 3) == 0 && off + 4 <= (int64_t)maxwell_const_size) {
         uint32_t v;
         memcpy(&v, maxwell_const_data + off, 4);
@@ -1988,7 +1989,7 @@ static bool glsl_early_tests(const Ctx *c) {
 uint32_t maxwell_push_base, maxwell_push_cap = 64;
 static void push_promote(Ctx *c, Str *body) {
     static int on = -1;
-    if (on < 0) { const char *e = getenv("LARECOMP_VK_PUSH_CB"); on = e && atoi(e); }
+    if (on < 0) { const char *e = getenv("LARECOMP_VK_PUSH_CB"); on = e ? atoi(e) != 0 : maxwell_glsl_push; }
     if (!on || (c->stage != STAGE_FRAGMENT && c->stage != STAGE_VERTEX) || !body->buf ||
         (maxwell_gmem_lazy && c->info->uses_gmem)) return;
     // LARECOMP_VK_PUSH_VS=0: none in vertex shaders (an A/B of the vertex words: the fragment budget stays 48 words)

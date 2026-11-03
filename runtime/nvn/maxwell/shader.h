@@ -128,6 +128,7 @@ extern bool maxwell_gmem_fs_miss;
 // variables form's pipelines (#526).
 extern bool maxwell_glsl_stack_vars;
 extern bool maxwell_glsl_structured;  // (the backend's default for this GPU: LARECOMP_VK_STATIC_STACKS / _STRUCTURE override)
+extern bool maxwell_glsl_push;  // (the backend's default: c1 inlined + push constants; LARECOMP_VK_INLINE_C1 / _PUSH_CB override)
 // The stage's compiler constants (c1: the bytes after its code), set by the caller around maxwell_translate (under its
 // lock). GLSL with LARECOMP_VK_INLINE_C1=1: statically indexed c1 reads become literals (no buffer load).
 extern const uint8_t *maxwell_const_data;

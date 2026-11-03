@@ -1299,6 +1299,13 @@ void vk_exec_init(void) {
     const char *se = getenv("LARECOMP_VK_STRUCTURE");
     LOG("[vk] structured shaders %s (%s)\n", (se ? atoi(se) != 0 : maxwell_glsl_structured) ? "on" : "off",
         se ? "LARECOMP_VK_STRUCTURE" : "default for this GPU");
+    // c1 inlined and the hot constant buffer words as push constants by default on Mali: Mesa's PanVK reads constant
+    // buffers from memory every time (Arm's driver and Turnip keep them in fast registers, where it's no change).
+    // LARECOMP_VK_INLINE_C1 / LARECOMP_VK_PUSH_CB =1 / =0 override.
+    maxwell_glsl_push = g_vk.props.vendorID == 0x13B5;
+    const char *pe = getenv("LARECOMP_VK_PUSH_CB");
+    LOG("[vk] constant-buffer push constants %s (%s)\n", (pe ? atoi(pe) != 0 : maxwell_glsl_push) ? "on" : "off",
+        pe ? "LARECOMP_VK_PUSH_CB" : "default for this GPU");
     // The command buffers of every slot, from the pool, before the recorder thread exists: from then on the pool and
     // the buffers are the recorder's (begun, recorded, ended and submitted in packet order)
     for (int i = 0; i < SUBS; i++) {
