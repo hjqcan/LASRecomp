@@ -441,7 +441,7 @@ void menu_sfx_play_gain(int id, float vgain) { menu_sfx_play_ex(id, vgain, 1, 0,
 void menu_sfx_play_ex(int id, float vgain, float rate, float lowpass, float from, float len, float delay) {
     static int off = -1;
     if (off < 0) off = no_audio();
-    if (id < 0 || id >= MENU_SFX_N || off) return;
+    if (id < 0 || id >= MENU_SFX_N || off || !g_settings.menu_sounds) return;  // (Audio tab: Menu sounds)
     pthread_mutex_lock(&g_lock);
     if (!ensure_loaded() || !g_sfx[id].pcm) { pthread_mutex_unlock(&g_lock); return; }
     if (!g_stream && !g_stream_failed) {

@@ -668,36 +668,30 @@ static void rows_goal(void) {
     if (opt_toggle("Triforce hunt", &hunt, false,
                    "Collect Triforce pieces to win. The last one you need rolls the credits, no Wind Fish required."))
         g_opts.tri_needed = hunt ? (g_tri_mode < 3 ? kTriPresets[g_tri_mode] : g_tri_custom) : 0;
-    opt_indent(1);
     static const char *const pn[] = {"3", "12", "24", LN("Custom")};
     if (!hunt) opt_disable_next();
     if (opt_choice("Pieces needed", &g_tri_mode, pn, 4, 2, "How many Triforce pieces you need to win.", false))
         g_opts.tri_needed = g_tri_mode < 3 ? kTriPresets[g_tri_mode] : g_tri_custom;
     if (hunt && g_tri_mode == 3) {  // Custom: the count
-        opt_indent(1);
         int v = g_tri_custom;
         if (opt_int("Custom", &v, 1, 50, 1, 24, "%d", "Pick any number from 1 to 50."))
             g_tri_custom = v, g_opts.tri_needed = v;
         take_focus(FOCUS_TRI);
-        opt_indent(-1);
     }
     static const char *const ex[] = {LN("None"), "+25%", "+50%"};
     if (!hunt) opt_disable_next();
     opt_choice("Extra pieces", &g_opts.tri_extra, ex, 3, 0,
                "Hides extra pieces on top of the ones you need, so you can skip some.");
-    opt_indent(-1);
 }
 
 static void rows_items(void) {
     {  // dungeon items: each kind shuffled (on) or given at the start (dungeon_items bits + compass_differs)
         bool beak = !(g_opts.dungeon_items & 1), map = !(g_opts.dungeon_items & 2), compass = map != g_opts.compass_differs;
         opt_section("Dungeon items shuffled");
-        opt_indent(1);
         bool ch = opt_toggle("Stone Beaks", &beak, true, "Turn off to start with every dungeon's Stone Beak.");
         ch |= opt_toggle("Maps", &map, true, "Turn off to start with every dungeon's map.");
         ch |= opt_toggle("Compasses", &compass, true, "Turn off to start with every dungeon's compass.");
         if (ch) g_opts.dungeon_items = (beak ? 0 : 1) | (map ? 0 : 2), g_opts.compass_differs = map != compass;
-        opt_indent(-1);
         opt_section("Other items");
     }
     opt_toggle("Hookshot anything", &g_opts.hookshot_any, false,
@@ -738,14 +732,11 @@ static void rows_extra_checks(void) {
     static const char *shopn[] = {LN("Off"), LN("Vanilla prices"), LN("Random prices")};
     opt_choice("Shopsanity", &g_opts.shopsanity, shopn, 3, 0, "Everything in the Mabe Village shop is a check.");
     {  // stealing (LAS 'stealing' never / normal / always), only with Shopsanity
-        opt_indent(1);
         bool steal = !g_opts.no_stealing, fast = !g_opts.steal_needs_sword;
         if (!g_opts.shopsanity) opt_disable_next();
         if (opt_toggle("Stealing", &steal, true, "Turns on or off the ability to steal.")) g_opts.no_stealing = !steal;
-        opt_indent(1);
         if (!g_opts.shopsanity || g_opts.no_stealing) opt_disable_next();
         if (opt_toggle("Fast Stealing", &fast, false, "Fast Stealing doesn't require the Sword.")) g_opts.steal_needs_sword = !fast;
-        opt_indent(-2);
     }
     opt_toggle("Trendy Game prizes", &g_opts.trendsanity, false,
                "Each of the 5 crane prize spots holds a check. Once you win one, it goes back to normal prizes.");
@@ -765,7 +756,6 @@ static void rows_world(float scale) {
         if (opt_toggle("Entrance randomizer", &on, false, "Shuffles where entrances lead, with logic."))
             g_opts.shuffle_dungeons = on, g_opts.entrances = 0;  // (on: dungeon entrances, the usual choice)
         bool last = false;  // (an attempt to turn off the last kind)
-        opt_indent(1);
         if (!on) opt_disable_next();
         if (opt_toggle("Dungeon entrances", &dungeons, false, "Dungeon entrances lead into other dungeons.")) {
             if (!dungeons && !houses) last = true;
@@ -781,7 +771,6 @@ static void rows_world(float scale) {
         if (!houses) opt_disable_next();
         opt_toggle("Decoupled entrances", &g_opts.decoupled, false,
                    "Leaving a house drops you outside a different door than the one you came in.");
-        opt_indent(-1);
         if (last) ImGui::OpenPopup("##entlast");
         if (!opt_collecting() && ImGui::BeginPopupModal("##entlast", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
             ImGui::TextUnformatted(L("Keep at least one kind of entrance shuffled, or turn the entrance randomizer off."));
@@ -805,7 +794,6 @@ static void rows_world(float scale) {
     {  // its doorway letters on the dungeon map (runtime/ui/chaos_overlay.mm; a player setting, not part of the seed):
        // on = as you explore, every pair once you have the map (CHAOS_LETTERS_MAP); off = none
         bool on = g_settings.chaos_letters != CHAOS_LETTERS_OFF;
-        opt_indent(1);
         if (!g_opts.room_shuffle) opt_disable_next();
         opt_own_next();
         if (opt_toggle("Map tracks door connections", &on, true,
@@ -814,7 +802,6 @@ static void rows_world(float scale) {
             g_settings.chaos_letters = on ? CHAOS_LETTERS_MAP : CHAOS_LETTERS_OFF;
             settings_save();
         }
-        opt_indent(-1);
     }
     opt_toggle("Shuffle instruments", &g_opts.shuffle_instruments, false,
                "The Siren Instruments are items in the pool instead of each dungeon's reward.");
@@ -823,7 +810,6 @@ static void rows_world(float scale) {
 
 static void rows_enemies(void) {
     opt_toggle("Randomize enemies", &g_opts.randomize_enemies, false, "Shuffles enemies around the island.");
-    opt_indent(1);
     {
         if (!g_opts.randomize_enemies) opt_disable_next();
         static const char *const modes[] = {LN("Seeded"), LN("Random")};
@@ -835,7 +821,6 @@ static void rows_enemies(void) {
                "Mini-bosses join the normal enemy pool. Only some appear indoors, since the rest don't behave well in "
                "small rooms.");
     {  // (miniboss-frequency 0 normal / 1 double / 3 all: the retired 3x, 2, reads as All)
-        opt_indent(1);
         if (!g_opts.randomize_enemies || !g_opts.enemy_minibosses) opt_disable_next();
         static const char *const freq[] = {LN("Normal"), LN("Double"), LN("All")};
         static const int ids[] = {0, 1, 3};
@@ -843,9 +828,7 @@ static void rows_enemies(void) {
         if (opt_choice("Mini-boss frequency", &i, freq, 3, 0,
                        "How often overworld enemies turn into mini-bosses. All swaps every enemy that has room."))
             g_opts.miniboss_freq = ids[i];
-        opt_indent(-1);
     }
-    opt_indent(-1);
     opt_toggle("Boss souls", &g_opts.boss_souls, false,
                "Each boss has a soul hidden in the item pool, Color Dungeon included. The boss won't show up until you "
                "find its soul, so that instrument stays locked. Found souls show on the Items screen.");
