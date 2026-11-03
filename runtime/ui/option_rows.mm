@@ -606,6 +606,13 @@ static bool is_tab(ImGuiID id) {
     return false;
 }
 
+// (a mouse click on a scroll bar plays nothing)
+static bool on_scrollbar(ImGuiContext &g) {
+    ImGuiWindow *w = g.HoveredWindow;
+    return w && (g.HoveredId == ImGui::GetWindowScrollbarID(w, ImGuiAxis_Y) ||
+                 g.HoveredId == ImGui::GetWindowScrollbarID(w, ImGuiAxis_X));
+}
+
 extern "C" void menu_sfx_frame(bool back_ok) {
     ImGuiContext &g = *ImGui::GetCurrentContext();
     static ImGuiContext *ctx;  // (the start screen's and the game's overlay are two)
@@ -616,7 +623,7 @@ extern "C" void menu_sfx_frame(bool back_ok) {
     if (!ui_text_busy() && cap < 0) {
         if (back_ok && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
             menu_sfx_play(MENU_SFX_CANCEL);
-        else if (g.NavActivatePressedId || (ImGui::IsMouseClicked(0) && g.HoveredId))
+        else if (g.NavActivatePressedId || (ImGui::IsMouseClicked(0) && g.HoveredId && !on_scrollbar(g)))
             menu_sfx_play(is_tab(g.NavActivatePressedId ? g.NavActivatePressedId : g.HoveredId) ? MENU_SFX_TAB
                                                                                                 : MENU_SFX_DECIDE);
         else if (g.NavCursorVisible && g.NavId && last && g.NavId != last)
