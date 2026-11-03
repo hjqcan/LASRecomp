@@ -3305,20 +3305,28 @@ static const char *sc_src =
     "  }\n"
     "  if (k <= 0.0) return none;\n"
     // alcoves - a doorstep inside a doorway's arch, lit or not: walls rise close by on the left, the right and behind
-    // (up the screen) all three (ground by a wall or in a corner has two at most). Each side: the highest of a few
-    // samples out to ~90 pixels (at 1080p: a doorway is ~100 wide), the level's model only - not the face trees by
-    // Crazy Tracy's (stencil slot 7, the prep: ground among them is open ground) - ramped over 0.4-0.7 in world height
-    "  float side[3];\n"
+    // (up the screen) all three (ground by a wall or in a corner has two at most), and the doorway's dark opening is
+    // right behind it. Each side: the highest of a few samples out to ~90 pixels (at 1080p: a doorway is ~100 wide),
+    // the level's model only - not the face trees by Crazy Tracy's (stencil slot 7, the prep: ground among them is
+    // open ground) - ramped over 0.4-0.7 in world height. The opening: the darkest of the samples behind, near black.
+    // (Without it the dead end of a walkway between two walls, a lit wall behind it, went bare - and back, frame by
+    // frame, as the samples moved with the camera: issue #575, by the well in Mabe Village)
+    "  float side[3], dark = 0.0;\n"
     "  int2 dirs[3] = {int2(-1, 0), int2(1, 0), int2(0, w.flags.x > 0.5 ? 1 : -1)};\n"
     "  for (int d = 0; d < 3; d++) {\n"
     "    side[d] = 0.0;\n"
     "    for (int j = 3; j <= 15; j += 4) {\n"
-    "      float4 a = sc_at(w, pp, clamp(q + dirs[d] * int(rad * float(j)), int2(0), mx));\n"
+    "      int2 qq = clamp(q + dirs[d] * int(rad * float(j)), int2(0), mx);\n"
+    "      if (d == 2) {\n"
+    "        float3 cb = ct.read(uint2(clamp(int2(float2(qq) * w.screen.xy / w.screen.zw), int2(0), int2(w.screen.xy) - 1))).rgb;\n"
+    "        dark = max(dark, 1.0 - smoothstep(0.02, 0.03, max(cb.r, max(cb.g, cb.b))));\n"
+    "      }\n"
+    "      float4 a = sc_at(w, pp, qq);\n"
     "      if (a.w > 0.5) continue;\n"
     "      side[d] = max(side[d], smoothstep(0.4, 0.7, a.y - p.y));\n"
     "    }\n"
     "  }\n"
-    "  k *= 1.0 - min(side[0], min(side[1], side[2]));\n"
+    "  k *= 1.0 - min(side[0], min(side[1], side[2])) * dark;\n"
     "  if (k <= 0.0) return none;\n"
     "  return float4(k, n.y, rough, sc_eye(w, (float2(q) + 0.5) * e, d));\n"
     "}\n"
