@@ -1991,7 +1991,11 @@ static void push_promote(Ctx *c, Str *body) {
     if (on < 0) { const char *e = getenv("LARECOMP_VK_PUSH_CB"); on = e && atoi(e); }
     if (!on || (c->stage != STAGE_FRAGMENT && c->stage != STAGE_VERTEX) || !body->buf ||
         (maxwell_gmem_lazy && c->info->uses_gmem)) return;
-    int cap = c->stage == STAGE_VERTEX ? 16 : (int)maxwell_push_cap - (int)maxwell_push_base / 4;
+    // LARECOMP_VK_PUSH_VS=0: none in vertex shaders (an A/B of the vertex words: the fragment budget stays 48 words)
+    static int vs_on = -1;
+    if (vs_on < 0) { const char *e = getenv("LARECOMP_VK_PUSH_VS"); vs_on = !e || atoi(e); }
+    if (c->stage == STAGE_VERTEX && !vs_on) return;
+    int cap = c->stage == STAGE_VERTEX ? 16 : (int)maxwell_push_cap - (vs_on ? (int)maxwell_push_base / 4 : 16);
     if (cap > 64) cap = 64;
     if (cap <= 0) return;
     enum { MAXW = 512, MAXD = 64 };
