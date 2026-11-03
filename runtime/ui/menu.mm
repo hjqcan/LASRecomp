@@ -293,6 +293,28 @@ bool menu_handle_event(const SDL_Event *e) {
     }
 }
 
+// Remember window size (Video tab): the window opens at the size it had when LAS Recomp last quit. The size is taken
+// at exit (every quit ends in exit()), not in fullscreen or maximized - those keep the last plain window's size.
+static SDL_Window *g_remember_win;
+static void remember_at_exit(void) {
+    if (!g_settings.remember_window || !g_remember_win) return;
+    SDL_WindowFlags fl = SDL_GetWindowFlags(g_remember_win);
+    int w, h;
+    if ((fl & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_MINIMIZED)) || !SDL_GetWindowSize(g_remember_win, &w, &h))
+        return;
+    if (w == g_settings.window_w && h == g_settings.window_h) return;
+    g_settings.window_w = w, g_settings.window_h = h;
+    settings_save();
+}
+extern "C" void rt_window_size(int *w, int *h) {  // before the window is made: the remembered size, if it's on
+    if (g_settings.remember_window && g_settings.window_w >= 320 && g_settings.window_h >= 180)
+        *w = g_settings.window_w, *h = g_settings.window_h;
+}
+extern "C" void rt_window_remember(void *w) {
+    if (!g_remember_win) atexit(remember_at_exit);
+    g_remember_win = (SDL_Window *)w;
+}
+
 extern "C" uint32_t g_window_resize_request;  // (test scripts: runtime/hle/input.c "resize")
 void menu_apply_window_requests(void *win) {
     SDL_Window *w = (SDL_Window *)win;
@@ -511,9 +533,15 @@ static void tab_display(void) {
         g_settings.fullscreen = fs;
         g_want_fullscreen_apply.store(true);
     }
-    opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
+    static const char *fps_corners[] = {LN("Off"), LN("Top left"), LN("Top right"), LN("Bottom left"), LN("Bottom right")};
+    opt_choice("Show FPS", &g_settings.show_fps, fps_corners, N_FPS_CORNERS, FPS_OFF,
+               "Shows the frame rate in a corner of the screen.");
     opt_toggle("Remove blur", &g_settings.blur_removal, false,
                "Turns off the tilt-shift blur at the top and bottom of the screen.");
+    opt_toggle("Pause on focus lost", &g_settings.pause_unfocused, false,
+               "The game pauses while its window isn't in front.");
+    opt_toggle("Remember window size", &g_settings.remember_window, false,
+               "The window opens at the size it was when you quit.");
 
     opt_section("Rendering");
     // display order -> RES_* (the ini / enum order predates the menu order)
@@ -657,15 +685,18 @@ static void tab_cosmetics(void) {
 
 static void tab_audio(void) {
     opt_begin("##audio", ImGui::GetFontSize() / 34);
-    opt_section("Sound");
+    opt_section("Volume");
     float pct = roundf(g_settings.volume * 100);
     if (opt_slider("Volume", &pct, 0, 200, 5, 100, "%g%%",
                    "The game's volume. 100% is normal, higher is louder."))
         g_settings.volume = pct / 100.0f;
-    opt_toggle("Room reverb", &g_settings.reverb, true,
-               "The game's echo in caves, dungeons and big rooms.");
     opt_toggle("Movie audio", &g_settings.movie_audio, true,
                "Sound in the opening and ending movies. Changes the next time a movie plays.");
+    opt_section("Effects");
+    opt_toggle("Enable reverb", &g_settings.reverb, true,
+               "The game's echo in caves, dungeons and big rooms.");
+    opt_toggle("LAS Recomp menu sounds", &g_settings.menu_sounds, true,
+               "Sounds when you move around and pick things in LAS Recomp's menus.");
     opt_end();
 }
 
@@ -1331,7 +1362,11 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui::NewFrame();
 
     if (g_settings.show_fps) {
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 16 * scale, 16 * scale), 0, ImVec2(1, 0));
+        int c = g_settings.show_fps;
+        bool right = c == FPS_TOP_RIGHT || c == FPS_BOTTOM_RIGHT, bottom = c == FPS_BOTTOM_LEFT || c == FPS_BOTTOM_RIGHT;
+        float m = 16 * scale;
+        ImGui::SetNextWindowPos(ImVec2(right ? io.DisplaySize.x - m : m, bottom ? io.DisplaySize.y - m : m), 0,
+                                ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f));
         ImGui::SetNextWindowBgAlpha(0.5f);
         ImGui::Begin("##fps", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                         ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
