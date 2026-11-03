@@ -528,6 +528,8 @@ static TexBackend *tex_backend(NvnTexture *t) {
 
 void backend_texture_destroyed(NvnTexture *t) {
     TexBackend *b = t->backend;
+    extern void interp_texture_destroyed(void);
+    interp_texture_destroyed();  // (frame interpolation: a texture the frame may have drawn with went away)
     if (b) {
         extern void vk_alias_texture_destroyed(NvnTexture *t);  // (exec.c copy aliases: a source's contents handed over)
         vk_alias_texture_destroyed(t);

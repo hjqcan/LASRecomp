@@ -19,6 +19,7 @@
 #include "../renderer.h"
 #include "../pace.h"
 #include "../shader_prep.h"
+#include "../interp.h"
 #include <pthread.h>
 
 VkG g_vk;
@@ -926,7 +927,7 @@ static uint64_t frames, total_frames, g_frame_counter;
 uint64_t renderer_present_count(void) { return total_frames; }  // (the game thread's frame: the HLE hooks')
 // The frame whose work is being translated (rqueue.h rq_frame): "once per frame" state of the translation. Without the
 // render thread, total_frames.
-uint64_t renderer_exec_frame(void) { return rq_current_item() ? rq_frame() : total_frames; }
+uint64_t renderer_exec_frame(void) { return (rq_current_item() ? rq_frame() : total_frames) + interp_replay_salt(); }
 uint64_t vk_frame_counter(void) { return renderer_exec_frame(); }  // (the translation's: g_frame_counter == total_frames)
 static float g_shot_crop[4] = {0, 0, 1, 1};
 static double last_fps_time;
@@ -937,10 +938,11 @@ const float *vk_shot_crop(void) { return g_shot_crop; }
 void backend_present(NvnTexture *t);
 void *backend_pool_push(void) { return NULL; }
 void backend_pool_pop(void *p) { (void)p; }
+static bool direct_repeat;  // (render thread off) backend_represent's present
 void backend_represent(void) {
     if (!g_last_presented) { SDL_Delay(16); return; }
     if (rq_on()) rq_present(g_last_presented, total_frames, false);
-    else backend_present_now(g_last_presented, total_frames);
+    else { direct_repeat = true; backend_present_now(g_last_presented, total_frames); direct_repeat = false; }
 }
 
 // (LARECOMP_VK_PROF) the present's time by part, per frame in the fps line ("present/frame"): submit = the frame's
@@ -981,6 +983,16 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
     // Its GPU time is counted, and the window image's submission's from after its wait (exec.c gpu_timer_add)
     renderer_submit();
     pp_mark(PP_SUBMIT);
+    {   // frame interpolation (runtime/nvn/interp.c): the frame's draws matched with the previous frame's and logged
+        // (LARECOMP_INTERP=measure; in-betweens: not yet on Vulkan)
+        bool repeat = rq_on() ? rq_present_is_repeat() : direct_repeat;
+        int want = interp_wanted();
+        if (!repeat) {
+            interp_frame_end(want != INTERP_OFF);
+            interp_frame_rotate();
+            if (want != INTERP_OFF) interp_log_stats();
+        }
+    }
     static const float black[4] = {0, 0, 0, 1};
     uint64_t t0 = SDL_GetTicksNS();
     bool have = vk_frame_begin(black);

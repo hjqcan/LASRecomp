@@ -21,6 +21,7 @@
 #include "vk.h"
 #include "record.h"
 #include "../renderer.h"
+#include "../interp.h"
 #include "../pace.h"
 #include "../recolour.h"
 #include "../screen_filter.h"
@@ -3481,6 +3482,11 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     // at every draw, as before)
     static int scan_once = -1;
     if (scan_once < 0) scan_once = getenv("LARECOMP_VK_NO_SCAN_ONCE") == NULL;
+    if (g_interp_log && stage < 2) {  // (frame interpolation: logged / blended copy; compared over the bytes the shader reads)
+        uint64_t used = si->cbuf_used[k] && si->cbuf_used[k] < size ? si->cbuf_used[k] : size;
+        const void *src = interp_cbuf(stage, k, idx, (const void *)(uintptr_t)r.addr, size, used);
+        if (src != (const void *)(uintptr_t)r.addr) return ubo_span(vk_transient_copy(src, size, 256), size);
+    }
     if (gc_lazy && si->uses_gmem && scan_once) return ubo_span(guest_copy_ex(r.addr, size, true), size);
     if (gc_lazy && si->uses_gmem) gc_scan_pointers((const uint32_t *)(uintptr_t)r.addr, size);
     return ubo_span(guest_copy(r.addr, size), size);
@@ -4882,6 +4888,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     NvnTexEntry *ent = NULL;  // (shadow slots: what the view came from)
     if (h && st.tpool && tic < (uint32_t)st.tpool->count) {
         NvnTexEntry *e = ent = &((NvnTexEntry *)st.tpool->entries)[tic];
+        if (g_interp_log) e = ent = (NvnTexEntry *)interp_texentry(stage, i, e, sizeof *e);  // (frame interpolation: the frame's entry)
         if (e->tex) {
             // Per-frame memo: ~2400 lookups per overworld frame recomputed the view (format / range math, cache
             // probe). The first lookup of a frame still runs vk_view (upload check); a view that may have been
@@ -5657,6 +5664,19 @@ static void draw_(CmdRec *r, bool indexed) {
     uint8_t cls;
     bool native = topology(mode, &topo, &cls);
     if (!native && mode != 6 && mode != 7 && mode != 9) { SKIP(SK_TOPOLOGY); return; }
+    if (g_interp_log) {  // (frame interpolation, runtime/nvn/interp.c: the draw's identity across frames - renderer.m's key)
+        static int kmask = -1;  // LARECOMP_INTERP_KEY=<mask> (renderer.m)
+        if (kmask < 0) kmask = getenv("LARECOMP_INTERP_KEY") ? atoi(getenv("LARECOMP_INTERP_KEY")) : 37;
+        uint64_t args[7];
+        memcpy(args, r->x, sizeof args);
+        if (indexed && !(kmask & 2)) args[3] = 0;
+        NvnTexture *kt = st.rt.ncolor ? st.rt.color[0] : st.rt.depth;
+        uint64_t key = (kmask & 1) ? hmix(1469598103934665603ull, args, sizeof args) : 1469598103934665603ull;
+        uint64_t ids[5] = {(kmask & 4) ? st.program->stages[0].code_addr : 0, (kmask & 4) ? st.program->stages[1].code_addr : 0,
+                           (kmask & 8) ? st.vbuf[0].addr : 0, (kmask & 16) ? (uint64_t)(uintptr_t)kt : 0,
+                           (kmask & 32) && kt ? (uint64_t)kt->format << 32 | (st.rt.ncolor ? 0 : 1u << 31) | (kt->height ? kt->width * 16 / kt->height : 0) : 0};
+        interp_draw(hmix(key, ids, sizeof ids), st.rt.ncolor == 0);
+    }
 
     uint64_t prof_tk_ = prof ? SDL_GetTicksNS() : 0;
     if (prof) prof_pre += prof_tk_ - prof_tp_;
@@ -7333,6 +7353,7 @@ static void exec_list(uint64_t handle, int depth) {
 
 void backend_execute(uint64_t handle) {
     PROF_T0();
+    interp_list_submitted(handle);  // (frame interpolation, runtime/nvn/interp.c: the frame's lists)
     exec_list(handle, 0);
     PROF_ADD(prof_exec);
     if (prof) cum_exec += SDL_GetTicksNS() - prof_t0_;
