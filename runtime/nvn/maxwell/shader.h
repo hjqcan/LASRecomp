@@ -78,6 +78,11 @@ typedef struct {
                             // target scale, [1 + i] = allocation scale of texture i
     uint32_t local_mem;     // bytes of local memory
     uint32_t num_insts;
+    // (GLSL fragment, LARECOMP_VK_PUSH_CB=1) constant buffer words moved into push constants (pcw[k]: the word at byte
+    // push_off[k] of cbuf push_cb[k]): the most read, loops first - kept in fast uniform registers where a driver
+    // doesn't promote uniform buffer words itself (Mesa's PanVK)
+    uint8_t npush, push_cb[64];
+    uint16_t push_off[64], push_base;  // (push_base: the block's offset in the push range, bytes)
     char error[256];        // set when translation fails
 } ShaderInfo;
 
@@ -123,6 +128,14 @@ extern bool maxwell_gmem_fs_miss;
 // variables form's pipelines (#526).
 extern bool maxwell_glsl_stack_vars;
 extern bool maxwell_glsl_structured;  // (the backend's default for this GPU: LARECOMP_VK_STATIC_STACKS / _STRUCTURE override)
+extern bool maxwell_glsl_push;  // (the backend's default: c1 inlined + push constants; LARECOMP_VK_INLINE_C1 / _PUSH_CB override)
+// The stage's compiler constants (c1: the bytes after its code), set by the caller around maxwell_translate (under its
+// lock). GLSL with LARECOMP_VK_INLINE_C1=1: statically indexed c1 reads become literals (no buffer load).
+extern const uint8_t *maxwell_const_data;
+extern uint32_t maxwell_const_size;
+// LARECOMP_VK_PUSH_CB: the fragment shader's push words start at maxwell_push_base (bytes: after the vertex shader's),
+// at most maxwell_push_cap words in all (set by the caller around maxwell_translate)
+extern uint32_t maxwell_push_base, maxwell_push_cap;
 // (GLSL / Vulkan) No heap import (panvk, Honeykrisp: no VK_EXT_external_memory_host, issue #483): every stage reaches
 // its storage buffers through the address table (GMap / GFast, as compute does), which points into copies of the
 // guest memory they cover (vulkan/exec.c gmir_). Accesses outside the table read 0 and drop their stores.

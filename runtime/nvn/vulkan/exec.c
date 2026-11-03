@@ -1299,6 +1299,13 @@ void vk_exec_init(void) {
     const char *se = getenv("LARECOMP_VK_STRUCTURE");
     LOG("[vk] structured shaders %s (%s)\n", (se ? atoi(se) != 0 : maxwell_glsl_structured) ? "on" : "off",
         se ? "LARECOMP_VK_STRUCTURE" : "default for this GPU");
+    // c1 inlined and the hot constant buffer words as push constants by default on Mali: Mesa's PanVK reads constant
+    // buffers from memory every time (Arm's driver and Turnip keep them in fast registers, where it's no change).
+    // LARECOMP_VK_INLINE_C1 / LARECOMP_VK_PUSH_CB =1 / =0 override.
+    maxwell_glsl_push = g_vk.props.vendorID == 0x13B5;
+    const char *pe = getenv("LARECOMP_VK_PUSH_CB");
+    LOG("[vk] constant-buffer push constants %s (%s)\n", (pe ? atoi(pe) != 0 : maxwell_glsl_push) ? "on" : "off",
+        pe ? "LARECOMP_VK_PUSH_CB" : "default for this GPU");
     // The command buffers of every slot, from the pool, before the recorder thread exists: from then on the pool and
     // the buffers are the recorder's (begun, recorded, ended and submitted in packet order)
     for (int i = 0; i < SUBS; i++) {
@@ -1805,6 +1812,7 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
 typedef struct {
     ShaderInfo *vi, *fi;
     uint64_t code[2], cmax[2];  // translation inputs (copied: translated on the translator thread)
+    uint32_t csize[2];          // (their compiler constants' size, at code + cmax: maxwell_const_data)
     ShaderKey vkey, fkey;
     VkShaderModule vs, fs;
     VkShaderModule fs_late;  // (lazy chunks) fs without early fragment tests, for alpha to coverage pipelines; or NULL
@@ -1869,9 +1877,14 @@ static VkPipelineLayout make_layout(Prog *p, int nsets, VkShaderStageFlags s0, V
     // (lazy chunks, vertex / fragment: the storage buffers' chunks as push constants, shader.h GMEM_DIRECT_MAX)
     VkPushConstantRange gd = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16 * GMEM_DIRECT_MAX};
     bool direct = gm && gc_lazy && s1 == VK_SHADER_STAGE_FRAGMENT_BIT;
+    // (LARECOMP_VK_PUSH_CB: the shaders' promoted constant buffer words, ShaderInfo.npush: vertex from 0, fragment after)
+    VkPushConstantRange pcr[2];
+    uint32_t npcr = 0;
+    if (!direct && p->vi && p->vi->npush) pcr[npcr++] = (VkPushConstantRange){VK_SHADER_STAGE_VERTEX_BIT, 0, p->vi->npush * 4u};
+    if (!direct && p->fi && p->fi->npush) pcr[npcr++] = (VkPushConstantRange){VK_SHADER_STAGE_FRAGMENT_BIT, p->fi->push_base, p->fi->npush * 4u};
     VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = (uint32_t)nsets,
-                                     .pSetLayouts = p->set_layout, .pushConstantRangeCount = direct ? 1 : 0,
-                                     .pPushConstantRanges = direct ? &gd : NULL};
+                                     .pSetLayouts = p->set_layout, .pushConstantRangeCount = direct ? 1 : npcr,
+                                     .pPushConstantRanges = direct ? &gd : npcr ? pcr : NULL};
     VkPipelineLayout l;
     VK_CHECK(vkCreatePipelineLayout(g_vk.dev, &ci, NULL, &l));
     return l;
@@ -1953,11 +1966,19 @@ static bool translate_program_now(Prog *p) {
     maxwell_gmem_size = HEAP_MAX;
     maxwell_gmem_chunk_shift = gmem_chunk_shift();
     pthread_mutex_lock(&translate_lock);
+    maxwell_const_data = (const uint8_t *)(uintptr_t)(p->code[0] + p->cmax[0]), maxwell_const_size = p->cmax[0] != 0x10000 ? p->csize[0] : 0;
+    // (LARECOMP_VK_PUSH_CB: the vertex shader's words first; vertex and fragment together within the device's limit,
+    // which Vulkan only guarantees at 128 bytes, and at most 64 words)
+    uint32_t pc_words = g_vk.props.limits.maxPushConstantsSize / 4;
+    maxwell_push_base = 0, maxwell_push_cap = pc_words < 64 ? pc_words : 64;
     p->vi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[0], p->cmax[0], STAGE_VERTEX, &p->vkey);
     if (p->vi->msl) {
         p->fkey.vs_out_mask = p->vi->out_mask;
+        maxwell_const_data = (const uint8_t *)(uintptr_t)(p->code[1] + p->cmax[1]), maxwell_const_size = p->cmax[1] != 0x10000 ? p->csize[1] : 0;
+        maxwell_push_base = p->vi->npush * 4u;  // (the fragment shader's words after them)
         p->fi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[1], p->cmax[1], STAGE_FRAGMENT, &p->fkey);
     }
+    maxwell_const_data = NULL, maxwell_const_size = 0;
     pthread_mutex_unlock(&translate_lock);
     if (!p->vi->msl) {
         LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
@@ -2101,6 +2122,7 @@ static Prog *get_program_(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     for (int i = 0; i < 2; i++) {
         p->code[i] = np->stages[i].code_addr;
         p->cmax[i] = np->stages[i].const_offset ? np->stages[i].const_offset : 0x10000;
+        p->csize[i] = np->stages[i].const_size;
     }
     p->vkey = *vkey;
     p->fkey = *fkey;
@@ -5806,6 +5828,7 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
         p->code[1] = (uintptr_t)fsb->code;
         p->cmax[0] = vsb->const_offset ? vsb->const_offset : 0x10000;
         p->cmax[1] = fsb->const_offset ? fsb->const_offset : 0x10000;
+        p->csize[0] = vsb->const_size, p->csize[1] = fsb->const_size;
         p->vkey = vkey;
         p->fkey = fkey;
         p->prep_vh = r->vs, p->prep_fh = r->fs;
@@ -6758,6 +6781,18 @@ static void draw_(CmdRec *r, bool indexed) {
     if (prof) prof_sets += SDL_GetTicksNS() - prof_t1_;
     VkDescriptorSet sets[2] = {vset, fset};
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, ndyn, ndyn ? dyn : NULL);
+    for (int sg = 0; sg < 2; sg++) {  // (LARECOMP_VK_PUSH_CB) the promoted words, from the bound ranges as the draw sees them now
+        const ShaderInfo *si = sg ? pr->fi : pr->vi;
+        if (!si->npush) continue;
+        uint32_t pw[64];
+        for (int i = 0; i < si->npush; i++) {
+            Range r = st.ubuf[sg][si->push_cb[i] - 3];
+            uint32_t o = si->push_off[i];
+            pw[i] = r.addr && o + 4 <= (r.size ? r.size : 0x10000) ? *(const uint32_t *)(uintptr_t)(r.addr + o) : 0;  // (as cbuf_info)
+        }
+        rec_CmdPushConstants(cb, pr->layout, sg ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT, si->push_base,
+                             si->npush * 4u, pw);
+    }
     if (gc_shift && (pr->vi->uses_gmem || pr->fi->uses_gmem))
         gmem_chunk_bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, GMEM_CHUNK_SET(STAGE_FRAGMENT),
                         (pr->vi->uses_gmem ? 1u << STAGE_VERTEX : 0) | (pr->fi->uses_gmem ? 1u << STAGE_FRAGMENT : 0));
