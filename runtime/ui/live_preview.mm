@@ -120,7 +120,7 @@ bool preview_draw(float scale, ImFont *font, ImFont *font_big, void (*page)(void
         if (left || right) P.sel ^= 1, menu_sfx_play(MENU_SFX_CURSOR);
         if (clicked == 4 || clicked == 5) P.sel = clicked - 4, a = true;
         if (a) close = true, keep = P.sel == 0, menu_sfx_play(MENU_SFX_DECIDE);
-        else if (b) P.confirm = false;
+        else if (b) close = true, keep = false;  // (B again: back without saving - no going round in circles)
     } else {
         if (clicked == 0) left = true;
         if (clicked == 1) right = true;

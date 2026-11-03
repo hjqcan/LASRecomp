@@ -294,10 +294,11 @@ bool opt_preview(const char *label, int *v, const char *const *names, int n, int
                  bool preview) {
     bool scan = preview && preview_scanning(), off = g_next_disabled;
     int cur = *v >= 0 && *v < n ? *v : 0;
-    int step = row(label, names[cur], cur != def, desc, true, true);
+    // (preview: a chevron - A / a click / Right opens it, the value doesn't step here)
+    int step = row(label, names[cur], cur != def, desc, true, !preview, preview);
     if (scan) return preview_row(label, v, names, n, def, desc, wrap, off);  // (row: only read, as the others)
-    if (step == 2 && preview && !g_collect) {
-        preview_open(label, opt_item_nav_focused() ? (int)g_rows.size() - 1 : -1);
+    if (preview) {
+        if (step == 2 && !g_collect) preview_open(label, opt_item_nav_focused() ? (int)g_rows.size() - 1 : -1);
         return false;
     }
     if (!step) return false;

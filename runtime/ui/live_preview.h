@@ -1,7 +1,7 @@
 // The live preview (runtime/ui/live_preview.mm): a setting whose effect you need to see (Internal resolution, Anti-
 // aliasing...) opens on its own, the settings window gone and the game behind a small panel at the bottom - the row's
 // name and value (‹ ›), its description, Return and Reset to default. Left / right change it live, A keeps it, B goes
-// back (a Yes / No to save when it changed: No puts the old value back).
+// back (a Yes / No to save when it changed: No, or B again, puts the old value back).
 //
 // A page opts a row in with opt_preview (option_rows.h) instead of opt_choice: A / a click opens the preview. While it
 // is up, the page that drew the row is run again each frame with its rows only read (not drawn), so its own code - the
