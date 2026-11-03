@@ -6322,7 +6322,8 @@ static NvnTexture *sc_color, *sc_depth;  // the scene pass's targets this frame 
 static float sc_vp[16], sc_zn, sc_zf;
 static bool sc_dm1;
 static int sc_tree;  // this draw: a tree shaken bare, its slot 1..6 (stencil bits 1-3), 7 a face tree, 0: none
-static int sc_mark;  // this draw: 0 as the game has it, 1 the level's model, 2 anything else, 3 grass and bushes
+static int sc_mark;  // this draw: 0 as the game has it, 1 the level's model, 2 anything else, 3 grass and bushes,
+                     // 4 a character
 static uint64_t sc_frame = ~0ull, sc_done = ~0ull;
 static uint32_t wx_scene_w, wx_scene_h;  // (the scene image the composite read: the scene pass's target size)
 bool vk_snow_pass(VkImage color_img, VkImageView color, VkFormat fmt, uint32_t cw, uint32_t ch, VkImageView depth,
@@ -6430,6 +6431,12 @@ static void snow_cover_check(CmdRec *r, bool indexed, Prog *pr) {
             else if (!level && i < nlvl && st.ubuf[0][4].addr && (st.ubuf[0][4].size == 1056 || st.ubuf[0][4].size == 1072))
                 sc_mark = 1;
         }
+        // (characters: a dusting on top, stencil bits 6 and 7 - the animals drawn with the level's shaders told from
+        // the props by their vertex data moving, issue #574)
+        bool actor = st.rt.ncolor && !level && st.ubuf[0][4].addr && (st.ubuf[0][4].size == 1056 || st.ubuf[0][4].size == 1072);
+        bool promoted = actor && sc_mark == 1;
+        bool animated = promoted && weather_snow_animated(st.vbuf[0].addr, (const void *)(uintptr_t)st.vbuf[0].addr, st.vbuf[0].size, frame);
+        if (actor && (sc_mark == 2 || animated)) sc_mark = 4;
         if (st.rt.ncolor && !level) {  // (grass and bushes: a dusting; trees: their bonk slot; rocks, face trees)
             enum { FC = 1024 };
             static struct { uint64_t key; bool fol, tree, rock, face; } fc[FC];
@@ -6445,6 +6452,7 @@ static void snow_cover_check(CmdRec *r, bool indexed, Prog *pr) {
                 }
                 fc[k].key = key, fc[k].fol = fol, fc[k].tree = tree, fc[k].rock = rock, fc[k].face = face;
             }
+            if (promoted && sc_mark == 4 && (fc[k].tree || fc[k].rock || fc[k].face)) sc_mark = 1;  // (scenery by its maps, even moving)
             if (fc[k].fol || (sc_mark == 1 && !fc[k].tree && !fc[k].rock && !fc[k].face)) sc_mark = 3;
             else if (sc_mark == 1 && fc[k].face) sc_tree = 7;
             else if (sc_mark == 1 && fc[k].tree && st.ubuf[0][3].addr && st.ubuf[0][3].size == 144) {
@@ -6675,7 +6683,7 @@ static void draw_(CmdRec *r, bool indexed) {
                 else if (p == VK_STENCIL_OP_ZERO || p == VK_STENCIL_OP_REPLACE) v[5] |= 0xCE;
                 if (p == VK_STENCIL_OP_KEEP || p == VK_STENCIL_OP_ZERO || p == VK_STENCIL_OP_REPLACE) v[1] = VK_STENCIL_OP_REPLACE;
                 v[6] = (st.ds[3] && ((f ? ops >> 20 : ops >> 8) & 0xF) == 3 ? st.stencil_ref[f] & 0x31 : 0) |
-                       (sc_mark == 2 ? 0x80 : sc_mark == 3 ? 0x40 : 0) | (uint32_t)sc_tree << 1;
+                       (sc_mark == 2 ? 0x80 : sc_mark == 3 ? 0x40 : sc_mark == 4 ? 0xC0 : 0) | (uint32_t)sc_tree << 1;
             }
             if (!ss_need(f ? SS_SFACE1 : SS_SFACE0, !memcmp(v, ss.sface[f], sizeof v))) continue;
             memcpy(ss.sface[f], v, sizeof v);
