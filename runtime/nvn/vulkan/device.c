@@ -595,7 +595,10 @@ static VkPresentModeKHR present_mode(void) {
     // queued behind the one waiting for a window image, so the game's fence waits followed the presentation engine:
     // a throttled / captured / busy compositor slowed the whole game (4-21 fps with the GPU mostly idle; mailbox:
     // 60). No tearing. LARECOMP_VK_PRESENT=fifo|immediate|mailbox to choose.
+    // Frame Generation (frame interpolation, backend_present_now) presents its in-betweens before the frame's image,
+    // one display refresh apart: FIFO, where they queue (mailbox would replace them before they were shown).
     const char *e = getenv("LARECOMP_VK_PRESENT");
+    if (!e && interp_wanted() == INTERP_ON) e = "fifo";
     VkPresentModeKHR want = !e || !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
     uint32_t n = 0;
@@ -971,6 +974,84 @@ static const char *pp_text(void) {
     return s;
 }
 
+// ---- frame interpolation's in-betweens (runtime/nvn/interp.c; Metal: metal.m ip_present, with a presenter thread)
+// Inline: before a game frame's image, its in-betweens (between the previous frame and this one) are made - each a
+// replay of the frame's lists with blended uniforms into the game's own targets - and presented, each with the
+// previous image's placement; FIFO (present_mode) shows each for one refresh. The frame's image is set aside first
+// (a copy) and put back before it is presented. In-betweens per frame: the game's frame interval over the display's
+// refresh period, less one (60 fps at 120 Hz: 1, at 240 Hz: 3).
+static struct { bool ok; float vx, vy, vw, vh, pv[8]; } ip_place;  // (the last image's placement in the window)
+static VkImage ip_held;
+static VmaAllocation ip_held_mem;
+static uint32_t ip_held_w, ip_held_h;
+static VkFormat ip_held_fmt;
+static bool ip_hold(TexBackend *b, bool restore) {  // false: no copy (no memory)
+    if (!restore && (!ip_held || ip_held_w != b->width || ip_held_h != b->height || ip_held_fmt != b->format)) {
+        if (ip_held) { rec_drain(); vkDeviceWaitIdle(g_vk.dev); vmaDestroyImage(g_vk.vma, ip_held, ip_held_mem); ip_held = VK_NULL_HANDLE; }
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = b->format,
+                                .extent = {b->width, b->height, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateImage(g_vk.vma, &ci, &ai, &ip_held, &ip_held_mem, NULL) != VK_SUCCESS) { ip_held = VK_NULL_HANDLE; return false; }
+        ip_held_w = b->width, ip_held_h = b->height, ip_held_fmt = b->format;
+        VkCommandBuffer cb = vk_cmd();
+        VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                    .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, .dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .image = ip_held,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+        rec_CmdPipelineBarrier2(cb, &di);
+    }
+    if (!ip_held) return false;
+    vk_end_pass();
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkImageCopy r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .extent = {b->width, b->height, 1}};
+    if (restore) rec_CmdCopyImage(cb, ip_held, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+    else rec_CmdCopyImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, ip_held, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+    vk_full_barrier(cb);
+    return true;
+}
+static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's image), placed as the last image
+    static const float black[4] = {0, 0, 0, 1};
+    if (!vk_frame_begin(black)) return;
+    VkCommandBuffer cb = vk_cmd();
+    vk_present_draw(cb, b, ip_place.vx, ip_place.vy, ip_place.vw, ip_place.vh, ip_place.pv);
+    menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
+    vk_frame_end(NULL);
+}
+static void ip_mids(TexBackend *b, uint64_t frame) {
+    static uint64_t prev_ns;
+    static double interval_ns;  // (smoothed: the game's frame interval)
+    uint64_t now = plat_now_ns();
+    if (prev_ns && now > prev_ns) {
+        double d = (double)(now - prev_ns);
+        interval_ns = interval_ns > 0 && d < 4 * interval_ns ? interval_ns + (d - interval_ns) * 0.1 : d;
+    }
+    prev_ns = now;
+    if (!ip_place.ok || interval_ns <= 0 || !b || !b->image || b->depth > 1 || b->layers > 1) return;
+    SDL_DisplayID did = SDL_GetDisplayForWindow(window);
+    const SDL_DisplayMode *dm = did ? SDL_GetCurrentDisplayMode(did) : NULL;
+    double hz = dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60;
+    int mids = (int)lround(interval_ns * hz / 1e9) - 1;
+    if (mids > 3) mids = 3;
+    if (mids < 1) return;
+    if (!interp_replays_allowed(frame, total_frames, now)) return;
+    if (!interp_replay_lock()) return;
+    if (ip_hold(b, false)) {
+        extern void renderer_interp_replay(void);
+        for (int m = 1; m <= mids; m++) {
+            if (!interp_prepare((float)m / (float)(mids + 1))) break;
+            renderer_interp_replay();
+            ip_present_mid(b);
+        }
+        ip_hold(b, true);
+    }
+    interp_replay_unlock();
+}
+
 // The GPU side of a present (the render thread when it's on, rqueue.c): the present pass, the overlay, shots.
 // frame: the number of this present (the game thread's frame when it was queued).
 void backend_present_now(NvnTexture *t, uint64_t frame) {
@@ -983,12 +1064,13 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
     // Its GPU time is counted, and the window image's submission's from after its wait (exec.c gpu_timer_add)
     renderer_submit();
     pp_mark(PP_SUBMIT);
-    {   // frame interpolation (runtime/nvn/interp.c): the frame's draws matched with the previous frame's and logged
-        // (LARECOMP_INTERP=measure; in-betweens: not yet on Vulkan)
+    {   // frame interpolation (runtime/nvn/interp.c): the frame's draws matched with the previous frame's and logged,
+        // and with it on, its in-betweens presented (ip_mids)
         bool repeat = rq_on() ? rq_present_is_repeat() : direct_repeat;
         int want = interp_wanted();
         if (!repeat) {
-            interp_frame_end(want != INTERP_OFF);
+            bool blend = interp_frame_end(want != INTERP_OFF);
+            if (want == INTERP_ON && blend) ip_mids(b, frame);
             interp_frame_rotate();
             if (want != INTERP_OFF) interp_log_stats();
         }
@@ -1050,6 +1132,8 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         VkCommandBuffer cb = vk_cmd();
         float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
         memcpy(g_shot_crop, crop, sizeof crop);
+        ip_place.ok = true, ip_place.vx = (float)vx, ip_place.vy = (float)vy, ip_place.vw = (float)vw, ip_place.vh = (float)vh;
+        memcpy(ip_place.pv, pv, sizeof ip_place.pv);
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
         pp_mark(PP_BLIT);
         static long menu_at = -1;

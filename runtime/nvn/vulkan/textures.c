@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "../rqueue.h"
+#include "../interp.h"
 #include "vk.h"
 #include "record.h"
 #include "../astc.h"
@@ -604,6 +605,9 @@ static void upload_pending(TexBackend *b) {
 uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn, prof_tex_watch_skips;
 static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (!t->addr || t->target == 10) return;
+    // (a frame interpolation replay shows the frame's textures as it uploaded them: checked again there, it uploaded
+    // what the game had meanwhile written for the next frame - renderer.m upload_texture)
+    if (b->uploaded && g_interp_replaying) return;
     uint64_t frame = vk_frame_counter();
     if (b->uploaded && b->checked_frame == frame) return;
     if (b->uploaded && !b->dynamic && ((frame + ((uintptr_t)b >> 6)) & 7)) return;

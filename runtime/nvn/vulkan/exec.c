@@ -3387,9 +3387,21 @@ static void bind_note(int kind, uint64_t addr, uint64_t size) {
 // vc_mark_sbufs) takes sbufs(stage); st.sbuf itself keeps the game's bindings (rehashed next frame).
 static void snap_apply(int stage, uint32_t read_mask) {
     bool on = snap_on();
+    // Frame interpolation (renderer.m): a replay's draw binds the table the frame's same draw had (its copies, made when
+    // it ran) and never touches the snapshot table - run there, it released copies and remade them from live memory
+    if (g_interp_replaying && stage < 2) {
+        const Range *lg = interp_cbuf(4 + stage, 0, 0, st.sbuf[stage], sizeof st.sbuf[stage], 0);
+        sb_eff_on = true;
+        memcpy(sb_eff[stage], lg, sizeof sb_eff[stage]);
+        return;
+    }
     for (int i = 0; i < 16; i++)
         if (st.sbuf[stage][i].addr && ((read_mask >> i) & 1)) bind_note(stage == 5 ? 3 : 2, st.sbuf[stage][i].addr, st.sbuf[stage][i].size);
-    if (!on) { sb_eff_on = false; return; }
+    if (!on) {
+        sb_eff_on = false;
+        if (g_interp_log && stage < 2) interp_cbuf(4 + stage, 0, 0, st.sbuf[stage], sizeof st.sbuf[stage], 0);
+        return;
+    }
     sb_eff_on = true;
     memcpy(sb_eff[stage], st.sbuf[stage], sizeof sb_eff[stage]);
     for (int i = 0; i < 16; i++) {
@@ -3399,6 +3411,7 @@ static void snap_apply(int stage, uint32_t read_mask) {
         r->addr = snap_storage(r->addr, r->size, stage == 5);
         snap_slot_class = -1;
     }
+    if (g_interp_log && stage < 2) interp_cbuf(4 + stage, 0, 0, sb_eff[stage], sizeof sb_eff[stage], 0);
 }
 
 // The driver constants of a graphics stage (cbuf 0, size bytes): zero but for the stage's storage buffer table at
@@ -4757,7 +4770,80 @@ void vc_flush(void) {
 // device-local cache above, else read in place - no per-draw copy, no index scan for the copy size. The game fences its
 // CPU writes as on the Switch. Falls back to copies outside the heap or without the import; LARECOMP_VK_COPY_VERTICES=1
 // forces copies.
+// Frame interpolation (runtime/nvn/interp.c; renderer.m iv_geometry / tape_copy_small): vertex / index data a frame
+// read in place that the game may rewrite for its next frame before an in-between runs - its per-frame pools
+// (CPU_UNCACHED | GPU_UNCACHED) up to 1 MB and anything up to 64 KB (quads, on Metal drawn half-written as thin
+// black lines across the screen) - is copied at the bind into chunks of their own, and a replay's same bind takes the
+// copy. A chunk is kept until the last submission that bound it is done (the transient ring recycles a chunk once
+// the frame's own submission is done: before its in-betweens ran). LARECOMP_INTERP_GEO_COPY=0: in place (research).
+typedef struct { VkBuffer buf; VmaAllocation mem; uint8_t *ptr; uint64_t size, used, seq, serial; } IvChunk;
+typedef struct { uint64_t addr, size, off; int chunk; } IvRec;
+static IvChunk ivc[64];
+static int nivc, iv_active = -1;
+static IvRec *iv_log;
+static uint32_t iv_n, iv_cap, iv_rp;
+static uint64_t iv_serial = ~0ull, iv_binds, iv_missed;
+static int iv_chunk_for(uint64_t size) {
+    uint64_t serial = interp_frame_serial(), done = vk_completed_seq();
+    if (iv_active >= 0 && ivc[iv_active].serial == serial && ivc[iv_active].used + size + 256 <= ivc[iv_active].size) return iv_active;
+    for (int i = 0; i < nivc; i++)
+        if (ivc[i].serial != serial && ivc[i].seq <= done && ivc[i].size >= size) {
+            ivc[i].used = 0, ivc[i].serial = serial;
+            return iv_active = i;
+        }
+    if (nivc == 64) return -1;
+    IvChunk *c = &ivc[nivc];
+    uint64_t want = size > (2u << 20) ? size : (2u << 20);
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = want,
+                             .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                  .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+    VmaAllocationInfo info;
+    if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &c->buf, &c->mem, &info) != VK_SUCCESS) return -1;
+    c->ptr = info.pMappedData, c->size = want, c->used = 0, c->seq = 0, c->serial = serial;
+    return iv_active = nivc++;
+}
+static void iv_note(uint64_t addr, uint64_t size) {  // (the frame: a copy for its in-betweens)
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_INTERP_GEO_COPY") || atoi(getenv("LARECOMP_INTERP_GEO_COPY"));
+    if (!on || !g_interp_log || g_interp_replaying || !size || size > (1u << 20) || interp_wanted() != INTERP_ON) return;
+    extern int nvn_pool_flags_at(uint64_t addr);
+    if (size > 65536 && (nvn_pool_flags_at(addr) & 0x13) != 0x12) return;  // (big and cached: a static mesh)
+    if (interp_frame_serial() != iv_serial) iv_serial = interp_frame_serial(), iv_n = 0;
+    int ci = iv_chunk_for(size);
+    if (ci < 0) return;
+    IvChunk *c = &ivc[ci];
+    uint64_t o = (c->used + 255) & ~255ull;
+    memcpy(c->ptr + o, (const void *)(uintptr_t)addr, size);
+    c->used = o + size;
+    c->seq = vk_pending_seq();
+    if (iv_n == iv_cap) { iv_cap = iv_cap ? iv_cap * 2 : 1024; iv_log = realloc(iv_log, sizeof *iv_log * iv_cap); }
+    iv_log[iv_n++] = (IvRec){addr, size, o, ci};
+}
+static bool iv_find(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {  // (a replay: the frame's copy)
+    if (interp_frame_serial() != iv_serial) return false;
+    for (uint32_t j = iv_rp; j < iv_n && j < iv_rp + 32; j++)
+        if (iv_log[j].addr == addr && iv_log[j].size == size) {
+            iv_rp = j + 1;
+            IvChunk *c = &ivc[iv_log[j].chunk];
+            if (c->serial != iv_serial) return false;
+            c->seq = vk_pending_seq();  // (kept until this replay's submission is done)
+            *buf = c->buf, *off = iv_log[j].off;
+            iv_binds++;
+            return true;
+        }
+    iv_missed++;
+    return false;
+}
+
+static bool guest_direct_(int kind, uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off);
 static bool guest_direct(int kind, uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {  // kind: 0 vertex, 1 index (bind_note)
+    if (g_interp_replaying && addr >= HEAP_BASE && iv_find(addr, size, buf, off)) return true;
+    bool r = guest_direct_(kind, addr, size, buf, off);
+    if (r) iv_note(addr, size);
+    return r;
+}
+static bool guest_direct_(int kind, uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     static int copy = -1;
     if (copy < 0) copy = getenv("LARECOMP_VK_COPY_VERTICES") != NULL;
     if (copy || addr < HEAP_BASE) return false;
@@ -5619,6 +5705,19 @@ static void draw_(CmdRec *r, bool indexed) {
             g_mirror_w = (float)st.rt.color[0]->width;
         }
     }
+    if (g_interp_log) {  // (frame interpolation, runtime/nvn/interp.c: the draw's identity across frames - renderer.m's key)
+        static int kmask = -1;  // LARECOMP_INTERP_KEY=<mask> (renderer.m)
+        if (kmask < 0) kmask = getenv("LARECOMP_INTERP_KEY") ? atoi(getenv("LARECOMP_INTERP_KEY")) : 37;
+        uint64_t args[7];
+        memcpy(args, r->x, sizeof args);
+        if (indexed && !(kmask & 2)) args[3] = 0;
+        NvnTexture *kt = st.rt.ncolor ? st.rt.color[0] : st.rt.depth;
+        uint64_t key = (kmask & 1) ? hmix(1469598103934665603ull, args, sizeof args) : 1469598103934665603ull;
+        uint64_t ids[5] = {(kmask & 4) ? st.program->stages[0].code_addr : 0, (kmask & 4) ? st.program->stages[1].code_addr : 0,
+                           (kmask & 8) ? st.vbuf[0].addr : 0, (kmask & 16) ? (uint64_t)(uintptr_t)kt : 0,
+                           (kmask & 32) && kt ? (uint64_t)kt->format << 32 | (st.rt.ncolor ? 0 : 1u << 31) | (kt->height ? kt->width * 16 / kt->height : 0) : 0};
+        interp_draw(hmix(key, ids, sizeof ids), st.rt.ncolor == 0);
+    }
     snap_apply(0, pr->vi->ssbo_read);  // (overlap) the storage slots the shaders read: a copy where the CPU rewrites the range
     snap_apply(1, pr->fi->ssbo_read);
     {   // fragment-shader hash: interior backdrop detection (widescreen), skip lists, item twinkle (renderer.m)
@@ -5664,19 +5763,6 @@ static void draw_(CmdRec *r, bool indexed) {
     uint8_t cls;
     bool native = topology(mode, &topo, &cls);
     if (!native && mode != 6 && mode != 7 && mode != 9) { SKIP(SK_TOPOLOGY); return; }
-    if (g_interp_log) {  // (frame interpolation, runtime/nvn/interp.c: the draw's identity across frames - renderer.m's key)
-        static int kmask = -1;  // LARECOMP_INTERP_KEY=<mask> (renderer.m)
-        if (kmask < 0) kmask = getenv("LARECOMP_INTERP_KEY") ? atoi(getenv("LARECOMP_INTERP_KEY")) : 37;
-        uint64_t args[7];
-        memcpy(args, r->x, sizeof args);
-        if (indexed && !(kmask & 2)) args[3] = 0;
-        NvnTexture *kt = st.rt.ncolor ? st.rt.color[0] : st.rt.depth;
-        uint64_t key = (kmask & 1) ? hmix(1469598103934665603ull, args, sizeof args) : 1469598103934665603ull;
-        uint64_t ids[5] = {(kmask & 4) ? st.program->stages[0].code_addr : 0, (kmask & 4) ? st.program->stages[1].code_addr : 0,
-                           (kmask & 8) ? st.vbuf[0].addr : 0, (kmask & 16) ? (uint64_t)(uintptr_t)kt : 0,
-                           (kmask & 32) && kt ? (uint64_t)kt->format << 32 | (st.rt.ncolor ? 0 : 1u << 31) | (kt->height ? kt->width * 16 / kt->height : 0) : 0};
-        interp_draw(hmix(key, ids, sizeof ids), st.rt.ncolor == 0);
-    }
 
     uint64_t prof_tk_ = prof ? SDL_GetTicksNS() : 0;
     if (prof) prof_pre += prof_tk_ - prof_tp_;
@@ -7280,14 +7366,19 @@ static void exec_list(uint64_t handle, int depth) {
                 clear(-1, 0, NULL, 0, r->x[0] != 0, r->f[0], has_stencil && r->x[2] != 0, (uint32_t)r->x[1], (uint32_t)r->x[2]);
             }
             break;
-        case CMD_DISPATCH: dispatch_compute((uint32_t)r->x[0], (uint32_t)r->x[1], (uint32_t)r->x[2]); break;
+        case CMD_DISPATCH:
+            if (g_interp_replaying) break;  // (a replayed frame: the frame's compute results are already there)
+            dispatch_compute((uint32_t)r->x[0], (uint32_t)r->x[1], (uint32_t)r->x[2]);
+            break;
         case CMD_DRAW_ARRAYS: draw(r, false); break;
         case CMD_DRAW_ELEMENTS: draw(r, true); break;
         case CMD_UPDATE_UNIFORM_BUFFER:
+            if (g_interp_replaying) break;  // (replay: the draws read their logged uniform copies)
             memcpy((void *)(uintptr_t)(r->x[0] + r->x[2]), x, r->x[3]);
             guest_copy_flush();  // (cbuf copies shared within the submission are stale now)
             break;
         case CMD_FENCE_SYNC: {
+            if (g_interp_replaying) break;  // (replays leave the game's fences, counters and memory alone)
             static int fence_flush = -1;
             if (fence_flush < 0) fence_flush = getenv("LARECOMP_FENCE_FLUSH") ? 1 : 0;
             if (fence_flush) renderer_flush();
@@ -7296,6 +7387,7 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         }
         case CMD_REPORT_COUNTER: {
+            if (g_interp_replaying) break;
             // The game times its GPU work with these (two per frame) and drops to 30 fps when that looks slow: the
             // host clock now, replaced by the GPU's time at this point once the submission is done (cq_resolve).
             uint64_t *out = (uint64_t *)(uintptr_t)r->x[1];
@@ -7339,8 +7431,9 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_COPY_TEXTURE_TO_TEXTURE: { const TexRefRec *t = x; copy_texture(&t[0], &t[1], r->x[6]); break; }
         case CMD_DOWNSAMPLE: { const TexRefRec *t = x; copy_texture(&t[0], &t[1], 1); break; }
         case CMD_COPY_BUFFER_TO_TEXTURE: copy_buffer_to_texture(r->x[0], x); break;
-        case CMD_COPY_TEXTURE_TO_BUFFER: copy_texture_to_buffer(x, r->x[3]); break;
+        case CMD_COPY_TEXTURE_TO_BUFFER: if (!g_interp_replaying) copy_texture_to_buffer(x, r->x[3]); break;
         case CMD_COPY_BUFFER_TO_BUFFER:
+            if (g_interp_replaying) break;
             wait_why = "buffer -> buffer copy";
             renderer_flush();
             memmove((void *)(uintptr_t)r->x[1], (void *)(uintptr_t)r->x[0], r->x[2]);
@@ -7351,12 +7444,37 @@ static void exec_list(uint64_t handle, int depth) {
     }
 }
 
-// (frame interpolation's stats line: replays' copies of per-frame geometry - none on Vulkan yet)
-void renderer_interp_geo_stats(uint64_t *binds, uint64_t *differed, uint64_t *missed) { *binds = *differed = *missed = 0; }
+// (frame interpolation's stats line: replays' copies of the frame's vertex / index data, guest_direct)
+void renderer_interp_geo_stats(uint64_t *binds, uint64_t *differed, uint64_t *missed) {
+    *binds = iv_binds, *differed = 0, *missed = iv_missed;
+    iv_binds = iv_missed = 0;
+}
+
+// Frame interpolation (runtime/nvn/interp.c; renderer.m renderer_interp_replay): the bound state at the frame's first
+// list, and a replay of the frame's lists with the logged (blended) uniforms - the game's own state is restored after
+// it. The caller holds interp_replay_lock and has set the render scale the frame was drawn at. The replay draws into
+// the game's own targets (the frame's image is composed before, the in-between's after).
+static __typeof__(st) st_frame_begin;
+void renderer_interp_replay(void) {
+    const uint64_t *h;
+    uint32_t n = interp_handles(&h);
+    __typeof__(st) st_end = st;
+    bool log = g_interp_log;
+    st = st_frame_begin;
+    g_interp_log = true;
+    iv_rp = 0;
+    interp_replay_begin();
+    for (uint32_t i = 0; i < n; i++) exec_list(h[i], 0);
+    vk_end_pass();
+    renderer_submit();
+    interp_replay_end();
+    g_interp_log = log;
+    st = st_end;
+}
 
 void backend_execute(uint64_t handle) {
     PROF_T0();
-    interp_list_submitted(handle);  // (frame interpolation, runtime/nvn/interp.c: the frame's lists)
+    if (interp_list_submitted(handle)) st_frame_begin = st;  // (frame interpolation: the frame's first list)
     exec_list(handle, 0);
     PROF_ADD(prof_exec);
     if (prof) cum_exec += SDL_GetTicksNS() - prof_t0_;
