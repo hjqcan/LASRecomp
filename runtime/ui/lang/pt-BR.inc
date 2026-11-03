@@ -1510,3 +1510,4 @@
 {"Configure how the game is scaled up to fit your window.", "Configura como o jogo é ampliado para preencher a janela."},
 {"Configure the smoothing of jagged edges. SMAA keeps textures sharp.", "Configura a suavização das bordas serrilhadas. SMAA mantém as texturas nítidas."},
 {"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "Configura o formato da imagem. Livre preenche a janela, Original mantém 16:9."},
+{"Apply", "Aplicar"},

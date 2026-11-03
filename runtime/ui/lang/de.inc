@@ -1802,3 +1802,4 @@
 {"Configure how the game is scaled up to fit your window.", "Legt fest, wie das Spiel auf dein Fenster hochskaliert wird."},
 {"Configure the smoothing of jagged edges. SMAA keeps textures sharp.", "Legt die Glättung gezackter Kanten fest. SMAA hält Texturen scharf."},
 {"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "Legt die Form des Bildes fest. Frei füllt das Fenster, Original behält 16:9."},
+{"Apply", "Übernehmen"},

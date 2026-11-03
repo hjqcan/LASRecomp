@@ -1802,3 +1802,4 @@
 {"Configure how the game is scaled up to fit your window.", "Задаёт, как игра растягивается под размер окна."},
 {"Configure the smoothing of jagged edges. SMAA keeps textures sharp.", "Задаёт сглаживание зубчатых краёв. SMAA сохраняет чёткость текстур."},
 {"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "Задаёт форму картинки. «Без ограничений» заполняет окно, «Оригинал 16:9» оставляет 16:9."},
+{"Apply", "Применить"},

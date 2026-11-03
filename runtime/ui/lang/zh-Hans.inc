@@ -1802,3 +1802,4 @@
 {"Configure how the game is scaled up to fit your window.", "设置游戏放大以填满窗口的方式。"},
 {"Configure the smoothing of jagged edges. SMAA keeps textures sharp.", "设置锯齿边缘的平滑。SMAA 能保持纹理清晰。"},
 {"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "设置画面的形状。解锁会填满窗口，原版保持 16:9。"},
+{"Apply", "应用"},

@@ -106,14 +106,14 @@ bool preview_draw(float scale, ImFont *font, ImFont *font_big, void (*page)(void
     static bool test_done;
 
     // input (the panel's hit boxes are last frame's: the layout hardly moves)
-    static ImVec2 hit[6][2];  // ‹, ›, Return, Reset to default, Yes, No
+    static ImVec2 hit[7][2];  // ‹, ›, Return, Reset to default, Yes, No, Apply
     bool left = pressed({ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadLStickLeft, ImGuiKey_LeftArrow}, true);
     bool right = pressed({ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadLStickRight, ImGuiKey_RightArrow}, true);
     bool a = pressed({ImGuiKey_GamepadFaceDown, ImGuiKey_Enter, ImGuiKey_KeypadEnter, ImGuiKey_Space}, false);
     bool b = pressed({ImGuiKey_GamepadFaceRight, ImGuiKey_Escape}, false);  // (its sound: menu_sfx_frame)
     int clicked = -1;
     if (click)
-        for (int i = 0; i < 6; i++)
+        for (int i = 0; i < 7; i++)
             if (in_rect(m, hit[i][0], hit[i][1])) clicked = i;
     if (test_confirm && !test_done && P.orig >= 0) test_done = true, P.step = 1, P.confirm = true, P.sel = 0;
     if (P.confirm) {
@@ -129,7 +129,7 @@ bool preview_draw(float scale, ImFont *font, ImFont *font_big, void (*page)(void
             menu_sfx_play(MENU_SFX_CURSOR);
         } else if ((left || right) && P.off) menu_sfx_play(MENU_SFX_BEEP);
         if (clicked == 3 && !P.off && P.cur != P.def) P.set = P.def, menu_sfx_play(MENU_SFX_DECIDE);
-        if (a) close = true, menu_sfx_play(MENU_SFX_DECIDE);  // (A keeps it)
+        if (a || clicked == 6) close = true, menu_sfx_play(MENU_SFX_DECIDE);  // (A / Apply keeps it)
         else if (b || clicked == 2) {
             if (clicked == 2) menu_sfx_play(MENU_SFX_CANCEL);
             if (P.cur == P.orig) close = true;
@@ -245,7 +245,7 @@ bool preview_draw(float scale, ImFont *font, ImFont *font_big, void (*page)(void
         dl->AddText(font, btn, ImVec2(tx + ax, ty), c, t.c_str());
         return x0 + bw;
     };
-    for (int i = 2; i < 6; i++) hit[i][0] = hit[i][1] = ImVec2(-1, -1);
+    for (int i = 2; i < 7; i++) hit[i][0] = hit[i][1] = ImVec2(-1, -1);
     if (P.confirm) {
         std::string q = L("Save changes?");
         text(dl, font, btn * 1.05f, ImVec2(mx, y_btn + (bh - btn * 1.05f) * 0.5f), pt.text, q.c_str(), true);
@@ -254,7 +254,9 @@ bool preview_draw(float scale, ImFont *font, ImFont *font_big, void (*page)(void
         button(5, LN("No"), x, false, P.sel == 1, true, false);
     } else {
         button(2, LN("Return"), mx, false, false, true, true);
-        button(3, LN("Reset to default"), mx + w, true, false, !P.off && P.cur != P.def, false);
+        // (bottom right: Apply, and Reset to default left of it)
+        button(6, LN("Apply"), mx + w, true, false, true, false);
+        button(3, LN("Reset to default"), hit[6][0].x - fs * 0.6f, true, false, !P.off && P.cur != P.def, false);
     }
     ImGui::End();
     return false;
