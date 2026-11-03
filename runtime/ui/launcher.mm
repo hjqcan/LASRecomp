@@ -1363,97 +1363,78 @@ static void data_folder_popup(float s) {
 }
 
 static bool g_files_deleted;  // set here: the start screen goes back to setting the game files up
+// Settings > Game files, as the other tabs: option rows on the left, the selected row's description on the right
 static void prelaunch_tab(float sc) {
-    {   // the page in a well, as the other tabs' panes
-        ImVec2 a = ImGui::GetCursorScreenPos(), av = ImGui::GetContentRegionAvail();
-        float m = 6 * sc;
-        plastic_well(ImGui::GetWindowDrawList(), ImVec2(a.x - m, a.y - m), ImVec2(a.x + av.x + m, a.y + av.y + m), sc);
-        ImGui::Indent(14 * sc);
-        ImGui::Dummy(ImVec2(0, 4 * sc));
-    }
-    const ImVec4 gold = plastic_col(plastic_theme().title);
-    auto heading = [&](const char *t) {
-        ImGui::PushFont(g_font_menu);
-        ImGui::TextColored(gold, "%s", t);
-        ImGui::PopFont();
-        ImGui::Separator();
-        ImGui::Spacing();
-    };
-    heading(L("Game files"));
     static double gb = -1;
+    static bool confirm_delete;
     if (gb < 0) gb = rt_game_files_size(g_root.c_str()) / 1e9;
+    char gbs[32];
+    snprintf(gbs, sizeof gbs, "%.1f GB", gb);
+    opt_begin("##gamefiles", sc);
+    opt_section("Game files");
 #ifdef _WIN32
-    if (ImGui::Button(L("Show in Explorer"))) reveal_folder(g_root);
+    const char *show = LN("Show in Explorer");
 #elif defined(__linux__)
-    if (ImGui::Button(L("Open folder"))) reveal_folder(g_root);
+    const char *show = LN("Open folder");
 #else
-    if (ImGui::Button(L("Show in Finder"))) reveal_folder(g_root);
+    const char *show = LN("Show in Finder");
 #endif
-    ImGui::SameLine();
+    if (opt_action(show, "", "Opens the folder with LAS Recomp's copy of the game files.")) reveal_folder(g_root);
     static bool shot_del = getenv("LARECOMP_LAUNCHER_SHOT") && strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":askdelete");
-    if (ImGui::Button(L("Delete game files")) || shot_del) ImGui::OpenPopup("##delfiles"), shot_del = false;  // (test: :askdelete)
-    if (ImGui::BeginPopupModal("##delfiles", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
-        ImGui::PushFont(g_font_menu);
-        ImGui::TextColored(plastic_col(plastic_theme().warn), "%s", L("Are you sure?"));
-        ImGui::PopFont();
-        ImGui::Text(L("This deletes LAS Recomp's %.1f GB copy of the game files."), gb);
-        ImGui::TextDisabled("%s", L("Your saves, seeds and settings stay."));
+    if (shot_del) confirm_delete = true, shot_del = false;  // (test: :askdelete)
+    if (!confirm_delete) {
+        if (opt_action("Delete game files", gbs, "Frees up the space LAS Recomp's copy of the game files uses. Your saves, "
+                       "seeds and settings stay.", true))
+            confirm_delete = true;
+    } else {
+        std::string d = L("Deletes the extracted game files now.");
         if (rt_dev_mode()) {  // (a source checkout: the files are the project's own extracted/)
             bool abs = !g_root.empty() && (g_root[0] == '/' || (g_root.size() > 1 && g_root[1] == ':'));
             std::string where = abs ? g_root : std::string(rt_data_root()) + "/" + g_root;
-            ImGui::TextColored(plastic_col(plastic_theme().warn), L("Dev checkout: this is %s"), where.c_str());
+            char b[700];
+            snprintf(b, sizeof b, L("Dev checkout: this is %s"), where.c_str());
+            d += std::string("\n\n") + b;
         }
-        ImGui::Spacing();
-        if (ImGui::Button(L("Delete"), ImVec2(220 * sc, 0))) {
+        opt_warn_next();
+        if (opt_action("Yes, delete them", gbs, d.c_str(), true)) {
             stop_background_prep();
             bool ok = rt_remove_game_files(g_root.c_str());  // (runtime/paths.c: only what the extraction made)
             game_files_changed();
             set_job(ok ? LN("Game files deleted.") : LN("Couldn't delete the game files. They aren't in LAS Recomp's data folder."),
                     !ok);
-            g_files_deleted = true, gb = -1;
-            ImGui::CloseCurrentPopup();
+            g_files_deleted = true, gb = -1, confirm_delete = false;
         }
-        ImGui::SameLine();
-        ImGui::SetItemDefaultFocus();
-        if (ImGui::Button(L("Cancel"), ImVec2(220 * sc, 0)) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
-            ImGui::IsKeyPressed(ImGuiKey_Escape, false))
-            ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
+        if (opt_action("Cancel", "", "Keeps the game files.", true)) confirm_delete = false;
     }
-    ImGui::Spacing();
-    ImGui::Spacing();
-    heading(L("Data folder"));
-    ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", rt_data_root());
-    ImGui::PopTextWrapPos();
-    const char *fixed = rt_data_root_fixed() ? L(rt_data_root_fixed()) : NULL;
-    ImGui::BeginDisabled(fixed != NULL);
-    if (ImGui::Button(L("Change..."))) choose_data_folder();
-    ImGui::EndDisabled();
-    if (fixed) ImGui::SameLine(), ImGui::TextDisabled("%s", fixed);
-    ImGui::Spacing();
-    ImGui::Spacing();
-    heading(L("Game font"));
+    {   // where all of it is kept (as the setup window's Storage row)
+        const char *fixed = rt_data_root_fixed() ? L(rt_data_root_fixed()) : NULL;
+        std::string d = std::string(L("Where LAS Recomp keeps game files, saves, seeds and settings.")) + "\n\n" +
+                        rt_data_root() + (fixed ? std::string("\n\n") + fixed : "");
+        opt_section("Storage");
+        if (fixed) opt_disable_next();
+        if (opt_action("Data folder", "Change...", d.c_str(), true)) choose_data_folder();
+    }
+    opt_section("Game font");
     import_fonts();
     bool fs = have_font(FONT_STD, 4), fl = have_font(FONT_LANG, 8), fe = have_font(FONT_EXT, 2);
-    ImGui::Text(L("Text: %s    Chinese / Korean: %s    Button icons: %s"),
-                fs ? L("Nintendo font (imported)") : L("substitute"),
-                fl ? L("Nintendo font (imported)") : L("substitute"), fe ? L("imported") : L("substitute"));
-    ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", L("Nintendo's fonts aren't included. For the original look, import your own "
-                                "nintendo_udsg-r_std_003 for text, nintendo_udsg-r_org_zh-cn_003, nintendo_udsg-r_ext_zh-cn_003, "
-                                "nintendo_udjxh-db_zh-tw_003 and nintendo_udsg-r_ko_003 for Chinese and Korean, and "
-                                "nintendo_ext_003 for button icons. Both .bfttf and .ttf work."));
-    ImGui::PopTextWrapPos();
-    if (!g_font_msg.empty()) ImGui::TextWrapped("%s", g_font_msg.c_str());
+    const char *fonts_d = LN("Nintendo's fonts aren't included. For the original look, import your own "
+                             "nintendo_udsg-r_std_003 for text, nintendo_udsg-r_org_zh-cn_003, nintendo_udsg-r_ext_zh-cn_003, "
+                             "nintendo_udjxh-db_zh-tw_003 and nintendo_udsg-r_ko_003 for Chinese and Korean, and "
+                             "nintendo_ext_003 for button icons. Both .bfttf and .ttf work.");
+    // (what's in use: rows with a value only, nothing to change)
+    opt_action("Text font", fs ? LN("Imported") : LN("Substitute"), fonts_d, true, fs);
+    opt_action("Chinese and Korean font", fl ? LN("Imported") : LN("Substitute"), fonts_d, true, fl);
+    opt_action("Button icons", fe ? LN("Imported") : LN("Substitute"), fonts_d, true, fe);
+    std::string imp_d = L(fonts_d);
+    if (!g_font_msg.empty()) imp_d += "\n\n" + g_font_msg;
     static SDL_DialogFileFilter font_f[] = {{"Switch fonts", "bfttf;ttf"}};
     font_f[0].name = L("Switch fonts");  // (the file window's; L's text stays)
-    if (ImGui::Button(L("Import fonts"))) SDL_ShowOpenFileDialog(picked_fonts, NULL, g_launcher_win, font_f, 1, NULL, true);
-    if (fs || fl || fe) {
-        ImGui::SameLine();
-        if (ImGui::Button(L("Remove imported fonts"))) remove_fonts();
-    }
-    ImGui::Unindent(14 * sc);
+    if (opt_action("Import fonts", "", imp_d.c_str(), true))
+        SDL_ShowOpenFileDialog(picked_fonts, NULL, g_launcher_win, font_f, 1, NULL, true);
+    if ((fs || fl || fe) && opt_action("Remove imported fonts", "", "Deletes the fonts you imported. The game goes back to "
+                                       "the substitutes.", true))
+        remove_fonts();
+    opt_end();
 }
 
 // The start screen's fonts, with the glyphs of the menus' language (i18n.h): again when it changes
