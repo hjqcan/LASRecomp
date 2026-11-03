@@ -1707,10 +1707,11 @@ static void shot_write(id<MTLTexture> tex, const char *path, bool exit_after) {
         CGImageRef img = CGBitmapContextCreateImage(ctx);
         CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)p, strlen(p), false);
         CGImageDestinationRef dest = CGImageDestinationCreateWithURL(url, (__bridge CFStringRef)UTTypePNG.identifier, 1, NULL);
-        if (dest) { CGImageDestinationAddImage(dest, img, NULL); CGImageDestinationFinalize(dest); CFRelease(dest); }
+        bool ok = false;
+        if (dest) { CGImageDestinationAddImage(dest, img, NULL); ok = CGImageDestinationFinalize(dest); CFRelease(dest); }
         CFRelease(url); CGImageRelease(img); CGContextRelease(ctx); CGColorSpaceRelease(cs);
         free(px);
-        LOG("[interp] saved %s\n", p);
+        LOG(ok ? "[interp] saved %s\n" : "[interp] couldn't save %s\n", p);
         free(p);
         if (exit_after) { fflush(stderr); _exit(0); }
     });
@@ -1832,6 +1833,75 @@ static void ip_tick(uint64_t tp) {
             pthread_mutex_lock(&menu_mx);
             menu_render(dev, cb, dst);
             pthread_mutex_unlock(&menu_mx);
+        }
+    }
+    {   // LARECOMP_INTERP_RING=<seconds> (debug): the images shown recently, at 1/4 of the window's size
+        // (LARECOMP_INTERP_RING_DIV), kept on the GPU; F10 saves them (interp_ring/<time>/<n>_f<frame>_<g|m|r>.png in the data folder) -
+        // what was on screen when a glitch showed, without slowing the run down the way saving every image does
+        static int ring_n = -1, ring_div, ring_i, ring_saving;
+        static id<MTLTexture> ring_tex[1200];
+        static uint64_t ring_frame[1200];
+        static int ring_kind[1200];
+        if (ring_n < 0) {
+            const char *e = getenv("LARECOMP_INTERP_RING");
+            ring_n = e ? (int)(atof(e) * 120) : 0;
+            if (ring_n > 1200) ring_n = 1200;
+            e = getenv("LARECOMP_INTERP_RING_DIV");
+            ring_div = e && atoi(e) > 0 ? atoi(e) : 4;
+        }
+        extern volatile int g_interp_ring_request;
+        static long ring_at = -1;  // LARECOMP_INTERP_RING_AT=<frame> (test): as if F10 was pressed then
+        if (ring_at < 0) ring_at = getenv("LARECOMP_INTERP_RING_AT") ? atol(getenv("LARECOMP_INTERP_RING_AT")) : 0;
+        if (ring_at && (long)frame >= ring_at) ring_at = 0, g_interp_ring_request = 1;
+        if (ring_n > 0 && g_interp_ring_request && !atomic_load((_Atomic int *)&ring_saving)) {
+            g_interp_ring_request = 0;
+            atomic_store((_Atomic int *)&ring_saving, 1);
+            char dir_buf[128];
+            mkdir("interp_ring", 0755);  // (in the data folder: the game's working folder)
+            snprintf(dir_buf, sizeof dir_buf, "interp_ring/%ld", (long)time(NULL));
+            if (mkdir(dir_buf, 0755) != 0) LOG("[interp] can't make %s: %s\n", dir_buf, strerror(errno));
+            const char *dir = strdup(dir_buf);
+            LOG("[interp] saving the last %d images to %s\n", ring_n, dir);
+            int start = ring_i;
+            [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+                (void)done;
+                for (int k = 0, n = 0; k < ring_n; k++) {
+                    int j = (start + k) % ring_n;
+                    if (!ring_tex[j]) continue;
+                    char p[200];
+                    snprintf(p, sizeof p, "%s/%04d_f%llu_%c.png", dir, n++, (unsigned long long)ring_frame[j], "gmr"[ring_kind[j]]);
+                    shot_write(ring_tex[j], p, false);
+                }
+                if (!shot_q) shot_q = dispatch_queue_create("interp.shots", DISPATCH_QUEUE_SERIAL);
+                dispatch_async(shot_q, ^{ atomic_store((_Atomic int *)&ring_saving, 0); LOG("[interp] ring saved\n"); free((void *)dir); });
+            }];
+        }
+        if (ring_n > 0 && !atomic_load((_Atomic int *)&ring_saving)) {
+            NSUInteger rw = drawable.texture.width / ring_div, rh = drawable.texture.height / ring_div;
+            if (!ring_tex[ring_i] || ring_tex[ring_i].width != rw || ring_tex[ring_i].height != rh) {
+                MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:drawable.texture.pixelFormat
+                                             width:rw height:rh mipmapped:NO];
+                td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+                td.storageMode = MTLStorageModeShared;
+                ring_tex[ring_i] = [dev newTextureWithDescriptor:td];
+            }
+            MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+            rp.colorAttachments[0].texture = ring_tex[ring_i];
+            rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+            rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+            id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+            [enc setViewport:(MTLViewport){0, 0, rw, rh, 0, 1}];
+            [enc setRenderPipelineState:present_pipe];
+            float pv[8] = {0, 0, 0, 0, 0, 0, 1, 1};
+            [enc setVertexBytes:pv length:sizeof pv atIndex:0];
+            float pf[4] = {0};
+            [enc setFragmentBytes:pf length:sizeof pf atIndex:0];
+            [enc setFragmentTexture:src atIndex:0];
+            [enc setFragmentSamplerState:present_sampler atIndex:0];
+            [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            [enc endEncoding];
+            ring_frame[ring_i] = frame, ring_kind[ring_i] = kind;
+            ring_i = (ring_i + 1) % ring_n;
         }
     }
     int b = best;

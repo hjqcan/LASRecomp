@@ -256,7 +256,7 @@ static int pair_cmp(const void *a, const void *b) {
 static uint64_t st_order_pairs, s_order_pairs;
 static int order_check = -1;  // LARECOMP_INTERP_ORDER_CHECK=0: occurrence pairs unchecked (research)
 static int32_t *p_match;  // per draw of this frame: its previous-frame draw (-1: none; -2: UI; -3: just appeared - not blended)
-static uint64_t st_id_pairs, st_content_pairs, st_new_objects, s_id_pairs, s_content_pairs, s_new_objects, s_class_snaps, s_toggled, s_integral, s_wraps, s_discont, s_split, s_reused;  // (stats)
+static uint64_t st_id_pairs, st_content_pairs, st_new_objects, s_id_pairs, s_content_pairs, s_new_objects, s_class_snaps, s_toggled, s_integral, s_wraps, s_discont, s_split, s_reused, s_onoff;  // (stats)
 static uint32_t *p_order; static uint32_t p_order_cap;
 static int order_cmp(const void *a, const void *b) {
     const DrawRec *x = &cur->draws[*(const uint32_t *)a], *y = &cur->draws[*(const uint32_t *)b];
@@ -1053,11 +1053,40 @@ bool interp_prepare(float t) {
                 continue;
             }
         }
+        // A fragment stage buffer with an element exactly zero in one frame and not in the other is a list whose
+        // slots switch on or off - the game's light list, which fills its slots in a different order as Link walks
+        // (a slot held light A, was empty, then held light B; light A moved to another slot) - not motion: the whole
+        // buffer shows this frame's list. Blended per element, an in-between drew lights at half strength or not at
+        // all: the Angler's Tunnel water darker for single images, now and then (2026-11-03). The vertex stage keeps
+        // blending (a position or matrix element can pass through an exact zero while it moves); values near zero
+        // (denormal leftovers, 1e-15) don't count, nor a value back at its value of two frames ago (the toggle
+        // rule shows this frame's: in Mabe Village 16-30 buffers an image, which then kept blending their other values).
+        // LARECOMP_INTERP_ZERO_SWITCH=0: blended (research).
+        static int zero_switch = -1;
+        if (zero_switch < 0) { const char *e = getenv("LARECOMP_INTERP_ZERO_SWITCH"); zero_switch = !e || atoi(e); }
+        bool onoff = false;
+        if (zero_switch && cc->stage == 1)
+            for (uint32_t q = 0; q < nf && !onoff; q++)
+                onoff = !done[q] && (a[q] == 0) != (b[q] == 0) && fmaxf(fabsf(a[q]), fabsf(b[q])) > 1e-6f &&
+                        !(toggles && a2 && a2[q] == b[q]);  // (back at its value of two frames ago: the toggle rule's)
+        s_onoff += onoff;
         for (uint32_t q = 0; q < nf; q++) {
             if (done[q]) continue;
+            if (onoff) { out[q] = b[q]; continue; }
             float av = a[q], bv = b[q], d = bv - av;
             bool toggle = toggles && a2 && a2[q] == bv && av != bv;
             s_toggled += toggle;
+            if (toggle) {  // LARECOMP_INTERP_LOG_TOGGLES=1 (debug): each toggling element (at most 400 lines a second)
+                static int lt = -1, nl;
+                static uint64_t sec;
+                if (lt < 0) lt = getenv("LARECOMP_INTERP_LOG_TOGGLES") && atoi(getenv("LARECOMP_INTERP_LOG_TOGGLES"));
+                uint64_t now = plat_now_ns() / 1000000000ull;
+                if (now != sec) sec = now, nl = 0;
+                if (lt && nl++ < 400)
+                    LOG("[interp-toggle] f%llu t %.2f cb %u stage %d slot %d size %u addr %llx elem %u: %g, %g, %g\n",
+                        (unsigned long long)s_frame_no, t, i, cc->stage, cc->slot, cc->size, (unsigned long long)cc->addr, q,
+                        a2[q], av, bv);
+            }
             if (!blendable(av, bv) || toggle || (cc->snap && fabsf(d) > cut + 0.05f * fmaxf(fabsf(av), fabsf(bv)))) { out[q] = bv; continue; }
             // Values that are whole numbers in both frames and changed by one or more are a selection, not motion
             // (a texture's frame, a mode): this frame's - unless the value took the same step the frame before (a
@@ -1097,6 +1126,23 @@ bool interp_prepare(float t) {
                 out[q] = halfway && t < 0.5f ? av : bv; s_discont++; continue;
             }
             out[q] = av + d * t;
+        }
+        {   // LARECOMP_INTERP_LOG_ONOFF=1 (debug): elements of big buffers (light lists) that went from zero to a value or
+            // back and did not show this frame's value (at most 400 lines a second)
+            static int lo = -1, nl;
+            static uint64_t sec;
+            if (lo < 0) lo = getenv("LARECOMP_INTERP_LOG_ONOFF") && atoi(getenv("LARECOMP_INTERP_LOG_ONOFF"));
+            if (lo && cc->size >= 4096) {
+                uint64_t now = plat_now_ns() / 1000000000ull;
+                if (now != sec) sec = now, nl = 0;
+                for (uint32_t q = 0; q < nf && nl < 400; q++)
+                    if ((a[q] == 0) != (b[q] == 0) && out[q] != b[q]) {
+                        nl++;
+                        LOG("[interp-onoff] f%llu t %.2f cb %u stage %d slot %d addr %llx elem %u: %g, %g, %g -> %g\n",
+                            (unsigned long long)s_frame_no, t, i, cc->stage, cc->slot, (unsigned long long)cc->addr, q,
+                            a2 ? a2[q] : NAN, a[q], b[q], out[q]);
+                    }
+            }
         }
         memcpy((uint8_t *)out + nf * 4, (const uint8_t *)b + nf * 4, cc->size - nf * 4);
         cc->blend = (int64_t)blend_n;
@@ -1294,10 +1340,10 @@ void interp_log_stats(void) {
     int o = 0;
     for (int i = 0; i < 9; i++)
         if (s_cuts[i]) o += snprintf(cuts + o, sizeof cuts - (size_t)o, " %s %llu", cut_name[i], (unsigned long long)s_cuts[i]);
-    LOG("[interp] %s: %.1f game frames/s, draws %.0f/frame matched %.1f%% (by object %.0f/f, by content %.0f/f, by order %.1f/f, new objects %.1f/f), buffers blended %.0f/f jumps %.0f/f (+%.0f/f with their class), toggling elements %.0f/image, whole-number %.0f, wraps %.1f, discontinuities %.1f, rotations %.0f (switched %.1f), split buffers %.1f/f, reused %.0f/image | images "
+    LOG("[interp] %s: %.1f game frames/s, draws %.0f/frame matched %.1f%% (by object %.0f/f, by content %.0f/f, by order %.1f/f, new objects %.1f/f), buffers blended %.0f/f jumps %.0f/f (+%.0f/f with their class), toggling elements %.0f/image, whole-number %.0f, wraps %.1f, discontinuities %.1f, lists switched %.1f, rotations %.0f (switched %.1f), split buffers %.1f/f, reused %.0f/image | images "
         "%.1f/s planned (in-between %.1f/s), late %llu, skipped %llu, gave way %llu, no GPU time %llu | replay cpu %.2f ms avg %.2f max, gpu %.2f ms; "
         "present pass gpu %.2f ms; prep %.2f ms/f | latency %.1f ms | cuts:%s\n",
-        game_level_name(), n / dt, s_draws / n, s_draws ? 100.0 * s_matched / s_draws : 0, s_id_pairs / n, s_content_pairs / n, s_order_pairs / n, s_new_objects / n, s_blended_cbs / n, s_cut_cbs / n, s_class_snaps / n, s_replays ? (double)s_toggled / s_replays : 0, s_replays ? (double)s_integral / s_replays : 0, s_replays ? (double)s_wraps / s_replays : 0, s_replays ? (double)s_discont / s_replays : 0,
+        game_level_name(), n / dt, s_draws / n, s_draws ? 100.0 * s_matched / s_draws : 0, s_id_pairs / n, s_content_pairs / n, s_order_pairs / n, s_new_objects / n, s_blended_cbs / n, s_cut_cbs / n, s_class_snaps / n, s_replays ? (double)s_toggled / s_replays : 0, s_replays ? (double)s_integral / s_replays : 0, s_replays ? (double)s_wraps / s_replays : 0, s_replays ? (double)s_discont / s_replays : 0, s_replays ? (double)s_onoff / s_replays : 0,
         s_replays ? (double)s_rot_blocks / s_replays : 0, s_replays ? (double)s_rot_switch / s_replays : 0, (double)s_split / n, s_replays ? (double)s_reused / s_replays : 0,
         s_shots / dt, s_mids / dt, (unsigned long long)s_late, (unsigned long long)s_skipped, (unsigned long long)s_gave_way, (unsigned long long)s_no_gpu,
         s_replays ? s_replay_cpu / s_replays : 0, s_replay_cpu_max, gn ? s_replay_gpu / gn : 0, cn ? s_compose_gpu / cn : 0,
@@ -1311,7 +1357,7 @@ void interp_log_stats(void) {
     if (st_replay_misses || st_replay_cb_miss)
         LOG("[interp] replay draw misses %llu/%llu, uniform misses %llu\n", (unsigned long long)st_replay_misses,
             (unsigned long long)st_replay_draws, (unsigned long long)st_replay_cb_miss);
-    s_frames = s_draws = s_matched = s_changed = s_cut_cbs = s_blended_cbs = s_id_pairs = s_order_pairs = s_content_pairs = s_new_objects = s_class_snaps = s_toggled = s_integral = s_wraps = s_discont = s_rot_blocks = s_rot_switch = s_split = s_reused = 0;
+    s_frames = s_draws = s_matched = s_changed = s_cut_cbs = s_blended_cbs = s_id_pairs = s_order_pairs = s_content_pairs = s_new_objects = s_class_snaps = s_toggled = s_integral = s_wraps = s_discont = s_onoff = s_rot_blocks = s_rot_switch = s_split = s_reused = 0;
     memset(s_cuts, 0, sizeof s_cuts);
     s_shots = s_mids = s_late = s_skipped = s_gave_way = s_no_gpu = s_replays = 0;
     s_replay_cpu = s_replay_cpu_max = s_prep = s_L = s_replay_gpu = s_compose_gpu = 0;

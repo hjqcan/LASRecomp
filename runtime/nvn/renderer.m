@@ -2771,7 +2771,12 @@ static void bind_cbufs(int stage, ShaderInfo *si) {
                 else for (int i = 0; i < 16; i++) if (sav[i] && (si->ssbo_read & (1u << i))) sav[i] = snap_lookup(sav[i], st.sbuf[stage][i].size);
             } else if (reads) {
                 for (int i = 0; i < 16; i++)
-                    if (sav[i] && (si->ssbo_read & (1u << i))) { bind_note(2, sav[i], st.sbuf[stage][i].size); sav[i] = snap_storage(sav[i], st.sbuf[stage][i].size, false); }
+                    if (sav[i] && (si->ssbo_read & (1u << i))) {
+                        bind_note(2, sav[i], st.sbuf[stage][i].size);
+                        uint64_t orig = sav[i];
+                        sav[i] = snap_storage(sav[i], st.sbuf[stage][i].size, false);
+                        if (sav[i] == orig) tape_note_inplace(orig, st.sbuf[stage][i].size < (1u << 20) ? st.sbuf[stage][i].size : (1u << 20));  // (the check, LARECOMP_INTERP_INPLACE_CHECK)
+                    }
                 if (g_interp_log) interp_cbuf(4 + stage, 0, 0, sav, sizeof sav, 0);
             }
             memcpy(g_bound_sbuf[stage], sav, sizeof sav);
