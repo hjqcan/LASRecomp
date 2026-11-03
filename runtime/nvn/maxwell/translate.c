@@ -1979,27 +1979,52 @@ static bool glsl_early_tests(const Ctx *c) {
 }
 
 // Declarations + entry point around the (rewritten) body; mirrors the MSL assembly in maxwell_translate.
-// LARECOMP_VK_PUSH_CB=1 (fragment): the constant buffer words read most (statically indexed, cbufs 3+: the game's own;
-// a read inside a loop counts 8x per loop level) move into push constants, up to 64 words (PanVK's 256 bytes): fast
-// uniform registers instead of a uniform buffer load each (Mesa's PanVK keeps none of those in fast uniforms).
+// LARECOMP_VK_PUSH_CB=1 (vertex and fragment): the constant buffer words read most (statically indexed, cbufs 3+: the
+// game's own) move into push constants: fast uniform registers instead of a uniform buffer load each (Mesa's PanVK
+// keeps no uniform buffer words in fast uniforms; ARM's driver promotes them itself). A read's weight is how often it
+// may run: x8 per enclosing loop, x1/2 per enclosing if / else (predicated instructions included). The vertex shader
+// takes up to 16 words from push offset 0, the fragment shader the rest of the 64 (PanVK's 256 bytes) after it: the
+// caller sets maxwell_push_base / maxwell_push_cap around each translation.
+uint32_t maxwell_push_base, maxwell_push_cap = 64;
 static void push_promote(Ctx *c, Str *body) {
     static int on = -1;
     if (on < 0) { const char *e = getenv("LARECOMP_VK_PUSH_CB"); on = e && atoi(e); }
-    if (!on || c->stage != STAGE_FRAGMENT || !body->buf || (maxwell_gmem_lazy && c->info->uses_gmem)) return;
-    enum { MAXW = 512 };
-    typedef struct { uint8_t cb; uint16_t off; uint64_t w; } PushWord;
+    if (!on || (c->stage != STAGE_FRAGMENT && c->stage != STAGE_VERTEX) || !body->buf ||
+        (maxwell_gmem_lazy && c->info->uses_gmem)) return;
+    int cap = c->stage == STAGE_VERTEX ? 16 : (int)maxwell_push_cap - (int)maxwell_push_base / 4;
+    if (cap > 64) cap = 64;
+    if (cap <= 0) return;
+    enum { MAXW = 512, MAXD = 64 };
+    typedef struct { uint8_t cb; uint16_t off; double w; } PushWord;
     PushWord words[MAXW];
-    int nw = 0, depth = 0;
-    const char *b = body->buf;
+    char scope[MAXD];  // 'l' loop, 'c' if / else, '-' other
+    int nw = 0, nd = 0, loops = 0, conds = 0;
+    const char *b = body->buf, *line = b;
     for (const char *p = b; *p; p++) {
-        if (!strncmp(p, "do {", 4)) depth++;
-        else if (!strncmp(p, "} while", 7) && depth) depth--;
+        if (*p == '\n') line = p + 1;
+        if (*p == '{') {
+            char k = '-';
+            const char *q = p;  // (what opens it: "do {", "if (...) {", "else {")
+            while (q > line && (q[-1] == ' ')) q--;
+            if (q - line >= 2 && !strncmp(q - 2, "do", 2)) k = 'l';
+            else if (strstr(line, "if (") && strstr(line, "if (") < p) k = 'c';
+            else if (q - line >= 4 && !strncmp(q - 4, "else", 4)) k = 'c';
+            if (nd < MAXD) scope[nd] = k;
+            nd++;
+            if (k == 'l') loops++; else if (k == 'c') conds++;
+            continue;
+        }
+        if (*p == '}') {
+            if (nd > 0) { nd--; if (nd < MAXD) { if (scope[nd] == 'l') loops--; else if (scope[nd] == 'c') conds--; } }
+            continue;
+        }
         int cb, row, col, len = 0;
         if (p[0] == 'c' && p[1] == 'b' && (p == b || !((p[-1] >= 'a' && p[-1] <= 'z') || (p[-1] >= '0' && p[-1] <= '9') || p[-1] == '_')) &&
             sscanf(p, "cb%d[%d][%d]%n", &cb, &row, &col, &len) == 3 && len && cb >= 3 && cb < 18 && col < 4 && row < 4096) {
             uint16_t off = (uint16_t)(row * 16 + col * 4);
-            uint64_t w = 1;
-            for (int d = 0; d < depth && d < 6; d++) w *= 8;
+            double w = 1;
+            for (int d = 0; d < loops && d < 6; d++) w *= 8;
+            for (int d = 0; d < conds && d < 6; d++) w *= 0.5;
             int i = 0;
             while (i < nw && !(words[i].cb == cb && words[i].off == off)) i++;
             if (i == nw && nw < MAXW) words[nw++] = (PushWord){(uint8_t)cb, off, 0};
@@ -2010,7 +2035,7 @@ static void push_promote(Ctx *c, Str *body) {
     if (!nw) return;
     for (int i = 1; i < nw; i++)  // (by weight, heaviest first)
         for (int j = i; j > 0 && words[j].w > words[j - 1].w; j--) { PushWord t = words[j]; words[j] = words[j - 1]; words[j - 1] = t; }
-    int n = nw < 64 ? nw : 64;
+    int n = nw < cap ? nw : cap;
     Str o = {0};
     for (const char *p = b; *p;) {
         int cb, row, col, len = 0, k = -1;
@@ -2024,6 +2049,7 @@ static void push_promote(Ctx *c, Str *body) {
     free(body->buf);
     *body = o;
     c->info->npush = (uint8_t)n;
+    c->info->push_base = c->stage == STAGE_VERTEX ? 0 : (uint16_t)maxwell_push_base;
     for (int i = 0; i < n; i++) c->info->push_cb[i] = words[i].cb, c->info->push_off[i] = words[i].off;
 }
 
@@ -2056,7 +2082,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if (!n) n = 1;
         sp(&s, "layout(std140, set = %d, binding = %d) uniform CB%d { uvec4 cb%d[%u]; };\n", set, i, i, i, n);
     }
-    if (info->npush) sp(&s, "layout(push_constant) uniform PC { uint pcw[%d]; };\n", info->npush);  // (push_promote)
+    if (info->npush) sp(&s, "layout(push_constant) uniform PC { layout(offset = %u) uint pcw[%d]; };\n", info->push_base, info->npush);  // (push_promote)
     if (info->uses_gmem && !maxwell_gmem_chunk_shift) {
         sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
            c->uses_gmem_store ? "" : "readonly ");

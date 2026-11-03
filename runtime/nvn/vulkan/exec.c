@@ -1869,12 +1869,14 @@ static VkPipelineLayout make_layout(Prog *p, int nsets, VkShaderStageFlags s0, V
     // (lazy chunks, vertex / fragment: the storage buffers' chunks as push constants, shader.h GMEM_DIRECT_MAX)
     VkPushConstantRange gd = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16 * GMEM_DIRECT_MAX};
     bool direct = gm && gc_lazy && s1 == VK_SHADER_STAGE_FRAGMENT_BIT;
-    // (LARECOMP_VK_PUSH_CB: the fragment shader's promoted constant buffer words, ShaderInfo.npush)
-    VkPushConstantRange pcr = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, (p->fi ? p->fi->npush : 0) * 4u};
-    bool pushcb = !direct && pcr.size;
+    // (LARECOMP_VK_PUSH_CB: the shaders' promoted constant buffer words, ShaderInfo.npush: vertex from 0, fragment after)
+    VkPushConstantRange pcr[2];
+    uint32_t npcr = 0;
+    if (!direct && p->vi && p->vi->npush) pcr[npcr++] = (VkPushConstantRange){VK_SHADER_STAGE_VERTEX_BIT, 0, p->vi->npush * 4u};
+    if (!direct && p->fi && p->fi->npush) pcr[npcr++] = (VkPushConstantRange){VK_SHADER_STAGE_FRAGMENT_BIT, p->fi->push_base, p->fi->npush * 4u};
     VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = (uint32_t)nsets,
-                                     .pSetLayouts = p->set_layout, .pushConstantRangeCount = direct || pushcb ? 1 : 0,
-                                     .pPushConstantRanges = direct ? &gd : pushcb ? &pcr : NULL};
+                                     .pSetLayouts = p->set_layout, .pushConstantRangeCount = direct ? 1 : npcr,
+                                     .pPushConstantRanges = direct ? &gd : npcr ? pcr : NULL};
     VkPipelineLayout l;
     VK_CHECK(vkCreatePipelineLayout(g_vk.dev, &ci, NULL, &l));
     return l;
@@ -1957,10 +1959,12 @@ static bool translate_program_now(Prog *p) {
     maxwell_gmem_chunk_shift = gmem_chunk_shift();
     pthread_mutex_lock(&translate_lock);
     maxwell_const_data = (const uint8_t *)(uintptr_t)(p->code[0] + p->cmax[0]), maxwell_const_size = p->cmax[0] != 0x10000 ? p->csize[0] : 0;
+    maxwell_push_base = 0, maxwell_push_cap = 64;  // (LARECOMP_VK_PUSH_CB: the vertex shader's words first)
     p->vi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[0], p->cmax[0], STAGE_VERTEX, &p->vkey);
     if (p->vi->msl) {
         p->fkey.vs_out_mask = p->vi->out_mask;
         maxwell_const_data = (const uint8_t *)(uintptr_t)(p->code[1] + p->cmax[1]), maxwell_const_size = p->cmax[1] != 0x10000 ? p->csize[1] : 0;
+        maxwell_push_base = p->vi->npush * 4u;  // (the fragment shader's words after them)
         p->fi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[1], p->cmax[1], STAGE_FRAGMENT, &p->fkey);
     }
     maxwell_const_data = NULL, maxwell_const_size = 0;
@@ -6750,14 +6754,17 @@ static void draw_(CmdRec *r, bool indexed) {
     if (prof) prof_sets += SDL_GetTicksNS() - prof_t1_;
     VkDescriptorSet sets[2] = {vset, fset};
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, ndyn, ndyn ? dyn : NULL);
-    if (pr->fi->npush) {  // (LARECOMP_VK_PUSH_CB) the promoted words, from the bound ranges as the draw sees them now
+    for (int sg = 0; sg < 2; sg++) {  // (LARECOMP_VK_PUSH_CB) the promoted words, from the bound ranges as the draw sees them now
+        const ShaderInfo *si = sg ? pr->fi : pr->vi;
+        if (!si->npush) continue;
         uint32_t pw[64];
-        for (int i = 0; i < pr->fi->npush; i++) {
-            Range r = st.ubuf[1][pr->fi->push_cb[i] - 3];
-            uint32_t o = pr->fi->push_off[i];
+        for (int i = 0; i < si->npush; i++) {
+            Range r = st.ubuf[sg][si->push_cb[i] - 3];
+            uint32_t o = si->push_off[i];
             pw[i] = r.addr && o + 4 <= (r.size ? r.size : 0x10000) ? *(const uint32_t *)(uintptr_t)(r.addr + o) : 0;  // (as cbuf_info)
         }
-        rec_CmdPushConstants(cb, pr->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, pr->fi->npush * 4u, pw);
+        rec_CmdPushConstants(cb, pr->layout, sg ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT, si->push_base,
+                             si->npush * 4u, pw);
     }
     if (gc_shift && (pr->vi->uses_gmem || pr->fi->uses_gmem))
         gmem_chunk_bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, GMEM_CHUNK_SET(STAGE_FRAGMENT),
