@@ -3806,7 +3806,7 @@ static bool heap_dmabuf_wanted(void) {
     const char *e = getenv("LARECOMP_VK_HEAP_DMABUF");
     return e ? atoi(e) != 0 : strstr(g_vk.props.deviceName, "RADV") != NULL;
 }
-static bool guest_heap_dmabuf(void) {
+static bool guest_heap_dmabuf_try(void) {
     if (gmem_buf || !heap_dmabuf_wanted()) return false;
     const uint64_t size = HEAP_MAX;
     VkPhysicalDeviceMemoryProperties mp;
@@ -3973,6 +3973,17 @@ static const char *heap_tracking_reason(void) {  // (overlap_on: why there is no
 static bool heap_whole_userptr(void) { return gmem_userptr && !gc_lazy && g_vk.props.vendorID == 0x1002; }
 
 #ifdef __linux__
+// The heap as the driver's memory (LARECOMP_VK_HEAP_DMABUF), tried once per boot. gmir_on tries it when it decides
+// (the copies are skipped only if the heap really is driver memory); a first failure keeps the copies and isn't
+// retried. A later boot (title screen) must make it again: shaders were set up without copies by then.
+static bool heap_dmabuf_failed, gmir_driver_heap;
+static bool guest_heap_dmabuf(void) {
+    if (gmem_buf || heap_dmabuf_failed || !heap_dmabuf_wanted()) return false;
+    if (guest_heap_dmabuf_try()) return true;
+    if (gmir_driver_heap) FATAL("the guest heap was the driver's memory and can't be made so again (see the log above)\n");
+    heap_dmabuf_failed = true;
+    return false;
+}
 #endif
 
 void backend_guest_heap_prepare(void) {
@@ -4763,10 +4774,16 @@ static bool gmir_on(void) {
         const char *e = getenv("LARECOMP_VK_GMEM_MIRROR");
         on = !g_vk.host_import && !getenv("LARECOMP_VK_NO_GMEM") && (!e || atoi(e) != 0);
 #ifdef __linux__
-        if (on && heap_dmabuf_wanted()) {  // (the heap will be the driver's memory: shaders read it directly)
-            on = 0;
-            LOG("[vk] shader global memory: the heap as driver memory, no copies\n");
-            return on;
+        // The heap as the driver's memory: shaders read it directly, no copies - decided on the heap itself, made now
+        // (else right after this, in backend_guest_heap_prepare, still before any game thread). If it fails, copies.
+        if (on && heap_dmabuf_wanted()) {
+            guest_heap_dmabuf();
+            if (gmem_dmabuf) {
+                on = 0, gmir_driver_heap = true;
+                LOG("[vk] shader global memory: the heap as driver memory, no copies\n");
+                return on;
+            }
+            LOG("[vk] shader global memory: the heap couldn't be driver memory (see above), copies instead\n");
         }
 #endif
         if (on) LOG("[vk] shader global memory: copies of the bound buffers (no host memory import here)\n");
