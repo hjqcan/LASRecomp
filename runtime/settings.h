@@ -42,6 +42,7 @@ typedef struct {
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
     bool movie_audio;
+    bool menu_sounds;    // LAS Recomp's own menu sounds (runtime/menu_sfx.c)
     bool show_fps;
     int dpad_mode;       // DPAD_*: what the d-pad (and arrow keys) do in play: nothing, items (runtime/hle/dpad_items.c), move Link
     bool rumble;         // controller vibration from the game (runtime/hle/input.c)

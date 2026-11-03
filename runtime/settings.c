@@ -36,6 +36,7 @@ Settings g_settings = {
     .volume = 1.0f,
     .reverb = true,
     .movie_audio = true,
+    .menu_sounds = true,
     .rumble = true,
     .rumble_strength = 100,
     .controller_light = true,
@@ -207,6 +208,7 @@ void settings_load(void) {
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
+        else if (!strcmp(key, "menu_sounds")) g_settings.menu_sounds = atoi(val) != 0;
         else if (!strcmp(key, "show_fps")) g_settings.show_fps = atoi(val) != 0;
         else if (!strcmp(key, "resolution")) {  // (auto: never chosen, the GPU's default)
             int n = atoi(val);
@@ -315,6 +317,7 @@ void settings_save(void) {
     fprintf(f, "volume = %.2f\n", g_settings.volume);
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
+    fprintf(f, "menu_sounds = %d\n", g_settings.menu_sounds);
     fprintf(f, "show_fps = %d\n", g_settings.show_fps);
     fprintf(f, "upscaler = %s\n", g_settings.upscaler_auto ? "auto" : g_settings.upscaler == UPSCALE_METALFX ? "metalfx" :
                                    g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");

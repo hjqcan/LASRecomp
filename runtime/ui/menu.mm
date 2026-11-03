@@ -665,15 +665,18 @@ static void tab_cosmetics(void) {
 
 static void tab_audio(void) {
     opt_begin("##audio", ImGui::GetFontSize() / 34);
-    opt_section("Sound");
+    opt_section("Volume");
     float pct = roundf(g_settings.volume * 100);
     if (opt_slider("Volume", &pct, 0, 200, 5, 100, "%g%%",
                    "The game's volume. 100% is normal, higher is louder."))
         g_settings.volume = pct / 100.0f;
-    opt_toggle("Room reverb", &g_settings.reverb, true,
-               "The game's echo in caves, dungeons and big rooms.");
     opt_toggle("Movie audio", &g_settings.movie_audio, true,
                "Sound in the opening and ending movies. Changes the next time a movie plays.");
+    opt_section("Effects");
+    opt_toggle("Enable reverb", &g_settings.reverb, true,
+               "The game's echo in caves, dungeons and big rooms.");
+    opt_toggle("LAS Recomp menu sounds", &g_settings.menu_sounds, true,
+               "Sounds when you move around and pick things in LAS Recomp's menus.");
     opt_end();
 }
 
