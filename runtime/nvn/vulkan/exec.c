@@ -7351,6 +7351,9 @@ static void exec_list(uint64_t handle, int depth) {
     }
 }
 
+// (frame interpolation's stats line: replays' copies of per-frame geometry - none on Vulkan yet)
+void renderer_interp_geo_stats(uint64_t *binds, uint64_t *differed, uint64_t *missed) { *binds = *differed = *missed = 0; }
+
 void backend_execute(uint64_t handle) {
     PROF_T0();
     interp_list_submitted(handle);  // (frame interpolation, runtime/nvn/interp.c: the frame's lists)
