@@ -41,7 +41,7 @@ Settings g_settings = {
     .rumble_strength = 100,
     .controller_light = true,
     .menu_confirm = MENU_CONFIRM_CONTROLLER,
-    .show_fps = false,
+    .show_fps = FPS_OFF,
     .inv_keys = true,
     .tracker = true,
     .tracker_filters = -1,
@@ -209,7 +209,12 @@ void settings_load(void) {
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
         else if (!strcmp(key, "menu_sounds")) g_settings.menu_sounds = atoi(val) != 0;
-        else if (!strcmp(key, "show_fps")) g_settings.show_fps = atoi(val) != 0;
+        else if (!strcmp(key, "show_fps")) {  // (older files: 0 / 1, and 1 was the top right)
+            static const char *const corners[] = {"off", "top_left", "top_right", "bottom_left", "bottom_right"};
+            g_settings.show_fps = atoi(val) ? FPS_TOP_RIGHT : FPS_OFF;
+            for (int i = 0; i < N_FPS_CORNERS; i++)
+                if (!strcmp(val, corners[i])) g_settings.show_fps = i;
+        }
         else if (!strcmp(key, "resolution")) {  // (auto: never chosen, the GPU's default)
             int n = atoi(val);
             g_settings.res_auto = !strcmp(val, "auto");
@@ -318,7 +323,11 @@ void settings_save(void) {
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "menu_sounds = %d\n", g_settings.menu_sounds);
-    fprintf(f, "show_fps = %d\n", g_settings.show_fps);
+    {
+        static const char *const corners[] = {"off", "top_left", "top_right", "bottom_left", "bottom_right"};
+        int c = g_settings.show_fps;
+        fprintf(f, "show_fps = %s\n", corners[c >= 0 && c < N_FPS_CORNERS ? c : 0]);
+    }
     fprintf(f, "upscaler = %s\n", g_settings.upscaler_auto ? "auto" : g_settings.upscaler == UPSCALE_METALFX ? "metalfx" :
                                    g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");

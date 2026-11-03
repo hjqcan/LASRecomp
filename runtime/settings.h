@@ -31,6 +31,8 @@ extern const char *const g_language_endonyms[N_LANGUAGES];  // each in its own l
 
 enum { RANDO_PRESETS_MAX = 20 };  // (the Randomizer tab's own presets: settings.rando_presets)
 
+enum { FPS_OFF, FPS_TOP_LEFT, FPS_TOP_RIGHT, FPS_BOTTOM_LEFT, FPS_BOTTOM_RIGHT, N_FPS_CORNERS };
+
 typedef struct {
     int aspect;          // ASPECT_*: unlocked = fill the window (wider/taller views), original = 16:9 with bars
     bool fullscreen;
@@ -43,7 +45,7 @@ typedef struct {
     bool reverb;         // room reverb effect
     bool movie_audio;
     bool menu_sounds;    // LAS Recomp's own menu sounds (runtime/menu_sfx.c)
-    bool show_fps;
+    int show_fps;        // FPS_*: the frame rate counter's corner (FPS_OFF: none)
     int dpad_mode;       // DPAD_*: what the d-pad (and arrow keys) do in play: nothing, items (runtime/hle/dpad_items.c), move Link
     bool rumble;         // controller vibration from the game (runtime/hle/input.c)
     int rumble_strength; // its intensity, percent (25 / 50 / 75 / 100)
