@@ -366,10 +366,8 @@ bool opt_colour(const char *label, CosColour *c, int slot, const char *desc) {
     ImGui::PushID(label);
     char hex[16];
     snprintf(hex, sizeof hex, "#%06X", (unsigned)(c->rgb & 0xFFFFFF));
-    opt_indent(1);
     g_value_shown = true;
     bool open = opt_action("Custom color", hex, "Pick any color by hue, saturation and brightness.", true, true);
-    opt_indent(-1);
     ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
     {   // a swatch of it, left of the value
         float fs = ImGui::GetFontSize(), sw = fs * 1.1f, vw = ImGui::CalcTextSize(hex).x;
@@ -526,9 +524,15 @@ void opt_pair_next(void) { g_half = 1; }
 void opt_list_begin(void) {
     // room under the list for the page's longest description (as last frame measured it; 2 lines at least): a longer
     // list scrolls
-    g_desc_w = ImGui::GetContentRegionAvail().x, g_listed = true;
+    // The width the description wraps at, measured as if the pane had a scrollbar whether or not it has one now: a
+    // width that followed the scrollbar re-wrapped the text, which moved the list, which toggled the scrollbar - the
+    // rows and the text flashed every frame (Bushsanity's three lines)
+    ImGuiWindow *win = ImGui::GetCurrentWindow();
+    g_desc_w = ImGui::GetContentRegionAvail().x - (win->ScrollbarY ? 0 : ImGui::GetStyle().ScrollbarSize), g_listed = true;
     float line = ImGui::GetFontSize() * 1.3f, avail = ImGui::GetContentRegionAvail().y;
-    float desc = (g_desc_max_last > line * 2 ? g_desc_max_last : line * 2) + 16 * g_scale;
+    // (+ opt_list_end's groove and the spacing around it, so the pane itself never needs to scroll)
+    float desc = (g_desc_max_last > line * 2 ? g_desc_max_last : line * 2) + 14 * g_scale +
+                 2 * ImGui::GetStyle().ItemSpacing.y + 4 * g_scale;
     float maxh = avail - desc > avail * 0.35f ? avail - desc : avail * 0.35f;
     ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, maxh));
     ImGui::BeginChild("##list", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
