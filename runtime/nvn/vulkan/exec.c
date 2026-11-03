@@ -1292,6 +1292,13 @@ void vk_exec_init(void) {
     maxwell_glsl_stack_vars = sa ? atoi(sa) == 0 : g_vk.props.vendorID == 0x8086;
     LOG("[vk] shader branch stacks as %s (%s)\n", maxwell_glsl_stack_vars ? "variables" : "arrays",
         sa ? "LARECOMP_VK_STACK_ARRAYS" : "default for this GPU");
+    // Structured shaders (static branch stacks + goto elimination instead of the pc-loop, translate.c) by default where
+    // they were measured: Mali (Arm's driver, Mesa's PanVK) and Adreno (Turnip). LARECOMP_VK_STATIC_STACKS=1
+    // LARECOMP_VK_STRUCTURE=1 turn them on elsewhere, =0 off anywhere.
+    maxwell_glsl_structured = g_vk.props.vendorID == 0x13B5 || g_vk.props.vendorID == 0x5143;  // (Arm, Qualcomm)
+    const char *se = getenv("LARECOMP_VK_STRUCTURE");
+    LOG("[vk] structured shaders %s (%s)\n", (se ? atoi(se) != 0 : maxwell_glsl_structured) ? "on" : "off",
+        se ? "LARECOMP_VK_STRUCTURE" : "default for this GPU");
     // The command buffers of every slot, from the pool, before the recorder thread exists: from then on the pool and
     // the buffers are the recorder's (begun, recorded, ended and submitted in packet order)
     for (int i = 0; i < SUBS; i++) {

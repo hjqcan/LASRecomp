@@ -27,6 +27,7 @@ uint32_t maxwell_gmem_chunk_shift;  // 0: one buffer for the whole heap (GLSL; s
 bool maxwell_gmem_lazy;
 bool maxwell_gmem_fs_miss;
 bool maxwell_glsl_stack_vars = true;
+bool maxwell_glsl_structured;  // static stacks + structured control flow by default (exec.c: Mali, Adreno)
 bool maxwell_gmem_mirror;  // (shader.h)
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
@@ -2805,7 +2806,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     }
     if (any_branch && c->glsl) {
         static int ss = -1;
-        if (ss < 0) { const char *e = getenv("LARECOMP_VK_STATIC_STACKS"); ss = e && atoi(e) != 0; }
+        if (ss < 0) { const char *e = getenv("LARECOMP_VK_STATIC_STACKS"); ss = e ? atoi(e) != 0 : maxwell_glsl_structured; }
         if (ss) {
             c->pop_target = calloc(end + 1, sizeof *c->pop_target);
             c->static_stacks = static_stacks_resolve((const uint64_t *)code, end, label, c->pop_target);
@@ -2818,7 +2819,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     Ast *plan = NULL; SBlock *sblk = NULL; int nsblk = 0; int *blk_of = NULL; Str saved_body = {0};
     if (c->static_stacks) {
         static int st = -1;
-        if (st < 0) { const char *e = getenv("LARECOMP_VK_STRUCTURE"); st = e && atoi(e) != 0; }
+        if (st < 0) { const char *e = getenv("LARECOMP_VK_STRUCTURE"); st = e ? atoi(e) != 0 : maxwell_glsl_structured; }
         if (st && struct_blocks((const uint64_t *)code, end, label, c->pop_target, &sblk, &nsblk, &blk_of)) {
             plan = ast_build(c, sblk, nsblk);
             c->structured = plan != NULL;
