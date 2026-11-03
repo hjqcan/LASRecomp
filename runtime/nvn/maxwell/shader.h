@@ -122,6 +122,7 @@ extern bool maxwell_gmem_fs_miss;
 // in the lit fragment shaders' light loop (#462), while Mali-G610 (libmali g29p1) never finished building the
 // variables form's pipelines (#526).
 extern bool maxwell_glsl_stack_vars;
+extern bool maxwell_glsl_structured;  // (the backend's default for this GPU: LARECOMP_VK_STATIC_STACKS / _STRUCTURE override)
 // (GLSL / Vulkan) No heap import (panvk, Honeykrisp: no VK_EXT_external_memory_host, issue #483): every stage reaches
 // its storage buffers through the address table (GMap / GFast, as compute does), which points into copies of the
 // guest memory they cover (vulkan/exec.c gmir_). Accesses outside the table read 0 and drop their stores.
