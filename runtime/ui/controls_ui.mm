@@ -280,14 +280,13 @@ extern "C" void controls_tab_draw(float scale) {
 
     opt_section("Controller");
     opt_toggle("Rumble", &g_settings.rumble, true, "Controller vibration.");
-    if (g_settings.rumble) {
+    {
         static const char *const pct[] = {LN("25%"), LN("50%"), LN("75%"), LN("100%")};
         int i = g_settings.rumble_strength / 25 - 1;
         if (i < 0 || i > 3) i = 3;
-        opt_indent(1);
+        if (!g_settings.rumble) opt_disable_next();
         if (opt_choice("Intensity", &i, pct, 4, 3, "How strong the vibration is.", false))
             g_settings.rumble_strength = (i + 1) * 25;
-        opt_indent(-1);
     }
     opt_toggle("Controller light", &g_settings.controller_light, true, "The light bar shows Link's health.");
     {

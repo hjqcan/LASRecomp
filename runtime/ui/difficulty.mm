@@ -101,12 +101,10 @@ extern "C" void difficulty_draw(float scale) {
             g_settings.walk_speed = mult[wi];
             settings_save();
         }
-        opt_indent(1);
         if (wi == 0) opt_disable_next();
         if (opt_toggle("Indoors", &g_settings.walk_speed_dungeons, false,
                        "Use the walk speed in houses, caves and dungeons too."))
             settings_save();
-        opt_indent(-1);
     }
     opt_section("Difficulty");
     static const char *const names[] = {LN("Half"), LN("Default"), LN("2x"), LN("3x"), LN("4x"), LN("5x"),
@@ -133,21 +131,18 @@ extern "C" void difficulty_draw(float scale) {
                    locked ? "Turn this on before you load a save."
                           : "Shows a run timer in the corner, from the start of gameplay to the ending."))
         settings_save();
-    opt_indent(1);
     {  // (any time, also mid-session)
         static const char *const pos[] = {LN("Bottom left"), LN("Bottom right")};
         if (!g_settings.timer) opt_disable_next();
         if (opt_choice("Timer position", &g_settings.timer_pos, pos, 2, TIMER_POS_LEFT, "Which corner the timer sits in."))
             settings_save();
     }
-    opt_indent(-1);
     if (opt_toggle("LiveSplit", &g_settings.livesplit, false,
                    "Connects to LiveSplit's Server component. It starts the timer, splits on each instrument and stops "
                    "at the ending, with load times removed.")) {
         settings_save();
         livesplit_poke();
     }
-    opt_indent(1);
     {
         char d[512];  // (in the menus' language already: the row leaves it as it is)
         snprintf(d, sizeof d, "%s%s%s", L("The address LiveSplit's Server listens on, written as host:port."),
@@ -159,6 +154,5 @@ extern "C" void difficulty_draw(float scale) {
             settings_save();
         }
     }
-    opt_indent(-1);
     opt_end();
 }
