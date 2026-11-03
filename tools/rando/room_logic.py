@@ -47,6 +47,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import rooms  # noqa: E402  (cell positions: Eagle's Tower's grid doesn't follow its names)
+import room_overrides  # noqa: E402
 
 LEVELS = {
     'Lv10ClothesDungeon': (0, 'color-dungeon'), 'Lv01TailCave': (1, 'tail-cave'), 'Lv02BottleGrotto': (2, 'bottle-grotto'),
@@ -596,10 +597,12 @@ def stairs_ports(romfs, level, cat):
             continue
         pa = [p for t, p in acts.get(a, ()) if t not in cat]  # (its stairs into the passage)
         pb = [p for t, p in acts.get(b, ()) if t not in cat]
+        req = room_overrides.alts(room_overrides.PASSAGES[frozenset({a, b})]) \
+            if frozenset({a, b}) in room_overrides.PASSAGES else PASSAGE
         for p in pa:
             for q in pb:
-                out.append((a, p, b, q, PASSAGE))
-                out.append((b, q, a, p, PASSAGE))
+                out.append((a, p, b, q, req))
+                out.append((b, q, a, p, req))
     _stairs_cache[(romfs, level, 'ports')] = out
     return out
 
@@ -621,9 +624,10 @@ FEATHER = [frozenset({'rs-jump'})]
 JUMPS = {1: FEATHER, 2: [frozenset({'rs-long-jump'})]}
 HOOK_REACH = 8  # tiles (hookshot_logic.py: 12 units) - pulled across pits / water to a target behind the landing
 # what the hookshot latches onto in standard play: objects, never a plain wall (runtime/hle/hookshot.c: a surface
-# without the target bit clinks off). Chests, pots, blocks, statues. With "hookshot anything" (HOOK_ANYTHING, set by
-# las_headless from the seed's settings) any solid tile.
-HOOK_TARGETS = ('ObjTreasureBox', 'ObjDungeonPot', 'ObjSquareBlock', 'ObjDungeonSt', 'ObjDungeonOw', 'ObjHookBridge')
+# without the target bit clinks off). Chests, blocks, statues - not pots (Bottle Grotto 02D, Angler's Tunnel 06F: the
+# shot breaks them). With "hookshot anything" (HOOK_ANYTHING, set by las_headless from the seed's settings) any solid
+# tile.
+HOOK_TARGETS = ('ObjTreasureBox', 'ObjSquareBlock', 'ObjDungeonSt', 'ObjDungeonOw', 'ObjHookBridge')
 HOOK_ANYTHING = False
 PASSAGE = [frozenset({'feather'})]  # side-view passages under the stairs (Face Shrine 05D <-> 04F: a gap only the
 # feather crosses - the Rooster doesn't come into side-view rooms)
@@ -681,6 +685,11 @@ def room_tiles(romfs, room):
                           if u in out and out[u][0] == FLOOR and out[u][1] is not None]
                 if beside and ht <= max(beside) + 0.3:
                     out[t] = (FLOOR, ht)
+            fix = room_overrides.ROOMS.get(room, {})  # (what the tiles can't tell: room_overrides.py)
+            for t in fix.get('solid', ()):
+                out[t] = (SOLID, 3.0)
+            for t in fix.get('floor', ()):
+                out[t] = (FLOOR, 0.0)
     except (OSError, TypeError, KeyError, struct.error):
         out = None
     _tiles_cache[room] = out
@@ -823,6 +832,19 @@ def room_areas(romfs, room):
     for (a, b), alts in list(moves.items()):
         if a in raised and frozenset() in alts and not any(x != a for (x, y) in moves if y == a):
             add(b, a, [frozenset()])
+    fix = room_overrides.ROOMS.get(room, {})  # moves the game has / hasn't (room_overrides.py)
+    for key, both in (('cut', False), ('cut2', True)):
+        for t, u in fix.get(key, ()):
+            for x, y in ((area[t], area[u]), (area[u], area[t])) if both else ((area[t], area[u]),):
+                moves.pop((x, y), None)
+    for key, both in (('add', False), ('add2', True)):
+        for t, u, req in fix.get(key, ()):
+            for x, y in ((area[t], area[u]), (area[u], area[t])) if both else ((area[t], area[u]),):
+                add(x, y, room_overrides.alts(req))
+    if 'check' in fix:  # the room's checks need more: an area of no tiles behind it (cell_terms: every area reached)
+        t, req = fix['check']
+        add(area[t], n, room_overrides.alts(req))
+        n += 1
     out = (area, n, [(a, b, sorted(alts, key=sorted)) for (a, b), alts in sorted(moves.items())])
     _areas_cache[room] = out
     return out
@@ -971,8 +993,10 @@ def level_graph(cat, romfs, level, layout, jump_rows, openings, trace=None):
         req = door_terms(own_doors(cat, layout[cell], side, own), n, room_types=cat[layout[cell]].get('types', ()),
                          lock_id=f'{lock_flag(romfs, layout[cell], side) or f"{cell}{side}{own}"}',
                          shutter=shutter_req(romfs, layout[cell], side), throw=throw_req(romfs, layout[cell]))
-        if req is None:
+        fx = (room_overrides.door(layout[cell], side, own, 'out'), room_overrides.door(layout[target], tside, tslot, 'in'))
+        if req is None or None in fx:
             continue
+        req = req | fx[0] | fx[1]
         dst = doorway_areas(romfs, layout[target], tside, tslot)
         if kind == 'arrival':
             via_stairs.append((cell, target, dst, req))
@@ -1006,8 +1030,10 @@ def level_graph(cat, romfs, level, layout, jump_rows, openings, trace=None):
                                     room_types=cat[layout[nb]].get('types', ()),
                                     lock_id=f'{lock_flag(romfs, layout[nb], OPP[side]) or f"{nb}{OPP[side]}{slot}"}',
                                     shutter=shutter_req(romfs, layout[nb], OPP[side]), throw=throw_req(romfs, room))
-                if req_out is None or req_in is None:
+                fx = (room_overrides.door(room, side, slot, 'out'), room_overrides.door(layout[nb], OPP[side], slot, 'in'))
+                if req_out is None or req_in is None or None in fx:
                     continue
+                req_out, req_in = req_out | fx[0], req_in | fx[1]
                 kind = inward.get((room, side, slot))
                 dst = doorway_areas(romfs, layout[nb], OPP[side], slot)
                 if kind == 'arrival':

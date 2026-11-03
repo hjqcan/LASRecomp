@@ -65,8 +65,8 @@ def main():
     for t in ((0, 1), (6, 2)):
         if moves_between(romfs, fs, (3, 6), t) is not None:
             fail(f'{fs}: climbs from the floor onto the raised strip at {t}')
-    if moves_between(romfs, fs, (1, 1), (3, 1)) != [frozenset()]:
-        fail(f'{fs}: the drop off the north-west strip is missing')
+    if moves_between(romfs, fs, (1, 1), (3, 1)) is not None:  # (room review: the walkway is railed)
+        fail(f'{fs}: a drop off the railed north-west strip')
     # Tail Cave 05E: the raised platform's edge is a wall - over the pit with the feather / Rooster, not a walk off
     tc = 'Lv01TailCave_05E'
     if set(moves_between(romfs, tc, (2, 2), (2, 6)) or ()) != set(feather):
@@ -79,10 +79,10 @@ def main():
     if rl.door_terms(['potdoor'], 6, throw=None) is not None:
         fail('a pot door with nothing to throw is passable')
 
-    # the hookshot: onto objects only (chests, pots, blocks, statues, hook posts), never a plain wall - unless the
+    # the hookshot: onto objects only (chests, blocks, statues, hook posts), never a plain wall or a pot - unless the
     # seed has "hookshot anything"
     cm = 'Lv05CatfishsMaw_02E'
-    if moves_between(romfs, cm, (1, 7), (6, 3)) != [frozenset({'hookshot'})]:
+    if set(moves_between(romfs, cm, (1, 7), (6, 3)) or ()) != {frozenset({'hookshot'}), frozenset({'rooster', 'bad-pets'})}:
         fail(f'{cm}: the stairs ledge -> the chest floor by the hook post: {moves_between(romfs, cm, (1, 7), (6, 3))}')
     bg = 'Lv02BottleGrotto_03C'
     area, n, moves = rl.room_areas(romfs, bg)
