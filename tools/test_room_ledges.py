@@ -65,9 +65,13 @@ def grid_checks(romfs, rev):
     layout = {'07C': 'Lv08TurtleRock_07E', '06F': 'Lv01TailCave_05F'}
     rows = [(level, '07C', 'N', 16, 10, '06F', 'S', 2.25, 0.0), (level, '06F', 'S', 10, 16, '07C', 'N', 3.75, 0.0, 0.75)]
     edges, _ = room_logic.level_graph(cat, romfs, level, layout, rows, dungeon_gen.openings)
-    if any(t == '06F' for t, _ in edges['07C']):
+    out = {}  # (cell -> cells: the room graph's nodes are areas of cells)
+    for a, ts in edges.items():
+        out.setdefault(room_logic.cell_of(a), set()).update(
+            room_logic.cell_of(t) for t, _ in ts if room_logic.cell_of(t) != room_logic.cell_of(a))
+    if '06F' in out['07C']:
         fail('Tail Cave 07C (Turtle Rock 07E) -> 06F: the logic still leaves through the north ledge')
-    if not any(t == '07C' for t, _ in edges['06F']):
+    if '07C' not in out['06F']:
         fail('Tail Cave 06F -> 07C: the way in (dropping off the ledge) is missing')
     if room_logic.inward_exits(cat, romfs, level, layout, rows):
         fail('inward_exits reports edges out through the ledge')
@@ -76,7 +80,7 @@ def grid_checks(romfs, rev):
     lay = {f'{c}': f'{tr}_{c}' for c in ('05D', '05E', '05F', '06D', '06E', '06F', '07F')}
     lay['07E'] = f'{tr}_07E'
     edges, _ = room_logic.level_graph(cat, romfs, tr, lay, [], dungeon_gen.openings)
-    if any(t == '07E' for t, _ in edges['06E']):
+    if any(room_logic.cell_of(t) == '07E' for a, ts in edges.items() if room_logic.cell_of(a) == '06E' for t, _ in ts):
         fail('Turtle Rock 06E -> 07E: left from 06E itself (its south strip is only reached by the stairs)')
 
 

@@ -229,6 +229,8 @@ def main():
     if settings.get('hookshot-anything'):  # new routes before anything reads the logic (room shuffle, entrances)
         import hookshot_logic
         print('hookshot anything:', hookshot_logic.apply(logic_defs), 'routes', flush=True)
+        import room_logic
+        room_logic.HOOK_ANYTHING = True  # (room shuffle: the hookshot crosses to any solid tile)
     import eagle_tower  # room shuffle: Eagle's Tower starts collapsed (its flags: player_start.py; tools/rando/eagle_tower.py)
     if eagle_tower.collapsed(settings):
         print("eagle's tower collapsed:", eagle_tower.apply_logic(logic_defs), 'conditions', flush=True)
