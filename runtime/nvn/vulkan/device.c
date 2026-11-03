@@ -978,8 +978,8 @@ static const char *pp_text(void) {
 // Inline: before a game frame's image, its in-betweens (between the previous frame and this one) are made - each a
 // replay of the frame's lists with blended uniforms into the game's own targets - and presented, each with the
 // previous image's placement; FIFO (present_mode) shows each for one refresh. The frame's image is set aside first
-// (a copy) and put back before it is presented. In-betweens per frame: the game's frame interval over the display's
-// refresh period, less one (60 fps at 120 Hz: 1, at 240 Hz: 3).
+// (a copy) and put back before it is presented. In-betweens per frame: the refresh rate over the game's 60, less one
+// (120 Hz: 1, 240 Hz: 3), from 100 Hz.
 static struct { bool ok; float vx, vy, vw, vh, pv[8]; } ip_place;  // (the last image's placement in the window)
 static VkImage ip_held;
 static VmaAllocation ip_held_mem;
@@ -1032,12 +1032,33 @@ static void ip_mids(TexBackend *b, uint64_t frame) {
     }
     prev_ns = now;
     if (!ip_place.ok || interval_ns <= 0 || !b || !b->image || b->depth > 1 || b->layers > 1) return;
+    // The refresh rate the window's presents really get: the display's own (SDL), unless the frames with in-betweens
+    // showed fewer - a virtual display (Parsec: 120 Hz reported, presents paced at 60) held each image two refreshes
+    // and the game fell to its 30 fps mode. Learned from those frames, kept while the display reports the same rate.
+    // In-betweens only from 100 Hz: never at the cost of the game's own 60.
+    static double hz_seen, hz_cap;
+    static int mids_last, settle;
     SDL_DisplayID did = SDL_GetDisplayForWindow(window);
     const SDL_DisplayMode *dm = did ? SDL_GetCurrentDisplayMode(did) : NULL;
     double hz = dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60;
-    int mids = (int)lround(interval_ns * hz / 1e9) - 1;
+    if (hz != hz_seen) hz_seen = hz, hz_cap = 0, settle = 0;
+    if (mids_last > 0 && ++settle > 30) {  // (the interval settled with in-betweens being made)
+        double expect = (mids_last + 1) * 1e9 / (hz_cap > 0 ? fmin(hz, hz_cap) : hz);
+        if (interval_ns > 1.3 * expect) {
+            hz_cap = (mids_last + 1) * 1e9 / interval_ns;
+            settle = 0;
+            static int nlog;
+            if (nlog++ < 5) LOG("[interp] the display shows %.0f images a second, not %.0f: in-betweens for %.0f Hz\n", hz_cap, hz, hz_cap);
+        }
+    }
+    if (hz_cap > 0 && hz_cap < hz) hz = hz_cap;
+    // (counted for the game's own 60, not the measured interval: a game slowed to its 30 fps mode got more in-betweens,
+    // which held it at 30)
+    int mids = hz >= 100 ? (int)lround(hz / 60.0) - 1 : 0;
     if (mids > 3) mids = 3;
-    if (mids < 1) return;
+    if (mids < 1) { mids_last = 0; return; }
+    if (mids != mids_last) settle = 0;
+    mids_last = mids;
     if (!interp_replays_allowed(frame, total_frames, now)) return;
     if (!interp_replay_lock()) return;
     if (ip_hold(b, false)) {
