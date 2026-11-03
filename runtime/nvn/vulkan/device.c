@@ -1399,6 +1399,18 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         extern bool g_gpuprof_frame;
         extern void vk_gpuprof_report(void);
         if (g_gpuprof_frame) { g_gpuprof_frame = false; vk_gpuprof_report(); }
+        // LARECOMP_GPUPROF_FILE=<path>: on demand - when that file appears (checked once a second) it is removed and
+        // 10 frames half a second apart are profiled (an A/B at one spot: touch the file while standing still)
+        static const char *pf;
+        static int pf_init;
+        static uint64_t pf_next, pf_left;
+        if (!pf_init) { pf_init = 1; pf = getenv("LARECOMP_GPUPROF_FILE"); }
+        if (pf && !pf_left && frame % 60 == 0 && access(pf, F_OK) == 0) {
+            unlink(pf);
+            pf_left = 10, pf_next = frame + 1;
+            LOG("[gpuprof] on demand: 10 frames from %llu\n", (unsigned long long)pf_next);
+        }
+        if (pf_left && frame == pf_next) { g_gpuprof_frame = true; pf_left--; pf_next = frame + 30; }
         const char *e = getenv("LARECOMP_GPUPROF_AT");
         for (const char *p = e; p && *p;) {
             long at = strtol(p, (char **)&p, 10);
