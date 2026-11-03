@@ -1154,14 +1154,12 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
     g_font = f0, g_font_big = f1;
 }
 
-// The menu bar (in game; its window is drawn in the menu's font). Returns its bottom edge: the page's window goes
-// under it. Its keys only while no page is open: left / right (d-pad, stick, arrows, L / R, Q / E) move the cursor,
-// A / Enter opens the entry, B / Esc closes the menu. The mouse lights the entry under it, a click opens it (another
-// page while one is open). *opened: a page opened this frame (it's drawn from the next one: the press that opened it
-// isn't the page's too).
-static double g_bar_t0 = -1;  // when the bar began to drop (-1: the menu is closed)
-static bool g_bar_focused;  // (the bar's window has ImGui's focus - a click on it: B still backs out of the page)
-static float bar_draw(ImGuiIO &io, float scale, bool *opened) {
+// The menu bar (in game; its window is drawn in the menu's font), only while no page is open: left / right (d-pad,
+// stick, arrows, L / R, Q / E) move the cursor, A / Enter opens the entry, B / Esc closes the menu. The mouse lights
+// the entry under it, a click opens it (the page is drawn from the next frame: the press that opened it isn't the
+// page's too).
+static double g_bar_t0 = -1;  // when the bar began to drop (-1: not shown - the menu is closed or a page is open)
+static void bar_draw(ImGuiIO &io, float scale) {
     static const char *names[BAR_N] = {LN("Settings"), LN("Warp"), LN("Save Editor"), LN("Quit"), ""};
     const PlasticTheme &pt = plastic_theme();
     double now = ImGui::GetTime();
@@ -1175,13 +1173,10 @@ static float bar_draw(ImGuiIO &io, float scale, bool *opened) {
     ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x - 2 * m, bh), ImGuiCond_Always);
     ImGui::Begin("##bar", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus);
-    g_bar_focused = ImGui::IsWindowFocused();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
-    int page = g_page.load();
-    bool alone = page < 0, typing = ui_text_busy();
     // the keys
-    if (alone && !typing) {
+    if (!ui_text_busy()) {
         auto pressed = [](ImGuiKey a, ImGuiKey b, ImGuiKey c) {
             return ImGui::IsKeyPressed(a) || ImGui::IsKeyPressed(b) || ImGui::IsKeyPressed(c);
         };
@@ -1193,11 +1188,11 @@ static float bar_draw(ImGuiIO &io, float scale, bool *opened) {
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
             if (g_bar_cur == BAR_CLOSE) set_open(false);
-            else page_open(g_bar_cur), menu_sfx_play(MENU_SFX_DECIDE), *opened = true;
+            else page_open(g_bar_cur), menu_sfx_play(MENU_SFX_DECIDE);
         } else if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
             set_open(false);
     }
-    // the entries: a row from the left, the cursor's (or the open page's) lit as the selected tab is
+    // the entries: a row from the left, the cursor's lit as the selected tab is
     static ImVec2 last_mouse(-1, -1);  // (not io.MouseDelta: none for the mouse's first move)
     bool mouse_moved = io.MousePos.x != last_mouse.x || io.MousePos.y != last_mouse.y;
     last_mouse = io.MousePos;
@@ -1209,8 +1204,8 @@ static float bar_draw(ImGuiIO &io, float scale, bool *opened) {
         bool clicked = ImGui::InvisibleButton("##entry", ImVec2(w, ph), ImGuiButtonFlags_PressedOnClick);
         ImGui::PopID();
         bool hot = ImGui::IsItemHovered();
-        if (hot && alone && mouse_moved && g_bar_cur != k) g_bar_cur = k, menu_sfx_play(MENU_SFX_CURSOR);
-        if (clicked && k != page) page_open(k), menu_sfx_play(MENU_SFX_DECIDE), *opened = true;
+        if (hot && mouse_moved && g_bar_cur != k) g_bar_cur = k, menu_sfx_play(MENU_SFX_CURSOR);
+        if (clicked) page_open(k), menu_sfx_play(MENU_SFX_DECIDE);
         // (as the Settings window's tabs: tabs_body - the user wants the bar's look to match Settings, 2026-11-03)
         bool sel = k == g_bar_cur;
         ImVec4 col = sel ? pt.tab_sel : hot ? pt.row_mark : pt.tab;
@@ -1229,11 +1224,10 @@ static float bar_draw(ImGuiIO &io, float scale, bool *opened) {
                      bx * 0.5f + 5 * scale, pt.tab_sel, 7 * scale, 1.0f, scale, true);
     ImGui::SetCursorScreenPos(xp);
     if (plastic_close_button(bx, scale)) set_open(false);
-    if (ImGui::IsItemHovered() && alone && mouse_moved && g_bar_cur != BAR_CLOSE)
+    if (ImGui::IsItemHovered() && mouse_moved && g_bar_cur != BAR_CLOSE)
         g_bar_cur = BAR_CLOSE, menu_sfx_play(MENU_SFX_CURSOR);
     ImGui::End();
     ImGui::PopFont();
-    return top + bh;
 }
 
 // Whether menu_render draws anything: the menu, the keyboard, an overlay (FPS, inventory, tracker, chaos, race, a
@@ -1390,19 +1384,19 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
     if (!open) g_bar_t0 = -1;
     if (open) {
-        bool opened = false;
-        float bar_bottom = bar_draw(io, scale, &opened);
-        int page = g_open.load() && !opened ? g_page.load() : -1;  // (the bar's B / X may have closed the menu)
-        static int shown = -1;  // (a page just opened takes ImGui's focus from the bar)
+        // A page open: the bar goes up and the page has the whole screen (user 2026-11-03); B brings the bar down again
+        int page = g_page.load();
+        if (page < 0) bar_draw(io, scale);
+        else g_bar_t0 = -1;
+        static int shown = -1;  // (a page just opened takes ImGui's focus)
         if (page < 0) shown = -1;
         if (page >= 0) {
             // dim the game behind the page (the bar alone leaves it as it is)
             ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
                                                           IM_COL32(0, 0, 0, (int)(plastic_theme().dim * 255)));
             if (page != shown) ImGui::SetNextWindowFocus(), shown = page;
-            float top = bar_bottom + 10 * scale;
-            float w = fminf(io.DisplaySize.x * 0.9f, 1500 * scale), h = io.DisplaySize.y - top - 18 * scale;  // (the rest of the height)
-            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, top), ImGuiCond_Always, ImVec2(0.5f, 0));
+            float w = fminf(io.DisplaySize.x * 0.9f, 1500 * scale), h = io.DisplaySize.y - 2 * 18 * scale;  // (all the height: a slim margin)
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
             ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
             ImGui::Begin("##menu", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
             ImFont *keep_big = g_font_big;  // (the window in the menu's font; header() uses g_font_big)
@@ -1432,7 +1426,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
             // frame before, so it's still true the frame a field lets go)
             if (!any_popup && !typing && !ui_text_busy() && !controls_ui_took_back() && !rando_tab_took_back() &&
                 !save_editor_took_back() && !warp_tab_took_back() &&
-                (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) || g_bar_focused) &&
+                ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
                 (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
                 back = true;
             if (back && g_page.load() == page) g_page = -1;
