@@ -1155,7 +1155,9 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     io.DisplaySize = ImVec2((float)tw, (float)th);
     io.DisplayFramebufferScale = ImVec2(1, 1);
     static double last;
-    double now = SDL_GetTicks() / 1000.0;
+    // (nanoseconds: two images drawn within a millisecond - an in-between and its frame on Vulkan - counted the gap as
+    // 1/60 s, and 120 images a second showed as 70 fps)
+    double now = SDL_GetTicksNS() / 1e9;
     io.DeltaTime = last > 0 && now > last ? (float)(now - last) : 1.0f / 60;
     last = now;
     if (g_ov_cache < 0) g_ov_cache = !getenv("LARECOMP_OVERLAY_CACHE") || atoi(getenv("LARECOMP_OVERLAY_CACHE")) != 0;

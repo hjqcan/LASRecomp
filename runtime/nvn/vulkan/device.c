@@ -1014,12 +1014,29 @@ static bool ip_hold(TexBackend *b, bool restore) {  // false: no copy (no memory
     vk_full_barrier(cb);
     return true;
 }
+// Presents one refresh period apart (Frame Generation on): an in-between and its frame's image presented back to back
+// - within a millisecond - left their spacing to FIFO, and through the compositor (and Parsec on top) some were merged
+// or dropped: 120 presents a second showed as jerky motion. Each waits until a period after the one before
+// (LARECOMP_INTERP_SPACING=0: not, research).
+static double ip_hz;            // (ip_mids: the refresh rate the in-betweens are made for; 0: none being made)
+static uint64_t ip_last_present;
+static void ip_space(void) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_INTERP_SPACING") || atoi(getenv("LARECOMP_INTERP_SPACING"));
+    uint64_t now = plat_now_ns();
+    if (on && ip_hz > 0 && ip_last_present) {
+        uint64_t target = ip_last_present + (uint64_t)(0.97e9 / ip_hz);
+        if (now < target && target - now < 50000000ull) { WAITING(SDL_DelayPrecise(target - now)); now = plat_now_ns(); }
+    }
+    ip_last_present = now;
+}
 static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's image), placed as the last image
     static const float black[4] = {0, 0, 0, 1};
     if (!vk_frame_begin(black)) return;
     VkCommandBuffer cb = vk_cmd();
     vk_present_draw(cb, b, ip_place.vx, ip_place.vy, ip_place.vw, ip_place.vh, ip_place.pv);
     menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
+    ip_space();
     vk_frame_end(NULL);
 }
 static void ip_mids(TexBackend *b, uint64_t frame) {
@@ -1067,7 +1084,8 @@ static void ip_mids(TexBackend *b, uint64_t frame) {
     // which held it at 30)
     int mids = hz >= 100 ? (int)lround(hz / 60.0) - 1 : 0;
     if (mids > 3) mids = 3;
-    if (mids < 1) { mids_last = 0; return; }
+    if (mids < 1) { mids_last = 0; ip_hz = 0; return; }
+    ip_hz = hz;
     if (mids != mids_last) settle = slow_checks = 0;
     mids_last = mids;
     if (!interp_replays_allowed(frame, total_frames, now)) return;
@@ -1177,6 +1195,7 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("LARECOMP_WINDOW_SHOT") ? atol(getenv("LARECOMP_WINDOW_SHOT")) : 0;
         bool shot = win_shot && (long)frame + 1 == win_shot;
+        ip_space();
         vk_frame_end(shot ? "build/window.png" : NULL);
         if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) exit_after_shot();
     } else {
