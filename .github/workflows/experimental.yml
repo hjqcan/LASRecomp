@@ -252,5 +252,7 @@ jobs:
             done
             gh release upload "$RELEASE" "$f" --clobber
           done
+          # the rolling release's tag follows its newest build (its page shows that commit)
+          if [ "$RELEASE" = experimental ]; then gh api -X PATCH "repos/$GH_REPO/git/refs/tags/experimental" -f sha="$SHA" -F force=true >/dev/null; fi
           # (the pushed experimental-* tag only started this run)
           if [ "$EVENT" = push ] && [ "$RELEASE" = experimental ]; then gh api -X DELETE "repos/$GH_REPO/git/refs/tags/$PUSHED" || true; fi
