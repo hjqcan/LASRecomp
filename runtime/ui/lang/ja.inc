@@ -1792,3 +1792,13 @@
 {"ghost item", "オバケのアイテム"},
 {"tunic upgrades", "服をアップグレード扱い"},
 {"digs", "穴掘り"},
+// the live preview (runtime/ui/live_preview.mm)
+{"Save changes?", "変更を保存しますか？"},
+{"Yes", "はい"},
+{"No", "いいえ"},
+{"Return", "戻る"},
+{"Reset to default", "初期設定に戻す"},
+{"Configure the resolution used for rendering the game. Higher values are more demanding on your graphics hardware.", "ゲームの描画に使う解像度を設定します。高い値ほどグラフィックハードウェアへの負荷が大きくなります。"},
+{"Configure how the game is scaled up to fit your window.", "ゲームをウィンドウに合わせて拡大する方法を設定します。"},
+{"Configure the smoothing of jagged edges. SMAA keeps textures sharp.", "ギザギザした輪郭のなめらかさを設定します。SMAAはテクスチャをくっきり保ちます。"},
+{"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "画面の形を設定します。「制限なし」はウィンドウ全体に広がり、「オリジナル」は16:9のままです。"},

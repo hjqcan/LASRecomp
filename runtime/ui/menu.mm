@@ -14,6 +14,7 @@
 
 #include "imgui.h"
 #include "i18n.h"
+#include "live_preview.h"
 #include "option_rows.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
@@ -82,9 +83,15 @@ static void push(const QEvent &e) {
 
 bool menu_is_open(void) { return g_open.load(); }
 static void set_open(bool open);
+static int g_tab = -1000, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab; -1000: the first tab)
 extern "C" void menu_test_open(void) {
     set_open(true);
     if (getenv("LARECOMP_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("LARECOMP_MENU_TAB")); }
+    // (test) LARECOMP_PREVIEW=<row label>: that row's live preview opens straight away (its page: LARECOMP_MENU_TAB)
+    if (const char *row = getenv("LARECOMP_PREVIEW")) {
+        if (getenv("LARECOMP_MENU_TAB")) g_tab = atoi(getenv("LARECOMP_MENU_TAB"));
+        preview_open(row, -1);
+    }
 }
 
 void menu_tabs_focus(bool first_tab);
@@ -100,7 +107,7 @@ static void set_open(bool open) {
         menu_tabs_focus(!opened);  // selected one
         opened = true;
     }
-    else { settings_save(); osk_cancel(); g_text_busy = false; }
+    else { settings_save(); osk_cancel(); g_text_busy = false; preview_reset(); }
 }
 
 static ImGuiKey key_from_scancode(SDL_Scancode sc) {
@@ -308,7 +315,6 @@ void menu_set_scene(id<MTLTexture> tex, const float uv[4]) {
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
 static ImFont *g_font, *g_font_big;
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Baloo 2); everything else keeps g_font
-static int g_tab = -1000, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab; -1000: the first tab)
 static int g_focus_tab = -99;  // put the nav cursor on this tab next frame (-100: the selected one; -99: none)
 static int g_focus_frames;
 
@@ -485,7 +491,8 @@ static void tab_display(void) {
     opt_begin("##video", scale);
     opt_section("Display");
     const char *aspects[] = {LN("Unlocked"), LN("Original 16:9")};
-    opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
+    preview_text(LN("Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9."), NULL);
+    opt_preview("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
                "Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps "
                "the game's 16:9 view with bars.");
     bool fs = g_settings.fullscreen;
@@ -530,7 +537,11 @@ static void tab_display(void) {
             snprintf(dyn, sizeof dyn, L("Dynamic is at %.0f%% of the display right now."), output_scale_dynamic_factor() * 100);
             snprintf(d + n, sizeof d - n, " %s", dyn);
         }
-        if (opt_choice("Internal resolution", &ri, res, NRES, rdef, d, false))
+        char note[32];  // (the preview's value: "50% (800×450)", its text the user's - 2026-11-03)
+        snprintf(note, sizeof note, "%.0f×%.0f", 1920.0 * sx, 1080.0 * sy);
+        preview_text(LN("Configure the resolution used for rendering the game. Higher values are more demanding on "
+                        "your graphics hardware."), note);
+        if (opt_preview("Internal resolution", &ri, res, NRES, rdef, d, false))
             g_settings.res_mode = res_mode[ri], g_settings.res_auto = false;
     }
     {   // each OS's own upscaler next to bilinear (UPSCALE_SHARP: MetalFX on macOS, AMD FSR 1 on Windows)
@@ -551,11 +562,13 @@ static void tab_display(void) {
             ud = udm;
             opt_disable_next();
         }
-        if (opt_choice("Upscaler", &ui, ups, 2, g_default_upscaler == UPSCALE_BILINEAR ? 0 : 1, ud))
+        preview_text(LN("Configure how the game is scaled up to fit your window."), NULL);
+        if (opt_preview("Upscaler", &ui, ups, 2, g_default_upscaler == UPSCALE_BILINEAR ? 0 : 1, ud))
             g_settings.upscaler = ui ? UPSCALE_SHARP : UPSCALE_BILINEAR, g_settings.upscaler_auto = false;
     }
     static const char *aa[] = {LN("Off"), LN("SMAA")};
-    opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
+    preview_text(LN("Configure the smoothing of jagged edges. SMAA keeps textures sharp."), NULL);
+    opt_preview("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
                "Smooths jagged edges. SMAA keeps textures sharp and helps most at a lower internal resolution.");
 
     opt_end();
@@ -621,7 +634,7 @@ static void tab_cosmetics(void) {
     opt_choice("Enemy colors", &g_settings.enemy_colours, g_enemy_colour_modes, N_ENEMY_COLOUR_MODES, 0,
                "Gives each kind of enemy a new color. Enemies whose color shows how strong they are keep theirs.");
     opt_section("Screen");
-    opt_choice("Screen filter", &g_settings.screen_filter, g_screen_filters, N_SCREEN_FILTERS, 0,
+    opt_preview("Screen filter", &g_settings.screen_filter, g_screen_filters, N_SCREEN_FILTERS, 0,
                "Puts a filter over the whole screen, HUD included.");
 #ifdef __APPLE__  // (the Metal renderer draws it; Vulkan: not yet - the setting does nothing there)
     {   // (the seed's weather cycle: "Seed", the seed's weather - locked)
@@ -897,6 +910,16 @@ static void focus_check(bool down, bool up, bool any_down, int focused_tab, int 
 }
 
 // The tab bar and its pages, into the current window: the in-game menu, and the start screen's Settings (in_game
+// The live preview (live_preview.h) of a row on the page shown: instead of the tabs, until it closes. The pages with
+// opt_preview rows: Video, Cosmetics.
+static void preview_page(void) {
+    if (g_tab == 0) tab_display();
+    else if (g_tab == 7) tab_cosmetics();
+}
+bool menu_preview_frame(float scale, ImFont *font, ImFont *font_big) {
+    return preview_active() && (preview_draw(scale, font, font_big, preview_page), true);
+}
+
 // false: nothing of the game is loaded yet - the tabs that need it are greyed out; prelaunch: the start screen's own
 // first tab, game files and fonts, drawn by launcher.mm).
 static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
@@ -1248,7 +1271,10 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         ImGui::GetStyle() = menu_style;
         plastic_widgets(true);
     }
-    if (open) {
+    if (open && preview_active()) {  // (the live preview: the game, a panel at the bottom)
+        menu_preview_frame(scale, g_menu_font, g_menu_font_big);
+        menu_sfx_frame(true);
+    } else if (open) {
         // dim the game behind the menu
         ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
                                                       IM_COL32(0, 0, 0, (int)(plastic_theme().dim * 255)));

@@ -1792,3 +1792,13 @@
 {"ghost item", "spook als voorwerp"},
 {"tunic upgrades", "outfits als upgrades"},
 {"digs", "graafplekken"},
+// the live preview (runtime/ui/live_preview.mm)
+{"Save changes?", "Wijzigingen opslaan?"},
+{"Yes", "Ja"},
+{"No", "Nee"},
+{"Return", "Terug"},
+{"Reset to default", "Standaard herstellen"},
+{"Configure the resolution used for rendering the game. Higher values are more demanding on your graphics hardware.", "Stelt de resolutie in waarmee het spel wordt weergegeven. Hogere waarden vragen meer van je grafische hardware."},
+{"Configure how the game is scaled up to fit your window.", "Stelt in hoe het spel wordt vergroot om je venster te vullen."},
+{"Configure the smoothing of jagged edges. SMAA keeps textures sharp.", "Stelt het gladmaken van gekartelde randen in. SMAA houdt texturen scherp."},
+{"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "Stelt de vorm van het beeld in. Ontgrendeld vult het venster, Origineel houdt 16:9."},

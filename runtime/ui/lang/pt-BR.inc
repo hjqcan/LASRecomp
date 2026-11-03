@@ -1500,3 +1500,13 @@
 {"Seed: %s", "Seed: %s"},
 {"shared", "compartilhada"},
 {"Marin is an item in the pool, and the desert is blocked without her.", "Marin é um item na lista, e o deserto fica bloqueado sem ela."},
+// the live preview (runtime/ui/live_preview.mm)
+{"Save changes?", "Salvar as alterações?"},
+{"Yes", "Sim"},
+{"No", "Não"},
+{"Return", "Voltar"},
+{"Reset to default", "Restaurar padrão"},
+{"Configure the resolution used for rendering the game. Higher values are more demanding on your graphics hardware.", "Configura a resolução usada para renderizar o jogo. Valores mais altos exigem mais do seu hardware gráfico."},
+{"Configure how the game is scaled up to fit your window.", "Configura como o jogo é ampliado para preencher a janela."},
+{"Configure the smoothing of jagged edges. SMAA keeps textures sharp.", "Configura a suavização das bordas serrilhadas. SMAA mantém as texturas nítidas."},
+{"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "Configura o formato da imagem. Livre preenche a janela, Original mantém 16:9."},

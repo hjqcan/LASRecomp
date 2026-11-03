@@ -18,6 +18,7 @@ extern "C" {
 #include "../menu_sfx.h"
 }
 #include "i18n.h"
+#include "live_preview.h"
 #include "option_rows.h"
 #include "osk.h"
 #include "plastic.h"
@@ -285,8 +286,20 @@ bool opt_toggle(const char *label, bool *v, bool def, const char *desc) {
 }
 
 bool opt_choice(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap) {
+    return opt_preview(label, v, names, n, def, desc, wrap, false);
+}
+
+// (opt_choice, with preview: A / a click on the row opens the live preview instead of stepping)
+bool opt_preview(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap,
+                 bool preview) {
+    bool scan = preview && preview_scanning(), off = g_next_disabled;
     int cur = *v >= 0 && *v < n ? *v : 0;
     int step = row(label, names[cur], cur != def, desc, true, true);
+    if (scan) return preview_row(label, v, names, n, def, desc, wrap, off);  // (row: only read, as the others)
+    if (step == 2 && preview && !g_collect) {
+        preview_open(label, opt_item_nav_focused() ? (int)g_rows.size() - 1 : -1);
+        return false;
+    }
     if (!step) return false;
     int nv = cur + (step == 2 ? 1 : step);
     nv = wrap ? (nv + n) % n : nv < 0 ? 0 : nv >= n ? n - 1 : nv;

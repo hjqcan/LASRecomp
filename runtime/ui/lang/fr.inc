@@ -1792,3 +1792,13 @@
 {"ghost item", "fantôme objet"},
 {"tunic upgrades", "tuniques cumulables"},
 {"digs", "fouilles"},
+// the live preview (runtime/ui/live_preview.mm)
+{"Save changes?", "Enregistrer les modifications ?"},
+{"Yes", "Oui"},
+{"No", "Non"},
+{"Return", "Retour"},
+{"Reset to default", "Rétablir par défaut"},
+{"Configure the resolution used for rendering the game. Higher values are more demanding on your graphics hardware.", "Règle la résolution utilisée pour le rendu du jeu. Les valeurs élevées sollicitent davantage ton matériel graphique."},
+{"Configure how the game is scaled up to fit your window.", "Règle la façon dont le jeu est agrandi pour remplir ta fenêtre."},
+{"Configure the smoothing of jagged edges. SMAA keeps textures sharp.", "Règle le lissage des bords crénelés. SMAA garde les textures nettes."},
+{"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "Règle la forme de l'image. Libre remplit la fenêtre, Original garde le 16:9."},

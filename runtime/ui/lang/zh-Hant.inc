@@ -1792,3 +1792,13 @@
 {"ghost item", "鬼怪道具"},
 {"tunic upgrades", "衣服升級"},
 {"digs", "挖掘"},
+// the live preview (runtime/ui/live_preview.mm)
+{"Save changes?", "儲存變更？"},
+{"Yes", "是"},
+{"No", "否"},
+{"Return", "返回"},
+{"Reset to default", "恢復預設"},
+{"Configure the resolution used for rendering the game. Higher values are more demanding on your graphics hardware.", "設定渲染遊戲所用的解析度。數值越高，對顯示卡的要求越高。"},
+{"Configure how the game is scaled up to fit your window.", "設定遊戲放大以填滿視窗的方式。"},
+{"Configure the smoothing of jagged edges. SMAA keeps textures sharp.", "設定鋸齒邊緣的平滑。SMAA 能保持材質清晰。"},
+{"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "設定畫面的形狀。解除鎖定會填滿視窗，原始保持 16:9。"},
