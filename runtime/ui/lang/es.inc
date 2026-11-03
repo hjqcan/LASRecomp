@@ -1791,3 +1791,7 @@
 {"Substitute", "Sustituta"},
 {"Chinese and Korean font", "Fuente china y coreana"},
 {"Deletes the fonts you imported. The game goes back to the substitutes.", "Borra las fuentes que importaste. El juego vuelve a las sustitutas."},
+{"Pause on focus lost", "Pausar sin foco"},
+{"The game pauses while its window isn't in front.", "El juego se pausa mientras su ventana no está delante."},
+{"Remember window size", "Recordar tamaño de ventana"},
+{"The window opens at the size it was when you quit.", "La ventana se abre con el tamaño que tenía al salir."},

@@ -1791,3 +1791,7 @@
 {"Substitute", "Vervangend"},
 {"Chinese and Korean font", "Chinees en Koreaans"},
 {"Deletes the fonts you imported. The game goes back to the substitutes.", "Verwijdert de lettertypen die je hebt geïmporteerd. Het spel gebruikt weer de vervangende."},
+{"Pause on focus lost", "Pauze zonder focus"},
+{"The game pauses while its window isn't in front.", "Het spel pauzeert zolang het venster niet vooraan staat."},
+{"Remember window size", "Venstergrootte onthouden"},
+{"The window opens at the size it was when you quit.", "Het venster opent op de grootte die het had toen je stopte."},

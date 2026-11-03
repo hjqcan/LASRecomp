@@ -1791,3 +1791,7 @@
 {"Substitute", "替代"},
 {"Chinese and Korean font", "中文和韓文字型"},
 {"Deletes the fonts you imported. The game goes back to the substitutes.", "刪除你匯入的字型。遊戲改回使用替代字型。"},
+{"Pause on focus lost", "失去焦點時暫停"},
+{"The game pauses while its window isn't in front.", "視窗不在最前面時，遊戲會暫停。"},
+{"Remember window size", "記住視窗大小"},
+{"The window opens at the size it was when you quit.", "視窗會以結束時的大小開啟。"},

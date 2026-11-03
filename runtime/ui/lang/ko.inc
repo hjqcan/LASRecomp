@@ -1791,3 +1791,7 @@
 {"Substitute", "대체"},
 {"Chinese and Korean font", "중국어·한국어 폰트"},
 {"Deletes the fonts you imported. The game goes back to the substitutes.", "가져온 폰트를 삭제합니다. 대체 폰트로 돌아갑니다."},
+{"Pause on focus lost", "포커스 잃으면 일시 정지"},
+{"The game pauses while its window isn't in front.", "창이 앞에 없는 동안 게임이 일시 정지됩니다."},
+{"Remember window size", "창 크기 기억"},
+{"The window opens at the size it was when you quit.", "종료할 때의 크기로 창이 열립니다."},
