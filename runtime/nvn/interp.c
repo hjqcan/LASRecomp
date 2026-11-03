@@ -1064,11 +1064,17 @@ bool interp_prepare(float t) {
         // LARECOMP_INTERP_ZERO_SWITCH=0: blended (research).
         static int zero_switch = -1;
         if (zero_switch < 0) { const char *e = getenv("LARECOMP_INTERP_ZERO_SWITCH"); zero_switch = !e || atoi(e); }
+        // The light lists themselves (fragment stage, 2 KB and over) come in two copies the game writes in turn, each
+        // listing the lights in its own order: paired slot by slot with the other copy, a light was blended with
+        // another light (the values both copies hold alike show up as toggling elements). Any element toggling: the
+        // whole list is this frame's.
         bool onoff = false;
         if (zero_switch && cc->stage == 1)
-            for (uint32_t q = 0; q < nf && !onoff; q++)
-                onoff = !done[q] && (a[q] == 0) != (b[q] == 0) && fmaxf(fabsf(a[q]), fabsf(b[q])) > 1e-6f &&
-                        !(toggles && a2 && a2[q] == b[q]);  // (back at its value of two frames ago: the toggle rule's)
+            for (uint32_t q = 0; q < nf && !onoff; q++) {
+                bool tog = toggles && a2 && a2[q] == b[q] && a[q] != b[q];  // (back at its value of two frames ago)
+                onoff = !done[q] && ((tog && cc->size >= 2048) ||
+                                     ((a[q] == 0) != (b[q] == 0) && fmaxf(fabsf(a[q]), fabsf(b[q])) > 1e-6f && !tog));
+            }
         s_onoff += onoff;
         for (uint32_t q = 0; q < nf; q++) {
             if (done[q]) continue;

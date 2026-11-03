@@ -240,7 +240,7 @@ void input_reset(void) {
 }
 
 volatile int g_debug_frame_request;  // F9: dump the next frame's passes (build/pass_*.png) + draw log
-volatile int g_interp_ring_request;  // F10: save frame interpolation's recent images (LARECOMP_INTERP_RING, metal.m)
+volatile int g_interp_ring_request;  // F10 or backslash (F10 can be a media key on a Mac): save frame interpolation's recent images (LARECOMP_INTERP_RING, metal.m)
 
 // Events a test pushes (LARECOMP_HOST_INPUT type: / sdlkey: / sdlpad: / sdlaxis: / mouse:) carry this device id: they go the whole way, menu first.
 #define TEST_DEVICE 0x7E57u
@@ -420,7 +420,7 @@ void input_handle_event(const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP: {
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) g_debug_frame_request = 1;
-        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F10 && !e->key.repeat) g_interp_ring_request = 1;
+        if (e->type == SDL_EVENT_KEY_DOWN && (e->key.scancode == SDL_SCANCODE_F10 || e->key.scancode == SDL_SCANCODE_BACKSLASH) && !e->key.repeat) g_interp_ring_request = 1;
         if (e->key.scancode < SDL_SCANCODE_COUNT) keys_down[e->key.scancode] = e->type == SDL_EVENT_KEY_DOWN;
         uint64_t before = key_buttons;
         recompute_keyboard();
