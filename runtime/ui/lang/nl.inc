@@ -504,7 +504,6 @@
 {"SMAA", "SMAA"},
 {"Anti-aliasing", "Anti-aliasing"},
 {"Smooths jagged edges. SMAA keeps textures sharp and helps most at a lower internal resolution.", "Maakt kartelige randen glad. SMAA houdt texturen scherp en helpt het meest bij een lagere interne resolutie."},
-{"Game", "Spel"},
 {"Remove blur", "Vervaging weg"},
 {"Turns off the tilt-shift blur at the top and bottom of the screen.", "Zet de tilt-shiftvervaging boven- en onderaan het scherm uit."},
 {"Hide Hero Mode icon", "Icoon Legendarisch weg"},
@@ -1494,6 +1493,7 @@
 {", ", ", "},
 {": ", ": "},
 // not used any more
+{"Game", "Spel"},
 {"Keys", "Sleutels"},
 {"This seed picked your look. Commit to it!", "Deze seed heeft je uiterlijk gekozen. Hou je eraan!"},
 {"Seed: %s", "Seed: %s"},
