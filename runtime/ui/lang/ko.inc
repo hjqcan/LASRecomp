@@ -504,7 +504,6 @@
 {"SMAA", "SMAA"},
 {"Anti-aliasing", "안티에일리어싱"},
 {"Smooths jagged edges. SMAA keeps textures sharp and helps most at a lower internal resolution.", "들쭉날쭉한 윤곽을 매끄럽게 합니다. SMAA는 텍스처를 선명하게 유지하며, 내부 해상도가 낮을 때 가장 효과가 큽니다."},
-{"Game", "게임"},
 {"Remove blur", "흐림 효과 끄기"},
 {"Turns off the tilt-shift blur at the top and bottom of the screen.", "화면 위아래의 틸트 시프트 흐림 효과를 끕니다."},
 {"Hide Hero Mode icon", "용사 모드 아이콘 숨기기"},
@@ -1494,6 +1493,7 @@
 {", ", ", "},
 {": ", ": "},
 // not used any more
+{"Game", "게임"},
 {"Keys", "열쇠"},
 {"This seed picked your look. Commit to it!", "이 시드가 외형을 정했습니다. 받아들이세요!"},
 {"Seed: %s", "시드: %s"},
