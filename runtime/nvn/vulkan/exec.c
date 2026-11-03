@@ -1808,6 +1808,7 @@ typedef struct {
     bool vs_uses_vid;
     _Atomic int state;  // 0 building, 1 ready, 2 failed
     uint64_t prep_vh, prep_fh;  // (prepared programs: their code hashes, for LARECOMP_PREP_CHECK)
+    uint64_t fs_rt_hash;        // (LARECOMP_VK_SHADER_STATS: the fragment hash the GPU profile shows)
     ShaderFp fp[2];             // (stale-program detector, shader_prep.h; compute: [0]; touched by the replay only)
     struct PipeMemo *pmemo;     // (render thread) draw_'s pipeline key memo for this program
     bool reuse;                 // set reuse (stage_set): some uniform buffers are dynamic, sets are kept while their contents repeat
@@ -2489,6 +2490,14 @@ static void build_pipeline(void *arg) {
     int bs = build_begin("pipeline vs/fs", k->prog->code[0] ? k->prog->code[0] : k->prog->prep_vh,
                          k->prog->code[1] ? k->prog->code[1] : k->prog->prep_fh);
     SLOW_FEEDBACK(c.pi);
+    extern bool g_shader_stats;
+    extern __thread char g_stats_label[128];
+    if (g_shader_stats) {  // (LARECOMP_VK_SHADER_STATS: the shaders by code address and the fs hash the GPU profile shows)
+        uint64_t fa = k->prog->code[1];
+        uint64_t fh = k->prog->fs_rt_hash ? k->prog->fs_rt_hash : fa ? hmix(1469598103934665603ull, (const void *)(uintptr_t)(fa + 0x30), 0x200) : 0;
+        snprintf(g_stats_label, sizeof g_stats_label, "vs %llx fs %llx fsh %016llx", (unsigned long long)k->prog->code[0],
+                 (unsigned long long)fa, (unsigned long long)fh);
+    }
     VkResult r = vk_create_graphics_pipeline(&c.pi, &pp->pipe);
     SLOW_FEEDBACK_HIT();
     build_end(bs);
@@ -5608,6 +5617,9 @@ static void build_compute(void *arg) {
                                                 .pSpecializationInfo = &spec},
                                       .layout = cp->p.layout};
     SLOW_FEEDBACK(ci);
+    extern bool g_shader_stats;
+    extern __thread char g_stats_label[128];
+    if (g_shader_stats) snprintf(g_stats_label, sizeof g_stats_label, "cs %llx", (unsigned long long)cp->code);
     VkResult r = vk_create_compute_pipeline(&ci, &cp->pipe);
     SLOW_FEEDBACK_HIT();
     atomic_fetch_add(&stat_compiles, 1);
@@ -5790,7 +5802,12 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
         p->vkey = vkey;
         p->fkey = fkey;
         p->prep_vh = r->vs, p->prep_fh = r->fs;
+        p->fs_rt_hash = hmix(1469598103934665603ull, (const void *)(uintptr_t)(p->code[1] + 0x30), 0x200);
         bool ok = translate_program_now(p);
+        if (ok) {  // (LARECOMP_SAVE_MSL: named by the profile's fragment hash, prepared programs having no addresses)
+            save_glsl(p->vi->msl, p->fs_rt_hash, "pvs");
+            save_glsl(p->fi->msl, p->fs_rt_hash, "pfs");
+        }
         p->code[0] = p->code[1] = 0;  // (the game files' copies are gone after this call)
         PREP_PUT(prep_progs, ck, p);  // (failed ones too: the game then skips them as it would its own)
         if (!ok) return false;
