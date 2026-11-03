@@ -1996,7 +1996,8 @@ static void push_promote(Ctx *c, Str *body) {
     static int vs_on = -1;
     if (vs_on < 0) { const char *e = getenv("LARECOMP_VK_PUSH_VS"); vs_on = !e || atoi(e); }
     if (c->stage == STAGE_VERTEX && !vs_on) return;
-    int cap = c->stage == STAGE_VERTEX ? 16 : (int)maxwell_push_cap - (vs_on ? (int)maxwell_push_base / 4 : 16);
+    int vs_cap = (int)maxwell_push_cap < 32 ? (int)maxwell_push_cap / 2 : 16;  // (the vertex shader's share of the budget)
+    int cap = c->stage == STAGE_VERTEX ? vs_cap : (int)maxwell_push_cap - (vs_on ? (int)maxwell_push_base / 4 : vs_cap);
     if (cap > 64) cap = 64;
     if (cap <= 0) return;
     enum { MAXW = 512, MAXD = 64 };

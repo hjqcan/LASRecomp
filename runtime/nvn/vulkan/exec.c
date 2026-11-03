@@ -1966,7 +1966,10 @@ static bool translate_program_now(Prog *p) {
     maxwell_gmem_chunk_shift = gmem_chunk_shift();
     pthread_mutex_lock(&translate_lock);
     maxwell_const_data = (const uint8_t *)(uintptr_t)(p->code[0] + p->cmax[0]), maxwell_const_size = p->cmax[0] != 0x10000 ? p->csize[0] : 0;
-    maxwell_push_base = 0, maxwell_push_cap = 64;  // (LARECOMP_VK_PUSH_CB: the vertex shader's words first)
+    // (LARECOMP_VK_PUSH_CB: the vertex shader's words first; vertex and fragment together within the device's limit,
+    // which Vulkan only guarantees at 128 bytes, and at most 64 words)
+    uint32_t pc_words = g_vk.props.limits.maxPushConstantsSize / 4;
+    maxwell_push_base = 0, maxwell_push_cap = pc_words < 64 ? pc_words : 64;
     p->vi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[0], p->cmax[0], STAGE_VERTEX, &p->vkey);
     if (p->vi->msl) {
         p->fkey.vs_out_mask = p->vi->out_mask;
