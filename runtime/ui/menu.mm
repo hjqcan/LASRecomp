@@ -82,25 +82,43 @@ static void push(const QEvent &e) {
 
 bool menu_is_open(void) { return g_open.load(); }
 static void set_open(bool open);
+// The menu in game: a bar drops down from the top over the game, its entries in a row (the one the cursor is on lit),
+// a close X at its right end; each entry opens its page in a window under it. The start screen's Settings is
+// launcher.mm's.
+enum { BAR_SETTINGS, BAR_WARP, BAR_EDITOR, BAR_QUIT, BAR_CLOSE, BAR_N };
+static std::atomic<int> g_page{-1};  // the entry whose page is open (-1: the bar alone)
+static int g_bar_cur;  // the bar's cursor (render thread)
+static void page_open(int page);
 extern "C" void menu_test_open(void) {
     set_open(true);
-    if (getenv("LARECOMP_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("LARECOMP_MENU_TAB")); }
+    // (test) LARECOMP_MENU_BAR=<entry>: the bar alone, its cursor on that entry. Otherwise a page, as before the bar:
+    // LARECOMP_MENU_TAB=4 Warp, 2 Save Editor, 9 Quit, any other a Settings tab
+    if (getenv("LARECOMP_MENU_BAR")) { g_bar_cur = atoi(getenv("LARECOMP_MENU_BAR")) % BAR_N; return; }
+    int t = getenv("LARECOMP_MENU_TAB") ? atoi(getenv("LARECOMP_MENU_TAB")) : -1;
+    page_open(t == 4 ? BAR_WARP : t == 2 ? BAR_EDITOR : t == 9 ? BAR_QUIT : BAR_SETTINGS);
+    if (t >= 0 && t != 2 && t != 4 && t != 9) { extern int g_tab_request_ext; g_tab_request_ext = t; }
 }
 
 void menu_tabs_focus(bool first_tab);
 static void set_open(bool open) {
     if (open == g_open.load()) return;
+    g_page = -1;  // (the bar alone first)
     g_open.store(open);
     menu_sfx_play(open ? MENU_SFX_OPEN : MENU_SFX_CLOSE);
     input_reset();  // nothing held while the menu had focus leaks into the game
     bind_capture_cancel();
-    if (open) {
-        save_editor_on_open();
+    if (!open) { settings_save(); osk_cancel(); g_text_busy = false; }
+}
+
+static void page_open(int page) {
+    g_bar_cur = page;
+    if (page == BAR_SETTINGS) {
         static bool opened;  // the controller's cursor: the first tab (Controls) the first time this session, later the
         menu_tabs_focus(!opened);  // selected one
         opened = true;
-    }
-    else { settings_save(); osk_cancel(); g_text_busy = false; }
+    } else menu_tabs_focus(false);  // (a page alone: the first Down goes to its first row)
+    if (page == BAR_EDITOR) save_editor_on_open();
+    g_page = page;
 }
 
 static ImGuiKey key_from_scancode(SDL_Scancode sc) {
@@ -898,8 +916,9 @@ static void focus_check(bool down, bool up, bool any_down, int focused_tab, int 
 
 // The tab bar and its pages, into the current window: the in-game menu, and the start screen's Settings (in_game
 // false: nothing of the game is loaded yet - the tabs that need it are greyed out; prelaunch: the start screen's own
-// first tab, game files and fonts, drawn by launcher.mm).
-static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
+// first tab, game files and fonts, drawn by launcher.mm). only: one page alone, without the tab bar (the in-game menu
+// bar's Warp, Save Editor and Quit).
+static void tabs_body(float scale, bool in_game, void (*prelaunch)(float), int only = -1000) {
     // (id: the page; -1 = Prelaunch)
     struct Tab { const char *name; int id; bool on; };
     Tab tabs[11];
@@ -907,10 +926,13 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     if (prelaunch) tabs[ntabs++] = {LN("Game files"), -1, true};
     static const char *names[] = {LN("Video"), LN("Audio"), LN("Save Editor"), LN("Randomizer"), LN("Warp"),
                                   LN("Cheats"), LN("Gameplay"), LN("Cosmetics"), LN("Controls"), LN("Quit")};
-    static const int order[] = {8, 0, 1, 6, 7, 3, 5, 4, 2, 9};  // Controls, Video, Audio, Gameplay, Cosmetics, Randomizer,
-                                                                // Cheats, Warp, Save Editor, Quit (ids stay: test hooks)
-    for (int i : order)  // (Quit: in game only - the start screen has its own QUIT, and an eleventh tab cut names short)
-        if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, in_game || (i != 2 && i != 4 && i != 5)};
+    // Controls, Video, Audio, Gameplay, Cosmetics, Randomizer, Cheats (ids stay: test hooks). Warp, Save Editor and
+    // Quit are the in-game menu bar's own entries (only usable in a save - user 2026-11-03)
+    static const int order[] = {8, 0, 1, 6, 7, 3, 5};
+    int keep_tab = g_tab;  // (one page alone: the Settings window's tab stays as it was)
+    if (only != -1000) tabs[ntabs++] = {names[only], only, true}, g_tab = only;
+    else
+        for (int i : order) tabs[ntabs++] = {names[i], i, in_game || i != 5};
     int cur = 0;  // g_tab / g_tab_request hold ids
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
     if (!tabs[cur].on) cur = 0;
@@ -923,7 +945,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();
     static int focused_tab = -99;  // the tab the controller's cursor is on (from the frame before; -99: none)
     bool switching = false;  // (L / R this frame: the page changes next frame)
-    if (!any_popup && !typing) {
+    if (!any_popup && !typing && only == -1000) {
         int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
                  : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1 : 0;
         if (step) {
@@ -977,7 +999,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
         for (int k = 0; k < ntabs; k++) found |= tabs[k].id == g_tab && tabs[k].on;
         if (!found) g_tab = tabs[cur].on ? tabs[cur].id : tabs[0].id;
     }
-    {
+    if (only == -1000) {
         const PlasticTheme &pt = plastic_theme();
         ImDrawList *dl = ImGui::GetWindowDrawList();
         float gap = 8 * scale, pad = 20 * scale, th = ImGui::GetFontSize() + 20 * scale;
@@ -1076,6 +1098,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                       ImGui::IsKeyPressed(ImGuiKey_GamepadLStickUp, false) || ImGui::IsKeyPressed(ImGuiKey_UpArrow, false));
     for (int k = 0; k < ntabs; k++)
         if (tabs[k].id == g_tab) focus_check(down1, up1, down, focused_tab, g_tab, tabs[k].name);
+    if (only != -1000) g_tab = keep_tab;
 }
 
 // The menu's look for a window of the start screen's (its game files window): until menu_style_end
@@ -1098,6 +1121,88 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
     tabs_body(scale, in_game, prelaunch);
     ImGui::GetStyle() = saved;
     g_font = f0, g_font_big = f1;
+}
+
+// The menu bar (in game; its window is drawn in the menu's font). Returns its bottom edge: the page's window goes
+// under it. Its keys only while no page is open: left / right (d-pad, stick, arrows, L / R, Q / E) move the cursor,
+// A / Enter opens the entry, B / Esc closes the menu. The mouse lights the entry under it, a click opens it (another
+// page while one is open). *opened: a page opened this frame (it's drawn from the next one: the press that opened it
+// isn't the page's too).
+static double g_bar_t0 = -1;  // when the bar began to drop (-1: the menu is closed)
+static bool g_bar_focused;  // (the bar's window has ImGui's focus - a click on it: B still backs out of the page)
+static float bar_draw(ImGuiIO &io, float scale, bool *opened) {
+    static const char *names[BAR_N] = {LN("Settings"), LN("Warp"), LN("Save Editor"), LN("Quit"), ""};
+    const PlasticTheme &pt = plastic_theme();
+    double now = ImGui::GetTime();
+    if (g_bar_t0 < 0) g_bar_t0 = now;
+    float e = fminf((float)(now - g_bar_t0) / 0.18f, 1);  // (drops down from above the screen, slowing as it lands)
+    e = 1 - (1 - e) * (1 - e) * (1 - e);
+    ImGui::PushFont(g_menu_font);
+    float fs = ImGui::GetFontSize(), in = 30 * scale, ph = fs + 20 * scale, m = 12 * scale;
+    float bh = ph + 2 * in, top = m - (1 - e) * (bh + m);
+    ImGui::SetNextWindowPos(ImVec2(m, top), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x - 2 * m, bh), ImGuiCond_Always);
+    ImGui::Begin("##bar", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                    ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    g_bar_focused = ImGui::IsWindowFocused();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+    int page = g_page.load();
+    bool alone = page < 0, typing = ui_text_busy();
+    // the keys
+    if (alone && !typing) {
+        auto pressed = [](ImGuiKey a, ImGuiKey b, ImGuiKey c) {
+            return ImGui::IsKeyPressed(a) || ImGui::IsKeyPressed(b) || ImGui::IsKeyPressed(c);
+        };
+        int step = pressed(ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadLStickRight, ImGuiKey_RightArrow) ||
+                           ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
+                   : pressed(ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadLStickLeft, ImGuiKey_LeftArrow) ||
+                           ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1 : 0;
+        if (step) g_bar_cur = (g_bar_cur + step + BAR_N) % BAR_N, menu_sfx_play(MENU_SFX_CURSOR);
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
+            if (g_bar_cur == BAR_CLOSE) set_open(false);
+            else page_open(g_bar_cur), menu_sfx_play(MENU_SFX_DECIDE), *opened = true;
+        } else if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+            set_open(false);
+    }
+    // the entries: a row from the left, the cursor's (or the open page's) lit as the selected tab is
+    static ImVec2 last_mouse(-1, -1);  // (not io.MouseDelta: none for the mouse's first move)
+    bool mouse_moved = io.MousePos.x != last_mouse.x || io.MousePos.y != last_mouse.y;
+    last_mouse = io.MousePos;
+    float x = wp.x + in, y = wp.y + in, pad = 22 * scale, gap = 10 * scale;
+    for (int k = 0; k < BAR_CLOSE; k++) {
+        float tw = ImGui::CalcTextSize(L(names[k])).x, w = tw + 2 * pad;
+        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        ImGui::PushID(k);
+        bool clicked = ImGui::InvisibleButton("##entry", ImVec2(w, ph), ImGuiButtonFlags_PressedOnClick);
+        ImGui::PopID();
+        bool hot = ImGui::IsItemHovered();
+        if (hot && alone && mouse_moved && g_bar_cur != k) g_bar_cur = k, menu_sfx_play(MENU_SFX_CURSOR);
+        if (clicked && k != page) page_open(k), menu_sfx_play(MENU_SFX_DECIDE), *opened = true;
+        // (as the Settings window's tabs: tabs_body - the user wants the bar's look to match Settings, 2026-11-03)
+        bool sel = k == g_bar_cur;
+        ImVec4 col = sel ? pt.tab_sel : hot ? pt.row_mark : pt.tab;
+        if (sel && hot) col = ImVec4(col.x * 0.88f, col.y * 0.88f, col.z * 0.88f, col.w);
+        plastic_pill(dl, ImVec2(x, y + (sel ? 0 : 2 * scale)), ImVec2(x + w, y + ph - 2 * scale), 10 * scale, col,
+                     (sel ? 7 : 4) * scale, sel ? 1.0f : 0.55f, scale, sel);
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(x + pad, y + (ph - fs) * 0.5f - (sel ? 2 : 1) * scale),
+                    sel ? pt.text_sel : pt.text, L(names[k]));
+        x += w + gap;
+    }
+    // the close X at the right end (the cursor on it: a ring round it)
+    float bx = ph;
+    ImVec2 xp(wp.x + ws.x - in - bx, y);
+    if (g_bar_cur == BAR_CLOSE)
+        plastic_pill(dl, ImVec2(xp.x - 5 * scale, xp.y - 5 * scale), ImVec2(xp.x + bx + 5 * scale, xp.y + bx + 5 * scale),
+                     bx * 0.5f + 5 * scale, pt.tab_sel, 7 * scale, 1.0f, scale, true);
+    ImGui::SetCursorScreenPos(xp);
+    if (plastic_close_button(bx, scale)) set_open(false);
+    if (ImGui::IsItemHovered() && alone && mouse_moved && g_bar_cur != BAR_CLOSE)
+        g_bar_cur = BAR_CLOSE, menu_sfx_play(MENU_SFX_CURSOR);
+    ImGui::End();
+    ImGui::PopFont();
+    return top + bh;
 }
 
 // Whether menu_render draws anything: the menu, the keyboard, an overlay (FPS, inventory, tracker, chaos, race, a
@@ -1248,43 +1353,60 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         ImGui::GetStyle() = menu_style;
         plastic_widgets(true);
     }
+    if (!open) g_bar_t0 = -1;
     if (open) {
-        // dim the game behind the menu
-        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
-                                                      IM_COL32(0, 0, 0, (int)(plastic_theme().dim * 255)));
-        float w = fminf(io.DisplaySize.x * 0.9f, 1500 * scale), h = io.DisplaySize.y - 2 * 18 * scale;  // (all the height: a slim margin)
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
-        ImGui::Begin("##menu", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-        ImFont *keep_big = g_font_big;  // (the window in the menu's font; header() uses g_font_big)
-        g_font_big = g_menu_font_big;
-        ImGui::PushFont(g_menu_font);
-        // header as on the start screen's Settings: the title, and a close X in the corner (B / Esc too). ("Title
-        // screen" - rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user 2026-10-11.)
-        ImGui::PushFont(g_font_big);
-        ImGui::TextColored(plastic_col(plastic_theme().title), "%s", L("Settings"));
-        ImGui::PopFont();
-        {
-            float bx = 44 * scale;
-            if (plastic_close_corner(bx, scale)) set_open(false);
-            if (plastic_reset_corner(bx, scale)) ImGui::OpenPopup("##vanilla");
-            vanilla_popup(scale);
-        }
+        bool opened = false;
+        float bar_bottom = bar_draw(io, scale, &opened);
+        int page = g_open.load() && !opened ? g_page.load() : -1;  // (the bar's B / X may have closed the menu)
+        static int shown = -1;  // (a page just opened takes ImGui's focus from the bar)
+        if (page < 0) shown = -1;
+        if (page >= 0) {
+            // dim the game behind the page (the bar alone leaves it as it is)
+            ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
+                                                          IM_COL32(0, 0, 0, (int)(plastic_theme().dim * 255)));
+            if (page != shown) ImGui::SetNextWindowFocus(), shown = page;
+            float top = bar_bottom + 10 * scale;
+            float w = fminf(io.DisplaySize.x * 0.9f, 1500 * scale), h = io.DisplaySize.y - top - 18 * scale;  // (the rest of the height)
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, top), ImGuiCond_Always, ImVec2(0.5f, 0));
+            ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
+            ImGui::Begin("##menu", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+            ImFont *keep_big = g_font_big;  // (the window in the menu's font; header() uses g_font_big)
+            g_font_big = g_menu_font_big;
+            ImGui::PushFont(g_menu_font);
+            // header as on the start screen's Settings: the page's title, and a close X in the corner (B / Esc too:
+            // back to the bar). ("Title screen" - rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user
+            // 2026-10-11.)
+            static const char *titles[] = {LN("Settings"), LN("Warp"), LN("Save Editor"), LN("Quit")};
+            ImGui::PushFont(g_font_big);
+            ImGui::TextColored(plastic_col(plastic_theme().title), "%s", L(titles[page]));
+            ImGui::PopFont();
+            bool back = false;
+            {
+                float bx = 44 * scale;
+                if (plastic_close_corner(bx, scale)) back = true;
+                if (page == BAR_SETTINGS) {
+                    if (plastic_reset_corner(bx, scale)) ImGui::OpenPopup("##vanilla");
+                    vanilla_popup(scale);
+                }
+            }
 
-        bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();  // (before the
-        tabs_body(scale, true, NULL);                                                                          //  pages run)
-        // B with nothing focused-deeper closes the menu (not the Esc / B that ends typing: typing is from the frame
-        // before, so it's still true the frame a field lets go)
-        if (!any_popup && !typing && !ui_text_busy() && !controls_ui_took_back() && !rando_tab_took_back() &&
-            !save_editor_took_back() && !warp_tab_took_back() &&
-            ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
-            (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
-            set_open(false);
-        ImGui::PopFont();
-        g_font_big = keep_big;
-        ImGui::End();
-        osk_draw(g_font_big, scale);  // (a text field activated with the controller)
-        menu_sfx_frame(true);
+            bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();  // (before
+            static const int only[] = {-1000, 4, 2, 9};  // (the pages' tab ids)                    //  the pages run)
+            tabs_body(scale, true, NULL, only[page]);
+            // B with nothing focused-deeper goes back to the bar (not the Esc / B that ends typing: typing is from the
+            // frame before, so it's still true the frame a field lets go)
+            if (!any_popup && !typing && !ui_text_busy() && !controls_ui_took_back() && !rando_tab_took_back() &&
+                !save_editor_took_back() && !warp_tab_took_back() &&
+                (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) || g_bar_focused) &&
+                (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
+                back = true;
+            if (back && g_page.load() == page) g_page = -1;
+            ImGui::PopFont();
+            g_font_big = keep_big;
+            ImGui::End();
+            osk_draw(g_font_big, scale);  // (a text field activated with the controller)
+            menu_sfx_frame(true);
+        } else menu_sfx_idle_check();
     }
 
     if (kbd) keyboard_draw(io, scale);
