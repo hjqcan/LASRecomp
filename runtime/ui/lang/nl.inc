@@ -403,6 +403,8 @@
 {"Setting up the game files...", "Spelbestanden instellen..."},
 {"Cancelling...", "Annuleren..."},
 {"Cancel", "Annuleren"},
+{"Return to Launcher", "Terug naar launcher"},
+{"Reset Game", "Spel resetten"},
 {"Skipping...", "Overslaan..."},
 {"Skip", "Overslaan"},
 {"Shaders will compile while you play instead, so expect some pop-in.", "De shaders worden dan tijdens het spelen gecompileerd, dus reken op wat haperingen."},

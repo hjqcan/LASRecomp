@@ -85,18 +85,19 @@ static void set_open(bool open);
 // The menu in game: a bar drops down from the top over the game, its entries in a row (the one the cursor is on lit),
 // a close X at its right end; each entry opens its page in a window under it. The start screen's Settings is
 // launcher.mm's.
-enum { BAR_SETTINGS, BAR_WARP, BAR_EDITOR, BAR_QUIT, BAR_CLOSE, BAR_N };
+enum { BAR_SETTINGS, BAR_WARP, BAR_EDITOR, BAR_RESET, BAR_QUIT, BAR_CLOSE, BAR_N };
 static std::atomic<int> g_page{-1};  // the entry whose page is open (-1: the bar alone)
 static int g_bar_cur;  // the bar's cursor (render thread)
 static void page_open(int page);
+static int g_ask = -1;  // the bar's Reset or Quit asked (render thread): ask_popup
 extern "C" void menu_test_open(void) {
     set_open(true);
     // (test) LARECOMP_MENU_BAR=<entry>: the bar alone, its cursor on that entry. Otherwise a page, as before the bar:
-    // LARECOMP_MENU_TAB=4 Warp, 2 Save Editor, 9 Quit, any other a Settings tab
+    // LARECOMP_MENU_TAB=4 Warp, 2 Save Editor, 9 Quit, 10 Reset, any other a Settings tab
     if (getenv("LARECOMP_MENU_BAR")) { g_bar_cur = atoi(getenv("LARECOMP_MENU_BAR")) % BAR_N; return; }
     int t = getenv("LARECOMP_MENU_TAB") ? atoi(getenv("LARECOMP_MENU_TAB")) : -1;
-    page_open(t == 4 ? BAR_WARP : t == 2 ? BAR_EDITOR : t == 9 ? BAR_QUIT : BAR_SETTINGS);
-    if (t >= 0 && t != 2 && t != 4 && t != 9) { extern int g_tab_request_ext; g_tab_request_ext = t; }
+    page_open(t == 4 ? BAR_WARP : t == 2 ? BAR_EDITOR : t == 9 ? BAR_QUIT : t == 10 ? BAR_RESET : BAR_SETTINGS);
+    if (t >= 0 && t != 2 && t != 4 && t != 9 && t != 10) { extern int g_tab_request_ext; g_tab_request_ext = t; }
 }
 
 void menu_tabs_focus(bool first_tab);
@@ -118,6 +119,7 @@ static void page_open(int page) {
         opened = true;
     } else menu_tabs_focus(false);  // (a page alone: the first Down goes to its first row)
     if (page == BAR_EDITOR) save_editor_on_open();
+    if (page == BAR_RESET || page == BAR_QUIT) { g_ask = page; return; }  // (a question over the bar: ask_popup)
     g_page = page;
 }
 
@@ -700,41 +702,71 @@ static void tab_audio(void) {
     opt_end();
 }
 
-// Quit: back to the start screen (in game: the game reboots to it) or out to the desktop. Each asks first (progress
-// since the last save is lost); B / Esc or Cancel backs out.
-extern "C" void rt_request_reboot(int kind);  // runtime/main.c (RT_REBOOT_TITLE = 2: the start screen)
-static void tab_quit(float scale, bool in_game) {
-    static int ask;  // 0: the two choices; 1: start screen?; 2: desktop?
-    if (ask && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
-        ask = 0;
-    // (in the menus' language already: the rows leave them as they are)
-    const char *lost = in_game ? L("Progress since your last save is lost.") : "";
-    char d1[512], d2[512];
-    snprintf(d1, sizeof d1, "%s%s%s", L("Leaves the game and goes back to the LAS Recomp start screen."),
-             in_game ? "\n\n" : "", lost);
-    snprintf(d2, sizeof d2, "%s%s%s", L("Closes LAS Recomp."), in_game ? "\n\n" : "", lost);
-    opt_begin("##quit", scale);
-    opt_section("Quit");
-    if (!ask) {
-        if (!in_game) opt_disable_next();  // (already on it)
-        if (opt_action("Quit to start screen", "", in_game ? d1 : "You're on the start screen.")) ask = 1;
-        if (opt_action("Quit to desktop", "", d2)) ask = 2;
-    } else {
-        if (opt_action(ask == 1 ? "Yes, quit to start screen" : "Yes, quit to desktop", "", ask == 1 ? d1 : d2)) {
-            settings_save();
-            if (ask == 1) {
-                rt_request_reboot(2);
-                set_open(false);
-            } else {
-                SDL_Event q = {};
-                q.type = SDL_EVENT_QUIT;
-                SDL_PushEvent(&q);
-            }
-            ask = 0;
-        }
-        if (opt_action("Cancel", "", "Stays where you are.")) ask = 0;
+extern "C" void rt_request_reboot(int kind);  // runtime/main.c (rt.h's RT_REBOOT_GAME / RT_REBOOT_TITLE)
+
+// Reset and Quit (the bar's entries): a question over the bar, as Reset to vanilla's (user 2026-11-03). Reset: the game
+// boots again (the intro movie). Quit: back to the start screen ("Return to Launcher") or out to the desktop. B / Esc
+// is Cancel, where the cursor starts.
+static void ask_popup(float scale) {
+    if (g_ask >= 0 && !ImGui::IsPopupOpen("##ask")) ImGui::OpenPopup("##ask");
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, ImGui::GetIO().DisplaySize.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("##ask", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar |
+                                                   ImGuiWindowFlags_NoMove))
+        return;
+    bool quit = g_ask == BAR_QUIT;
+    // LARECOMP_MENU_ASK=cancel / launcher / reset (test): presses that button a few frames after the question opens
+    static const char *test = getenv("LARECOMP_MENU_ASK");
+    static int frames;
+    frames++;
+    bool test_cancel = test && frames == 30 && !strcmp(test, "cancel");
+    bool test_launcher = test && frames == 30 && !strcmp(test, "launcher");
+    bool test_reset = test && frames == 30 && !strcmp(test, "reset");
+    ImGui::PushFont(g_menu_font_big);
+    ImGui::TextColored(plastic_col(plastic_theme().title), "%s", quit ? L("Quit") : L("Reset Game"));
+    ImGui::PopFont();
+    ImGui::Spacing();
+    ImGui::TextUnformatted(L("Progress since your last save is lost."));
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImVec2 bs(260 * scale, 0);
+    bool done = false;
+    if (ImGui::Button(L("Cancel"), bs) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+        ImGui::IsKeyPressed(ImGuiKey_Escape, false) || test_cancel) {
+        menu_sfx_play(MENU_SFX_CANCEL);
+        done = true;
     }
-    opt_end();
+    ImGui::SetItemDefaultFocus();
+    if (!quit) {
+        ImGui::SameLine();
+        if (ImGui::Button(L("Reset"), bs) || test_reset) {
+            LOG("[menu] reset: the game boots again\n");
+            settings_save();
+            rt_request_reboot(RT_REBOOT_GAME);
+            done = true;
+            set_open(false);
+        }
+    } else {
+        ImGui::SameLine();
+        if (ImGui::Button(L("Return to Launcher"), bs) || test_launcher) {
+            LOG("[menu] quit: back to the start screen\n");
+            settings_save();
+            rt_request_reboot(RT_REBOOT_TITLE);
+            done = true;
+            set_open(false);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(L("Quit"), bs)) {
+            LOG("[menu] quit: to the desktop\n");
+            settings_save();
+            SDL_Event q = {};
+            q.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&q);
+            done = true;
+        }
+    }
+    if (done) g_ask = -1, frames = 0, ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 // Reset to vanilla (the round arrow beside the close X): the game as Nintendo made it - 16:9, the Gameplay tab (but
@@ -1111,7 +1143,6 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float), int o
         case 6: difficulty_draw(scale); break;
         case 7: tab_cosmetics(); break;
         case 8: controls_tab_draw(scale); break;
-        case 9: tab_quit(scale, in_game); break;
         }
         static const char *scroll_test = getenv("LARECOMP_MENU_SCROLL");  // test hook: page scroll, 0..1
         if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
@@ -1160,7 +1191,7 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
 // page's too).
 static double g_bar_t0 = -1;  // when the bar began to drop (-1: not shown - the menu is closed or a page is open)
 static void bar_draw(ImGuiIO &io, float scale) {
-    static const char *names[BAR_N] = {LN("Settings"), LN("Warp"), LN("Save Editor"), LN("Quit"), ""};
+    static const char *names[BAR_N] = {LN("Settings"), LN("Warp"), LN("Save Editor"), LN("Reset"), LN("Quit"), ""};
     const PlasticTheme &pt = plastic_theme();
     double now = ImGui::GetTime();
     if (g_bar_t0 < 0) g_bar_t0 = now;
@@ -1176,7 +1207,7 @@ static void bar_draw(ImGuiIO &io, float scale) {
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
     // the keys
-    if (!ui_text_busy()) {
+    if (!ui_text_busy() && g_ask < 0) {
         auto pressed = [](ImGuiKey a, ImGuiKey b, ImGuiKey c) {
             return ImGui::IsKeyPressed(a) || ImGui::IsKeyPressed(b) || ImGui::IsKeyPressed(c);
         };
@@ -1386,7 +1417,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     if (open) {
         // A page open: the bar goes up and the page has the whole screen (user 2026-11-03); B brings the bar down again
         int page = g_page.load();
-        if (page < 0) bar_draw(io, scale);
+        if (page < 0) bar_draw(io, scale), ask_popup(scale);
         else g_bar_t0 = -1;
         static int shown = -1;  // (a page just opened takes ImGui's focus)
         if (page < 0) shown = -1;
@@ -1405,7 +1436,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
             // header as on the start screen's Settings: the page's title, and a close X in the corner (B / Esc too:
             // back to the bar). ("Title screen" - rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user
             // 2026-10-11.)
-            static const char *titles[] = {LN("Settings"), LN("Warp"), LN("Save Editor"), LN("Quit")};
+            static const char *titles[] = {LN("Settings"), LN("Warp"), LN("Save Editor")};
             ImGui::PushFont(g_font_big);
             ImGui::TextColored(plastic_col(plastic_theme().title), "%s", L(titles[page]));
             ImGui::PopFont();
@@ -1420,7 +1451,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
             }
 
             bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();  // (before
-            static const int only[] = {-1000, 4, 2, 9};  // (the pages' tab ids)                    //  the pages run)
+            static const int only[] = {-1000, 4, 2};  // (the pages' tab ids)                    //  the pages run)
             tabs_body(scale, true, NULL, only[page]);
             // B with nothing focused-deeper goes back to the bar (not the Esc / B that ends typing: typing is from the
             // frame before, so it's still true the frame a field lets go)

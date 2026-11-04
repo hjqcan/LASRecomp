@@ -404,6 +404,8 @@
 {"Setting up the game files...", "Preparando os arquivos do jogo..."},
 {"Cancelling...", "Cancelando..."},
 {"Cancel", "Cancelar"},
+{"Return to Launcher", "Voltar ao inicializador"},
+{"Reset Game", "Reiniciar jogo"},
 {"Skipping...", "Pulando..."},
 {"Skip", "Pular"},
 {"Shaders will compile while you play instead, so expect some pop-in.", "Os shaders serão compilados enquanto você joga, então espere alguns travamentos."},
