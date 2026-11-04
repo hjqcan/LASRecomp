@@ -28,7 +28,7 @@ bool maxwell_gmem_lazy;
 bool maxwell_gmem_fs_miss;
 bool maxwell_glsl_stack_vars = true;
 bool maxwell_glsl_structured;  // static stacks + structured control flow by default (exec.c: Mali, Adreno)
-bool maxwell_glsl_push;  // c1 inlined + push constants by default (exec.c: Mali)
+bool maxwell_glsl_push;  // c1 inlined + push constants by default (exec.c: Mali, Adreno)
 const uint8_t *maxwell_const_data;
 uint32_t maxwell_const_size;
 bool maxwell_gmem_mirror;  // (shader.h)
