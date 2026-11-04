@@ -267,10 +267,10 @@ static const char *cover_fs =
     "    n = normalize(n);\n"
     "    vec4 cq = vec4(-w.ivp[0].z + w.ivp[0].w, -w.ivp[1].z + w.ivp[1].w, -w.ivp[2].z + w.ivp[2].w, -w.ivp[3].z + w.ivp[3].w);\n"
     "    if (dot(n, cq.xyz / cq.w - p) < 0.0) n = -n;\n"
-    "    float k = smoothstep(0.62, 0.92, n.y) * 0.55 * smoothstep(0.1, 0.8, w.flags.z);\n"
+    "    float k = smoothstep(0.72, 0.95, n.y) * 0.35 * smoothstep(0.1, 0.8, w.flags.z);\n"
     "    if (k <= 0.0) { o = dst; return; }\n"
     "    if (w.trail.y > 0.5) { o = mix(dst, vec4(1.0, 0.0, 0.0, 1.0), k); return; }\n"
-    "    vec3 col = w.tone.rgb * (0.5 + 0.5 * saturate(mc / w.tone.w));\n"
+    "    vec3 col = w.tone.rgb * (0.3 + 0.7 * saturate(mc / w.tone.w));\n"
     "    o = vec4(mix(c, col, k), dst.a);\n"
     "    return;\n"
     "  }\n"
@@ -304,7 +304,7 @@ static const char *cover_fs =
     "    if (dz < best) { best = dz; near = t; }\n"
     "  }\n"
     "  vec4 hv = wsum > 1e-4 ? acc / wsum : near;\n"
-    "  float open_ = smoothstep(0.88, 0.97, hv.y) * (1.0 - hv.z);\n"  // (near black left alone, but not open flat ground: renderer.m)
+    "  float open_ = smoothstep(0.95, 0.99, hv.y) * (1.0 - hv.z);\n"  // (near black left alone, but not open flat ground: renderer.m)
     "  float k = hv.x * mix(smoothstep(0.018, 0.03, mc), 1.0, open_);\n"
     "  uint ts = (sm >> 1) & 7u;\n"
     "  if (ts != 0u) k *= shake(ts);\n"
@@ -317,6 +317,7 @@ static const char *cover_fs =
     "  k *= 1.0 - saturate(fp) * (0.9 - 0.45 * cover);\n"
     "  float lit = mix(saturate(mc / w.tone.w), 0.8, rough * 0.7);\n"
     "  vec3 col = w.tone.rgb * (0.45 + 0.55 * lit) * (0.85 + 0.15 * hv.y) * (0.96 + 0.06 * vnoise(pr * 3.0));\n"
+    "  col = mix(col, w.tone.rgb * saturate(mc / w.tone.w), saturate(2.0 * open_) * (1.0 - smoothstep(0.018, 0.03, mc)));\n"
     "  col *= vec3(1.0 - 0.5 * saturate(fp), 1.0 - 0.42 * saturate(fp), 1.0 - 0.28 * saturate(fp));\n"
     "  o = vec4(mix(c, col, k), dst.a);\n"
     "}\n";

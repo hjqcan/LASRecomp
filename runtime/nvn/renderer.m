@@ -3375,10 +3375,10 @@ static const char *sc_src =
     "    n = normalize(n);\n"
     "    float4 cq = float4(w.ivp[0].z * -1.0 + w.ivp[0].w, w.ivp[1].z * -1.0 + w.ivp[1].w, w.ivp[2].z * -1.0 + w.ivp[2].w, w.ivp[3].z * -1.0 + w.ivp[3].w);\n"
     "    if (dot(n, cq.xyz / cq.w - p) < 0.0) n = -n;\n"  // (facing the camera)
-    "    float k = smoothstep(0.62, 0.92, n.y) * 0.55 * smoothstep(0.1, 0.8, w.flags.z);\n"
+    "    float k = smoothstep(0.72, 0.95, n.y) * 0.35 * smoothstep(0.1, 0.8, w.flags.z);\n"
     "    if (k <= 0.0) return dst;\n"
     "    if (w.trail.y > 0.5) return half4(mix(dst, half4(1.0, 0.0, 0.0, 1.0), half(k)));\n"
-    "    float3 col = w.tone.rgb * (0.5 + 0.5 * saturate(mc / w.tone.w));\n"
+    "    float3 col = w.tone.rgb * (0.3 + 0.7 * saturate(mc / w.tone.w));\n"
     "    return half4(half3(mix(c, col, k)), dst.a);\n"
     "  }\n"
     // grass and bushes: a dusting - patches in the world (low frequency: they don't crawl as the blades sway), more
@@ -3417,7 +3417,7 @@ static const char *sc_src =
     // up): left exactly as the game drew it. Not open flat ground, though: a character's or a statue's shadow there is
     // as dark, and its middle stayed bare - dark smudges under the animals (issue #574; a dark recess is the half
     // pass' hem test)
-    "  float open = smoothstep(0.88, 0.97, hv.y) * (1.0 - hv.z);\n"
+    "  float open = smoothstep(0.95, 0.99, hv.y) * (1.0 - hv.z);\n"
     "  float k = hv.x * mix(smoothstep(0.018, 0.03, mc), 1.0, open);\n"
     "  uint ts = (sm.r >> 1) & 7u;\n"  // (a tree shaken bare by a bonk: its snow growing back)
     "  if (ts != 0u) k *= w.shake[ts];\n"
@@ -3432,6 +3432,9 @@ static const char *sc_src =
     // between leaf and gap), the slope, a soft unevenness
     "  float lit = mix(saturate(mc / w.tone.w), 0.8, rough * 0.7);\n"
     "  float3 col = w.tone.rgb * (0.45 + 0.55 * lit) * (0.85 + 0.15 * hv.y) * (0.96 + 0.06 * vnoise(pr * 3.0));\n"
+    // near black on open ground (a cast shadow, the shade under trees): snow as dark as the shadow - its shape kept,
+    // the dark stones' colours under it gone
+    "  col = mix(col, w.tone.rgb * saturate(mc / w.tone.w), saturate(2.0 * open) * (1.0 - smoothstep(0.018, 0.03, mc)));\n"
     "  col *= float3(1.0 - 0.5 * saturate(fp), 1.0 - 0.42 * saturate(fp), 1.0 - 0.28 * saturate(fp));\n"  // (its shade: blue-grey)
     "  return half4(half3(mix(c, col, k)), dst.a);\n"
     "}\n";
