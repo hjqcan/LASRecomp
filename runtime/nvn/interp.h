@@ -32,7 +32,8 @@ void interp_texture_destroyed(void);  // (render thread, in queue order) a textu
 
 // Objects freed at once by the game's threads (programs, memory pools, samplers): a replay must not run while one goes,
 // nor use a frame that one went from after its lists were run.
-void interp_free_begin(void);
+void interp_free_begin(int kind, uint64_t size);  // kind: INTERP_FREE_* (stats)
+enum { INTERP_FREE_POOL, INTERP_FREE_SAMPLER, INTERP_FREE_PROGRAM, INTERP_FREE_KINDS };
 void interp_free_end(void);
 
 // The present (render thread), once per game frame: the frame's draws are matched against the previous frame's.

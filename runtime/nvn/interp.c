@@ -373,7 +373,11 @@ static void frame_reset(Frame *f) {
 // ---- objects freed by the game's threads
 static pthread_mutex_t free_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t free_gen;
-void interp_free_begin(void) {
+// (stats: the frees by kind, the pools' bytes, and the frames that lost their in-betweens to one - by the kinds freed
+// since the frame began)
+static uint64_t s_frees[INTERP_FREE_KINDS], s_free_pool_bytes, s_free_cuts[INTERP_FREE_KINDS];
+static _Atomic uint32_t free_kinds;
+void interp_free_begin(int kind, uint64_t size) {
     if (pthread_mutex_trylock(&free_lock) != 0) {  // (a replay runs: the wait isn't the game's work - frame pacing)
         extern __thread uint64_t g_blocked_ns;
         uint64_t t0 = plat_now_ns();
@@ -381,11 +385,16 @@ void interp_free_begin(void) {
         g_blocked_ns += plat_now_ns() - t0;
     }
     atomic_fetch_add(&free_gen, 1);
+    s_frees[kind]++;
+    if (kind == INTERP_FREE_POOL) s_free_pool_bytes += size;
+    atomic_fetch_or(&free_kinds, 1u << kind);
 }
 void interp_free_end(void) { pthread_mutex_unlock(&free_lock); }
 bool interp_replay_lock(void) {
     pthread_mutex_lock(&free_lock);
     if (atomic_load(&free_gen) == cur->free_gen) return true;
+    uint32_t k = atomic_load(&free_kinds);
+    for (int i = 0; i < INTERP_FREE_KINDS; i++) s_free_cuts[i] += (k >> i) & 1;
     pthread_mutex_unlock(&free_lock);
     return false;
 }
@@ -398,6 +407,7 @@ bool interp_list_submitted(uint64_t handle) {
         frame_open = true;
         memset(occ_keys, 0, sizeof occ_keys);
         cur->free_gen = atomic_load(&free_gen);
+        atomic_store(&free_kinds, 0);
     }
     GROW(cur->handles, cur->nhandles, cur->cap_handles, 64);
     cur->handles[cur->nhandles++] = handle;
@@ -1361,6 +1371,11 @@ void interp_log_stats(void) {
         if (gb || gm) LOG("[interp] replay geometry: %llu binds from the frame's copies, %llu of them rewritten live since, %llu not found\n",
                           (unsigned long long)gb, (unsigned long long)gd, (unsigned long long)gm);
     }
+    if (s_frees[0] || s_frees[1] || s_frees[2])
+        LOG("[interp] freed by the game: pools %llu (%.1f MB), samplers %llu, programs %llu | frames without in-betweens after: a pool %llu, a sampler %llu, a program %llu\n",
+            (unsigned long long)s_frees[0], s_free_pool_bytes / 1048576.0, (unsigned long long)s_frees[1], (unsigned long long)s_frees[2],
+            (unsigned long long)s_free_cuts[0], (unsigned long long)s_free_cuts[1], (unsigned long long)s_free_cuts[2]);
+    memset(s_frees, 0, sizeof s_frees), memset(s_free_cuts, 0, sizeof s_free_cuts), s_free_pool_bytes = 0;
     if (st_replay_misses || st_replay_cb_miss)
         LOG("[interp] replay draw misses %llu/%llu, uniform misses %llu\n", (unsigned long long)st_replay_misses,
             (unsigned long long)st_replay_draws, (unsigned long long)st_replay_cb_miss);
