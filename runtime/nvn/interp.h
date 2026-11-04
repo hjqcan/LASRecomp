@@ -77,3 +77,4 @@ void interp_log_stats(void);  // (render thread, per game frame) a line every LA
 void interp_note_skipped(void);  // (stats) an in-between not made: no free image slot
 void interp_note_given_way(void);  // (stats) ... a game thread was waiting for the render thread
 void interp_note_no_gpu(void);     // (stats) ... no GPU time left for it in the game's frame
+void interp_note_images(int mids);  // (stats, Vulkan's inline presents) a frame's image and its mids in-betweens shown

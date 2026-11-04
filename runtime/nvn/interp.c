@@ -1330,6 +1330,7 @@ int interp_schedule(uint64_t s0u, uint64_t s1u, uint64_t nowu, uint64_t phaseu, 
 void interp_note_skipped(void) { s_skipped++; }
 void interp_note_given_way(void) { s_gave_way++; }
 void interp_note_no_gpu(void) { s_no_gpu++; }
+void interp_note_images(int mids) { s_shots += (uint64_t)(1 + mids), s_mids += (uint64_t)mids; }
 
 void interp_log_stats(void) {
     static double every = -1, last;

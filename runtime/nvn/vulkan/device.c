@@ -1020,15 +1020,48 @@ static bool ip_hold(TexBackend *b, bool restore) {  // false: no copy (no memory
 // (LARECOMP_INTERP_SPACING=0: not, research).
 static double ip_hz;            // (ip_mids: the refresh rate the in-betweens are made for; 0: none being made)
 static uint64_t ip_last_present;
+// (stats, ip_log: where the window's presents fell short of the refresh rate - gaps over 1.5 refresh periods, waits
+// that overslept by over half a period, and in-betweens not made, by reason)
+enum { IP_NOT_ALLOWED, IP_LOCKED, IP_NO_HOLD, IP_NOT_PREPARED, IP_CAPPED, IP_NO_BLEND, IP_NREASONS };
+static uint64_t ip_presents, ip_gaps, ip_overslept, ip_not_made[IP_NREASONS];
+static double ip_gap_max;
 static void ip_space(void) {
     static int on = -1;
     if (on < 0) on = !getenv("LARECOMP_INTERP_SPACING") || atoi(getenv("LARECOMP_INTERP_SPACING"));
     uint64_t now = plat_now_ns();
     if (on && ip_hz > 0 && ip_last_present) {
         uint64_t target = ip_last_present + (uint64_t)(0.97e9 / ip_hz);
-        if (now < target && target - now < 50000000ull) { WAITING(SDL_DelayPrecise(target - now)); now = plat_now_ns(); }
+        if (now < target && target - now < 50000000ull) {
+            WAITING(SDL_DelayPrecise(target - now));
+            now = plat_now_ns();
+            ip_overslept += now > target && now - target > 0.5e9 / ip_hz;
+        }
     }
+    if (ip_hz > 0 && ip_last_present && now > ip_last_present) {
+        double gap = (now - ip_last_present) / 1e6;
+        ip_gaps += gap > 1.5e3 / ip_hz;
+        ip_gap_max = fmax(ip_gap_max, gap);
+    }
+    ip_presents++;
     ip_last_present = now;
+}
+static void ip_log(void) {
+    static uint64_t last;
+    uint64_t now = plat_now_ns();
+    if (!last) last = now;
+    if (now - last < 2000000000ull) return;
+    double dt = (now - last) / 1e9;
+    static const char *why[IP_NREASONS] = {"cut", "busy", "no copy", "not prepared", "lower display rate", "no blend"};
+    char nm[200] = "";
+    int o = 0;
+    for (int i = 0; i < IP_NREASONS; i++)
+        if (ip_not_made[i]) o += snprintf(nm + o, sizeof nm - (size_t)o, " %s %llu", why[i], (unsigned long long)ip_not_made[i]);
+    if (ip_hz > 0 || o)
+        LOG("[interp] presents %.1f/s for %.0f Hz, gaps over 1.5 refreshes %llu (longest %.1f ms), waits overslept %llu | frames without in-betweens:%s\n",
+            ip_presents / dt, ip_hz, (unsigned long long)ip_gaps, ip_gap_max, (unsigned long long)ip_overslept, o ? nm : " none");
+    ip_presents = ip_gaps = ip_overslept = 0, ip_gap_max = 0;
+    memset(ip_not_made, 0, sizeof ip_not_made);
+    last = now;
 }
 static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's image), placed as the last image
     static const float black[4] = {0, 0, 0, 1};
@@ -1039,7 +1072,7 @@ static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's i
     ip_space();
     vk_frame_end(NULL);
 }
-static void ip_mids(TexBackend *b, uint64_t frame) {
+static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
     static uint64_t prev_ns;
     static double interval_ns;  // (smoothed: the game's frame interval)
     static double win_sum, win_max;  // (the raw intervals of the current 30-frame check)
@@ -1050,7 +1083,7 @@ static void ip_mids(TexBackend *b, uint64_t frame) {
         win_sum += d, win_max = fmax(win_max, d);
     }
     prev_ns = now;
-    if (!ip_place.ok || interval_ns <= 0 || !b || !b->image || b->depth > 1 || b->layers > 1) return;
+    if (!ip_place.ok || interval_ns <= 0 || !b || !b->image || b->depth > 1 || b->layers > 1) return 0;
     // The refresh rate the window's presents really get: the display's own (SDL), unless the frames with in-betweens
     // showed fewer - a virtual display (Parsec: 120 Hz reported, presents paced at 60) held each image two refreshes
     // and the game fell to its 30 fps mode. Learned from those frames, kept while the display reports the same rate.
@@ -1100,22 +1133,26 @@ static void ip_mids(TexBackend *b, uint64_t frame) {
     // which held it at 30)
     int mids = hz >= 100 ? (int)lround(hz / 60.0) - 1 : 0;
     if (mids > 3) mids = 3;
-    if (mids < 1) { mids_last = 0; ip_hz = 0; return; }
+    if (mids < 1) { ip_not_made[IP_CAPPED] += hz_cap > 0; mids_last = 0; ip_hz = 0; return 0; }
     ip_hz = hz;
     if (mids != mids_last) settle = slow_checks = 0;
     mids_last = mids;
-    if (!interp_replays_allowed(frame, total_frames, now)) return;
-    if (!interp_replay_lock()) return;
+    if (!interp_replays_allowed(frame, total_frames, now)) { ip_not_made[IP_NOT_ALLOWED]++; return 0; }
+    if (!interp_replay_lock()) { ip_not_made[IP_LOCKED]++; return 0; }
+    int made = 0;
     if (ip_hold(b, false)) {
         extern void renderer_interp_replay(void);
         for (int m = 1; m <= mids; m++) {
             if (!interp_prepare((float)m / (float)(mids + 1))) break;
             renderer_interp_replay();
             ip_present_mid(b);
+            made++;
         }
         ip_hold(b, true);
-    }
+        if (!made) ip_not_made[IP_NOT_PREPARED]++;
+    } else ip_not_made[IP_NO_HOLD]++;
     interp_replay_unlock();
+    return made;
 }
 
 // The GPU side of a present (the render thread when it's on, rqueue.c): the present pass, the overlay, shots.
@@ -1136,9 +1173,13 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         int want = interp_wanted();
         if (!repeat) {
             bool blend = interp_frame_end(want != INTERP_OFF);
-            if (want == INTERP_ON && blend) ip_mids(b, frame);
+            if (want == INTERP_ON) {
+                if (blend) interp_note_images(ip_mids(b, frame));
+                else ip_not_made[IP_NO_BLEND]++, interp_note_images(0);
+            }
             interp_frame_rotate();
             if (want != INTERP_OFF) interp_log_stats();
+            if (want == INTERP_ON) ip_log();
         }
     }
     static const float black[4] = {0, 0, 0, 1};
