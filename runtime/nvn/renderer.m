@@ -3100,7 +3100,8 @@ static bool wx_dm1;  // (its depth mode: -1..1)
 // effects. Its depth comes from a depth-only pre-pass of most of the opaque draws (not Link's), which uses stencil bit
 // 0 (and only that): while there is snow every opaque draw, in the pre-pass and in the colour pass, also writes bit
 // 7 where it passes - clear for the level's model, set for anything else and for the water (part of the level's
-// model, told by its maps) - so each pixel ends up telling whether what shows there takes snow. The cover goes on in
+// model, told by its maps); bit 6 marks grass and bushes, both bits a character - so each pixel ends up telling
+// whether what shows there takes snow, and how. The cover goes on in
 // a pass of its own on the scene's colour target right before the first blended draw: from the scene depth, its
 // stencil (bit 7: left alone) and the camera (vertex constant slot 1, 1024 bytes: the view-projection first). One
 // full-screen triangle (reading the colour under it: Apple GPUs' framebuffer fetch); the footprints come from a
@@ -3304,20 +3305,28 @@ static const char *sc_src =
     "  }\n"
     "  if (k <= 0.0) return none;\n"
     // alcoves - a doorstep inside a doorway's arch, lit or not: walls rise close by on the left, the right and behind
-    // (up the screen) all three (ground by a wall or in a corner has two at most). Each side: the highest of a few
-    // samples out to ~90 pixels (at 1080p: a doorway is ~100 wide), the level's model only - not the face trees by
-    // Crazy Tracy's (stencil slot 7, the prep: ground among them is open ground) - ramped over 0.4-0.7 in world height
-    "  float side[3];\n"
+    // (up the screen) all three (ground by a wall or in a corner has two at most), and the doorway's dark opening is
+    // right behind it. Each side: the highest of a few samples out to ~90 pixels (at 1080p: a doorway is ~100 wide),
+    // the level's model only - not the face trees by Crazy Tracy's (stencil slot 7, the prep: ground among them is
+    // open ground) - ramped over 0.4-0.7 in world height. The opening: the darkest of the samples behind, near black.
+    // (Without it the dead end of a walkway between two walls, a lit wall behind it, went bare - and back, frame by
+    // frame, as the samples moved with the camera: issue #575, by the well in Mabe Village)
+    "  float side[3], dark = 0.0;\n"
     "  int2 dirs[3] = {int2(-1, 0), int2(1, 0), int2(0, w.flags.x > 0.5 ? 1 : -1)};\n"
     "  for (int d = 0; d < 3; d++) {\n"
     "    side[d] = 0.0;\n"
     "    for (int j = 3; j <= 15; j += 4) {\n"
-    "      float4 a = sc_at(w, pp, clamp(q + dirs[d] * int(rad * float(j)), int2(0), mx));\n"
+    "      int2 qq = clamp(q + dirs[d] * int(rad * float(j)), int2(0), mx);\n"
+    "      if (d == 2) {\n"
+    "        float3 cb = ct.read(uint2(clamp(int2(float2(qq) * w.screen.xy / w.screen.zw), int2(0), int2(w.screen.xy) - 1))).rgb;\n"
+    "        dark = max(dark, 1.0 - smoothstep(0.02, 0.03, max(cb.r, max(cb.g, cb.b))));\n"
+    "      }\n"
+    "      float4 a = sc_at(w, pp, qq);\n"
     "      if (a.w > 0.5) continue;\n"
     "      side[d] = max(side[d], smoothstep(0.4, 0.7, a.y - p.y));\n"
     "    }\n"
     "  }\n"
-    "  k *= 1.0 - min(side[0], min(side[1], side[2]));\n"
+    "  k *= 1.0 - min(side[0], min(side[1], side[2])) * dark;\n"
     "  if (k <= 0.0) return none;\n"
     "  return float4(k, n.y, rough, sc_eye(w, (float2(q) + 0.5) * e, d));\n"
     "}\n"
@@ -3332,11 +3341,46 @@ static const char *sc_src =
     "  int2 q = clamp(int2(uv * w.screen.zw), int2(0), mx);\n"
     "  uint4 sm = sv.read(uint2(q));\n"
     "  if (abs(w.trail.y - 2.0) < 0.5) return half4((sm.r & 0x80u) ? 1.0h : 0.0h, (sm.r & 1u) ? 1.0h : 0.0h, (sm.r & 0x40u) ? 1.0h : 0.0h, 1.0h);\n"  // (test)
-    "  if (sm.r & 0x80u) return dst;\n"  // (a character: no snow on it)
+    "  if ((sm.r & 0xC0u) == 0x80u) return dst;\n"  // (the water, or anything else that isn't the level's: no snow on it)
     "  float d = dt.read(uint2(q));\n"
     "  if (d >= 0.99999) return dst;\n"
     "  float3 c = float3(dst.rgb);\n"
     "  float mc = max(c.r, max(c.g, c.b));\n"
+    // characters: a dusting on what faces up - the top of a head, shoulders, an animal's back (issue #574). The
+    // normal from the depth a few pixels around, on the same character only (no normals across its outline: per axis
+    // the nearer side); no world-anchored patches (they would slide over a walking character), the picture's own light
+    "  if ((sm.r & 0xC0u) == 0xC0u) {\n"
+    "    float2 e = 1.0 / w.screen.zw;\n"
+    "    int r = int(max(1.0, round(2.0 * w.screen.w / 1080.0)));\n"
+    "    float3 p = world_at(w, (float2(q) + 0.5) * e, d), ax[2];\n"
+    "    float ez = sc_eye(w, (float2(q) + 0.5) * e, d);\n"
+    "    float lim = 2.5 * length(world_at(w, (float2(q) + float2(0.5 + float(r), 0.5)) * e, d) - p);\n"  // (a step of r pixels at this depth, facing the camera: 2.5x)
+    "    int nax = 0;\n"
+    "    for (int a = 0; a < 2; a++) {\n"
+    "      float best = 1e9;\n"
+    "      for (int sgn = -1; sgn <= 1; sgn += 2) {\n"
+    "        int2 qq = clamp(q + (a == 0 ? int2(sgn * r, 0) : int2(0, sgn * r)), int2(0), mx);\n"
+    "        float dk = dt.read(uint2(qq));\n"
+    "        if (all(qq == q) || (sv.read(uint2(qq)).r & 0xC0u) != 0xC0u || dk >= 0.99999) continue;\n"
+    "        float3 v = world_at(w, (float2(qq) + 0.5) * e, dk) - p;\n"
+    "        float dz = abs(sc_eye(w, (float2(qq) + 0.5) * e, dk) - ez);\n"
+    "        if (length(v) > lim || dz >= best) continue;\n"
+    "        best = dz, ax[a] = v * float(sgn);\n"
+    "      }\n"
+    "      nax += best < 1e8 ? 1 : 0;\n"
+    "    }\n"
+    "    if (nax < 2) return dst;\n"
+    "    float3 n = cross(ax[0], ax[1]);\n"
+    "    if (length(n) < 1e-12) return dst;\n"
+    "    n = normalize(n);\n"
+    "    float4 cq = float4(w.ivp[0].z * -1.0 + w.ivp[0].w, w.ivp[1].z * -1.0 + w.ivp[1].w, w.ivp[2].z * -1.0 + w.ivp[2].w, w.ivp[3].z * -1.0 + w.ivp[3].w);\n"
+    "    if (dot(n, cq.xyz / cq.w - p) < 0.0) n = -n;\n"  // (facing the camera)
+    "    float k = smoothstep(0.72, 0.95, n.y) * 0.35 * smoothstep(0.1, 0.8, w.flags.z);\n"
+    "    if (k <= 0.0) return dst;\n"
+    "    if (w.trail.y > 0.5) return half4(mix(dst, half4(1.0, 0.0, 0.0, 1.0), half(k)));\n"
+    "    float3 col = w.tone.rgb * (0.3 + 0.7 * saturate(mc / w.tone.w));\n"
+    "    return half4(half3(mix(c, col, k)), dst.a);\n"
+    "  }\n"
     // grass and bushes: a dusting - patches in the world (low frequency: they don't crawl as the blades sway), more
     // on the lit tips and tops than in the shaded depths of a tuft (by the picture's own brightness, which moves
     // with the blades; no normals from the depth of thin blades), a third at most, in patches over a few percent - still clearly grass
@@ -3352,9 +3396,6 @@ static const char *sc_src =
     "    float3 col = w.tone.rgb * (0.55 + 0.45 * saturate(mc / w.tone.w));\n"
     "    return half4(half3(mix(c, col, k)), dst.a);\n"
     "  }\n"
-    // near black - the insides of doorways, windows, the gaps under eaves (~0.02 here; ground in a shadow is 0.03 and
-    // up): left exactly as the game drew it
-    "  if (mc < 0.018) return dst;\n"
     "  float2 e = 1.0 / w.screen.zw;\n"
     "  float ez = sc_eye(w, (float2(q) + 0.5) * e, d);\n"
     "  float2 hp = in.pos.xy / w.trail.z - 0.5;\n"
@@ -3372,7 +3413,12 @@ static const char *sc_src =
     "    if (dz < best) best = dz, near = t;\n"
     "  }\n"
     "  float4 hv = wsum > 1e-4 ? acc / wsum : near;\n"
-    "  float k = hv.x * smoothstep(0.018, 0.03, mc);\n"
+    // near black - the insides of doorways, windows, the gaps under eaves (~0.02 here; ground in a shadow is 0.03 and
+    // up): left exactly as the game drew it. Not open flat ground, though: a character's or a statue's shadow there is
+    // as dark, and its middle stayed bare - dark smudges under the animals (issue #574; a dark recess is the half
+    // pass' hem test)
+    "  float open = smoothstep(0.95, 0.99, hv.y) * (1.0 - hv.z);\n"
+    "  float k = hv.x * mix(smoothstep(0.018, 0.03, mc), 1.0, open);\n"
     "  uint ts = (sm.r >> 1) & 7u;\n"  // (a tree shaken bare by a bonk: its snow growing back)
     "  if (ts != 0u) k *= w.shake[ts];\n"
     "  if (k <= 0.0) return dst;\n"
@@ -3386,6 +3432,9 @@ static const char *sc_src =
     // between leaf and gap), the slope, a soft unevenness
     "  float lit = mix(saturate(mc / w.tone.w), 0.8, rough * 0.7);\n"
     "  float3 col = w.tone.rgb * (0.45 + 0.55 * lit) * (0.85 + 0.15 * hv.y) * (0.96 + 0.06 * vnoise(pr * 3.0));\n"
+    // near black on open ground (a cast shadow, the shade under trees): snow as dark as the shadow - its shape kept,
+    // the dark stones' colours under it gone
+    "  col = mix(col, w.tone.rgb * saturate(mc / w.tone.w), saturate(2.0 * open) * (1.0 - smoothstep(0.018, 0.03, mc)));\n"
     "  col *= float3(1.0 - 0.5 * saturate(fp), 1.0 - 0.42 * saturate(fp), 1.0 - 0.28 * saturate(fp));\n"  // (its shade: blue-grey)
     "  return half4(half3(mix(c, col, k)), dst.a);\n"
     "}\n";
@@ -3396,7 +3445,7 @@ static bool sc_dm1;
 static int sc_tree;  // this draw: a tree shaken bare, its slot 1..6 (stencil bits 1-3), 7 a face tree (Crazy
                      // Tracy's, the Tabahl Wasteland: no wall for the alcoves' test), 0: none
 static int sc_mark;  // this draw: 0 as the game has it, 1 the level's model (stencil bit 7 clear), 2 anything else (set),
-                     // 3 grass and bushes (bit 6: a light dusting)
+                     // 3 grass and bushes (bit 6: a light dusting), 4 a character (bits 6 and 7: a dusting on top)
 static uint64_t sc_frame = ~0ull, sc_done = ~0ull;
 static uint32_t wx_scene_w, wx_scene_h;  // (the scene image the composite read: the scene pass's target size)
 
@@ -3713,6 +3762,14 @@ static void snow_cover_check(CmdRec *r, bool indexed, Prog *pr) {
             else if (!level && i < nlvl && st.ubuf[0][4].addr && (st.ubuf[0][4].size == 1056 || st.ubuf[0][4].size == 1072))
                 sc_mark = 1;
         }
+        // Characters - Link, NPCs, enemies, animals, items - get a dusting on what faces up (stencil bits 6 and 7 both,
+        // sc_fs). The animals drawn with the level's shaders (the fox, the cuccos) are told from the scenery actors
+        // drawn with them (rocks, statues, signs, flower plants) by moving: their vertex data is posed anew each frame
+        // (weather.c). Their shaders and constant buffers are the props' own. Issue #574: they took the props' dusting
+        bool actor = st.rt.ncolor && !level && st.ubuf[0][4].addr && (st.ubuf[0][4].size == 1056 || st.ubuf[0][4].size == 1072);
+        bool promoted = actor && sc_mark == 1;
+        bool animated = promoted && weather_snow_animated(st.vbuf[0].addr, (const void *)(uintptr_t)st.vbuf[0].addr, st.vbuf[0].size, frame);
+        if (actor && (sc_mark == 2 || animated)) sc_mark = 4;
         // Grass and bushes - the tall grass tufts (instanced), cuttable / liftable bushes, flowers and small plants -
         // get a light dusting of their own (stencil bit 6, sc_fs): told by their maps (runtime/nvn/recolour_seasons.c's
         // tall grass, bush and lime-foliage maps), looked up once per program and mesh. Not the level's own ground
@@ -3737,6 +3794,7 @@ static void snow_cover_check(CmdRec *r, bool indexed, Prog *pr) {
             // (and the scenery actors the rule above gives full snow unless they are trees: the village's big flower
             // plants and props carry no maps the recolours know - a dusting suits them better than a white blanket.
             // Rocks take it like the ground: a cap on top; the face trees as the level's own, slot 7)
+            if (promoted && sc_mark == 4 && (fc[k].tree || fc[k].rock || fc[k].face)) sc_mark = 1;  // (scenery by its maps, even moving)
             if (fc[k].fol || (sc_mark == 1 && !fc[k].tree && !fc[k].rock && !fc[k].face)) sc_mark = 3;
             else if (sc_mark == 1 && fc[k].face) sc_tree = 7;
             else if (sc_mark == 1 && fc[k].tree && st.ubuf[0][3].addr && st.ubuf[0][3].size == 144) {
@@ -4041,7 +4099,7 @@ static void draw_one(CmdRec *r, bool indexed) {
     if (sc_mark) {  // (the game's reference where its pass op was a replace, 0 for a zero; bits 6-7 the mark, 1-3 a shaken tree)
         uint32_t ops = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16, ref[2];
         for (int f = 0; f < 2; f++)
-            ref[f] = (st.ds[3] && ((f ? ops >> 20 : ops >> 8) & 0xF) == 3 ? st.stencil_ref[f] & 0x31 : 0) | (sc_mark == 2 ? 0x80 : sc_mark == 3 ? 0x40 : 0) | (uint32_t)sc_tree << 1;
+            ref[f] = (st.ds[3] && ((f ? ops >> 20 : ops >> 8) & 0xF) == 3 ? st.stencil_ref[f] & 0x31 : 0) | (sc_mark == 2 ? 0x80 : sc_mark == 3 ? 0x40 : sc_mark == 4 ? 0xC0 : 0) | (uint32_t)sc_tree << 1;
         [enc setStencilFrontReferenceValue:ref[0] backReferenceValue:ref[1]];
     } else [enc setStencilFrontReferenceValue:st.stencil_ref[0] backReferenceValue:st.stencil_ref[1]];
     [enc setBlendColorRed:st.blend_color[0] green:st.blend_color[1] blue:st.blend_color[2] alpha:st.blend_color[3]];

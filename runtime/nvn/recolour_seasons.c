@@ -7,7 +7,8 @@
 //   on the houses (their own decal maps: Sale's, Marin and Tarin's, Schule's, the Seashell Mansion's, the fairy
 //   fountain's hedges). Not the houses' painted wood (Sale's green trim is in his house's atlas: it stays, as the
 //   Animal Village's painted roofs do).
-//   Grass: the ground's grass, tall grass Lawn_01 (the graveyard's too), grass tufts.
+//   Grass: the ground's grass, tall grass Lawn_01 (the graveyard's too), grass tufts, the single ground tiles drawn
+//   over it (ObjFieldTip*).
 //   Sand: the beaches, Yarna Desert, the sandy south around the Face Shrine, the shore lines.
 // The leaves flying off cut grass and bushes (effect sheets grass_00 / grass_01 / cut_lawn_00) get the same colour as
 // what was cut. Only greens move (a hue range): flowers, trunks, dirt, rocks keep theirs.
@@ -76,6 +77,12 @@ static const RecolourSource k_sources[] = {
     {"region_common/actor/ObjRock.bfres", field},
     {"region_common/actor/ObjTabahlTree.bfres", field},
     {"region_common/actor/ObjSpeakTree.bfres", field},
+    // (single ground tiles placed over the level's ground, with their own copies of its maps: they stayed green under
+    // an autumn ground, issue #577)
+    {"region_common/actor/ObjFieldTipKanalet.bfres", field},
+    {"region_common/actor/ObjFieldTipMaze.bfres", field},
+    {"region_common/actor/ObjFieldTipMysterious.bfres", field},
+    {"region_common/actor/ObjFieldTipUkuku.bfres", field},
     {"region_common/effect/Common.ptcl", effect},
     {"region_common/effect/Player.ptcl", effect},
     {"region_common/effect/Object.ptcl", effect},

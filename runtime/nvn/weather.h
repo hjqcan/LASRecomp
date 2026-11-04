@@ -98,6 +98,10 @@ float weather_snow_now(void);  // (their time base: the weather's time)
 // A tree drawn this frame (the renderer: a scenery actor with canopy maps; its model's world position): which shaken
 // tree slot it is (1..6, its snow regrowing after a bonk), 0: none
 int weather_snow_tree(const float pos[3]);
+// A scenery-looking actor drawn this frame (one drawn with the level's own shaders): whether it is animated - an
+// animal (its vertex data, posed for each frame, keeps changing), not a prop or a rock (still). key: its vertex
+// buffer's address, vtx / size: the data there. Render thread
+bool weather_snow_animated(uint64_t key, const void *vtx, uint64_t size, uint64_t frame);
 // Game thread, every frame: Link's position for the footprints and the kicked-up snow (snow on the overworld only),
 // and for a storm's lightning (it aims at him now and then; it shocks him if he is still there when it strikes)
 struct Cpu;
