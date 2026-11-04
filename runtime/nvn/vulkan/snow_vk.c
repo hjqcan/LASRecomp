@@ -317,7 +317,7 @@ static const char *cover_fs =
     "  k *= 1.0 - saturate(fp) * (0.9 - 0.45 * cover);\n"
     "  float lit = mix(saturate(mc / w.tone.w), 0.8, rough * 0.7);\n"
     "  vec3 col = w.tone.rgb * (0.45 + 0.55 * lit) * (0.85 + 0.15 * hv.y) * (0.96 + 0.06 * vnoise(pr * 3.0));\n"
-    "  col = mix(col, w.tone.rgb * saturate(mc / w.tone.w), saturate(2.0 * open_) * (1.0 - smoothstep(0.018, 0.03, mc)));\n"
+    "  col = mix(col, mix(c, w.tone.rgb / w.tone.w * dot(c, vec3(0.2126, 0.7152, 0.0722)), open_), 1.0 - smoothstep(0.018, 0.03, mc));\n"
     "  col *= vec3(1.0 - 0.5 * saturate(fp), 1.0 - 0.42 * saturate(fp), 1.0 - 0.28 * saturate(fp));\n"
     "  o = vec4(mix(c, col, k), dst.a);\n"
     "}\n";

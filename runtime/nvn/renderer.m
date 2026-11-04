@@ -3432,9 +3432,10 @@ static const char *sc_src =
     // between leaf and gap), the slope, a soft unevenness
     "  float lit = mix(saturate(mc / w.tone.w), 0.8, rough * 0.7);\n"
     "  float3 col = w.tone.rgb * (0.45 + 0.55 * lit) * (0.85 + 0.15 * hv.y) * (0.96 + 0.06 * vnoise(pr * 3.0));\n"
-    // near black on open ground (a cast shadow, the shade under trees): snow as dark as the shadow - its shape kept,
-    // the dark stones' colours under it gone
-    "  col = mix(col, w.tone.rgb * saturate(mc / w.tone.w), saturate(2.0 * open) * (1.0 - smoothstep(0.018, 0.03, mc)));\n"
+    // near black: as drawn, or on open ground (a cast shadow, the shade under trees) snow as dark as the shadow - its
+    // shape kept, the dark stones' colours under it gone. Never the lit snow's colour there: where the half pass' open
+    // ground estimate is partial (the edge of a tree's shade) that left single grey pixels
+    "  col = mix(col, mix(c, w.tone.rgb / w.tone.w * dot(c, float3(0.2126, 0.7152, 0.0722)), open), 1.0 - smoothstep(0.018, 0.03, mc));\n"
     "  col *= float3(1.0 - 0.5 * saturate(fp), 1.0 - 0.42 * saturate(fp), 1.0 - 0.28 * saturate(fp));\n"  // (its shade: blue-grey)
     "  return half4(half3(mix(c, col, k)), dst.a);\n"
     "}\n";
