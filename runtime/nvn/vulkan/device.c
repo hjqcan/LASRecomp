@@ -1042,10 +1042,12 @@ static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's i
 static void ip_mids(TexBackend *b, uint64_t frame) {
     static uint64_t prev_ns;
     static double interval_ns;  // (smoothed: the game's frame interval)
+    static double win_sum, win_max;  // (the raw intervals of the current 30-frame check)
     uint64_t now = plat_now_ns();
     if (prev_ns && now > prev_ns) {
         double d = (double)(now - prev_ns);
         interval_ns = interval_ns > 0 && d < 4 * interval_ns ? interval_ns + (d - interval_ns) * 0.1 : d;
+        win_sum += d, win_max = fmax(win_max, d);
     }
     prev_ns = now;
     if (!ip_place.ok || interval_ns <= 0 || !b || !b->image || b->depth > 1 || b->layers > 1) return;
@@ -1053,30 +1055,44 @@ static void ip_mids(TexBackend *b, uint64_t frame) {
     // showed fewer - a virtual display (Parsec: 120 Hz reported, presents paced at 60) held each image two refreshes
     // and the game fell to its 30 fps mode. Learned from those frames, kept while the display reports the same rate.
     // In-betweens only from 100 Hz: never at the cost of the game's own 60.
-    // (gameplay only, three 30-frame checks in a row: a movie's or a load's hitch isn't the display.)
+    // (gameplay only, three 30-frame checks in a row, each steady - no frame over 1.5x the check's average: a movie's,
+    // a load's or a resolution change's hitches aren't the display. A cap is tried again after 10 s of the game at its
+    // 60 - 20 s, 40 s... up to 5 min each time it comes back: an 8x resolution scale's slow frames learned 61 Hz once,
+    // and nothing measured again.)
     // LARECOMP_INTERP_HZ=<hz> (tests): that refresh rate, nothing learned.
     static double hz_seen, hz_cap, hz_env = -1;
-    static int mids_last, settle, slow_checks;
+    static int mids_last, settle, slow_checks, full_rate, retry_after = 600;
     if (hz_env < 0) hz_env = getenv("LARECOMP_INTERP_HZ") ? atof(getenv("LARECOMP_INTERP_HZ")) : 0;
     SDL_DisplayID did = SDL_GetDisplayForWindow(window);
     const SDL_DisplayMode *dm = did ? SDL_GetCurrentDisplayMode(did) : NULL;
     double hz = dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60;
     if (hz != hz_seen) {
         LOG("[interp] display %u: %.2f Hz (SDL)%s\n", (unsigned)did, hz, hz_env > 0 ? " - LARECOMP_INTERP_HZ overrides it" : "");
-        hz_seen = hz, hz_cap = 0, settle = slow_checks = 0;
+        hz_seen = hz, hz_cap = 0, settle = slow_checks = full_rate = 0, retry_after = 600;
     }
     if (hz_env > 0) hz = hz_env;
     extern int game_in_play(void);      // hle/warp.c
     extern bool world_on_screen(void);  // hle/mirror.c
-    if (hz_env <= 0 && mids_last > 0 && game_in_play() && world_on_screen() && ++settle >= 30) {  // (30 frames with in-betweens)
+    bool playing = hz_env <= 0 && game_in_play() && world_on_screen();
+    if (playing && mids_last > 0 && ++settle >= 30) {  // (30 frames with in-betweens)
+        double expect = (mids_last + 1) * 1e9 / (hz_cap > 0 ? fmin(hz, hz_cap) : hz), mean = win_sum / settle;
+        bool steady = win_max < 1.5 * mean;
         settle = 0;
-        double expect = (mids_last + 1) * 1e9 / (hz_cap > 0 ? fmin(hz, hz_cap) : hz);
-        slow_checks = interval_ns > 1.3 * expect ? slow_checks + 1 : 0;
+        slow_checks = steady && mean > 1.3 * expect ? slow_checks + 1 : 0;
         if (slow_checks >= 3) {
-            hz_cap = (mids_last + 1) * 1e9 / interval_ns;
-            slow_checks = 0;
+            hz_cap = (mids_last + 1) * 1e9 / mean;
+            slow_checks = full_rate = 0;
             static int nlog;
-            if (nlog++ < 5) LOG("[interp] the display shows %.0f images a second, not %.0f: in-betweens for %.0f Hz\n", hz_cap, hz, hz_cap);
+            if (nlog++ < 10) LOG("[interp] the display shows %.0f images a second, not %.0f: in-betweens for %.0f Hz\n", hz_cap, hz, hz_cap);
+        }
+    }
+    if (!playing || mids_last == 0 || settle == 0) win_sum = win_max = 0;  // (a check counts its own 30 frames)
+    if (hz_cap > 0 && hz_cap < hz) {  // (trying the display's rate again)
+        full_rate = playing && interval_ns < 1.1e9 / 60 ? full_rate + 1 : 0;
+        if (full_rate >= retry_after) {
+            LOG("[interp] trying %.0f Hz again (the game held 60 for %d s)\n", hz, retry_after / 60);
+            hz_cap = 0, full_rate = settle = slow_checks = 0;
+            retry_after = retry_after * 2 > 18000 ? 18000 : retry_after * 2;
         }
     }
     if (hz_env <= 0 && hz_cap > 0 && hz_cap < hz) hz = hz_cap;
