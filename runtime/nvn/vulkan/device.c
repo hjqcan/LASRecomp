@@ -1136,7 +1136,6 @@ static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
     // which held it at 30)
     int mids = hz >= 100 ? (int)lround(hz / 60.0) - 1 : 0;
     if (mids > 3) mids = 3;
-    if (g_settings.frame_gen_cap > 0 && mids > g_settings.frame_gen_cap / 60 - 1) mids = g_settings.frame_gen_cap / 60 - 1;  // (Frame rate cap)
     if (mids < 1) { ip_not_made[IP_CAPPED] += hz_cap > 0; mids_last = 0; ip_hz = 0; return 0; }
     ip_hz = hz;
     if (mids != mids_last) settle = slow_checks = 0;

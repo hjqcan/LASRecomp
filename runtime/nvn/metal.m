@@ -2091,10 +2091,6 @@ static bool ip_present(NvnTexture *t, uint64_t frame, bool repeat) {
     if (!s0) blend = false;
     InterpShot sh[10];
     uint64_t per = atomic_load(&ip_period);
-    // Frame Generation's cap (the Video tab): images on a grid of 1 / cap instead of every vsync - shown at the vsync
-    // they fall on (a display with a variable refresh rate shows them when they are due)
-    if (g_settings.frame_gen_cap > 0 && 1000000000ull / (uint64_t)g_settings.frame_gen_cap > per)
-        per = 1000000000ull / (uint64_t)g_settings.frame_gen_cap;
     int n = interp_schedule(s0, s1, now, atomic_load(&ip_phase), per, ip_wake_ns ? ip_wake_ns + 1000000 : (uint64_t)((ip_lead_ms > 0 ? ip_lead_ms : 33.3) * 1e6) + 1000000, blend, sh, 10);
     float rsx, rsy, rax = g_al_x, ray = g_al_y;  // (the scale this frame was drawn at: compose sets the next one's)
     renderer_get_scale(&rsx, &rsy);

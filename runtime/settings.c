@@ -194,7 +194,6 @@ void settings_load(void) {
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
         else if (!strcmp(key, "show_fps")) g_settings.show_fps = atoi(val) != 0;
         else if (!strcmp(key, "frame_interp")) g_settings.frame_interp = atoi(val) != 0;
-        else if (!strcmp(key, "frame_gen_cap")) { int c = atoi(val); g_settings.frame_gen_cap = c == 90 || c == 120 || c == 144 || c == 240 ? c : 0; }
         else if (!strcmp(key, "resolution")) {  // (auto: never chosen, the GPU's default)
             int n = atoi(val);
             g_settings.res_auto = !strcmp(val, "auto");
@@ -296,7 +295,6 @@ void settings_save(void) {
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "show_fps = %d\n", g_settings.show_fps);
     fprintf(f, "frame_interp = %d\n", g_settings.frame_interp);
-    fprintf(f, "frame_gen_cap = %d\n", g_settings.frame_gen_cap);
     fprintf(f, "upscaler = %s\n", g_settings.upscaler_auto ? "auto" : g_settings.upscaler == UPSCALE_METALFX ? "metalfx" :
                                    g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
