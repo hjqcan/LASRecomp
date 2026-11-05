@@ -16,8 +16,12 @@
 
 extern const char *g_romfs_dir;
 
+// (the archive has no thunder or rain sound: the thunder is the Face Shrine statue's stone rumble, played at 0.55x
+// speed through a low-pass - a deep, decaying roll; a near strike's crack a bomb's blast, lower; the crackle before a
+// strike the Buzz Blob's spark; see load_one)
 static const char *const g_names[MENU_SFX_N] = {"SE_SY_CURSOL_MOVE", "SE_SY_MENU_LR_MOVE", "SE_SY_DECIDE",
-                                                "SE_SY_BEEP", "SE_SY_CANCEL", "SE_SY_MENU_OPEN", "SE_SY_MENU_CLOSE"};
+                                                "SE_SY_BEEP", "SE_SY_CANCEL", "SE_SY_MENU_OPEN", "SE_SY_MENU_CLOSE",
+                                                "SE_MAP_MATFACE_RUMBLE", "SE_MAP_BOMB_EXPLO", "SE_ENE_BUZZBLOB_SPARK"};
 
 #define RATE 48000
 
@@ -271,6 +275,8 @@ static bool load_one(Archive *a, Buf strg, int id, char *why, size_t wn) {
         for (uint32_t i = 0; i < n; i++) src[i * 2 + 1] = src[i * 2];
     // to RATE at the note's pitch, with the volumes (the note's velocity squared, as the game's sequencer does)
     double step = rate * (double)pitch * pow(2.0, (key - orig_key) / 12.0) / RATE;
+    if (id == MENU_SFX_THUNDER) step *= 0.55;  // (slower and lower: stone rumble -> thunder)
+    if (id == MENU_SFX_THUNDER_CRACK) step *= 0.7;  // (a bomb's blast, lower: the crack of a strike close by)
     if (!(step > 1.0 / 64 && step < 64) || (n - 1) / step > RATE * 30) { free(src); snprintf(why, wn, "pitch %g", step); goto done; }
     float gain = vol * ivol * (vel / 127.0f) * (vel / 127.0f);
     uint32_t frames = (uint32_t)((n - 1) / step) + 1;
@@ -284,6 +290,15 @@ static bool load_one(Archive *a, Buf strg, int id, char *why, size_t wn) {
         for (int c = 0; c < 2; c++) pcm[i * 2 + c] = (src[j * 2 + c] * (1 - f) + src[k * 2 + c] * f) * gain;
     }
     free(src);
+    if (id == MENU_SFX_THUNDER) {  // one-pole low-pass (~500 Hz), twice: the grit off, the roll kept
+        float k = 1 - expf(-2 * 3.14159265f * 500 / RATE), z[4] = {0};
+        for (uint32_t i = 0; i < frames; i++)
+            for (int c = 0; c < 2; c++) {
+                z[c] += k * (pcm[i * 2 + c] - z[c]);
+                z[2 + c] += k * (z[c] - z[2 + c]);
+                pcm[i * 2 + c] = z[2 + c] * 1.6f;
+            }
+    }
     while (frames > 1 && fabsf(pcm[frames * 2 - 2]) < 1e-4f && fabsf(pcm[frames * 2 - 1]) < 1e-4f) frames--;  // (silence at the end)
     g_sfx[id].pcm = pcm, g_sfx[id].frames = frames;
     LOG("[menu_sfx] %s: %s %u Hz %u ch, %.0f ms (program %d, key %d, gain %.3f)\n", name,
@@ -359,7 +374,9 @@ static bool ensure_loaded(void) {
 
 // ---- playing: up to a few at once, mixed on our stream (its callback)
 #define VOICES 8
-typedef struct { int id; uint32_t pos; uint64_t start; } Voice;
+// (pos: frames into the sound, negative: still waiting; step: frames a frame out; lp: a two-pole low-pass, k 0: none;
+// end: where it stops, the last quarter fading)
+typedef struct { int id; double pos, step, end, fade; uint64_t start; float gain, k, z[4]; } Voice;
 static Voice g_voice[VOICES];
 static int g_nvoice;
 static SDL_AudioStream *g_stream;
@@ -383,10 +400,19 @@ static void SDLCALL feed(void *ud, SDL_AudioStream *st, int need, int total) {
         for (int v = 0; v < g_nvoice;) {
             Voice *vo = &g_voice[v];
             const Sfx *s = &g_sfx[vo->id];
-            uint32_t left = s->frames - vo->pos, k = left < (uint32_t)n ? left : (uint32_t)n;
-            for (uint32_t i = 0; i < k * 2; i++) buf[i] += s->pcm[vo->pos * 2 + i] * gain;
-            vo->pos += k;
-            if (vo->pos >= s->frames) g_voice[v] = g_voice[--g_nvoice];
+            double end = vo->end > 0 && vo->end < s->frames - 1 ? vo->end : s->frames - 1;
+            for (int i = 0; i < n && vo->pos < end; i++, vo->pos += vo->step) {
+                if (vo->pos < 0) continue;
+                uint32_t j = (uint32_t)vo->pos;
+                float f = (float)(vo->pos - j), g = gain * vo->gain;
+                if (vo->fade > 0 && vo->pos > vo->fade) g *= (float)fmax(0, (end - vo->pos) / (end - vo->fade));
+                for (int c = 0; c < 2; c++) {
+                    float x = s->pcm[j * 2 + c] * (1 - f) + s->pcm[(j + 1) * 2 + c] * f;
+                    if (vo->k > 0) vo->z[c] += vo->k * (x - vo->z[c]), vo->z[2 + c] += vo->k * (vo->z[c] - vo->z[2 + c]), x = vo->z[2 + c];
+                    buf[i * 2 + c] += x * g;
+                }
+            }
+            if (vo->pos >= end) g_voice[v] = g_voice[--g_nvoice];
             else v++;
         }
         if (!g_nvoice && !g_idle_since) g_idle_since = SDL_GetTicksNS();
@@ -408,10 +434,14 @@ void menu_sfx_load_now(void) {
     pthread_mutex_unlock(&g_lock);
 }
 
-void menu_sfx_play(int id) {
+void menu_sfx_play(int id) { menu_sfx_play_gain(id, 1); }
+
+void menu_sfx_play_gain(int id, float vgain) { menu_sfx_play_ex(id, vgain, 1, 0, 0, 0, 0); }
+
+void menu_sfx_play_ex(int id, float vgain, float rate, float lowpass, float from, float len, float delay) {
     static int off = -1;
     if (off < 0) off = no_audio();
-    if (id < 0 || id >= MENU_SFX_N || off) return;
+    if (id < 0 || id >= MENU_SFX_N || off || !g_settings.menu_sounds) return;  // (Audio tab: Menu sounds)
     pthread_mutex_lock(&g_lock);
     if (!ensure_loaded() || !g_sfx[id].pcm) { pthread_mutex_unlock(&g_lock); return; }
     if (!g_stream && !g_stream_failed) {
@@ -426,10 +456,11 @@ void menu_sfx_play(int id) {
     // one press, one sound: a more important sound just before drops this one; this drops less important ones
     uint64_t now = SDL_GetTicksNS(), recent = 150000000ull;
     bool drop = false;
-    for (int v = 0; v < g_nvoice; v++)
-        if (now - g_voice[v].start < recent && g_voice[v].id > id) drop = true;
+    bool weather = id >= MENU_SFX_THUNDER;  // (the weather's: never dropped, never drop a menu sound)
+    for (int v = 0; v < g_nvoice && !weather; v++)
+        if (now - g_voice[v].start < recent && g_voice[v].id > id && g_voice[v].id < MENU_SFX_THUNDER) drop = true;
     if (!drop) {
-        for (int v = 0; v < g_nvoice;)
+        for (int v = 0; v < g_nvoice && !weather;)
             if (now - g_voice[v].start < recent && g_voice[v].id < id) g_voice[v] = g_voice[--g_nvoice];
             else v++;
         if (g_nvoice == VOICES) {  // (the oldest makes room)
@@ -438,7 +469,11 @@ void menu_sfx_play(int id) {
                 if (g_voice[v].start < g_voice[old].start) old = v;
             g_voice[old] = g_voice[--g_nvoice];
         }
-        g_voice[g_nvoice++] = (Voice){id, 0, now};
+        if (!(rate > 0.05f && rate < 8)) rate = 1;
+        Voice vo = {id, from * RATE - delay * RATE * rate, rate, len > 0 ? (from + len) * RATE : 0,
+                    len > 0 ? (from + len * 0.75) * RATE : 0, now, vgain};
+        if (lowpass > 0) vo.k = 1 - expf(-2 * 3.14159265f * lowpass / RATE);
+        g_voice[g_nvoice++] = vo;
         g_idle_since = 0;
     }
     pthread_mutex_unlock(&g_lock);

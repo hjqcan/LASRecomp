@@ -3,7 +3,9 @@
 Status: builds and runs the game on Vulkan (with your own game files) on x86-64, checked before
 each release by `make smoketest`. aarch64 is **experimental**: cross-compiled, its start screen checked under emulation,
 the game itself untested on real hardware - community reports decide (see the end). `make appimage` / `make appimages`
-package the release AppImages.
+package the AppImages. The latest aarch64 one is on the rolling
+[Experimental builds](https://github.com/peiikai/LASRecomp/releases/tag/experimental) pre-release
+(`.github/workflows/experimental.yml`); releases from 1.0.0 on carry only the x86-64 one.
 
 ## Running the AppImage
     chmod +x LAS.Recomp-<version>-linux-x86_64.AppImage
@@ -111,7 +113,8 @@ files or fonts.
 - Pages: 4K and 16K kernels (Asahi) work; 64K-page kernels (some ARM servers) are not supported.
 
 ## Testing on ARM (aarch64): what to report
-The aarch64 AppImage is experimental: built on x86-64, only its start screen has run (emulated): reports from real hardware
+The aarch64 AppImage is on the [Experimental builds](https://github.com/peiikai/LASRecomp/releases/tag/experimental)
+page: only its start screen has run (emulated), so reports from real hardware
 (Asahi Linux, Snapdragon laptops, Raspberry Pi 5 and other boards) are what tells whether it works. Please include:
 
 1. **Distribution and kernel**: `cat /etc/os-release | head -3; uname -r; getconf PAGESIZE`

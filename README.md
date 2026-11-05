@@ -16,7 +16,7 @@ native Windows, macOS and Linux application.
 > - macOS - Apple Silicon only, Metal graphics backend + MetalFX
 > - Windows - x86-64 only, Vulkan graphics backend
 > - Linux - x86-64, Vulkan graphics backend (AppImage)
-> - Linux aarch64 (ARM) - **experimental**: built but untested on real hardware; reports welcome
+> - Linux aarch64 (ARM) - **experimental**: the latest build is on the [Experimental builds](https://github.com/peiikai/LASRecomp/releases/tag/experimental) page; reports welcome
 >   ([docs/linux.md](docs/linux.md) lists what to include)
 
 ## System requirements
@@ -111,7 +111,6 @@ Known issues and their status are on the [GitHub issues page](https://github.com
 - Dungeon Room Shuffle: every dungeon is rebuilt from its own rooms each seed.
   - Coupled: going back through a door takes you back where you came from.
   - Decoupled: going back through a door takes you somewhere else.
-  - Labyrinth (planned): doors can lead into other dungeons.
   - The map can show how rooms connect as you explore.
 - A tracker on the pause menu's map shows how many checks are left in each area and whether you can reach them.
 - The inventory screen shows your keys, dungeon items, trade items and souls for each dungeon.
@@ -142,7 +141,8 @@ Python 3.12.
 ### Windows
 
 Requirements: Windows 10+ x86-64, a CPU with AVX2 and a GPU with Vulkan 1.3. More detail in
-[docs/BUILD-windows.md](docs/BUILD-windows.md).
+[docs/BUILD-windows.md](docs/BUILD-windows.md). Windows on ARM (experimental) builds with the same setup script; see
+that page.
 
 1. One-time setup, in PowerShell from the repo root: `powershell -ExecutionPolicy Bypass -File tools\setup_windows.ps1`.
    It installs MSYS2 (UCRT64: clang, make, SDL3, FFmpeg, Vulkan, shaderc), Python 3.12 for the tools and the
@@ -196,7 +196,8 @@ without touching the installed game, your game files or your saves.
 - **[@rkammoun](https://github.com/rkammoun)** - the fix for the black walls in the Ukuku Prairie cave on Mac (#215, #216)
 - **[@NevesHenry](https://github.com/NevesHenry)** - a clear message on Linux when no file window can open (#298),
   the rumble test running in CI (#299), Linux builds finding their own SDL3 (#437), font re-imports that no longer
-  empty the font (#490), and a message box on Linux for a CPU without AVX2 (#491)
+  empty the font (#490), a message box on Linux for a CPU without AVX2 (#491), the build and system in the log bot's
+  summary (#582), and an FFmpeg licence check that really checks (#583)
 - **[@ky1vstar](https://github.com/ky1vstar)** - a much faster Linux ARM release build (#319)
 - **[@theb0rg](https://github.com/theb0rg)** - the fix for AMD integrated graphics on Windows (#335)
 - **[@gtf-dot](https://github.com/gtf-dot)** - the game-text font on Linux (#330)
@@ -205,6 +206,7 @@ without touching the installed game, your game files or your saves.
   cheats and save editor (#453)
 - **[@wimw85](https://github.com/wimw85)** - much faster game code setup on the Steam Deck and other PCs (#434)
 - **[@missionfloyd](https://github.com/missionfloyd)** - a much smaller game code build, without debug info (#487)
+- **[@wolfchimneyrock](https://github.com/wolfchimneyrock)** - full speed on ARM Mali graphics (#527), the CPU and GPU working in parallel on Mali (#529), and faster render passes on Mali (#528, #534), a cheaper FSR upscale (#532), the game on the big cores of ARM and Intel hybrid CPUs on Linux (#533), no more flickering grass and shadows on Mali (#546), the game starting on Snapdragon (Adreno) devices (#561), much faster shaders on Mali and Adreno (#562, #563, #579), faster graphics memory on Mali with Mesa (#564), and GPU tuning tools for Vulkan (#565)
 
 Thanks also to everyone who reports issues and tests builds. Your logs and screenshots find most of the bugs.
 
@@ -222,6 +224,10 @@ none of their files are used):
 - **XBOX UI** by fellow_demo - Xbox button prompts (https://gamebanana.com/mods/540069)
 - **PS4 UI Buttons** by messiahgov - PlayStation button prompts (https://gamebanana.com/mods/324458)
 - **No Hero Mode Indicator** by Boo/Calla - hide the Hero Mode icon (https://gamebanana.com/mods/441172)
+
+**Art**
+- **[Kenney](https://kenney.nl)** - the D-pad on the HUD for D-pad items, from the Input Prompts pack (CC0,
+  `third_party/kenney`)
 
 **Libraries and tools**
 - [SDL 3](https://libsdl.org) - windowing, input, audio (zlib license)

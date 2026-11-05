@@ -16,18 +16,22 @@ enum { AA_OFF = 0, AA_SMAA = 1 };
 enum { PROMPTS_AUTO = 0, PROMPTS_NINTENDO = 1, PROMPTS_XBOX = 2, PROMPTS_PLAYSTATION = 3 };
 // Which face button confirms in our own menus (runtime/ui/pad_nav.mm); the game's input is never affected
 enum { MENU_CONFIRM_GAME = 0, MENU_CONFIRM_CONTROLLER = 1 };
+enum { DPAD_NOTHING = 0, DPAD_ITEMS = 1, DPAD_MOVE = 2 };
 enum { TIMER_POS_LEFT = 0, TIMER_POS_RIGHT = 1 };  // the run timer's corner (bottom left / right)
 enum { CHAOS_LETTERS_OFF = 0, CHAOS_LETTERS_EXPLORED = 1, CHAOS_LETTERS_MAP = 2 /* explored, all with the Map */ };
 // System language served to the game (runtime/services/am.c GetDesiredLanguage, services/hid_set.c GetLanguageCode):
 // the game picks its text language from it, as it would from the Switch's own system setting, and the menus follow it
 // too (runtime/ui/i18n.mm). LANG_AUTO follows the host's language (macOS / Windows: the user's preferred languages;
 // Linux: $LC_ALL / $LC_MESSAGES / $LANG); the rest are the codes of the languages the game has text for.
-enum { LANG_AUTO = 0, N_LANGUAGES = 12 };
+// The ones from N_GAME_LANGUAGES on are the menus' only (pt-BR): the game has no text for them and is told en-US.
+enum { LANG_AUTO = 0, N_GAME_LANGUAGES = 12, N_LANGUAGES = 13 };
 extern const char *const g_language_codes[N_LANGUAGES];  // what the game is told: "ja", "en-US", "es", ...
 extern const char *const g_language_names[N_LANGUAGES];  // ("Auto", "Japanese", ..., "Spanish")
 extern const char *const g_language_endonyms[N_LANGUAGES];  // each in its own language, for the menu ("日本語", "Deutsch")
 
 enum { RANDO_PRESETS_MAX = 20 };  // (the Randomizer tab's own presets: settings.rando_presets)
+
+enum { FPS_OFF, FPS_TOP_LEFT, FPS_TOP_RIGHT, FPS_BOTTOM_LEFT, FPS_BOTTOM_RIGHT, N_FPS_CORNERS };
 
 typedef struct {
     int aspect;          // ASPECT_*: unlocked = fill the window (wider/taller views), original = 16:9 with bars
@@ -40,9 +44,10 @@ typedef struct {
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
     bool movie_audio;
-    bool show_fps;
+    bool menu_sounds;    // LAS Recomp's own menu sounds (runtime/menu_sfx.c)
     bool frame_interp;   // Frame Generation: extra images between the game's frames (runtime/nvn/interp.c)
-    bool dpad_move;      // the d-pad (and arrow keys) move Link like the stick
+    int show_fps;        // FPS_*: the frame rate counter's corner (FPS_OFF: none)
+    int dpad_mode;       // DPAD_*: what the d-pad (and arrow keys) do in play: nothing, items (runtime/hle/dpad_items.c), move Link
     bool rumble;         // controller vibration from the game (runtime/hle/input.c)
     int rumble_strength; // its intensity, percent (25 / 50 / 75 / 100)
     bool controller_light; // the controller's light bar shows Link's health (runtime/led.h, hle/input.c)
@@ -50,10 +55,15 @@ typedef struct {
     bool move_360;       // analog movement in any direction (the game snaps the stick to 8): runtime/hle/qol.c
     bool blur_removal;   // no tilt-shift blur at the top / bottom of the screen
     bool hide_hero_icon; // no Hero Mode icon on the HUD
+    bool pause_unfocused; // the game stops while its window isn't in front (runtime/hle/vi.c)
+    bool remember_window; // the window opens at the size it was closed at (runtime/paths.c rt_window_remember)
+    int window_w, window_h; // that size, in points (0: none saved yet)
     bool mirror_mode;    // the world mirrored left to right (Gameplay tab): renderers + runtime/hle/input.c
     int language;        // LANG_AUTO or an index into g_language_codes: the game's text language
     int prompts;         // PROMPTS_*: button glyphs (auto = follow the controller SDL reports): runtime/nvn/texpatch.c
     int menu_confirm;    // MENU_CONFIRM_*: game layout (right confirms, bottom goes back) or the controller's convention
+    bool face_by_label;  // Xbox / PlayStation pads: the game's A/B/X/Y follow the buttons' labels, not the Switch's
+                         // positions (bottom = A, right = B, left = X, top = Y): runtime/hle/bindings.c bind_pad_host
     bool inv_keys;       // randomizer: show every dungeon's keys on the pause menu's Items page
     bool tracker;        // randomizer: check tracker on the pause menu's Map page
     int tracker_filters; // its filter bar (runtime/ui/tracker_overlay.mm bits), -1 = the defaults; no menu row
@@ -84,6 +94,8 @@ typedef struct {
     CosColour fences, walls, houses;  // the overworld's wooden fences, cliff walls, houses (recolour_buildings.c)
     int enemy_colours;        // 0 Off, 1 Random per seed, 2 Random every load (runtime/nvn/recolour_enemies.c)
     int screen_filter;        // 0 Off, 1 Game Boy, 2 Game Boy Color, 3 Grayscale (runtime/nvn/screen_filter.h)
+    int weather;              // WEATHER_* (runtime/nvn/weather.h): rain / snow / storm / blizzard on the overworld, looks only
+    char cosmetics_seed[300];  // the seed folder whose own cosmetics were last copied into the rows (cosmetics_seed.c)
     // speedrun (Gameplay tab; runtime/hle/run_timer.c, runtime/livesplit.c)
     bool timer;            // the in-game run timer in the corner (game time: level loads don't count)
     int timer_pos;         // TIMER_POS_*: which bottom corner it sits in
@@ -96,8 +108,9 @@ typedef struct {
 } Settings;
 
 
-enum { N_ENEMY_COLOUR_MODES = 3, N_SCREEN_FILTERS = 4 };
+enum { N_ENEMY_COLOUR_MODES = 3, N_SCREEN_FILTERS = 4, N_WEATHERS = 6 };
 extern const char *const g_screen_filters[N_SCREEN_FILTERS];  // (the menu's names)
+extern const char *const g_weathers[N_WEATHERS];  // (the menu's names: Off, Rain, Snow, Storm, Blizzard, Random)
 extern const char *const g_enemy_colour_modes[N_ENEMY_COLOUR_MODES];  // (the menu's names)
 
 extern Settings g_settings;
@@ -115,7 +128,10 @@ extern int g_default_res_mode;  // RES_*: likewise
 // An integrated GPU (as settings_resolve_defaults was told): the fixed 1x renders 1280x720 there, what the game itself
 // picked on such a GPU (runtime/nvn/output_scale.c)
 extern bool g_gpu_integrated;
-// The language code to serve the game ("es", "en-US", ...): the setting, or the host locale for LANG_AUTO
+// The language code to serve the game ("es", "en-US", ...): the setting, or the host locale for LANG_AUTO (en-US for a
+// language of the menus only)
 const char *settings_language(void);
+// The menus' language code: the setting's, or the host locale's (pt-BR too, which the game itself doesn't have)
+const char *settings_menu_language(void);
 // That code's name for the menu ("Spanish")
 const char *settings_language_name(void);

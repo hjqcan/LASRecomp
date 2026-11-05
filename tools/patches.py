@@ -490,6 +490,53 @@ def _bottle1_use(gen, a):
 PATCHES[BOTTLE1_USE_SITE] = _bottle1_use
 
 
+# D-pad items (runtime/hle/dpad_items.c): the d-pad as a third set of item buttons, in the game's own "use it now?"
+# checks. The 12 Items page items each have one (main+0xd50e60 .. 0xd52fb0; Roc's Feather the last): the buttons newly
+# pressed (`bic w8, w8, w9`), then `tbnz w8, #3` (Y) -> `ldrb wN, [x8, #0xa2]` (the item on Y) `cmp wN, #<its slot>`,
+# and the same for X with #2 / +0xa3. The Y test also passes for a newly pressed d-pad direction, and the read then
+# answers the item itself when a direction just pressed holds it - else the item on Y (Y pressed) or none. A direction
+# and Y (or X) pressed together use both items, as Y and X do (bomb arrows); the button slots never change.
+EQUIP_Y_TEST_SITES = (
+    A.EQUIP_Y_TEST_SITES_0, A.EQUIP_Y_TEST_SITES_1, A.EQUIP_Y_TEST_SITES_2, A.EQUIP_Y_TEST_SITES_3,
+    A.EQUIP_Y_TEST_SITES_4, A.EQUIP_Y_TEST_SITES_5, A.EQUIP_Y_TEST_SITES_6, A.EQUIP_Y_TEST_SITES_7,
+    A.EQUIP_Y_TEST_SITES_8, A.EQUIP_Y_TEST_SITES_9, A.EQUIP_Y_TEST_SITES_10, A.EQUIP_Y_TEST_SITES_11,
+)
+EQUIP_Y_READ_SITES = (
+    A.EQUIP_Y_READ_SITES_0, A.EQUIP_Y_READ_SITES_1, A.EQUIP_Y_READ_SITES_2, A.EQUIP_Y_READ_SITES_3,
+    A.EQUIP_Y_READ_SITES_4, A.EQUIP_Y_READ_SITES_5, A.EQUIP_Y_READ_SITES_6, A.EQUIP_Y_READ_SITES_7,
+    A.EQUIP_Y_READ_SITES_8, A.EQUIP_Y_READ_SITES_9, A.EQUIP_Y_READ_SITES_10, A.EQUIP_Y_READ_SITES_11,
+)
+
+
+def _equip_y_test(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w & 0xFFF8001F == 0x37180008, hex(w)  # tbnz w8, #3, <read>
+    t = a + ((((w >> 5) & 0x3FFF) ^ 0x2000) - 0x2000) * 4
+    return (f'{{ extern int rt_equip_y_test(uint32_t pressed); if (rt_equip_y_test((uint32_t)c->x[8])) goto L_{t:x}; }}'
+            f'  /* {a:#x}: tbnz w8, #3 (Y newly pressed, or a d-pad direction) */')
+
+
+EQUIP_Y_READ_SLOTS = (0xf, 0xe, 0xd, 0x6, 0x5, 0x4, 0x3, 0x2, 0x7, 0xc, 0x8, 0x9)  # (each check's item, its `cmp`)
+
+
+def _equip_y_read(gen, a):
+    at = a - gen.base
+    w = struct.unpack_from('<I', gen.nso.image, at)[0]
+    assert w & 0xFFFFFFE0 == 0x39428900 and w & 31 < 30, hex(w)  # ldrb wN, [x8, #0xa2]
+    slot = EQUIP_Y_READ_SLOTS[EQUIP_Y_READ_SITES.index(a)]
+    if at + 8 <= len(gen.nso.image):
+        n = struct.unpack_from('<I', gen.nso.image, at + 4)[0]
+        assert n == 0x7100001F | slot << 10 | (w & 31) << 5, hex(n)  # cmp wN, #<slot>
+    return (f'{{ extern uint32_t rt_equip_y_read(uint64_t ps, int slot); c->x[{w & 31}] = rt_equip_y_read(c->x[8], {slot}); }}'
+            f'  /* {a:#x}: ldrb w{w & 31}, [x8, #0xa2] (item on Y; item {slot:#x} on a d-pad direction) */')
+
+
+for _a in EQUIP_Y_TEST_SITES:
+    PATCHES[_a] = _equip_y_test
+for _a in EQUIP_Y_READ_SITES:
+    PATCHES[_a] = _equip_y_read
+
+
 # Boss souls (runtime/hle/souls.c): the actor factory f_70008f5ea0 (x2 = spawn info, type u16 at +8) takes the type's
 # create function from the actor table (main+0x1bcc898, 0x58 bytes per type, +0 create fn, +0x50 name); a null fn is
 # its "no such actor" path (the caller gets an empty handle). A dungeon boss whose soul isn't found yet gets that path.
@@ -569,6 +616,23 @@ def _walk_speed(gen, a):
 
 for _a in WALK_SPEED_SITES:
     PATCHES[_a] = _walk_speed
+
+
+# Wind push (runtime/nvn/weather.c rt_wind_push: a blizzard's wind, for a randomizer option; off by default): Link's
+# move (main+0xd57260, every state's) has just summed the frame's displacement - knockback, walking, a pit's pull, a
+# platform's carry - at [x29-0x80] (world units, this frame; x19 = Link, s1 = the frame's dt) and hands it to the
+# collision move next, so a push added there is stopped by walls and ledges like his walking.
+WIND_PUSH_SITE = A.WIND_PUSH_SITE
+
+
+def _wind_push(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w == 0x38686a68, hex(w)  # ldrb w8, [x19, x8]
+    return ('{ extern void rt_wind_push(Cpu *); rt_wind_push(c); c->x[8] = LD8(c->x[19] + c->x[8]); }'
+            f'  /* {a:#x}: ldrb w8, [x19, x8] (Link move: the wind push) */')
+
+
+PATCHES[WIND_PUSH_SITE] = _wind_push
 
 
 # Walk animation rate: main+0xdce320 (walk state) has the walk animation's play rate in s8 (1, 0.75 on slow ground,

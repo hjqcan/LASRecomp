@@ -27,6 +27,8 @@ static const char *const k_enemy_colour_keys[N_ENEMY_COLOUR_MODES] = {"off", "se
 const char *const g_screen_filters[N_SCREEN_FILTERS] = {LN("Off"), LN("Game Boy"), LN("Game Boy Color"),
                                                         LN("Grayscale")};
 static const char *const k_screen_filter_keys[N_SCREEN_FILTERS] = {"off", "gameboy", "gameboy_color", "grayscale"};  // (else: off)
+const char *const g_weathers[N_WEATHERS] = {LN("Off"), LN("Rain"), LN("Snow"), LN("Storm"), LN("Blizzard"), LN("Random")};
+static const char *const k_weather_keys[N_WEATHERS] = {"off", "rain", "snow", "storm", "blizzard", "random"};  // (else: off)
 
 Settings g_settings = {
     .aspect = ASPECT_UNLOCKED,
@@ -34,11 +36,12 @@ Settings g_settings = {
     .volume = 1.0f,
     .reverb = true,
     .movie_audio = true,
+    .menu_sounds = true,
     .rumble = true,
     .rumble_strength = 100,
     .controller_light = true,
     .menu_confirm = MENU_CONFIRM_CONTROLLER,
-    .show_fps = false,
+    .show_fps = FPS_OFF,
     .inv_keys = true,
     .tracker = true,
     .tracker_filters = -1,
@@ -59,13 +62,15 @@ Settings g_settings = {
 // regionJP/JPja, regionKR/KRkr, regionTW/TWch, regionCN/CNch), and the game picks one from the system language it
 // reads back (runtime/services/am.c), exactly as it does on the console. Codes as the Switch reports them, except for
 // the Chinese ones: the game only recognizes zh-Hans / zh-Hant and falls back to Japanese when told zh-CN / zh-TW.
+// Then the menus' own (N_GAME_LANGUAGES on): the game has no text in them, its text stays English.
 const char *const g_language_codes[N_LANGUAGES] = {"auto", "ja", "en-US", "es", "fr", "de", "it", "nl", "ru", "ko",
-                                                   "zh-Hans", "zh-Hant"};
+                                                   "zh-Hans", "zh-Hant", "pt-BR"};
 const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English", "Spanish", "French", "German",
                                                    "Italian", "Dutch", "Russian", "Korean", "Chinese (Simplified)",
-                                                   "Chinese (Traditional)"};
+                                                   "Chinese (Traditional)", "Portuguese (Brazil)"};
 const char *const g_language_endonyms[N_LANGUAGES] = {"Auto", "日本語", "English", "Español", "Français", "Deutsch",
-                                                      "Italiano", "Nederlands", "Русский", "한국어", "简体中文", "繁體中文"};
+                                                      "Italiano", "Nederlands", "Русский", "한국어", "简体中文", "繁體中文",
+                                                      "Português (Brasil)"};
 
 // A locale name ("es_ES.UTF-8", "zh-Hans-CN", "ja-JP", "zh_TW") -> one of the game's codes, NULL for none of its
 // languages.
@@ -91,13 +96,13 @@ static const char *match_locale(const char *e) {
     for (const char *p = e; *p && !strchr(".@_-", *p) && n < sizeof l - 1; p++) l[n++] = (char)tolower((unsigned char)*p);
     static const struct { const char *loc, *code; } map[] = {{"ja", "ja"}, {"ko", "ko"}, {"ru", "ru"}, {"nl", "nl"},
                                                              {"de", "de"}, {"it", "it"}, {"fr", "fr"}, {"es", "es"},
-                                                             {"en", "en-US"}};
+                                                             {"en", "en-US"}, {"pt", "pt-BR"}};
     for (size_t i = 0; i < sizeof map / sizeof *map; i++)
         if (!strcmp(l, map[i].loc)) return map[i].code;
     return NULL;
 }
 
-// LANG_AUTO: the host's own language, en-US when it is none of the game's. Linux: the locale variables
+// LANG_AUTO: the host's own language, en-US when it is none of the menus'. Linux: the locale variables
 // (LANG=es_ES.UTF-8 -> es); macOS / Windows: the first of the user's preferred languages that the game has (apps get
 // no locale variables there).
 static const char *host_language(void) {
@@ -132,13 +137,20 @@ static const char *host_language(void) {
     return lang;
 }
 
-const char *settings_language(void) {
+const char *settings_menu_language(void) {
     int i = g_settings.language;
     return i > LANG_AUTO && i < N_LANGUAGES ? g_language_codes[i] : host_language();
 }
 
+const char *settings_language(void) {
+    const char *c = settings_menu_language();
+    for (int i = N_GAME_LANGUAGES; i < N_LANGUAGES; i++)
+        if (!strcmp(c, g_language_codes[i])) return "en-US";  // (the menus' only)
+    return c;
+}
+
 const char *settings_language_name(void) {
-    const char *c = settings_language();
+    const char *c = settings_menu_language();
     for (int i = 0; i < N_LANGUAGES; i++)
         if (!strcmp(c, g_language_codes[i])) return g_language_names[i];
     return "English";
@@ -186,13 +198,23 @@ void settings_load(void) {
             strlcpy(g_settings.rando_seed, val, sizeof g_settings.rando_seed);
             continue;
         }
+        if (!strcmp(key, "cosmetics_seed")) {
+            strlcpy(g_settings.cosmetics_seed, val, sizeof g_settings.cosmetics_seed);
+            continue;
+        }
         if (fields != 2) continue;
         if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
-        else if (!strcmp(key, "show_fps")) g_settings.show_fps = atoi(val) != 0;
+        else if (!strcmp(key, "menu_sounds")) g_settings.menu_sounds = atoi(val) != 0;
+        else if (!strcmp(key, "show_fps")) {  // (older files: 0 / 1, and 1 was the top right)
+            static const char *const corners[] = {"off", "top_left", "top_right", "bottom_left", "bottom_right"};
+            g_settings.show_fps = atoi(val) ? FPS_TOP_RIGHT : FPS_OFF;
+            for (int i = 0; i < N_FPS_CORNERS; i++)
+                if (!strcmp(val, corners[i])) g_settings.show_fps = i;
+        }
         else if (!strcmp(key, "frame_interp")) g_settings.frame_interp = atoi(val) != 0;
         else if (!strcmp(key, "resolution")) {  // (auto: never chosen, the GPU's default)
             int n = atoi(val);
@@ -209,7 +231,8 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
         else if (!strcmp(key, "inv_keys")) g_settings.inv_keys = atoi(val) != 0;
-        else if (!strcmp(key, "dpad_move")) g_settings.dpad_move = atoi(val) != 0;
+        else if (!strcmp(key, "dpad_mode")) g_settings.dpad_mode = !strcmp(val, "items") ? DPAD_ITEMS : !strcmp(val, "move") ? DPAD_MOVE : DPAD_NOTHING;
+        else if (!strcmp(key, "dpad_move")) g_settings.dpad_mode = atoi(val) ? DPAD_MOVE : DPAD_NOTHING;  // (older settings: a toggle)
         else if (!strcmp(key, "rumble")) g_settings.rumble = atoi(val) != 0;
         else if (!strcmp(key, "rumble_strength")) g_settings.rumble_strength = atoi(val);
         else if (!strcmp(key, "controller_light")) g_settings.controller_light = atoi(val) != 0;
@@ -217,11 +240,15 @@ void settings_load(void) {
         else if (!strcmp(key, "move_360")) g_settings.move_360 = atoi(val) != 0;
         else if (!strcmp(key, "blur_removal")) g_settings.blur_removal = atoi(val) != 0;
         else if (!strcmp(key, "hide_hero_icon")) g_settings.hide_hero_icon = atoi(val) != 0;
+        else if (!strcmp(key, "pause_unfocused")) g_settings.pause_unfocused = atoi(val) != 0;
+        else if (!strcmp(key, "remember_window")) g_settings.remember_window = atoi(val) != 0;
+        else if (!strcmp(key, "window_size")) sscanf(val, "%dx%d", &g_settings.window_w, &g_settings.window_h);
         else if (!strcmp(key, "mirror_mode")) g_settings.mirror_mode = atoi(val) != 0;
         else if (!strcmp(key, "prompts")) g_settings.prompts = !strcmp(val, "nintendo") ? PROMPTS_NINTENDO : !strcmp(val, "xbox") ?
                                                               PROMPTS_XBOX : !strcmp(val, "playstation") ? PROMPTS_PLAYSTATION : PROMPTS_AUTO;
         else if (!strcmp(key, "menu_confirm")) g_settings.menu_confirm = !strcmp(val, "game") ? MENU_CONFIRM_GAME
                                                                                                   : MENU_CONFIRM_CONTROLLER;
+        else if (!strcmp(key, "face_buttons_by_label")) g_settings.face_by_label = atoi(val) != 0;
         else if (!strcmp(key, "language")) {  // ("auto" or one of the game's codes; anything else: auto)
             // (zh-CN / zh-TW: what a settings file from before this wrote; the game reads zh-Hans / zh-Hant)
             const char *v = !strcmp(val, "zh-CN") ? "zh-Hans" : !strcmp(val, "zh-TW") ? "zh-Hant" : val;
@@ -270,6 +297,9 @@ void settings_load(void) {
         else if (!strcmp(key, "screen_filter")) {
             for (int i = 0; i < N_SCREEN_FILTERS; i++) if (!strcmp(val, k_screen_filter_keys[i])) g_settings.screen_filter = i;
         }
+        else if (!strcmp(key, "weather")) {
+            for (int i = 0; i < N_WEATHERS; i++) if (!strcmp(val, k_weather_keys[i])) g_settings.weather = i;
+        }
         else if (!strcmp(key, "enemy_colours")) {
             for (int i = 0; i < N_ENEMY_COLOUR_MODES; i++) if (!strcmp(val, k_enemy_colour_keys[i])) g_settings.enemy_colours = i;
         }
@@ -293,23 +323,32 @@ void settings_save(void) {
     fprintf(f, "volume = %.2f\n", g_settings.volume);
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
-    fprintf(f, "show_fps = %d\n", g_settings.show_fps);
+    fprintf(f, "menu_sounds = %d\n", g_settings.menu_sounds);
+    {
+        static const char *const corners[] = {"off", "top_left", "top_right", "bottom_left", "bottom_right"};
+        int c = g_settings.show_fps;
+        fprintf(f, "show_fps = %s\n", corners[c >= 0 && c < N_FPS_CORNERS ? c : 0]);
+    }
     fprintf(f, "frame_interp = %d\n", g_settings.frame_interp);
     fprintf(f, "upscaler = %s\n", g_settings.upscaler_auto ? "auto" : g_settings.upscaler == UPSCALE_METALFX ? "metalfx" :
                                    g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
     fprintf(f, "resolution = %s\n", g_settings.res_auto ? "auto" : res_name(g_settings.res_mode));
     fprintf(f, "inv_keys = %d\n", g_settings.inv_keys);
-    fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
+    fprintf(f, "dpad_mode = %s\n", g_settings.dpad_mode == DPAD_ITEMS ? "items" : g_settings.dpad_mode == DPAD_MOVE ? "move" : "nothing");
     fprintf(f, "rumble = %d\n", g_settings.rumble);
     fprintf(f, "rumble_strength = %d\n", g_settings.rumble_strength);
     fprintf(f, "controller_light = %d\n", g_settings.controller_light);
     fprintf(f, "background_input = %d\n", g_settings.bg_input);
     fprintf(f, "move_360 = %d\nblur_removal = %d\nhide_hero_icon = %d\n", g_settings.move_360, g_settings.blur_removal,
             g_settings.hide_hero_icon);
+    fprintf(f, "pause_unfocused = %d\nremember_window = %d\n", g_settings.pause_unfocused, g_settings.remember_window);
+    if (g_settings.window_w > 0 && g_settings.window_h > 0)
+        fprintf(f, "window_size = %dx%d\n", g_settings.window_w, g_settings.window_h);
     static const char *const prompts[] = {"auto", "nintendo", "xbox", "playstation"};
     fprintf(f, "prompts = %s\n", prompts[g_settings.prompts & 3]);
     fprintf(f, "menu_confirm = %s\n", g_settings.menu_confirm == MENU_CONFIRM_CONTROLLER ? "controller" : "game");
+    fprintf(f, "face_buttons_by_label = %d\n", g_settings.face_by_label);
     fprintf(f, "mirror_mode = %d\n", g_settings.mirror_mode);
     fprintf(f, "language = %s\n", g_language_codes[g_settings.language > LANG_AUTO && g_settings.language < N_LANGUAGES
                                                      ? g_settings.language : LANG_AUTO]);
@@ -344,6 +383,8 @@ void settings_save(void) {
     }
     fprintf(f, "enemy_colours = %s\n", k_enemy_colour_keys[g_settings.enemy_colours]);
     fprintf(f, "screen_filter = %s\n", k_screen_filter_keys[g_settings.screen_filter]);
+    fprintf(f, "weather = %s\n", k_weather_keys[g_settings.weather]);
+    if (g_settings.cosmetics_seed[0]) fprintf(f, "cosmetics_seed = %s\n", g_settings.cosmetics_seed);
     bind_settings_save(f);
     fprintf(f, "rando_seed = %s\n", g_settings.rando_seed);
     if (g_settings.rando_options[0]) fprintf(f, "rando_options = %s\n", g_settings.rando_options);

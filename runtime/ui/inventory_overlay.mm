@@ -96,6 +96,8 @@ extern "C" int inventory_items_cursor(void) {
     uint32_t i = LD32(g_items_obj + 0x4020);
     return i < 12 ? (int)i : -1;
 }
+// dpad_items.c: the Items page's object (its cells: +0x598 + 0x280 * cell = the cell's item slot)
+extern "C" uint64_t inventory_items_obj(void) { return g_items_obj; }
 
 static bool companion_card(void) {
     int o[6];
@@ -485,7 +487,7 @@ extern "C" void inventory_overlay_draw(ImVec2 display, ImFont *font) {
     dl->AddRectFilled(p0, p1, IM_COL32(52, 38, 20, 205), 14 * u);
     dl->AddRect(p0, p1, IM_COL32(214, 176, 92, 230), 14 * u, 0, 2.5f * u);
     int n = keys ? (int)(sizeof kDungeons / sizeof kDungeons[0]) : 0;
-    float cw = (p1.x - p0.x) / n;
+    float cw = (p1.x - p0.x) / (n ? n : 1);
     float fs = 30 * u;
     for (int k = 0; k < n; k++) {
         int keys = 0, bits = 0;

@@ -130,7 +130,7 @@ static void watch_results(int fam, char *msg, size_t cap) {
     msg[0] = 0;
     if (kind == 2)
         snprintf(msg, cap, L("Swapped. %s is on %s now."), L(bind_input_name(rother)),
-                 L(rdev == BIND_DEV_PAD ? bind_pad_label(g_bind_pad[rother], fam) : bind_key_label(g_bind_key[rother])));
+                 L(rdev == BIND_DEV_PAD ? bind_pad_label(bind_pad_host(rother), fam) : bind_key_label(g_bind_key[rother])));
     if (kind == 1 || kind == 2 || kind == 5) settings_save();
 }
 
@@ -202,7 +202,7 @@ static void configure_inputs(float scale) {
             bool waiting = cd == dev && cs == b.slot;
             char val[64];
             if (waiting) snprintf(val, sizeof val, g_dev_pad ? L("Press a button...  %d") : L("Press a key...  %d"), (ms + 999) / 1000);
-            else snprintf(val, sizeof val, "%s", g_dev_pad ? bind_pad_label(g_bind_pad[b.slot], fam) : bind_key_label(g_bind_key[b.slot]));
+            else snprintf(val, sizeof val, "%s", g_dev_pad ? bind_pad_label(bind_pad_host(b.slot), fam) : bind_key_label(g_bind_key[b.slot]));
             // the same button / key on two inputs (a hand-edited larecomp.ini): red
             const int16_t *t = g_dev_pad ? g_bind_pad : g_bind_key;
             bool dup = false;
@@ -271,20 +271,22 @@ extern "C" void controls_tab_draw(float scale) {
         input_apply_background();
 
     opt_section("Movement");
-    opt_toggle("D-pad moves Link", &g_settings.dpad_move, false, "Move Link with the D-pad as well as the stick.");
+    {
+        static const char *const modes[] = {LN("Nothing"), LN("Items"), LN("Movement")};
+        opt_choice("D-pad", &g_settings.dpad_mode, modes, 3, DPAD_NOTHING, "What the D-pad does in play.");
+    }
     opt_toggle("360-degree movement", &g_settings.move_360, false,
                "Link walks in the exact direction of the stick instead of snapping to 8 directions.");
 
     opt_section("Controller");
     opt_toggle("Rumble", &g_settings.rumble, true, "Controller vibration.");
-    if (g_settings.rumble) {
+    {
         static const char *const pct[] = {LN("25%"), LN("50%"), LN("75%"), LN("100%")};
         int i = g_settings.rumble_strength / 25 - 1;
         if (i < 0 || i > 3) i = 3;
-        opt_indent(1);
+        if (!g_settings.rumble) opt_disable_next();
         if (opt_choice("Intensity", &i, pct, 4, 3, "How strong the vibration is.", false))
             g_settings.rumble_strength = (i + 1) * 25;
-        opt_indent(-1);
     }
     opt_toggle("Controller light", &g_settings.controller_light, true, "The light bar shows Link's health.");
     {
@@ -301,6 +303,9 @@ extern "C" void controls_tab_draw(float scale) {
                    "Which button confirms in LAS Recomp's menus. Nintendo layout uses the right button like the Switch, "
                    "Bottom button uses the bottom one like Xbox and PlayStation.");
     }
+    opt_toggle("Buttons match labels", &g_settings.face_by_label, false,
+               "On Xbox and PlayStation controllers, A, B, X and Y work as printed on the controller, so the bottom "
+               "button is A. Off keeps the Switch layout. Nintendo controllers aren't affected.");
 
     opt_end();
 }

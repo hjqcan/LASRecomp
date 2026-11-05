@@ -7,11 +7,16 @@
 //            field_areas); interiors count at their door. Names read as a player would ("Bush, Mabe Village (north)").
 //            One icon per dungeon (found / total) at the overworld door that leads into it (dungeon entrance shuffle),
 //            labelled by the dungeon reached there; room shuffle: a moved room's checks count for the dungeon it sits
-//            in now (tools/rando/tracker.py)
+//            in now (tools/rando/tracker.py). With dungeon entrances shuffled an icon shows "?" until the player has
+//            been inside that dungeon (its record's explored rooms), so the map doesn't give the shuffle away
+//   shops    the shop's and Trendy Game's checks all count until the player has walked in (the game's map icon flag
+//            for the place); after that only the ones whose item helps progress (tracker.tsv H rows)
 //   list     A on a bullet: the area's checks in one list by status (open in logic, needs an item with the cheapest
-//            missing items, trick logic, collected struck out); A on a row shows that check's spot, B goes back
-//   filters  "In logic now" (on by default), "Hide checked" and one toggle per kind of check in the seed. Filters only
-//            change the bullets, never a list. Game-styled: a line in the game's button row, a filter panel on Y
+//            missing items, trick logic, collected struck out); with "In logic now" on, only the ones in logic. A on a
+//            row shows that check's spot, B goes back
+//   filters  "In logic now" (on by default), "Hide checked" and one toggle per kind of check in the seed. The kind
+//            toggles and "Hide checked" only change the bullets. Game-styled: a line in the game's button row, a filter
+//            panel on Y
 //   input    while it drives, the left stick / d-pad, A and Y never reach the game, B neither while a list, a shown
 //            spot or the filters are up (runtime/hle/input.c -> tracker_map_input); the right stick still zooms /
 //            scrolls the game's map; ZR hands the page back to the game's own map (warp points, pins). The mouse
@@ -138,6 +143,8 @@ struct Check {
     int group, flag, node, kind;
     std::string dungeon, dcell;  // the dungeon (D0..D8) and cell it sits in now (the dungeon view, phase 2)
     int place;                   // the game's place name it's in (T_MapName_NN), -1 = unknown / a dungeon's
+    int seen_flag = -1;          // (shop / Trendy Game) set once the player has walked in; then only `prog` counts
+    bool prog = true;
     std::string title, spot;     // readable name ("Bush, Mabe Village (north)"), spot inside the place ("north-west")
 };
 struct Group { std::string label; float x, y; };
@@ -264,6 +271,9 @@ static void load(void) {
             g_checks.push_back(std::move(k));
         } else if (c[0][0] == 'R' && c.size() >= 6)
             g_rooms.push_back({c[1], c[2], c[3], (float)atof(c[4]), (float)atof(c[5])});
+        else if (c[0][0] == 'H' && c.size() >= 4)
+            for (auto &k : g_checks)
+                if (k.name == c[1]) k.seen_flag = atoi(c[2]), k.prog = atoi(c[3]) != 0;
     }
     fclose(f);
     snprintf(path, sizeof path, "%s/flags.tsv", dir);
@@ -543,6 +553,7 @@ static void solve_costs(void) {
 
 static std::string needs_text(int check, ImFont *font, float max_w);
 static std::vector<int> g_status;  // per check
+static std::vector<char> g_skip;   // per check: left out of the counts and lists (a seen shop's junk)
 static void debug_dump(void) {
     if (!ENV("LARECOMP_LOG_TRACKER")) return;
     for (size_t i = 0; i < g_checks.size() && i < g_status.size(); i++)
@@ -618,7 +629,8 @@ static const char *dungeon_name(const std::string &label) {
     static const char *const n[] = {LN("Color Dungeon"), LN("Tail Cave"), LN("Bottle Grotto"), LN("Key Cavern"),
                                     LN("Angler's Tunnel"), LN("Catfish's Maw"), LN("Face Shrine"), LN("Eagle's Tower"),
                                     LN("Turtle Rock")};
-    if (label.size() == 2 && label[0] == 'D' && label[1] >= '0' && label[1] <= '8') return L(n[label[1] - '0']);
+    if (label.size() == 2 && label[0] == 'D' && label[1] >= '0' && label[1] <= '8')
+        return L(n[label[1] - '0']);
     return label.c_str();
 }
 
@@ -1048,11 +1060,13 @@ static void update_status(void) {
     solve(false);
     solve_costs();
     g_status.assign(g_checks.size(), ST_NEEDS);
+    g_skip.assign(g_checks.size(), 0);
     for (size_t i = 0; i < g_checks.size(); i++) {
         const Check &c = g_checks[i];
         if (flag_set(c.flag)) g_status[i] = ST_DONE;
         else if (A(c.node) > 0) g_status[i] = ST_LOGIC;
         else if (c.node < (int)g_acc_trick.size() && g_acc_trick[c.node] > 0) g_status[i] = ST_TRICK;
+        g_skip[i] = g_status[i] != ST_DONE && !c.prog && c.seen_flag >= 0 && flag_set(c.seen_flag);
     }
 }
 
@@ -1079,7 +1093,7 @@ static Badge badge_of(const std::vector<int> &list, int f) {
         b.total++;
         int st = g_status[i];
         if (st == ST_DONE) { b.done++; continue; }
-        if ((f & F_IN_LOGIC) && st != ST_LOGIC) continue;
+        if (g_skip[i] || ((f & F_IN_LOGIC) && st != ST_LOGIC)) continue;
         b.open++;
         b.best = std::min(b.best, st);
     }
@@ -1313,21 +1327,36 @@ static int draw_list(ImDrawList *dl, ImFont *font, float ox, float oy, float u, 
         }
     }
     dl->PopClipRect();
+    if (rows.empty()) dl->AddText(font, fs_r, ImVec2(x, top + 8 * u), ink2, L("Nothing in logic here right now."));
     dl->AddText(font, 16 * u, ImVec2(x, z.y - 36 * u), IM_COL32(0x4A, 0x30, 0x20, 255), v.foot);
     *close = (click && !in_panel) || rclick;
     return chosen;
 }
 
-// the rows of a list: open in logic, needs an item, trick logic, collected (struck out, last)
-static void list_rows(const std::vector<int> &list, std::vector<Row> &rows) {
+// the rows of a list: open in logic, needs an item, trick logic, collected (struck out, last); "In logic now": only the
+// ones in logic
+static void list_rows(const std::vector<int> &list, std::vector<Row> &rows, int f) {
     rows.clear();
     static const int order[4] = {0, 2, 1, 3};  // (by St: logic 0, trick 2, needs 1, done 3)
-    for (int i : list) rows.push_back({i, g_status[i]});
+    for (int i : list)
+        if (!g_skip[i] && (!(f & F_IN_LOGIC) || g_status[i] == ST_LOGIC)) rows.push_back({i, g_status[i]});
     std::stable_sort(rows.begin(), rows.end(), [](const Row &a, const Row &b) {
         if (order[a.st] != order[b.st]) return order[a.st] < order[b.st];
         const Check &x = g_checks[a.check], &y = g_checks[b.check];
         return (x.title.empty() ? x.name : x.title) < (y.title.empty() ? y.name : y.title);
     });
+}
+
+// Whether the player has been inside dungeon dk (D1..D8, D0): its record's explored-room map (+8..+15, a bit per
+// room of the floor) has a room in it. With dungeon entrances shuffled, an icon names its dungeon only after that.
+static bool dungeon_seen(const std::string &dk) {
+    static int shuffled = -1;
+    if (shuffled < 0) shuffled = std::find(g_seed_settings.begin(), g_seed_settings.end(), tok("shuffle-dungeons")) != g_seed_settings.end();
+    if (!shuffled || dk.size() != 2 || dk[0] != 'D') return true;
+    int d = dk[1] - '0', rec = d == 0 ? 18 : 2 * (d - 1);
+    uint64_t r = SAVE + 0xE0 + 0x10ull * rec;
+    for (int i = 8; i < 16; i++) if (LD8(r + i)) return true;
+    return false;
 }
 
 // a dungeon's header pills: small keys, Nightmare Key, boss soul, room shuffle
@@ -1456,7 +1485,7 @@ extern "C" void tracker_overlay_draw(ImVec2 display, ImFont *font) {
             if (lhave[i] && fabsf(p.x - lp[i].x) < lw[i] * 0.5f + 16 && fabsf(p.y - lp[i].y) < 11 + 16) p.x = lp[i].x - lw[i] * 0.5f - 18;
         b.x = p.x, b.y = p.y;
         dbadges[g] = b;
-        targets.push_back({1, (int)g, p.x, p.y});
+        if (dungeon_seen(g_groups[g].label)) targets.push_back({1, (int)g, p.x, p.y});  // ("?": nothing to open yet)
     }
     // the cursor: kept on its target; else the area nearest Link's screen (PlayerStatus +0x40, e.g. "11C" on the
     // Field) or the map's centre
@@ -1501,7 +1530,7 @@ extern "C" void tracker_overlay_draw(ImVec2 display, ImFont *font) {
     auto build_rows = [&]() {
         rows.clear();
         const std::vector<int> *list = ui.panel || ui.spot >= 0 ? panel_list(ui.panel_type, ui.panel_id) : nullptr;
-        if (list) list_rows(*list, rows);
+        if (list) list_rows(*list, rows, filters());
     };
     build_rows();
 
@@ -1573,10 +1602,12 @@ extern "C" void tracker_overlay_draw(ImVec2 display, ImFont *font) {
         dl->AddRectFilled(a, z, P_PARCH_LT, 5 * u);
         dl->AddRect(a, z, P_BROWN, 5 * u, 0, 2.2f * u);
         const std::string &lab = g_groups[g].label;
-        const char *num = lab.size() == 2 && lab[0] == 'D' ? lab.c_str() + 1 : lab.c_str();
+        bool seen = dungeon_seen(lab);
+        const char *num = !seen ? "?" : lab.size() == 2 && lab[0] == 'D' ? lab.c_str() + 1 : lab.c_str();
         float fs = 17 * u * zs;
         ImVec2 ts = text_size(font, fs, num);
         dl->AddText(font, fs, ImVec2(p.x - ts.x * 0.5f, p.y - ts.y * 0.5f), P_INK, num);
+        if (!seen) continue;
         if (b.open && (!(f & F_IN_LOGIC) || b.best == ST_LOGIC)) {  // the best open check inside
             dl->AddCircleFilled(ImVec2(z.x - 1 * u, a.y + 1 * u), 5.5f * u, P_BROWN);
             dl->AddCircleFilled(ImVec2(z.x - 1 * u, a.y + 1 * u), 4 * u, kStCol[b.best]);
@@ -1589,7 +1620,7 @@ extern "C" void tracker_overlay_draw(ImVec2 display, ImFont *font) {
         dl->AddRectFilled(ca, ImVec2(ca.x + ct.x + 8 * u, ca.y + ct.y + 1 * u), P_PARCH_LT, ct.y);
         dl->AddRect(ca, ImVec2(ca.x + ct.x + 8 * u, ca.y + ct.y + 1 * u), P_LINE, ct.y, 0, 1 * u);
         dl->AddText(font, cs, ImVec2(ca.x + 4 * u, ca.y), P_INK, cnt);
-        if (mouse.x >= a.x && mouse.x <= z.x && mouse.y >= a.y && mouse.y <= z.y) hover = (int)(badges.size() + g);
+        if (mouse.x >= a.x && mouse.x <= z.x && mouse.y >= a.y && mouse.y <= z.y) hover = find_target(1, (int)g);
     }
     if (cur >= 0 && !ui.filter_focus && ui.spot < 0) {  // the cursor
         ImVec2 p = to_screen(ImVec2(targets[cur].x, targets[cur].y));
@@ -1625,7 +1656,7 @@ extern "C" void tracker_overlay_draw(ImVec2 display, ImFont *font) {
     std::string sel_name;
     if (cur >= 0) {
         const std::vector<int> *list = panel_list(targets[cur].type, targets[cur].id);
-        if (list) for (int i : *list) n_sel[g_status[i]]++, n_sel_all++;
+        if (list) for (int i : *list) n_sel[g_status[i]] += !g_skip[i], n_sel_all++;
         sel_name = title_of(targets[cur].type, targets[cur].id);
     }
     if (ui.spot >= 0) sel_name = g_checks[ui.spot].title.empty() ? pretty(g_checks[ui.spot].name) : L_line(g_checks[ui.spot].title), n_sel_all = 0;
@@ -1634,7 +1665,7 @@ extern "C" void tracker_overlay_draw(ImVec2 display, ImFont *font) {
         if (!(f >> g_checks[i].kind & 1)) continue;
         run_all++;
         run_done += g_status[i] == ST_DONE;
-        run_logic += g_status[i] == ST_LOGIC;
+        run_logic += g_status[i] == ST_LOGIC && !g_skip[i];
     }
     int tri_have = 0, tri_need = 0;
     bool tri = triforce_counts(&tri_have, &tri_need);
@@ -1677,14 +1708,15 @@ extern "C" void tracker_overlay_draw(ImVec2 display, ImFont *font) {
 
     // ---- the list (one list by status)
     if (ui.panel) {
-        if (rows.empty() && !panel_list(ui.panel_type, ui.panel_id)) ui.panel = false;
+        const std::vector<int> *list = panel_list(ui.panel_type, ui.panel_id);
+        if (!list) ui.panel = false;
         else {
             int done = 0;
-            for (auto &r : rows) done += r.st == ST_DONE;
+            for (int i : *list) done += g_status[i] == ST_DONE;
             ListView v;
             v.title = title_of(ui.panel_type, ui.panel_id);
             char sub[64];
-            snprintf(sub, sizeof sub, L("%d / %d found"), done, (int)rows.size());
+            snprintf(sub, sizeof sub, L("%d / %d found"), done, (int)list->size());
             v.sub = sub;
             v.filt = filter_label(filter_word);
             if (ui.panel_type == 1) v.pills = dungeon_pills(g_groups[ui.panel_id].label);
@@ -1797,7 +1829,7 @@ extern "C" void tracker_dungeon_draw(ImVec2 display, ImFont *font) {
     std::vector<Chip> chips = make_chips();
     if (ui.chip >= (int)chips.size()) ui.chip = (int)chips.size() - 1;
     std::vector<Row> rows;
-    list_rows(all, rows);
+    list_rows(all, rows, f);
     auto open_list = [&](const std::string &cell) {
         ui.panel = true, ui.panel_type = 1, ui.panel_row = 0, ui.panel_scroll = 0, ui.filter_focus = false;
         for (size_t i = 0; i < rows.size(); i++)
@@ -1933,7 +1965,7 @@ extern "C" void tracker_dungeon_draw(ImVec2 display, ImFont *font) {
         char info[160] = "";
         if (cur >= 0 && !ui.panel) {
             int n[4] = {0, 0, 0, 0};
-            for (int i : by_room[rbs[cur].cell]) n[g_status[i]]++;
+            for (int i : by_room[rbs[cur].cell]) if (!g_skip[i]) n[g_status[i]]++;
             Check tmp;
             tmp.dcell = rbs[cur].cell;
             int k = snprintf(info, sizeof info, L("%s: %d in logic"), room_label(tmp).c_str(), n[ST_LOGIC]);
@@ -1947,11 +1979,11 @@ extern "C" void tracker_dungeon_draw(ImVec2 display, ImFont *font) {
     if (ui.filter_focus) draw_filter_panel(dl, font, ox, oy, u, f, mouse, mouse_moved, click);
     if (ui.panel) {
         int found = 0;
-        for (auto &r : rows) found += r.st == ST_DONE;
+        for (int i : all) found += g_status[i] == ST_DONE;
         ListView lvw;
         lvw.title = dungeon_name(dk);
         char sub[48];
-        snprintf(sub, sizeof sub, L("%d / %d found"), found, (int)rows.size());
+        snprintf(sub, sizeof sub, L("%d / %d found"), found, (int)all.size());
         lvw.sub = sub;
         lvw.filt = filter_label(filter_word);
         lvw.pills = dungeon_pills(dk);

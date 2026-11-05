@@ -21,18 +21,49 @@ enum { IT_COMPASS = 44, IT_MAP = 45, IT_BEAK = 47, IT_SMALL_KEY = 48, IT_NIGHTMA
 
 // Pot filler refills (tools/rando/pots.py REFILL_INDEX): bombs / magic powder / arrows only once Link has the bomb
 // bag / powder / bow (a refill would otherwise unlock them - "bombs must be found first"); before that a blue rupee.
+// Bombs / powder only so with the seed's Bomb bag / Powder bag (LAS shuffle-bombs / shuffle-powder): without it they
+// are unlocked from the start (unlocked-bombs) or found like any item, and a refill gives the real thing (#537).
 // Inventory bits: live save +0x5568 (notes/save_format.md): bit 2 bombs, bit 3 bow, bit 8 powder.
 enum { IT_BOMB = 4, IT_POWDER = 11, IT_ARROW = 60, IT_RUPEE_BLUE = 102, REFILL_INDEX = 80 };
+enum { GET_MAGIC_POWDER = 295 };  // (GlobalFlags.gsheet index)
+
+bool flags_ext_get(int idx);  // flags_ext.c
+void flags_put(int idx, bool on);
+
+// the running seed's Bomb bag / Powder bag settings (read again after an in-place reboot)
+static int g_shuffle_bombs = -1, g_shuffle_powder = -1;
+RT_ON_RESET(shuffle_bags_reset) { g_shuffle_bombs = g_shuffle_powder = -1; }
+
+static void read_bag_settings(void) {
+    if (g_shuffle_powder >= 0) return;
+    g_shuffle_bombs = g_shuffle_powder = 0;
+    const char *dir = rando_seed_dir();
+    static char buf[1 << 16];
+    char p[512];
+    FILE *f = dir ? (snprintf(p, sizeof p, "%s/settings.json", dir), fopen(p, "rb")) : NULL;
+    if (f) {
+        size_t n = fread(buf, 1, sizeof buf - 1, f);
+        buf[n] = 0;
+        fclose(f);
+        g_shuffle_bombs = strstr(buf, "\"shuffle-bombs\": true") != NULL;
+        g_shuffle_powder = strstr(buf, "\"shuffle-powder\": true") != NULL;
+    }
+}
 
 static int refill(Cpu *c, int item, int count) {
+    read_bag_settings();
     uint32_t inv = *(const uint32_t *)(uintptr_t)(GA(LIVE_SAVE) + 0x5568);
-    int have = item == IT_BOMB ? inv & (1u << 2) : item == IT_POWDER ? inv & (1u << 8) : inv & (1u << 3);
+    int have = item == IT_BOMB ? !g_shuffle_bombs || (inv & (1u << 2))
+             : item == IT_POWDER ? !g_shuffle_powder || (inv & (1u << 8)) : (inv & (1u << 3)) != 0;
     if (!have) {
         c->x[0] = IT_RUPEE_BLUE;
         c->x[1] = 1;
+    } else if (item == IT_POWDER && !(inv & (1u << 8))) {
+        flags_put(GET_MAGIC_POWDER, true);  // (powder's found flag, as its own item-get sets it: powder from now on)
     }
     c->x[2] = (uint64_t)(int64_t)-1;  // the game's own add from here on
-    LOG("[pots] refill item %d x%d: %s\n", item, count, have ? "owned -> refill" : "not owned -> blue rupee");
+    LOG("[pots] refill item %d x%d (inventory %#x): %s\n", item, count, inv,
+        have ? "owned or no bag -> refill" : "not owned -> blue rupee");
     return 0;
 }
 
@@ -42,27 +73,8 @@ static int refill(Cpu *c, int item, int count) {
 // refill's "nowhere to put it" message and the Bomb Bag's (held up as the powder sack) set it without the bag, and
 // the next capacity upgrade handed out real powder. In these seeds the flag stays clear while the powder bit
 // (live save +0x5568 bit 8, set by the bag's own add) is - also mending saves where it was set that way.
-static int g_shuffle_powder = -1;  // the running seed has it (read again after an in-place reboot)
-RT_ON_RESET(shuffle_powder_reset) { g_shuffle_powder = -1; }
-
-bool flags_ext_get(int idx);  // flags_ext.c
-void flags_put(int idx, bool on);
-
 void rt_powder_flag_tick(void) {
-    enum { GET_MAGIC_POWDER = 295 };  // (GlobalFlags.gsheet index)
-    if (g_shuffle_powder < 0) {
-        g_shuffle_powder = 0;
-        const char *dir = rando_seed_dir();
-        static char buf[1 << 16];
-        char p[512];
-        FILE *f = dir ? (snprintf(p, sizeof p, "%s/settings.json", dir), fopen(p, "rb")) : NULL;
-        if (f) {
-            size_t n = fread(buf, 1, sizeof buf - 1, f);
-            buf[n] = 0;
-            fclose(f);
-            g_shuffle_powder = strstr(buf, "\"shuffle-powder\": true") != NULL;
-        }
-    }
+    read_bag_settings();
     if (!g_shuffle_powder || !flags_ext_get(GET_MAGIC_POWDER)) return;
     if (*(const uint32_t *)(uintptr_t)(GA(LIVE_SAVE) + 0x5568) & (1u << 8)) return;  // (the Powder Bag is found)
     flags_put(GET_MAGIC_POWDER, false);

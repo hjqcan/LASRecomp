@@ -114,8 +114,25 @@ static uint32_t *no_contraction(uint32_t *spv, size_t *nwords) {
 // No spirv-opt by default: it rewrote the depth pre-pass and colour-pass vertex shaders differently enough that
 // their depths stopped matching (EQUAL test: black holes in foliage), and it was most of the compile time; the
 // driver optimises anyway. LARECOMP_VK_OPT=1 turns it back on (experiments).
+// Mali (ARM's driver): fragment and compute shaders are run through spirv-opt (performance). The translated pc-loop
+// shaders (a switch on a guest pc inside a loop, every guest register a function-scope variable, the SSY / PBK
+// stacks as dynamically indexed arrays) compiled at -O0 are pathological for Mali's compiler: the light-list loop
+// of the interiors' main pass (Marin & Tarin's house: one 1280x720 pass, 48 draws) took ~400-800 ms of GPU a frame
+// on a Mali-G610 (1.5 fps), 30 fps with it optimised. Vertex shaders stay -O0 (the depth pre-pass / EQUAL reason
+// above). LARECOMP_VK_OPT_FS=0/1 forces it off / on for any GPU; the optimised SPIR-V has its own cache entries.
+static bool opt_stage(int stage) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("LARECOMP_VK_OPT_FS");
+        on = e ? atoi(e) != 0 : g_vk.props.vendorID == 0x13B5;  // (ARM)
+        if (on) LOG("[vk] fragment / compute shaders optimised (spirv-opt)%s\n", e ? " (LARECOMP_VK_OPT_FS)" : ": Mali");
+    }
+    return getenv("LARECOMP_VK_OPT") || (on && stage != STAGE_VERTEX);
+}
+
 uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t *nwords) {
-    uint64_t h = src_hash(src, stage);
+    bool opt = opt_stage(stage);
+    uint64_t h = src_hash(src, stage) ^ (opt ? 0x9e3779b97f4a7c15ull : 0);
     static int nocache = -1;
     if (nocache < 0) nocache = getenv("LARECOMP_VK_NO_SPIRV_CACHE") != NULL;
     uint32_t *out = nocache ? NULL : cache_load(h, nwords);
@@ -124,7 +141,7 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
     if (!comp) comp = shaderc_compiler_initialize();
     shaderc_compile_options_t o = shaderc_compile_options_initialize();
     shaderc_compile_options_set_target_env(o, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
-    shaderc_compile_options_set_optimization_level(o, getenv("LARECOMP_VK_OPT") ? shaderc_optimization_level_performance
+    shaderc_compile_options_set_optimization_level(o, opt ? shaderc_optimization_level_performance
                                                                                   : shaderc_optimization_level_zero);
     shaderc_compilation_result_t r = shaderc_compile_into_spv(comp, src, strlen(src), kind_of(stage), name, "main", o);
     shaderc_compile_options_release(o);
@@ -240,6 +257,37 @@ static const char *builtin_src(const char *name, int *stage) {
                "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
                "  vec2 u = vec2(p.x, pc.a.x > 0.5 ? 1.0 - p.y : p.y);\n"
                "  uv = pc.crop.xy + u * pc.crop.zw;\n"
+               "}\n";
+    }
+    // present.frag with FSR 1's RCAS sharpen folded in: when the present draws EASU's output 1:1 (the whole image, its
+    // size in the window), the sharpen reads EASU's image here instead of a pass of its own - one full-window image less
+    // written and read back. Same math as rcas.frag (sharpness 0.2 stops).
+    if (!strcmp(name, "present_rcas.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform mediump sampler2D t;\n"
+               "layout(push_constant) uniform F { layout(offset = 32) vec4 pf; };\n"  // (the screen filter)
+               "layout(location = 0) in vec2 uv;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "ivec2 sz;\n"
+               "mediump vec3 tap(ivec2 p) { return texelFetch(t, clamp(p, ivec2(0), sz - 1), 0).rgb; }\n"
+               "mediump float lum(mediump vec3 c) { return c.g + 0.5 * (c.r + c.b); }\n"
+               "void main() {\n"
+               "  sz = textureSize(t, 0);\n"
+               "  ivec2 ip = ivec2(floor(uv * vec2(sz)));\n"
+               "  mediump vec3 b = tap(ip + ivec2(0, -1)), d = tap(ip + ivec2(-1, 0)), e = tap(ip), f = tap(ip + ivec2(1, 0)), h = tap(ip + ivec2(0, 1));\n"
+               "  mediump float bL = lum(b), dL = lum(d), eL = lum(e), fL = lum(f), hL = lum(h);\n"
+               "  float nz = 0.25 * (bL + dL + fL + hL) - eL;\n"
+               "  float rng = max(max(max(bL, dL), max(eL, fL)), hL) - min(min(min(bL, dL), min(eL, fL)), hL);\n"
+               "  nz = 1.0 - 0.5 * clamp(abs(nz) / max(rng, 1.0 / 65536.0), 0.0, 1.0);\n"
+               "  vec3 mn4 = min(min(b, d), min(f, h)), mx4 = max(max(b, d), max(f, h));\n"
+               "  vec3 hitMin = min(mn4, e) / max(4.0 * mx4, vec3(1.0 / 65536.0));\n"
+               "  vec3 hitMax = (1.0 - max(mx4, e)) / min(4.0 * mn4 - 4.0, vec3(-1.0 / 65536.0));\n"
+               "  vec3 lobeRGB = max(-hitMin, hitMax);\n"
+               "  float lobe = max(-(0.25 - 1.0 / 16.0), min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * exp2(-0.2) * nz;\n"
+               "  vec3 c = (lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0);\n"
+               SCREEN_FILTER_SRC("vec3")
+               "  o = vec4(c, 1.0);\n"
                "}\n";
     }
     if (!strcmp(name, "present.frag")) {
@@ -368,11 +416,11 @@ static const char *builtin_src(const char *name, int *stage) {
     if (!strcmp(name, "easu.frag")) {
         *stage = STAGE_FRAGMENT;
         return "#version 450\n"
-               "layout(set = 0, binding = 0) uniform sampler2D t;\n"
+               "layout(set = 0, binding = 0) uniform mediump sampler2D t;\n"
                "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
                "layout(location = 0) out vec4 o;\n"
-               "vec3 tap(ivec2 p) { return texelFetch(t, clamp(p, ivec2(0), ivec2(pc.b.xy) - 1), 0).rgb; }\n"
-               "float lum(vec3 c) { return c.g + 0.5 * (c.r + c.b); }\n"
+               "mediump vec3 tap(ivec2 p) { return texelFetch(t, clamp(p, ivec2(0), ivec2(pc.b.xy) - 1), 0).rgb; }\n"
+               "mediump float lum(mediump vec3 c) { return c.g + 0.5 * (c.r + c.b); }\n"
                "void setf(inout vec2 dir, inout float len, float w, float lA, float lB, float lC, float lD, float lE) {\n"
                "  float dx = lD - lB, dy = lE - lA;\n"
                "  float lx = clamp(abs(dx) / max(max(abs(lD - lC), abs(lC - lB)), 1.0 / 65536.0), 0.0, 1.0);\n"
@@ -380,12 +428,13 @@ static const char *builtin_src(const char *name, int *stage) {
                "  dir += vec2(dx, dy) * w;\n"
                "  len += (lx * lx + ly * ly) * w;\n"
                "}\n"
-               "void tapf(inout vec3 ac, inout float aw, vec2 off, vec2 dir, vec2 len2, float lob, float clp, vec3 c) {\n"
-               "  vec2 v = vec2(dot(off, dir), dot(off, vec2(-dir.y, dir.x))) * len2;\n"
-               "  float d2 = min(dot(v, v), clp);\n"
-               "  float wb = 0.4 * d2 - 1.0, wa = lob * d2 - 1.0;\n"
+               "void tapf(inout mediump vec3 ac, inout mediump float aw, mediump vec2 off, mediump vec2 dir, mediump vec2 len2,\n"
+               "          mediump float lob, mediump float clp, mediump vec3 c) {\n"
+               "  mediump vec2 v = vec2(dot(off, dir), dot(off, vec2(-dir.y, dir.x))) * len2;\n"
+               "  mediump float d2 = min(dot(v, v), clp);\n"
+               "  mediump float wb = 0.4 * d2 - 1.0, wa = lob * d2 - 1.0;\n"
                "  wb *= wb; wa *= wa;\n"
-               "  float w = (1.5625 * wb - 0.5625) * wa;\n"
+               "  mediump float w = (1.5625 * wb - 0.5625) * wa;\n"
                "  ac += c * w; aw += w;\n"
                "}\n"
                "void main() {\n"
@@ -396,12 +445,12 @@ static const char *builtin_src(const char *name, int *stage) {
                "  //  e f g h\n"
                "  //  i j k l\n"
                "  //    n o\n"
-               "  vec3 bC = tap(fp + ivec2(0, -1)), cC = tap(fp + ivec2(1, -1));\n"
-               "  vec3 eC = tap(fp + ivec2(-1, 0)), fC = tap(fp), gC = tap(fp + ivec2(1, 0)), hC = tap(fp + ivec2(2, 0));\n"
-               "  vec3 iC = tap(fp + ivec2(-1, 1)), jC = tap(fp + ivec2(0, 1)), kC = tap(fp + ivec2(1, 1)), lC = tap(fp + ivec2(2, 1));\n"
-               "  vec3 nC = tap(fp + ivec2(0, 2)), oC = tap(fp + ivec2(1, 2));\n"
-               "  float bL = lum(bC), cL = lum(cC), eL = lum(eC), fL = lum(fC), gL = lum(gC), hL = lum(hC);\n"
-               "  float iL = lum(iC), jL = lum(jC), kL = lum(kC), lL = lum(lC), nL = lum(nC), oL = lum(oC);\n"
+               "  mediump vec3 bC = tap(fp + ivec2(0, -1)), cC = tap(fp + ivec2(1, -1));\n"
+               "  mediump vec3 eC = tap(fp + ivec2(-1, 0)), fC = tap(fp), gC = tap(fp + ivec2(1, 0)), hC = tap(fp + ivec2(2, 0));\n"
+               "  mediump vec3 iC = tap(fp + ivec2(-1, 1)), jC = tap(fp + ivec2(0, 1)), kC = tap(fp + ivec2(1, 1)), lC = tap(fp + ivec2(2, 1));\n"
+               "  mediump vec3 nC = tap(fp + ivec2(0, 2)), oC = tap(fp + ivec2(1, 2));\n"
+               "  mediump float bL = lum(bC), cL = lum(cC), eL = lum(eC), fL = lum(fC), gL = lum(gC), hL = lum(hC);\n"
+               "  mediump float iL = lum(iC), jL = lum(jC), kL = lum(kC), lL = lum(lC), nL = lum(nC), oL = lum(oC);\n"
                "  vec2 dir = vec2(0.0);\n"
                "  float len = 0.0;\n"
                "  setf(dir, len, (1.0 - pp.x) * (1.0 - pp.y), bL, eL, fL, gL, jL);\n"
@@ -415,9 +464,9 @@ static const char *builtin_src(const char *name, int *stage) {
                "  float stretch = dot(dir, dir) / max(abs(dir.x), abs(dir.y));\n"
                "  vec2 len2 = vec2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);\n"
                "  float lob = 0.5 - 0.29 * len, clp = 1.0 / lob;\n"
-               "  vec3 mn = min(min(fC, gC), min(jC, kC)), mx = max(max(fC, gC), max(jC, kC));\n"
-               "  vec3 ac = vec3(0.0);\n"
-               "  float aw = 0.0;\n"
+               "  mediump vec3 mn = min(min(fC, gC), min(jC, kC)), mx = max(max(fC, gC), max(jC, kC));\n"
+               "  mediump vec3 ac = vec3(0.0);\n"
+               "  mediump float aw = 0.0;\n"
                "  tapf(ac, aw, vec2(0.0, -1.0) - pp, dir, len2, lob, clp, bC);\n"
                "  tapf(ac, aw, vec2(1.0, -1.0) - pp, dir, len2, lob, clp, cC);\n"
                "  tapf(ac, aw, vec2(-1.0, 1.0) - pp, dir, len2, lob, clp, iC);\n"
@@ -438,18 +487,18 @@ static const char *builtin_src(const char *name, int *stage) {
     if (!strcmp(name, "rcas.frag")) {
         *stage = STAGE_FRAGMENT;
         return "#version 450\n"
-               "layout(set = 0, binding = 0) uniform sampler2D t;\n"
+               "layout(set = 0, binding = 0) uniform mediump sampler2D t;\n"
                "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
                "layout(location = 0) out vec4 o;\n"
-               "vec3 tap(ivec2 p) { return texelFetch(t, clamp(p, ivec2(0), ivec2(pc.b.xy) - 1), 0).rgb; }\n"
-               "float lum(vec3 c) { return c.g + 0.5 * (c.r + c.b); }\n"
+               "mediump vec3 tap(ivec2 p) { return texelFetch(t, clamp(p, ivec2(0), ivec2(pc.b.xy) - 1), 0).rgb; }\n"
+               "mediump float lum(mediump vec3 c) { return c.g + 0.5 * (c.r + c.b); }\n"
                "void main() {\n"
                "  ivec2 ip = ivec2(gl_FragCoord.xy);\n"
                "  //    b\n"
                "  //  d e f\n"
                "  //    h\n"
-               "  vec3 b = tap(ip + ivec2(0, -1)), d = tap(ip + ivec2(-1, 0)), e = tap(ip), f = tap(ip + ivec2(1, 0)), h = tap(ip + ivec2(0, 1));\n"
-               "  float bL = lum(b), dL = lum(d), eL = lum(e), fL = lum(f), hL = lum(h);\n"
+               "  mediump vec3 b = tap(ip + ivec2(0, -1)), d = tap(ip + ivec2(-1, 0)), e = tap(ip), f = tap(ip + ivec2(1, 0)), h = tap(ip + ivec2(0, 1));\n"
+               "  mediump float bL = lum(b), dL = lum(d), eL = lum(e), fL = lum(f), hL = lum(h);\n"
                "  float nz = 0.25 * (bL + dL + fL + hL) - eL;\n"
                "  float rng = max(max(max(bL, dL), max(eL, fL)), hL) - min(min(min(bL, dL), min(eL, fL)), hL);\n"
                "  nz = 1.0 - 0.5 * clamp(abs(nz) / max(rng, 1.0 / 65536.0), 0.0, 1.0);\n"

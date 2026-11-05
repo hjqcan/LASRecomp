@@ -36,9 +36,33 @@ void plat_soft_write_tracking(uint64_t lo, uint64_t hi);
 // The OS is about to write [addr, addr+size) (a file read into guest memory): pages soft tracking protected are opened
 // and count as written first (a write by the OS on a protected page would fail instead of faulting)
 void plat_os_write(uint64_t addr, uint64_t size);
+// A kernel driver is about to pin [addr, addr+size) for writing (a host-pointer import): soft tracking opens the range and
+// protects nothing until plat_os_write_end
+void plat_os_write_begin(uint64_t addr, uint64_t size);
+void plat_os_write_end(void);
 #else
 static inline void plat_os_write(uint64_t addr, uint64_t size) { (void)addr, (void)size; }
+static inline void plat_os_write_begin(uint64_t addr, uint64_t size) { (void)addr, (void)size; }
+static inline void plat_os_write_end(void) {}
 #endif
+// CPU data cache maintenance for memory a GPU reads or writes without snooping the CPU's caches (aarch64 Linux, where
+// EL0 may use DC CVAC / DC CIVAC; elsewhere nothing). Clean: what the CPU wrote reaches memory. Clean + invalidate:
+// also drops the lines, so the CPU's next read comes from memory (after the GPU wrote it).
+static inline void plat_cache_op(uint64_t addr, uint64_t size, bool invalidate) {
+#if defined(__aarch64__) && defined(__linux__)
+    static uint64_t line;
+    if (!size) return;
+    if (!line) { uint64_t ctr; __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr)); line = 4ull << ((ctr >> 16) & 0xF); }
+    if (invalidate) __asm__ volatile("dsb sy" ::: "memory");
+    for (uint64_t a = addr & ~(line - 1); a < addr + size; a += line) {
+        if (invalidate) __asm__ volatile("dc civac, %0" ::"r"(a) : "memory");
+        else __asm__ volatile("dc cvac, %0" ::"r"(a) : "memory");
+    }
+    __asm__ volatile("dsb sy" ::: "memory");
+#else
+    (void)addr; (void)size; (void)invalidate;
+#endif
+}
 enum { PLAT_PROT_NONE = 0, PLAT_PROT_READ = 1, PLAT_PROT_RW = 3 };
 int plat_protect(uint64_t addr, uint64_t size, int prot);  // 0 on success
 #define PLAT_PAGE 0x4000ull  // largest page size we deal with (macOS 16K; multiple of Windows' 4K)
@@ -53,12 +77,20 @@ int plat_cpu_count(void);  // logical cores this process may run on (its affinit
 void plat_thread_guest(int prio);  // a guest thread's host scheduling class from its Switch priority (lower = more urgent)
 uint64_t plat_thread_cpu_ns(void);  // the calling thread's CPU time so far (user + system; diagnostics)
 // The calling thread is one of the frame's critical threads: on Windows, no power throttling (EcoQoS) for it and, on a
-// hybrid CPU, a preference for the performance cores (selected CPU sets; LARECOMP_PCORE=0: off). Elsewhere a no-op.
+// hybrid CPU, a preference for the performance cores (selected CPU sets); on Linux with big and little cores (arm64
+// big.LITTLE, Intel hybrid), its affinity limited to the big ones. LARECOMP_PCORE=0: off. Elsewhere a no-op.
 enum { PLAT_PERF_GAME, PLAT_PERF_RENDER, PLAT_PERF_VSYNC };
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
 void plat_thread_perf_core(int role);
 #else
 static inline void plat_thread_perf_core(int role) { (void)role; }
+#endif
+// The calling thread on all of the process's cores again (Linux: a thread inherits its creator's affinity, so threads
+// started by a critical thread would otherwise stay on the big cores too). Elsewhere a no-op.
+#ifdef __linux__
+void plat_thread_default_core(void);
+#else
+static inline void plat_thread_default_core(void) {}
 #endif
 
 // ---- process

@@ -122,6 +122,9 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads C
 VkFormat vk_format(uint32_t nvn_format);
 VkFormat vk_image_format(uint32_t nvn_format, VkImageAspectFlags *aspect);  // (shader preparation)
 void vk_pipeline_cache_save(void);
+// (device.c) pipelines as vkCreate*Pipelines with g_vk.pcache, or from / into our stored binaries (VK_KHR_pipeline_binary)
+VkResult vk_create_graphics_pipeline(const VkGraphicsPipelineCreateInfo *ci, VkPipeline *out);
+VkResult vk_create_compute_pipeline(const VkComputePipelineCreateInfo *ci, VkPipeline *out);
 bool vk_format_alpha_one(uint32_t nvn_format);
 // View of t (optionally through an NVN texture view) for rendering or sampling.
 VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool render, int want_textype);

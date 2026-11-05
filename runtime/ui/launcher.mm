@@ -101,6 +101,20 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 // players move to it.
 #define LARECOMP_VERSION "beta_6"
 #define LARECOMP_TEST_OF "beta_6"
+// Experimental builds (.github/workflows/experimental.yml sets these): the build's time (YYYYMMDDHHMM, UTC; 0: not an
+// experimental build). They only look for a newer experimental build of their own platform, never a normal release.
+#define LARECOMP_EXPERIMENTAL_STAMP 0LL
+#if defined(_WIN32) && defined(_M_ARM64)
+#define LARECOMP_PLATFORM "windows-arm64"
+#elif defined(_WIN32)
+#define LARECOMP_PLATFORM "windows"
+#elif defined(__APPLE__)
+#define LARECOMP_PLATFORM "macOS"
+#elif defined(__aarch64__)
+#define LARECOMP_PLATFORM "linux-aarch64"
+#else
+#define LARECOMP_PLATFORM "linux-x86_64"
+#endif
 extern "C" const char *larecomp_version(void) { return LARECOMP_VERSION; }  // (the shader caches' tag)
 
 // ------------------------------------------------------------------ update check
@@ -123,7 +137,8 @@ static void *update_thread(void *) {
     if (const char *t = getenv("LARECOMP_UPDATE_TAGS")) {  // (test) "beta_2,v1.0.0": these releases, no network
         for (const char *p = t; *p;) {
             const char *c = strchr(p, ',');
-            body += "\"tag_name\": \"" + std::string(p, c ? c - p : strlen(p)) + "\"\n";
+            std::string t(p, c ? c - p : strlen(p));  // (LAS.Recomp-*: an asset name)
+            body += (t.compare(0, 11, "LAS.Recomp-") ? "\"tag_name\": \"" : "\"name\": \"") + t + "\"\n";
             p = c ? c + 1 : p + strlen(p);
         }
     } else {
@@ -148,14 +163,18 @@ static void *update_thread(void *) {
         remove(out.c_str());
     }
     std::string best;
-    // (a test build ranks just below the release it previews; other test builds rank -1: never offered)
-    long long best_rank = strncmp(LARECOMP_VERSION, "test-", 5) ? tag_rank(LARECOMP_VERSION) : tag_rank(LARECOMP_TEST_OF) - 1;
-    for (size_t at = 0; (at = body.find("\"tag_name\"", at)) != std::string::npos;) {
-        size_t q1 = body.find('"', body.find(':', at) + 1), q2 = q1 == std::string::npos ? q1 : body.find('"', q1 + 1);
-        if (q2 == std::string::npos) break;
-        std::string tag = body.substr(q1 + 1, q2 - q1 - 1);
-        if (tag_rank(tag) > best_rank) best_rank = tag_rank(tag), best = tag;
-        at = q2;
+    if (LARECOMP_EXPERIMENTAL_STAMP) {
+        if (newest_experimental(body, LARECOMP_PLATFORM) > LARECOMP_EXPERIMENTAL_STAMP) best = "experimental";
+    } else {
+        // (a test build ranks just below the release it previews; other test builds rank -1: never offered)
+        long long best_rank = strncmp(LARECOMP_VERSION, "test-", 5) ? tag_rank(LARECOMP_VERSION) : tag_rank(LARECOMP_TEST_OF) - 1;
+        for (size_t at = 0; (at = body.find("\"tag_name\"", at)) != std::string::npos;) {
+            size_t q1 = body.find('"', body.find(':', at) + 1), q2 = q1 == std::string::npos ? q1 : body.find('"', q1 + 1);
+            if (q2 == std::string::npos) break;
+            std::string tag = body.substr(q1 + 1, q2 - q1 - 1);
+            if (tag_rank(tag) > best_rank) best_rank = tag_rank(tag), best = tag;
+            at = q2;
+        }
     }
     if (!best.empty()) fprintf(stderr, "[launcher] update available: %s (this build %s)\n", best.c_str(), LARECOMP_VERSION);
     pthread_mutex_lock(&g_update_lock);
@@ -783,6 +802,7 @@ static int g_refocus = MAIN;  // back on the main page: select the item of the p
 static bool g_menu_small;  // sub pages: buttons in the small font
 void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, void (*prelaunch)(float));  // menu.mm
 void menu_style_begin(float scale);  // (menu.mm: the menu's look, until menu_style_end)
+bool menu_preview_frame(float scale, ImFont *font, ImFont *font_big);  // (menu.mm: true while a live preview is up)
 void menu_style_end(void);
 void menu_tabs_focus(bool first_tab);
 extern int g_tab_request_ext;
@@ -1343,97 +1363,78 @@ static void data_folder_popup(float s) {
 }
 
 static bool g_files_deleted;  // set here: the start screen goes back to setting the game files up
+// Settings > Game files, as the other tabs: option rows on the left, the selected row's description on the right
 static void prelaunch_tab(float sc) {
-    {   // the page in a well, as the other tabs' panes
-        ImVec2 a = ImGui::GetCursorScreenPos(), av = ImGui::GetContentRegionAvail();
-        float m = 6 * sc;
-        plastic_well(ImGui::GetWindowDrawList(), ImVec2(a.x - m, a.y - m), ImVec2(a.x + av.x + m, a.y + av.y + m), sc);
-        ImGui::Indent(14 * sc);
-        ImGui::Dummy(ImVec2(0, 4 * sc));
-    }
-    const ImVec4 gold = plastic_col(plastic_theme().title);
-    auto heading = [&](const char *t) {
-        ImGui::PushFont(g_font_menu);
-        ImGui::TextColored(gold, "%s", t);
-        ImGui::PopFont();
-        ImGui::Separator();
-        ImGui::Spacing();
-    };
-    heading(L("Game files"));
     static double gb = -1;
+    static bool confirm_delete;
     if (gb < 0) gb = rt_game_files_size(g_root.c_str()) / 1e9;
+    char gbs[32];
+    snprintf(gbs, sizeof gbs, "%.1f GB", gb);
+    opt_begin("##gamefiles", sc);
+    opt_section("Game files");
 #ifdef _WIN32
-    if (ImGui::Button(L("Show in Explorer"))) reveal_folder(g_root);
+    const char *show = LN("Show in Explorer");
 #elif defined(__linux__)
-    if (ImGui::Button(L("Open folder"))) reveal_folder(g_root);
+    const char *show = LN("Open folder");
 #else
-    if (ImGui::Button(L("Show in Finder"))) reveal_folder(g_root);
+    const char *show = LN("Show in Finder");
 #endif
-    ImGui::SameLine();
+    if (opt_action(show, "", "Opens the folder with LAS Recomp's copy of the game files.")) reveal_folder(g_root);
     static bool shot_del = getenv("LARECOMP_LAUNCHER_SHOT") && strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":askdelete");
-    if (ImGui::Button(L("Delete game files")) || shot_del) ImGui::OpenPopup("##delfiles"), shot_del = false;  // (test: :askdelete)
-    if (ImGui::BeginPopupModal("##delfiles", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
-        ImGui::PushFont(g_font_menu);
-        ImGui::TextColored(plastic_col(plastic_theme().warn), "%s", L("Are you sure?"));
-        ImGui::PopFont();
-        ImGui::Text(L("This deletes LAS Recomp's %.1f GB copy of the game files."), gb);
-        ImGui::TextDisabled("%s", L("Your saves, seeds and settings stay."));
+    if (shot_del) confirm_delete = true, shot_del = false;  // (test: :askdelete)
+    if (!confirm_delete) {
+        if (opt_action("Delete game files", gbs, "Frees up the space LAS Recomp's copy of the game files uses. Your saves, "
+                       "seeds and settings stay.", true))
+            confirm_delete = true;
+    } else {
+        std::string d = L("Deletes the extracted game files now.");
         if (rt_dev_mode()) {  // (a source checkout: the files are the project's own extracted/)
             bool abs = !g_root.empty() && (g_root[0] == '/' || (g_root.size() > 1 && g_root[1] == ':'));
             std::string where = abs ? g_root : std::string(rt_data_root()) + "/" + g_root;
-            ImGui::TextColored(plastic_col(plastic_theme().warn), L("Dev checkout: this is %s"), where.c_str());
+            char b[700];
+            snprintf(b, sizeof b, L("Dev checkout: this is %s"), where.c_str());
+            d += std::string("\n\n") + b;
         }
-        ImGui::Spacing();
-        if (ImGui::Button(L("Delete"), ImVec2(220 * sc, 0))) {
+        opt_warn_next();
+        if (opt_action("Yes, delete them", gbs, d.c_str(), true)) {
             stop_background_prep();
             bool ok = rt_remove_game_files(g_root.c_str());  // (runtime/paths.c: only what the extraction made)
             game_files_changed();
             set_job(ok ? LN("Game files deleted.") : LN("Couldn't delete the game files. They aren't in LAS Recomp's data folder."),
                     !ok);
-            g_files_deleted = true, gb = -1;
-            ImGui::CloseCurrentPopup();
+            g_files_deleted = true, gb = -1, confirm_delete = false;
         }
-        ImGui::SameLine();
-        ImGui::SetItemDefaultFocus();
-        if (ImGui::Button(L("Cancel"), ImVec2(220 * sc, 0)) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
-            ImGui::IsKeyPressed(ImGuiKey_Escape, false))
-            ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
+        if (opt_action("Cancel", "", "Keeps the game files.", true)) confirm_delete = false;
     }
-    ImGui::Spacing();
-    ImGui::Spacing();
-    heading(L("Data folder"));
-    ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", rt_data_root());
-    ImGui::PopTextWrapPos();
-    const char *fixed = rt_data_root_fixed() ? L(rt_data_root_fixed()) : NULL;
-    ImGui::BeginDisabled(fixed != NULL);
-    if (ImGui::Button(L("Change..."))) choose_data_folder();
-    ImGui::EndDisabled();
-    if (fixed) ImGui::SameLine(), ImGui::TextDisabled("%s", fixed);
-    ImGui::Spacing();
-    ImGui::Spacing();
-    heading(L("Game font"));
+    {   // where all of it is kept (as the setup window's Storage row)
+        const char *fixed = rt_data_root_fixed() ? L(rt_data_root_fixed()) : NULL;
+        std::string d = std::string(L("Where LAS Recomp keeps game files, saves, seeds and settings.")) + "\n\n" +
+                        rt_data_root() + (fixed ? std::string("\n\n") + fixed : "");
+        opt_section("Storage");
+        if (fixed) opt_disable_next();
+        if (opt_action("Data folder", "Change...", d.c_str(), true)) choose_data_folder();
+    }
+    opt_section("Game font");
     import_fonts();
     bool fs = have_font(FONT_STD, 4), fl = have_font(FONT_LANG, 8), fe = have_font(FONT_EXT, 2);
-    ImGui::Text(L("Text: %s    Chinese / Korean: %s    Button icons: %s"),
-                fs ? L("Nintendo font (imported)") : L("substitute"),
-                fl ? L("Nintendo font (imported)") : L("substitute"), fe ? L("imported") : L("substitute"));
-    ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", L("Nintendo's fonts aren't included. For the original look, import your own "
-                                "nintendo_udsg-r_std_003 for text, nintendo_udsg-r_org_zh-cn_003, nintendo_udsg-r_ext_zh-cn_003, "
-                                "nintendo_udjxh-db_zh-tw_003 and nintendo_udsg-r_ko_003 for Chinese and Korean, and "
-                                "nintendo_ext_003 for button icons. Both .bfttf and .ttf work."));
-    ImGui::PopTextWrapPos();
-    if (!g_font_msg.empty()) ImGui::TextWrapped("%s", g_font_msg.c_str());
+    const char *fonts_d = LN("Nintendo's fonts aren't included. For the original look, import your own "
+                             "nintendo_udsg-r_std_003 for text, nintendo_udsg-r_org_zh-cn_003, nintendo_udsg-r_ext_zh-cn_003, "
+                             "nintendo_udjxh-db_zh-tw_003 and nintendo_udsg-r_ko_003 for Chinese and Korean, and "
+                             "nintendo_ext_003 for button icons. Both .bfttf and .ttf work.");
+    // (what's in use: rows with a value only, nothing to change)
+    opt_action("Text font", fs ? LN("Imported") : LN("Substitute"), fonts_d, true, fs);
+    opt_action("Chinese and Korean font", fl ? LN("Imported") : LN("Substitute"), fonts_d, true, fl);
+    opt_action("Button icons", fe ? LN("Imported") : LN("Substitute"), fonts_d, true, fe);
+    std::string imp_d = L(fonts_d);
+    if (!g_font_msg.empty()) imp_d += "\n\n" + g_font_msg;
     static SDL_DialogFileFilter font_f[] = {{"Switch fonts", "bfttf;ttf"}};
     font_f[0].name = L("Switch fonts");  // (the file window's; L's text stays)
-    if (ImGui::Button(L("Import fonts"))) SDL_ShowOpenFileDialog(picked_fonts, NULL, g_launcher_win, font_f, 1, NULL, true);
-    if (fs || fl || fe) {
-        ImGui::SameLine();
-        if (ImGui::Button(L("Remove imported fonts"))) remove_fonts();
-    }
-    ImGui::Unindent(14 * sc);
+    if (opt_action("Import fonts", "", imp_d.c_str(), true))
+        SDL_ShowOpenFileDialog(picked_fonts, NULL, g_launcher_win, font_f, 1, NULL, true);
+    if ((fs || fl || fe) && opt_action("Remove imported fonts", "", "Deletes the fonts you imported. The game goes back to "
+                                       "the substitutes.", true))
+        remove_fonts();
+    opt_end();
 }
 
 // The start screen's fonts, with the glyphs of the menus' language (i18n.h): again when it changes
@@ -1886,6 +1887,8 @@ extern "C" void launcher_run(const char *root) {
                 ImGui::SetCursorPosX(x0);
                 if (menu_item(L("QUIT"), true)) exit(0);
                 g_menu_gap = 0.35f;
+            } else if (page == SETTINGS && menu_preview_frame(ds.y / 1080.0f, g_font_small, g_font_menu)) {
+                pieces = true;  // (a row's live preview, live_preview.h: the panel at the bottom instead of the window)
             } else if (page == SETTINGS) {
                 // the in-game menu's tabs (runtime/ui/menu.mm), in a window like the in-game one; tabs that need a
                 // loaded game say so

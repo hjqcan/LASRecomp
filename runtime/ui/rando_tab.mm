@@ -137,7 +137,7 @@ struct GenOpts {
     bool shellsanity = false; // every Secret Seashell spot is a check (tools/rando/seashell_spots.py); off: vanilla
     int room_shuffle = 0;     // dungeon-room-shuffle: 0 off / 2 coupled / 3 decoupled (1: retired Coherent; dungeon_gen.py)
     bool pet_rooster = false, pet_ghost = false;  // pets in the pool (tools/rando/pets.py)
-    bool pet_marin = false;   // Marin in the pool, the desert closed until she wakes the Walrus (open-desert off)
+    bool pet_marin = false;   // Marin in the pool, the desert closed until she wakes the Walrus (open-desert off); she stays after
     int shopsanity = 0;       // off / vanilla prices / random prices (tools/rando/shopsanity.py)
     int miniboss_freq = 0;    // miniboss-frequency: overworld mini-boss chance 1x / 2x / 3x / every enemy that fits (enemies.py)
     int enemy_mode = 0;       // enemy-mode: seeded (fixed in the seed) / random (re-rolled at every load: enemy_random.c)
@@ -160,12 +160,14 @@ struct GenOpts {
     bool apples = false;      // apples: Applesanity, 3 checks per apple tree (tools/rando/apple_trees.py)
     bool chest_looks = false; // chest-looks: a chest's colour shows what's inside (tools/rando/chest_looks.py)
     bool retired_key_rings = false;  // (the removed key rings: its seed ID bit stays, always off)
+    bool retired_labyrinth = false;  // (the removed Labyrinth: its seed ID bit stays, always off)
     bool hints = false;       // hints: owl statues and phone booths tell about the seed (tools/rando/seed_hints.py)
     bool rocks = false;       // rocks: every overworld rock hides an item (tools/rando/rocks.py)
     // fast-egg: the Egg's first drop lands at the boss, no maze (tools/rando/fast_egg.py). On for new seeds; seed IDs
     // made before it hold 0 = the maze, as they were
     bool fast_egg = true;
     bool no_start_mambo = false;  // Manbo's Mambo not given at the start (before the split: with the Ocarina)
+    bool weather_cycle = false;  // weather-cycle: the overworld's weather changes on its own (runtime/nvn/weather_cycle.c)
 };
 static GenOpts g_opts;
 
@@ -217,9 +219,10 @@ static bool *opt_flags(GenOpts &o, int i) {  // the yes/no options, in ID order 
                  &o.pet_rooster, &o.pet_ghost, &o.pet_marin, &o.trendsanity, &o.boss_souls, &o.hookshot_any,
                  &o.digs, &o.miniboss_souls, &o.no_start_sword, &o.no_start_shield, &o.no_start_ocarina,
                  &o.tunic_upgrades, &o.shellsanity, &o.race, &o.random_cosmetics, &o.apples, &o.chest_looks,
-                 &o.retired_key_rings, &o.hints, &o.rocks, &o.fast_egg, &o.compass_differs, &o.no_start_mambo};
+                 &o.retired_key_rings, &o.hints, &o.rocks, &o.fast_egg, &o.compass_differs, &o.no_start_mambo,
+                 &o.weather_cycle, &o.retired_labyrinth};
                  // (order after random_cosmetics: apples, chest_looks, key rings (retired), hints, rocks, fast_egg,
-                 // compass_differs, no_start_mambo)
+                 // compass_differs, no_start_mambo, weather_cycle, labyrinth (retired))
     return i < (int)(sizeof f / sizeof *f) ? f[i] : NULL;
 }
 
@@ -316,6 +319,7 @@ static std::string seed_id_decode(const char *text, GenOpts &o) {
     if (t.room_shuffle == 1) t.room_shuffle = 2;
     if (t.miniboss_freq == 2) t.miniboss_freq = 3;  // (the retired 3x reads as All)
     t.retired_key_rings = false;
+    t.retired_labyrinth = false;
     o = t;
     return "";
 }
@@ -454,6 +458,7 @@ static void start_generation(void) {
     fprintf(f, " \"pots\": %s, \"no-buff-drops\": %s, \"bushes\": %s, \"digs\": %s,\n", g_opts.pots ? "true" : "false",
             g_opts.no_buffs ? "true" : "false", g_opts.bushes ? "true" : "false", g_opts.digs ? "true" : "false");
     if (g_opts.rocks) fprintf(f, " \"rocks\": true,\n");  // (off: not written, seeds as before)
+    if (g_opts.weather_cycle) fprintf(f, " \"weather-cycle\": true,\n");  // (likewise)
     fprintf(f, " \"tunic-upgrades\": %s, \"shellsanity\": %s, \"random-cosmetics\": %s,\n",
             g_opts.tunic_upgrades ? "true" : "false", g_opts.shellsanity ? "true" : "false",
             g_opts.random_cosmetics ? "true" : "false");
@@ -651,8 +656,8 @@ static void rows_general(void) {
     opt_toggle("Disable Guardian Acorns / Pieces of Power", &g_opts.no_buffs, false,
                "Disables Guardian Acorns and Pieces of Power from spawning.");
     opt_own_next();  // (the player's own, not part of a seed)
-    if (opt_toggle("Check tracker on overworld map", &g_settings.tracker, true,
-                   "The overworld map marks the checks you have and haven't done yet."))
+    if (opt_toggle("Overworld and Dungeon Check Tracker", &g_settings.tracker, true,
+                   "The overworld and dungeon maps show which checks you can reach with your items."))
         settings_save();
     opt_toggle("Fast Egg", &g_opts.fast_egg, true, "First drop in the Wind Fish Egg drops you to the boss.");
 }
@@ -663,36 +668,30 @@ static void rows_goal(void) {
     if (opt_toggle("Triforce hunt", &hunt, false,
                    "Collect Triforce pieces to win. The last one you need rolls the credits, no Wind Fish required."))
         g_opts.tri_needed = hunt ? (g_tri_mode < 3 ? kTriPresets[g_tri_mode] : g_tri_custom) : 0;
-    opt_indent(1);
     static const char *const pn[] = {"3", "12", "24", LN("Custom")};
     if (!hunt) opt_disable_next();
     if (opt_choice("Pieces needed", &g_tri_mode, pn, 4, 2, "How many Triforce pieces you need to win.", false))
         g_opts.tri_needed = g_tri_mode < 3 ? kTriPresets[g_tri_mode] : g_tri_custom;
     if (hunt && g_tri_mode == 3) {  // Custom: the count
-        opt_indent(1);
         int v = g_tri_custom;
         if (opt_int("Custom", &v, 1, 50, 1, 24, "%d", "Pick any number from 1 to 50."))
             g_tri_custom = v, g_opts.tri_needed = v;
         take_focus(FOCUS_TRI);
-        opt_indent(-1);
     }
     static const char *const ex[] = {LN("None"), "+25%", "+50%"};
     if (!hunt) opt_disable_next();
     opt_choice("Extra pieces", &g_opts.tri_extra, ex, 3, 0,
                "Hides extra pieces on top of the ones you need, so you can skip some.");
-    opt_indent(-1);
 }
 
 static void rows_items(void) {
     {  // dungeon items: each kind shuffled (on) or given at the start (dungeon_items bits + compass_differs)
         bool beak = !(g_opts.dungeon_items & 1), map = !(g_opts.dungeon_items & 2), compass = map != g_opts.compass_differs;
         opt_section("Dungeon items shuffled");
-        opt_indent(1);
         bool ch = opt_toggle("Stone Beaks", &beak, true, "Turn off to start with every dungeon's Stone Beak.");
         ch |= opt_toggle("Maps", &map, true, "Turn off to start with every dungeon's map.");
         ch |= opt_toggle("Compasses", &compass, true, "Turn off to start with every dungeon's compass.");
         if (ch) g_opts.dungeon_items = (beak ? 0 : 1) | (map ? 0 : 2), g_opts.compass_differs = map != compass;
-        opt_indent(-1);
         opt_section("Other items");
     }
     opt_toggle("Hookshot anything", &g_opts.hookshot_any, false,
@@ -720,29 +719,24 @@ static void rows_extra_checks(void) {
     opt_toggle("Bushsanity", &g_opts.bushes, false,
                "Every bush on the island hides an item, about 310 more checks. Bushes you haven't cut yet are golden.");
     opt_toggle("Digsanity", &g_opts.digs, false,
-               "Every diggable tile on the overworld is a check, about 5,000 more, and most important items end up "
-               "buried. Cut grass and bushes before you dig. Holes stay dug, so you can see where you've been.");
+               "Every diggable tile on the overworld is a check, about 5,000 more. Holes stay dug.");
     opt_toggle("Shellsanity", &g_opts.shellsanity, false, "Every hidden Secret Seashell spot holds an item from the pool.");
     opt_toggle("Applesanity", &g_opts.apples, false, "Each apple tree holds 3 items from the pool.");
     opt_toggle("Rocksanity", &g_opts.rocks, false, "Every rock you can lift on the overworld hides an item from the pool.");
     static const char *ksn[] = {LN("Off"), LN("Small Keys"), LN("Small + Nightmare"), LN("All dungeon items")};
     opt_choice("Keysanity", &g_opts.keysanity, ksn, 4, 0,
-               "Dungeon keys can turn up anywhere in the world. The last choice does the same for every dungeon item. "
-               "Keys only open doors in their own dungeon, and the Items screen shows how many you have for each.");
+               "Dungeon keys can be anywhere. The last choice does this for every dungeon item.");
     opt_toggle("Potsanity", &g_opts.pots, false,
                "Every pot you can lift in houses, caves and dungeons hides an item, about 400 more checks. Pots you "
                "haven't checked yet are golden.");
     static const char *shopn[] = {LN("Off"), LN("Vanilla prices"), LN("Random prices")};
     opt_choice("Shopsanity", &g_opts.shopsanity, shopn, 3, 0, "Everything in the Mabe Village shop is a check.");
     {  // stealing (LAS 'stealing' never / normal / always), only with Shopsanity
-        opt_indent(1);
         bool steal = !g_opts.no_stealing, fast = !g_opts.steal_needs_sword;
         if (!g_opts.shopsanity) opt_disable_next();
         if (opt_toggle("Stealing", &steal, true, "Turns on or off the ability to steal.")) g_opts.no_stealing = !steal;
-        opt_indent(1);
         if (!g_opts.shopsanity || g_opts.no_stealing) opt_disable_next();
         if (opt_toggle("Fast Stealing", &fast, false, "Fast Stealing doesn't require the Sword.")) g_opts.steal_needs_sword = !fast;
-        opt_indent(-2);
     }
     opt_toggle("Trendy Game prizes", &g_opts.trendsanity, false,
                "Each of the 5 crane prize spots holds a check. Once you win one, it goes back to normal prizes.");
@@ -762,7 +756,6 @@ static void rows_world(float scale) {
         if (opt_toggle("Entrance randomizer", &on, false, "Shuffles where entrances lead, with logic."))
             g_opts.shuffle_dungeons = on, g_opts.entrances = 0;  // (on: dungeon entrances, the usual choice)
         bool last = false;  // (an attempt to turn off the last kind)
-        opt_indent(1);
         if (!on) opt_disable_next();
         if (opt_toggle("Dungeon entrances", &dungeons, false, "Dungeon entrances lead into other dungeons.")) {
             if (!dungeons && !houses) last = true;
@@ -778,7 +771,6 @@ static void rows_world(float scale) {
         if (!houses) opt_disable_next();
         opt_toggle("Decoupled entrances", &g_opts.decoupled, false,
                    "Leaving a house drops you outside a different door than the one you came in.");
-        opt_indent(-1);
         if (last) ImGui::OpenPopup("##entlast");
         if (!opt_collecting() && ImGui::BeginPopupModal("##entlast", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
             ImGui::TextUnformatted(L("Keep at least one kind of entrance shuffled, or turn the entrance randomizer off."));
@@ -802,7 +794,6 @@ static void rows_world(float scale) {
     {  // its doorway letters on the dungeon map (runtime/ui/chaos_overlay.mm; a player setting, not part of the seed):
        // on = as you explore, every pair once you have the map (CHAOS_LETTERS_MAP); off = none
         bool on = g_settings.chaos_letters != CHAOS_LETTERS_OFF;
-        opt_indent(1);
         if (!g_opts.room_shuffle) opt_disable_next();
         opt_own_next();
         if (opt_toggle("Map tracks door connections", &on, true,
@@ -811,7 +802,6 @@ static void rows_world(float scale) {
             g_settings.chaos_letters = on ? CHAOS_LETTERS_MAP : CHAOS_LETTERS_OFF;
             settings_save();
         }
-        opt_indent(-1);
     }
     opt_toggle("Shuffle instruments", &g_opts.shuffle_instruments, false,
                "The Siren Instruments are items in the pool instead of each dungeon's reward.");
@@ -820,7 +810,6 @@ static void rows_world(float scale) {
 
 static void rows_enemies(void) {
     opt_toggle("Randomize enemies", &g_opts.randomize_enemies, false, "Shuffles enemies around the island.");
-    opt_indent(1);
     {
         if (!g_opts.randomize_enemies) opt_disable_next();
         static const char *const modes[] = {LN("Seeded"), LN("Random")};
@@ -832,7 +821,6 @@ static void rows_enemies(void) {
                "Mini-bosses join the normal enemy pool. Only some appear indoors, since the rest don't behave well in "
                "small rooms.");
     {  // (miniboss-frequency 0 normal / 1 double / 3 all: the retired 3x, 2, reads as All)
-        opt_indent(1);
         if (!g_opts.randomize_enemies || !g_opts.enemy_minibosses) opt_disable_next();
         static const char *const freq[] = {LN("Normal"), LN("Double"), LN("All")};
         static const int ids[] = {0, 1, 3};
@@ -840,9 +828,7 @@ static void rows_enemies(void) {
         if (opt_choice("Mini-boss frequency", &i, freq, 3, 0,
                        "How often overworld enemies turn into mini-bosses. All swaps every enemy that has room."))
             g_opts.miniboss_freq = ids[i];
-        opt_indent(-1);
     }
-    opt_indent(-1);
     opt_toggle("Boss souls", &g_opts.boss_souls, false,
                "Each boss has a soul hidden in the item pool, Color Dungeon included. The boss won't show up until you "
                "find its soul, so that instrument stays locked. Found souls show on the Items screen.");
@@ -859,13 +845,16 @@ static void rows_companions(void) {
                "The Ghost is an item. Once you find him, walk him to his grave for a check. He won't show up on his "
                "own after the Surf Harp.");
     opt_toggle("Marin", &g_opts.pet_marin, false,
-               "Marin is an item in the pool, and the desert is blocked without her.");
+               "Marin is an item in the pool, and the desert is blocked without her. She decides to stay with you after "
+               "waking the Walrus.");
     opt_toggle("Companions allowed in dungeons", &g_opts.pets_in_dungeons, false,
                "Companions follow Link into dungeons, and the logic counts on what they can do there, like the Flying "
                "Rooster standing in for Roc's Feather.");
 }
 
 static void rows_fun(void) {
+    opt_toggle("Weather Cycle", &g_opts.weather_cycle, false,
+               "Adds a weather cycle, including storm and blizzard hazards.");
     opt_toggle("Randomize music", &g_opts.randomize_music, false, "Shuffles the game's music.");
     opt_toggle("Randomize Cosmetics", &g_opts.random_cosmetics, false, "Randomizes cosmetics to the seed.");
     opt_toggle("Randomized Game Environments", &g_opts.environments, false,
@@ -1024,7 +1013,6 @@ static const OptName kOptNames[] = {  // (names the built-in presets use; inv: t
     {"boss_souls", &GenOpts::boss_souls}, {"miniboss_souls", &GenOpts::miniboss_souls}, {"no_buffs", &GenOpts::no_buffs},
     {"hints", &GenOpts::hints}, {"chest_looks", &GenOpts::chest_looks}, 
     {"rocks", &GenOpts::rocks},
-    // not on this branch yet (its entry below is skipped until a line is added here): "labyrinth" (rando-labyrinth)
 };
 static const OptName *opt_by_name(const char *n) {
     for (const OptName &o : kOptNames) if (!strcmp(o.name, n)) return &o;
@@ -1048,7 +1036,7 @@ static const std::vector<Builtin> &builtins(void) {
         {"trendsanity", {0, 0, 0, 1}}, {"fishing", {0, 0, 0, 1}}, {"rapids", {0, 0, 0, 1}}, {"dampe", {0, 0, 0, 1}},
         {"trade", {0, 0, 0, 1}}, {"blupees", {0, 0, 0, 1}},
         {"entrance_dungeons", {0, 0, 1, 1}}, {"entrance_houses", {0, 0, 2, 2}}, {"decoupled", {0, 0, 0, 1}},
-        {"room_shuffle", {0, 0, 2, 3}}, {"labyrinth", {0, 0, 0, 0}}, {"shuffle_instruments", {0, 0, 1, 1}},
+        {"room_shuffle", {0, 0, 2, 3}}, {"shuffle_instruments", {0, 0, 1, 1}},
         {"open_mabe", {1, 0, 0, 0}}, {"randomize_enemies", {0, 0, 1, 1}}, {"enemy_mode", {0, 0, 0, 1}},
         {"enemy_minibosses", {0, 0, 0, 1}}, {"miniboss_freq", {0, 0, 0, 1}},
         {"boss_souls", {0, 0, 1, 1}}, {"miniboss_souls", {0, 0, 0, 1}}, {"no_buffs", {0, 0, 1, 1}},

@@ -8,6 +8,7 @@
 #include "../hle.h"
 #include "../i18n_mark.h"
 #include "../input_bind.h"
+#include "../settings.h"
 
 _Static_assert(PADB_LTRIGGER == SDL_GAMEPAD_BUTTON_COUNT, "trigger pseudo-buttons follow SDL's buttons");
 
@@ -115,7 +116,20 @@ bool bind_is_default_slot(int dev, int slot) {
     return dev == BIND_DEV_PAD ? g_bind_pad[slot] == k_def_pad[slot] : g_bind_key[slot] == k_def_key[slot];
 }
 
-int bind_prompt_host(int slot) { return slot >= 0 && slot < BIND_PAD_COUNT ? g_bind_pad[slot] : -1; }
+// (its own inverse: also turns a pressed button into the positional one stored)
+static int label_swap(int host) {
+    extern int input_pad_family(void);  // runtime/hle/input.c
+    if (!g_settings.face_by_label || !input_pad_family()) return host;
+    switch (host) {
+    case SDL_GAMEPAD_BUTTON_SOUTH: return SDL_GAMEPAD_BUTTON_EAST;
+    case SDL_GAMEPAD_BUTTON_EAST: return SDL_GAMEPAD_BUTTON_SOUTH;
+    case SDL_GAMEPAD_BUTTON_WEST: return SDL_GAMEPAD_BUTTON_NORTH;
+    case SDL_GAMEPAD_BUTTON_NORTH: return SDL_GAMEPAD_BUTTON_WEST;
+    default: return host;
+    }
+}
+int bind_pad_host(int slot) { return slot >= 0 && slot < BIND_PAD_COUNT ? label_swap(g_bind_pad[slot]) : -1; }
+int bind_prompt_host(int slot) { return bind_pad_host(slot); }
 
 // ------------------------------------------------------------------ capture
 static _Atomic int cap_dev = -1, cap_slot = -1;
@@ -159,6 +173,7 @@ int bind_last_result(int *dev, int *slot, int *other, int *serial) {
 
 // Bind `host` to `slot`; an input already on `host` takes the slot's old binding (swap).
 static void assign(int dev, int slot, int host) {
+    if (dev == BIND_DEV_PAD) host = label_swap(host);  // (stored by position)
     int16_t *t = dev == BIND_DEV_PAD ? g_bind_pad : g_bind_key;
     int n = dev == BIND_DEV_PAD ? BIND_PAD_COUNT : BIND_KEY_COUNT, other = -1;
     for (int i = 0; i < n; i++)

@@ -114,7 +114,8 @@ def write_messages(out_dir, romfs, combos):
         sysm = Msbt(_read(out_dir, romfs, rel))
         place = Msbt(_read(out_dir, romfs, rel.replace('System.msbt', 'Place.msbt'))).texts
         for key, idx in sorted(combos):
-            get, name = sysm.texts.get(GET_MSG[key]), place.get(place_label(idx))
+            get = sysm.texts.get(GET_MSG[key])
+            name = place.get(place_label(idx))
             if get is None or name is None:
                 continue
             sysm.set(entry(key, idx), compose(get, name, lang.endswith('en')))

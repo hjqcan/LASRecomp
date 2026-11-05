@@ -8,11 +8,16 @@
 #   so until this file is on main, name a branch that has it)
 #   tag: the release tag; must equal LARECOMP_VERSION (runtime/ui/launcher.mm) at ref - the file names come from it.
 #   ref: branch or commit to build (default: the dispatching branch's head).
+#   platforms: test builds (test-*, ci-test-*) only - the platforms the fix targets and wants feedback from, e.g.
+#     -f platforms=windows or -f platforms=macos,linux: every platform is still built (a compile check), only those
+#     files go on the test build. Releases always ship every platform.
 # Dry run of this workflow itself: a tag starting with ci-test- may differ from LARECOMP_VERSION (the files keep its
 # name); its draft is a prerelease, as for test-<name> builds.
 # Also on a release published on GitHub (its tag = LARECOMP_VERSION at the tagged commit): the files are built and
 # attached to it, with a "being built" line on top of its notes meanwhile and the sha256 table under them after. A
 # release that already has files (a draft this workflow made, then published) is left alone.
+# Linux aarch64 stays on these releases through Beta 6 (so players on older aarch64 builds still get offered an update);
+# from 1.0.0 it is only on the rolling "experimental" pre-release (experimental.yml).
 name: Release
 on:
   release:
@@ -24,6 +29,10 @@ on:
         required: true
       ref:
         description: 'Branch or commit to build (default: the dispatching ref)'
+        required: false
+        default: ''
+      platforms:
+        description: 'Test builds only: the platforms the fix targets (macos, windows, linux, linux-aarch64; comma list). Empty: all'
         required: false
         default: ''
 permissions:
@@ -39,6 +48,7 @@ jobs:
       sha: ${{ steps.v.outputs.sha }}
       version: ${{ steps.v.outputs.version }}
       skip: ${{ steps.v.outputs.skip }}
+      platforms: ${{ steps.v.outputs.platforms }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,11 +58,14 @@ jobs:
         id: v
         env:
           TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          PLATFORMS: ${{ inputs.platforms }}
           ASSETS: ${{ github.event_name == 'release' && toJSON(github.event.release.assets) || '[]' }}
           GH_TOKEN: ${{ github.token }}
         run: |
           # (a published release that already has its files: made by a dispatched run - nothing to do)
           if [ "$(jq length <<< "$ASSETS")" != 0 ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; echo "$TAG already has files"; exit 0; fi
+          # (experimental.yml's own releases)
+          if [[ $TAG == experimental* || $TAG == test-arm-* ]]; then echo "skip=true" >> "$GITHUB_OUTPUT"; echo "$TAG: experimental.yml"; exit 0; fi
           [[ $TAG =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::tag '$TAG': letters, digits, . _ - only"; exit 1; }
           SHA=$(git rev-parse HEAD)
           VERSION=$(sed -n 's/^#define LARECOMP_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
@@ -68,8 +81,17 @@ jobs:
           if TAGGED=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" -q .sha 2>/dev/null); then
             [ "$TAGGED" = "$SHA" ] || { echo "::error::tag $TAG exists at $TAGGED, not at $SHA"; exit 1; }
           fi
+          # the platforms whose files ship: all for a release; a test build may name only the ones its fix targets
+          PLATFORMS=${PLATFORMS//,/ }
+          if [ -z "${PLATFORMS// /}" ]; then PLATFORMS="macos windows linux linux-aarch64"
+          elif [[ $TAG != test-* && $TAG != ci-test-* ]]; then echo "::error::platforms: only for test builds; a release ships all"; exit 1; fi
+          for p in $PLATFORMS; do
+            case $p in macos|windows|linux|linux-aarch64) ;; *) echo "::error::platform '$p': macos, windows, linux or linux-aarch64"; exit 1 ;; esac
+          done
+          echo "platforms=$(echo $PLATFORMS)" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "platforms: $PLATFORMS"
           echo "$TAG: $SHA, LARECOMP_VERSION $VERSION"
 
   macos:
@@ -233,6 +255,14 @@ jobs:
         with:
           path: build/linux/${{ matrix.arch }}/wheels
           key: wheels-linux-${{ matrix.arch }}-${{ hashFiles('third_party/LAS-Randomizer/requirements.txt', 'tools/linux/rando_helper.sh', 'tools/linux/Containerfile') }}
+      # From Beta 6 the release's aarch64 build is the bridge to the experimental release: its update check only offers
+      # newer experimental builds (LARECOMP_EXPERIMENTAL_STAMP, runtime/ui/launcher.mm), so players on it move there.
+      - name: Experimental update check (aarch64)
+        if: matrix.arch == 'aarch64'
+        run: |
+          STAMP=$(date -u +%Y%m%d%H%M)
+          sed -i "s/^#define LARECOMP_EXPERIMENTAL_STAMP .*/#define LARECOMP_EXPERIMENTAL_STAMP ${STAMP}LL/" runtime/ui/launcher.mm
+          grep -q "^#define LARECOMP_EXPERIMENTAL_STAMP ${STAMP}LL" runtime/ui/launcher.mm
       - name: AppImage
         run: make appimage ARCH=${{ matrix.arch }}
       # saved once complete (shaderc: build_deps.sh's last part; .ok: the helpers' wheels all installed), even when a
@@ -299,12 +329,19 @@ jobs:
           TAG: ${{ inputs.tag || github.event.release.tag_name }}
           EVENT: ${{ github.event_name }}
           SHA: ${{ needs.check.outputs.sha }}
+          PLATFORMS: ${{ needs.check.outputs.platforms }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           cd dist
           ls -la
           [ "$(ls | wc -l)" = 4 ] || { echo "::error::expected 4 files"; exit 1; }
+          # (a test build: only the platforms its fix targets ship; the others were built as a compile check)
+          for f in *; do
+            case $f in *-macOS.dmg) p=macos ;; *-windows.zip) p=windows ;; *-linux-x86_64.AppImage) p=linux ;;
+                        *-linux-aarch64.AppImage) p=linux-aarch64 ;; *) echo "::error::unknown file $f"; exit 1 ;; esac
+            [[ " $PLATFORMS " == *" $p "* ]] || { echo "built, not shipped: $f"; rm "$f"; }
+          done
           if [ "$EVENT" = release ]; then  # (published on GitHub: attach the files, the notes get the sha256 table)
             gh release view "$TAG" --json body -q .body | grep -v '^> The download files are being built' > ../body.md || true
             { cat ../body.md; echo; echo "| File | sha256 |"; echo "|---|---|"

@@ -69,7 +69,7 @@ int main(void) {
         CHECK(bundle_build("test-foo").empty() && bundle_build("alpha_3").empty(), "no build number without a release");
     }
     const char *never[] = {"alpha_3", "test-388-grass", "beta_0", "beta_5.0", "v0.0.1", "v1.0", "v0.6.0-rc1", "beta_5.3x",
-                           "ci-test-1", "", "v", "beta_"};
+                           "ci-test-1", "", "v", "beta_", "experimental", "experimental-202610302315-abc1234"};
     for (const char *t : never) CHECK(tag_rank(t) == -1, "'%s' is not a release (%lld)", t, tag_rank(t));
 
     const char *labels[][3] = {  // tag, label, with the word
@@ -81,11 +81,25 @@ int main(void) {
         {"v1.0.0", "1.0.0", "Version 1.0.0"},
         {"v1.2.3", "1.2.3", "Version 1.2.3"},
         {"test-foo", "Test build foo", "Test build foo"},
+        {"experimental", "Experimental build", "Experimental build"},
+        {"experimental-202610302315-abc1234", "Experimental build 2026-10-30", "Experimental build 2026-10-30"},
     };
     for (auto &l : labels) {
         std::string a = tag_label(l[0], false), b = tag_label(l[0], true);
         CHECK(a == l[1], "%s -> '%s', want '%s'", l[0], a.c_str(), l[1]);
         CHECK(b == l[2], "%s (with word) -> '%s', want '%s'", l[0], b.c_str(), l[2]);
+    }
+    {  // the newest experimental build of one platform, from asset names
+        std::string body = "\"name\":\"LAS.Recomp-experimental-202610302315-abc1234-linux-aarch64.AppImage\"\n"
+                           "\"name\":\"LAS.Recomp-experimental-202611011200-def5678-linux-aarch64.AppImage\"\n"
+                           "\"name\":\"LAS.Recomp-experimental-202612010000-0123456-windows-arm64.zip\"\n"
+                           "\"name\":\"LAS.Recomp-experimental-2026120100-0123456-linux-aarch64.AppImage\"\n"
+                           "\"name\":\"LAS.Recomp-experimental-202612020000-0123456-linux-aarch64x.AppImage\"\n"
+                           "\"name\":\"LAS.Recomp-beta_5.4-linux-aarch64.AppImage\"\n";
+        CHECK(newest_experimental(body, "linux-aarch64") == 202611011200LL, "linux-aarch64: %lld",
+              newest_experimental(body, "linux-aarch64"));
+        CHECK(newest_experimental(body, "windows-arm64") == 202612010000LL, "windows-arm64");
+        CHECK(newest_experimental(body, "linux-x86_64") == 0 && newest_experimental("", "linux-aarch64") == 0, "none");
     }
     if (fails) { printf("%d failed\n", fails); return 1; }
     printf("update tags: all passed\n");

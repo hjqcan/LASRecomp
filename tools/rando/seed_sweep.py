@@ -48,9 +48,10 @@ FLAGS = ['bomb_bag', 'powder_bag', 'environments', 'pets_in_dungeons', 'skip_sto
          'hookshot_any', 'digs', 'miniboss_souls', 'no_start_sword', 'no_start_shield', 'no_start_ocarina',
          'tunic_upgrades', 'shellsanity', 'race', 'random_cosmetics', 'apples', 'chest_looks',
          'retired_key_rings',  # (key rings, removed: the slot stays so seed IDs keep their layout)
-         'hints', 'rocks', 'fast_egg', 'compass_differs', 'no_start_mambo']
+         'hints', 'rocks', 'fast_egg', 'compass_differs', 'no_start_mambo', 'weather_cycle',
+         'retired_labyrinth']  # (the Labyrinth, removed: the slot stays so seed IDs keep their layout)
          # (order after random_cosmetics: apples, chest looks, retired key rings, hints, rocks, fast_egg, compass_differs,
-         # no_start_mambo)
+         # no_start_mambo, weather_cycle, retired labyrinth)
 ROOM_IDS = {'off': 0, 'coupled': 2, 'decoupled': 3}  # room_shuffle in the ID (1: the retired Coherent)
 BITS = 150  # (v5: 30 characters; v4 IDs had 125 - decode reads both)
 TIMEOUT = 900  # (seconds per seed)
@@ -131,7 +132,8 @@ def request(sid, o):
                                                 ('compass', bool(o['dungeon_items'] & 2) != o.get('compass_differs', False)),
                                                 ('stone-beak', o['dungeon_items'] & 1)) if on],
         'traps': ['none', 'few', 'several', 'many', 'trapsanity'][o['traps']],
-        'shuffle-instruments': o['shuffle_instruments'], 'shuffle-dungeons': o['shuffle_dungeons'],
+        'shuffle-instruments': o['shuffle_instruments'],
+        'shuffle-dungeons': o['shuffle_dungeons'],
         'randomize-enemies': o['randomize_enemies'], 'randomize-music': o['randomize_music'],
         'open-mabe': o['open_mabe'], 'fast-songs': o['fast_songs'], 'OHKO': False,
         'boss-cutscenes': o['boss_cutscenes'], 'create-spoiler': o['spoiler'], 'starting-rupees': o['start_rupees'],

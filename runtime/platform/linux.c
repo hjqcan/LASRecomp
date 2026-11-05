@@ -160,10 +160,39 @@ void plat_os_write(uint64_t addr, uint64_t size) {
         if (atomic_load(&g_soft_state[p]) == SOFT_ARMED) soft_release(p);
 }
 
+// The kernel driver about to pin [addr, addr+size) for writing (a host-pointer import: Mali's kbase pins with write
+// access, which fails on a page soft tracking protected read-only - the whole import is refused). Queries stop
+// protecting (they report every page they cover as written meanwhile: the safe side), the ones already running are
+// waited out, and the range's protected pages are opened (counted written). plat_os_write_end: queries protect again.
+static _Atomic int g_soft_hold, g_soft_inflight;
+void plat_os_write_begin(uint64_t addr, uint64_t size) {
+    if (!g_soft_state) return;
+    atomic_fetch_add(&g_soft_hold, 1);
+    while (atomic_load(&g_soft_inflight)) sched_yield();
+    plat_os_write(addr, size);
+}
+void plat_os_write_end(void) {
+    if (g_soft_state) atomic_fetch_sub(&g_soft_hold, 1);
+}
+
 // plat_written_pages over soft tracking: protect the range's open pages first, then take the written marks, so a write
 // between the two is either already marked or faults after the protection.
+static int soft_written_pages_(uint64_t addr, uint64_t size, uint64_t *pages, int max);
 static int soft_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max) {
     if (addr < g_soft_lo || addr + size > g_soft_hi || max <= 0) return -1;
+    atomic_fetch_add(&g_soft_inflight, 1);
+    int n;
+    if (atomic_load(&g_soft_hold)) {  // (an import is pinning pages: protect nothing, every page counts as written)
+        // The marks stay set: the pages stay open meanwhile, so a CPU write to one now neither faults nor marks it; the
+        // first query after the hold arms the page and must still report it (once more: the safe side).
+        uint64_t first = (addr - g_soft_lo) / SOFT_PAGE, last = (addr + size - 1 - g_soft_lo) / SOFT_PAGE;
+        n = 0;
+        for (uint64_t p = first; p <= last && n < max; p++) { atomic_store(&g_soft_written[p], 1); pages[n++] = g_soft_lo + p * SOFT_PAGE; }
+    } else n = soft_written_pages_(addr, size, pages, max);
+    atomic_fetch_sub(&g_soft_inflight, 1);
+    return n;
+}
+static int soft_written_pages_(uint64_t addr, uint64_t size, uint64_t *pages, int max) {
     uint64_t first = (addr - g_soft_lo) / SOFT_PAGE, last = (addr + size - 1 - g_soft_lo) / SOFT_PAGE;
     for (uint64_t p = first; p <= last;) {  // runs of pages not protected: one mprotect each
         uint8_t st = atomic_load(&g_soft_state[p]);
@@ -270,12 +299,165 @@ void plat_sleep_until_ns(uint64_t t) {
 
 // Real-time scheduling where the user may have it (rtkit / limits.conf), else just a higher priority: keeps the
 // vsync thread on time while the guest threads load every core.
+static int pcore_process_cpus(void);
 int plat_cpu_count(void) {
+    int n = pcore_process_cpus();  // (the process's cores, also from a thread held to the big ones)
+    if (n) return n;
     cpu_set_t set;
     return sched_getaffinity(0, sizeof set, &set) == 0 ? CPU_COUNT(&set) : 0;
 }
 
-void plat_thread_guest(int prio) { (void)prio; }  // (the OS's default scheduling serves the game here)
+static void pcore_guest(void);
+// A guest thread: with big and little cores, on the big ones with the frame's other critical threads (pcore_guest);
+// otherwise the OS's default scheduling serves the game here
+void plat_thread_guest(int prio) { (void)prio; pcore_guest(); }
+
+// The frame's critical threads on the big cores of a big.LITTLE / hybrid CPU. The scheduler places a thread by its
+// recent load, so the game or render thread, idle for part of each frame, often lands on a little core: on an RK3588
+// (4x Cortex-A55 + 4x A76) the game's main thread ran on an A55 most of the time and frames missed the 30 fps mode's
+// 33 ms. A core's class: its cpu_capacity (arm64, from the device tree), else its highest frequency. "Big" = every
+// class above the lowest (as Windows' efficiency classes), within the process affinity. LARECOMP_PCORE=0: off.
+static pthread_once_t pcore_once = PTHREAD_ONCE_INIT;
+static cpu_set_t pcore_set, pcore_all;  // the big cores; the process's own cores (plat_thread_default_core)
+static int pcore_n;  // 0: no selection (off, not hybrid, or the affinity allows only one class)
+
+static long cpu_sysfs_long(int cpu, const char *file) {
+    char p[96], b[32];
+    snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/%s", cpu, file);
+    FILE *f = fopen(p, "r");
+    if (!f) return -1;
+    long v = fgets(b, sizeof b, f) ? atol(b) : -1;
+    fclose(f);
+    return v;
+}
+
+// "0-7,16-23" (a sysfs cpu list) into a set; the number of cpus, or -1 when the file is missing / empty
+static int cpulist_read(const char *path, cpu_set_t *set) {
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    char b[256];
+    bool ok = fgets(b, sizeof b, f) != NULL;
+    fclose(f);
+    if (!ok) return -1;
+    CPU_ZERO(set);
+    int n = 0;
+    for (char *p = b; *p && *p != '\n';) {
+        char *q;
+        long lo = strtol(p, &q, 10), hi = lo;
+        if (q == p) break;
+        if (*q == '-') hi = strtol(q + 1, &q, 10);
+        for (long c = lo; c <= hi && c < CPU_SETSIZE; c++) CPU_SET((int)c, set), n++;
+        p = *q == ',' ? q + 1 : q;
+    }
+    return n ? n : -1;
+}
+
+static void pcore_log_set(const char *how, int ncpu) {
+    char list[256] = "";
+    size_t n = 0;
+    for (int c = 0; c < CPU_SETSIZE; c++)
+        if (CPU_ISSET(c, &pcore_set) && n < sizeof list - 8) n += (size_t)snprintf(list + n, sizeof list - n, "%s%d", n ? "," : "", c);
+    fprintf(stderr, "[pcore] big.LITTLE / hybrid CPU (%s): game threads on cores %s (%d of %d)\n", how, list, pcore_n, ncpu);
+}
+
+static void pcore_init(void) {
+    const char *e = getenv("LARECOMP_PCORE");
+    if (e && *e && atoi(e) == 0) { fprintf(stderr, "[pcore] off (LARECOMP_PCORE=0): default scheduling\n"); return; }
+    cpu_set_t allowed;
+    if (sched_getaffinity(0, sizeof allowed, &allowed) != 0) return;
+    pcore_all = allowed;
+    int ncpu = CPU_COUNT(&allowed);
+    char how[96];
+#if defined(__aarch64__) || defined(__arm__)
+    // arm64: each core's capacity from the device tree; big = every class above the lowest
+    long cap[CPU_SETSIZE], lo = -1, hi = -1;
+    for (int c = 0; c < CPU_SETSIZE; c++) {
+        cap[c] = CPU_ISSET(c, &allowed) ? cpu_sysfs_long(c, "cpu_capacity") : -1;
+        if (cap[c] <= 0) continue;
+        if (lo < 0 || cap[c] < lo) lo = cap[c];
+        if (cap[c] > hi) hi = cap[c];
+    }
+    if (lo > 0 && hi > lo) {
+        CPU_ZERO(&pcore_set);
+        for (int c = 0; c < CPU_SETSIZE; c++)
+            if (cap[c] > lo) CPU_SET(c, &pcore_set), pcore_n++;
+        snprintf(how, sizeof how, "cpu_capacity %ld..%ld", lo, hi);
+        pcore_log_set(how, ncpu);
+        return;
+    }
+    if (lo > 0) { fprintf(stderr, "[pcore] %d cores of one capacity: default scheduling\n", ncpu); return; }
+#else
+    // Intel hybrid: the kernel lists the P and E cores (these files exist only on a hybrid CPU)
+    cpu_set_t pc, ec;
+    if (cpulist_read("/sys/devices/cpu_core/cpus", &pc) > 0 && cpulist_read("/sys/devices/cpu_atom/cpus", &ec) > 0) {
+        CPU_AND(&pcore_set, &pc, &allowed);
+        CPU_AND(&ec, &ec, &allowed);
+        if (CPU_COUNT(&pcore_set) && CPU_COUNT(&ec)) {
+            pcore_n = CPU_COUNT(&pcore_set);
+            pcore_log_set("cpu_core / cpu_atom", ncpu);
+            return;
+        }
+        fprintf(stderr, "[pcore] hybrid CPU, but the affinity allows one kind only: default scheduling\n");
+        return;
+    }
+#endif
+    // Otherwise each core's highest frequency, and only a large gap counts: a desktop's favoured cores (Turbo Boost Max
+    // 3.0, some Ryzen frequency drivers) report a few percent more than the rest of the same kind of core, and pinning
+    // the game to those one or two would be a big regression. Big and little when the slowest is under 80 % of the
+    // fastest; big = every core within 80 % of the fastest.
+    long f[CPU_SETSIZE], flo = -1, fhi = -1;
+    for (int c = 0; c < CPU_SETSIZE; c++) {
+        f[c] = CPU_ISSET(c, &allowed) ? cpu_sysfs_long(c, "cpufreq/cpuinfo_max_freq") : -1;
+        if (f[c] <= 0) continue;
+        if (flo < 0 || f[c] < flo) flo = f[c];
+        if (f[c] > fhi) fhi = f[c];
+    }
+    if (flo <= 0 || flo * 5 >= fhi * 4) {
+        fprintf(stderr, "[pcore] %d cores of one class (highest frequency %ld..%ld kHz): default scheduling\n", ncpu, flo, fhi);
+        return;
+    }
+    CPU_ZERO(&pcore_set);
+    for (int c = 0; c < CPU_SETSIZE; c++)
+        if (f[c] > 0 && f[c] * 5 >= fhi * 4) CPU_SET(c, &pcore_set), pcore_n++;
+    snprintf(how, sizeof how, "highest frequency %ld..%ld kHz", flo, fhi);
+    pcore_log_set(how, ncpu);
+}
+
+static int pcore_process_cpus(void) {
+    pthread_once(&pcore_once, pcore_init);
+    return pcore_n ? CPU_COUNT(&pcore_all) : 0;
+}
+
+void plat_thread_default_core(void) {
+    pthread_once(&pcore_once, pcore_init);
+    if (pcore_n) pthread_setaffinity_np(pthread_self(), sizeof pcore_all, &pcore_all);
+}
+
+// The game's own threads join the big cores too: its frame work isn't only on the main thread (on an RK3588 the
+// busiest guest thread during play has Switch priority 32, the main thread 44, and a build that left the guest threads
+// free missed vblanks in 11-12 % of 2 s windows on a walking route, against 2 % with them on the A76s). On the Switch
+// the game owns its cores as well. LARECOMP_PCORE_GUEST=0: only the game / render / vsync threads.
+static void pcore_guest(void) {
+    pthread_once(&pcore_once, pcore_init);
+    if (!pcore_n) return;
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("LARECOMP_PCORE_GUEST");
+        on = !e || !*e || atoi(e) != 0;
+        fprintf(stderr, "[pcore] guest threads: %s\n", on ? "big cores" : "all cores (LARECOMP_PCORE_GUEST=0)");
+    }
+    pthread_setaffinity_np(pthread_self(), sizeof (on ? pcore_set : pcore_all), on ? &pcore_set : &pcore_all);
+}
+
+void plat_thread_perf_core(int role) {
+    pthread_once(&pcore_once, pcore_init);
+    if (!pcore_n) return;
+    bool ok = pthread_setaffinity_np(pthread_self(), sizeof pcore_set, &pcore_set) == 0;
+    static _Atomic int logged;  // (once per role: a reboot's new game thread applies the same, quietly)
+    static const char *const names[] = {"game", "render", "vsync"};
+    if (role < 0 || role > 2 || (atomic_fetch_or(&logged, 1 << role) & (1 << role))) return;
+    fprintf(stderr, "[pcore] %s thread: %s\n", names[role], ok ? "big cores" : "affinity refused (default scheduling)");
+}
 
 void plat_thread_realtime(uint64_t period_ns) {
     (void)period_ns;

@@ -51,6 +51,9 @@ def code(s, n=160):
 FPS_RE = re.compile(r"^\[(vk|metal)\] t=([\d.]+) frame (\d+) ([\d.]+) fps max (\d+)ms level (\S+)")
 BUILD_RE = re.compile(r"LAS[ ._-]?Recomp[ ._-]((?:beta_\d+(?:[._-]\d+)?)|(?:v\d+\.\d+\.\d+)|(?:test-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*?))"
                       r"(?:-(windows|macos|linux|android)\b|[\\/\s]|$)", re.I)
+# runtime/main.c log_startup_info: "[info] LAS Recomp beta_5.4, Windows 11 (10.0.26300, x64), AMD Ryzen 5 7500F
+# 6-Core Processor 6 cores / 12 threads, 31.7 GB RAM, zip" - the build; the OS, CPU and RAM; the package when known
+INFO_RE = re.compile(r"^\[info\] LAS Recomp ([^\s,]+), (.+?(?:GB RAM|RAM unknown))(?:, (.+))?$")
 MS_RE = re.compile(r"([\d.]+)\s*ms")
 
 # notable lines: (label, regex); each is reported once, with its count and first line
@@ -74,18 +77,21 @@ NOTABLE = [
 def parse(text):
     lines = text.splitlines()
     r = {"backend": None, "gpu": None, "gpus": [], "api": None, "driver": None, "os": None, "cpu": None,
-         "build": None, "settings": None, "swapchain": None, "integrated": False, "fps": [], "slow": [],
+         "system": None, "build": None, "settings": None, "swapchain": None, "integrated": False, "fps": [], "slow": [],
          "notable": {}, "seed": None, "end": None, "end_line": None, "lines": len(lines)}
     fatal = exc = crash_head = None
     devlost = hang = closed = False
     for i, ln in enumerate(lines):
-        if ln.startswith("[paths] data: "):
+        if m := INFO_RE.match(ln):  # (the build's own name: wins over a folder name in the data path)
+            r["build"] = m.group(1) + (f" ({m.group(3)})" if m.group(3) else "")
+            r["system"] = m.group(2)
+        elif ln.startswith("[paths] data: "):
             p = ln[14:]
             r["os"] = ("Windows" if re.match(r"[A-Za-z]:\\", p) else "Android" if p.startswith("/storage/")
                        else "macOS" if p.startswith("/Users/") or "Library/Application Support" in p
                        else "Linux" if p.startswith("/") else None)
             m = BUILD_RE.search(p)
-            if m: r["build"] = m.group(1) + (f" ({m.group(2).lower()})" if m.group(2) else "")
+            if m and not r["build"]: r["build"] = m.group(1) + (f" ({m.group(2).lower()})" if m.group(2) else "")
         elif ln.startswith("ANDROID:"):
             r["os"] = "Android"
         elif not r["build"] and re.match(r"^\[(version|build)\] ", ln):
@@ -171,7 +177,7 @@ def summarise(r):
     out.append(f"- **Build:** {code(r['build']) if r['build'] else 'not in the log'}")
     sysl = [r["os"] or "OS not in the log"]
     if r["cpu"]: sysl.append(r["cpu"])
-    out.append("- **System:** " + ", ".join(sysl))
+    out.append("- **System:** " + (code(r["system"]) if r["system"] else ", ".join(sysl)))
     if r["gpu"]:
         g = code(r["gpu"], 80) + (" (integrated)" if r["integrated"] else "")
         if r["api"]: g += f", Vulkan {r['api']}"

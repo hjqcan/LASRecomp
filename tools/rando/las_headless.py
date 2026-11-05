@@ -229,6 +229,8 @@ def main():
     if settings.get('hookshot-anything'):  # new routes before anything reads the logic (room shuffle, entrances)
         import hookshot_logic
         print('hookshot anything:', hookshot_logic.apply(logic_defs), 'routes', flush=True)
+        import room_logic
+        room_logic.HOOK_ANYTHING = True  # (room shuffle: the hookshot crosses to any solid tile)
     import eagle_tower  # room shuffle: Eagle's Tower starts collapsed (its flags: player_start.py; tools/rando/eagle_tower.py)
     if eagle_tower.collapsed(settings):
         print("eagle's tower collapsed:", eagle_tower.apply_logic(logic_defs), 'conditions', flush=True)
@@ -382,6 +384,7 @@ def main():
     # (tools/rando/room_logic.py), the same layouts are written into the seed after LAS's files
     room_mode = settings['dungeon-room-shuffle']
     room_plan = None
+    room_attempt = 0
     if room_mode != 'off':
         stage('Planning dungeon rooms', 0.03)
         import dungeon_gen
@@ -400,9 +403,8 @@ def main():
             except RuntimeError as e:  # (no round left every dungeon room for its keys and items: next one)
                 print('room layout:', e, '- planning another', flush=True)
                 continue
-            logic_rows = jumps
             logic_defs, item_defs, settings = (copy.deepcopy(x) for x in base)
-            print('room logic:', room_logic.apply(cat, romfs, layouts, logic_rows, logic_defs, item_defs, settings, extra),
+            print('room logic:', room_logic.apply(cat, romfs, layouts, jumps, logic_defs, item_defs, settings, extra),
                   flush=True)
             why = settings.pop('room-logic-unfillable', None)
             if not why:
@@ -427,6 +429,16 @@ def main():
         print('mini-boss souls on vanilla dungeons:', souls_mod.vanilla_gate(
             soul_cat, romfs, logic_defs, vanilla, {n: p['room'] for n, p in pot_locs.items() if p.get('room')}),
             'conditions', flush=True)
+
+    def retry_layout(why):
+        """Dungeon room shuffle: the items can't be placed in this layout (or the seed came out unbeatable) - the
+        next layout of the same seed ID, in a fresh run (deterministic: a seed ID never fails while one is left)."""
+        if not room_plan or room_attempt + 1 >= 40:
+            return
+        print(f'room layout {room_attempt + 1}: {why} - planning another', flush=True)
+        import subprocess
+        cmd = [sys.executable] + ([] if getattr(sys, 'frozen', False) else [SELF]) + ORIG_ARGV
+        sys.exit(subprocess.run(cmd, env=dict(os.environ, LARECOMP_ROOM_ATTEMPT=str(room_attempt + 1))).returncode)
 
     result = {}
     errors = []
@@ -500,6 +512,8 @@ def main():
             m = re.search(r'RuntimeError: (Triforce hunt: .*)', str(e))
             if m:
                 print('error ' + m.group(1), flush=True)
+        if not any('Triforce hunt' in str(e) for e in errors):
+            retry_layout('the items can\'t be placed')
         print('SHUFFLE ERROR', errors, file=sys.stderr)
         sys.exit(1)
     print('placements ready', flush=True)
@@ -568,14 +582,16 @@ def main():
             print('  ', k, 'region', sh.logic_defs[k]['region'], 'cond', c, '| missing', [t for t in toks if not access.get(t)], flush=True)
     if unreached:
         print('  unreachable:', ', '.join(sorted(unreached)[:30]), flush=True)
-    if missing:
-        print('SHUFFLE ERROR unbeatable seed', missing, file=sys.stderr)
-        sys.exit(3)
     if os.environ.get('LARECOMP_CHECK_ONLY'):  # (test: tools/rando/seed_sweep.py - placements + logic, no game files)
-        with open(os.path.join(out_dir, 'placements.json'), 'w') as f:
+        with open(os.path.join(out_dir, 'placements.json'), 'w') as f:  # (an unbeatable one's too: to look into)
             json.dump({'placements': {k: v for k, v in pl.items() if isinstance(v, str)},
                        'access': {k: 1 for k, v in settings.items() if v is True},
                        **({'room-plan': {'layouts': room_plan[0], 'jumps': room_plan[1]}} if room_plan else {})}, f)
+    if missing:
+        retry_layout(f'unbeatable ({", ".join(missing[:3])})')
+        print('SHUFFLE ERROR unbeatable seed', missing, file=sys.stderr)
+        sys.exit(3)
+    if os.environ.get('LARECOMP_CHECK_ONLY'):
         sys.exit(0)
 
     if pot_locs or bush_locs or dig_locs or rock_locs:  # bomb / powder / arrow refills anywhere: only once owned, else a blue rupee (runtime)
@@ -780,6 +796,7 @@ def main():
         s['dungeon-entrances'] = dict(result['placements'].get('dungeon-entrances') or {})
         s['hint-sheet'] = True  # (runtime/hle/hint_sheet.c: older seeds have no Hint Sheet)
         s['ghost-item'] = 'ghost' in pets  # (runtime/hle/pets.c: older seeds' Ghost follows Link)
+        s['marin-stays'] = 'marin-companion' in pets  # (pets.py; runtime/hle/pets.c: older seeds' Marin leaves)
         s['underwater-items'] = True  # (runtime: the sunken heart-piece actors don't hide for an owned heart piece)
         s['silent-pickups'] = True  # (tools/rando/silent_pickups.py; runtime/hle/silent_pickups.c)
         shells = sum(1 for v in result['placements'].values() if v == 'seashell')  # (the fly-in's "n / total": 50)
@@ -794,7 +811,7 @@ def main():
     if settings.get('tunic-color', 'default') != 'default':
         import cosmetics
         print('tunic:', cosmetics.apply(out_dir, romfs, settings['seed'], settings['tunic-color']), flush=True)
-    print('tracker:', tracker.build(out_dir, romfs), flush=True)
+    print('tracker:', tracker.build(out_dir, romfs, result['placements']), flush=True)
     import spoiler_view  # readable spoiler + walkthrough for the in-game Spoiler page
     # the spoiler is named after the seed string (the seed ID): a fixed name survives renaming the seed's folder
     sp = os.path.join(out_dir, f"spoiler_{settings['seed']}.txt")

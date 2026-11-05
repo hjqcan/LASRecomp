@@ -18,6 +18,7 @@ extern "C" {
 #include "../menu_sfx.h"
 }
 #include "i18n.h"
+#include "live_preview.h"
 #include "option_rows.h"
 #include "osk.h"
 #include "plastic.h"
@@ -285,8 +286,21 @@ bool opt_toggle(const char *label, bool *v, bool def, const char *desc) {
 }
 
 bool opt_choice(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap) {
+    return opt_preview(label, v, names, n, def, desc, wrap, false);
+}
+
+// (opt_choice, with preview: A / a click on the row opens the live preview instead of stepping)
+bool opt_preview(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap,
+                 bool preview) {
+    bool scan = preview && preview_scanning(), off = g_next_disabled;
     int cur = *v >= 0 && *v < n ? *v : 0;
-    int step = row(label, names[cur], cur != def, desc, true, true);
+    // (preview: a chevron - A / a click / Right opens it, the value doesn't step here)
+    int step = row(label, names[cur], cur != def, desc, true, !preview, preview);
+    if (scan) return preview_row(label, v, names, n, def, desc, wrap, off);  // (row: only read, as the others)
+    if (preview) {
+        if (step == 2 && !g_collect) preview_open(label, opt_item_nav_focused() ? (int)g_rows.size() - 1 : -1);
+        return false;
+    }
     if (!step) return false;
     int nv = cur + (step == 2 ? 1 : step);
     nv = wrap ? (nv + n) % n : nv < 0 ? 0 : nv >= n ? n - 1 : nv;
@@ -357,19 +371,7 @@ bool opt_colour(const char *label, CosColour *c, int slot, const char *desc) {
     int prev = c->pick;
     const char *names[N_COL];
     for (int i = 0; i < N_COL; i++) names[i] = g_col_names[i];
-    char seed[96], hexs[16];
-    int sp = col_pick(c, slot);
-    uint32_t srgb = 0;  // (the seed's own colours are any colour: shown as #RRGGBB)
-    if (sp == COL_CUSTOM && col_seed_rgb(c, slot, &srgb))
-        snprintf(hexs, sizeof hexs, "#%06X", (unsigned)srgb), snprintf(seed, sizeof seed, L("Seed: %s"), hexs);
-    else if (col_seed_rgb(c, slot, &srgb)) snprintf(seed, sizeof seed, L("Seed: %s"), L(g_col_names[sp]));
-    else seed[0] = 0;
-    if (seed[0]) {  // (the seed's own colour: locked, greyed out)
-        opt_disable_next();
-        g_value_shown = true;
-        opt_action(label, seed, desc, true, true);
-        return false;
-    }
+    (void)slot;
     bool changed = opt_choice(label, &c->pick, names, N_COL, COL_DEFAULT, desc);
     if (g_collect) return false;
     if (changed && c->pick == COL_CUSTOM && prev != COL_CUSTOM)  // (Custom starts from the colour it was on)
@@ -378,10 +380,8 @@ bool opt_colour(const char *label, CosColour *c, int slot, const char *desc) {
     ImGui::PushID(label);
     char hex[16];
     snprintf(hex, sizeof hex, "#%06X", (unsigned)(c->rgb & 0xFFFFFF));
-    opt_indent(1);
     g_value_shown = true;
     bool open = opt_action("Custom color", hex, "Pick any color by hue, saturation and brightness.", true, true);
-    opt_indent(-1);
     ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
     {   // a swatch of it, left of the value
         float fs = ImGui::GetFontSize(), sw = fs * 1.1f, vw = ImGui::CalcTextSize(hex).x;
@@ -538,9 +538,15 @@ void opt_pair_next(void) { g_half = 1; }
 void opt_list_begin(void) {
     // room under the list for the page's longest description (as last frame measured it; 2 lines at least): a longer
     // list scrolls
-    g_desc_w = ImGui::GetContentRegionAvail().x, g_listed = true;
+    // The width the description wraps at, measured as if the pane had a scrollbar whether or not it has one now: a
+    // width that followed the scrollbar re-wrapped the text, which moved the list, which toggled the scrollbar - the
+    // rows and the text flashed every frame (Bushsanity's three lines)
+    ImGuiWindow *win = ImGui::GetCurrentWindow();
+    g_desc_w = ImGui::GetContentRegionAvail().x - (win->ScrollbarY ? 0 : ImGui::GetStyle().ScrollbarSize), g_listed = true;
     float line = ImGui::GetFontSize() * 1.3f, avail = ImGui::GetContentRegionAvail().y;
-    float desc = (g_desc_max_last > line * 2 ? g_desc_max_last : line * 2) + 16 * g_scale;
+    // (+ opt_list_end's groove and the spacing around it, so the pane itself never needs to scroll)
+    float desc = (g_desc_max_last > line * 2 ? g_desc_max_last : line * 2) + 14 * g_scale +
+                 2 * ImGui::GetStyle().ItemSpacing.y + 4 * g_scale;
     float maxh = avail - desc > avail * 0.35f ? avail - desc : avail * 0.35f;
     ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, maxh));
     ImGui::BeginChild("##list", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
@@ -600,6 +606,13 @@ static bool is_tab(ImGuiID id) {
     return false;
 }
 
+// (a mouse click on a scroll bar plays nothing)
+static bool on_scrollbar(ImGuiContext &g) {
+    ImGuiWindow *w = g.HoveredWindow;
+    return w && (g.HoveredId == ImGui::GetWindowScrollbarID(w, ImGuiAxis_Y) ||
+                 g.HoveredId == ImGui::GetWindowScrollbarID(w, ImGuiAxis_X));
+}
+
 extern "C" void menu_sfx_frame(bool back_ok) {
     ImGuiContext &g = *ImGui::GetCurrentContext();
     static ImGuiContext *ctx;  // (the start screen's and the game's overlay are two)
@@ -610,7 +623,7 @@ extern "C" void menu_sfx_frame(bool back_ok) {
     if (!ui_text_busy() && cap < 0) {
         if (back_ok && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
             menu_sfx_play(MENU_SFX_CANCEL);
-        else if (g.NavActivatePressedId || (ImGui::IsMouseClicked(0) && g.HoveredId))
+        else if (g.NavActivatePressedId || (ImGui::IsMouseClicked(0) && g.HoveredId && !on_scrollbar(g)))
             menu_sfx_play(is_tab(g.NavActivatePressedId ? g.NavActivatePressedId : g.HoveredId) ? MENU_SFX_TAB
                                                                                                 : MENU_SFX_DECIDE);
         else if (g.NavCursorVisible && g.NavId && last && g.NavId != last)

@@ -821,6 +821,7 @@ class ItemShuffler(QtCore.QThread):
             
             # Keep track of where we placed items. this is necessary to undo placements if we get stuck
             placement_tracker = []
+            undos = 0  # (LAS Recomp: the undo / reshuffle can go round forever - room shuffle gives up the layout)
             
             # Iterate through the dungeon items for that dungeon (inherently in order of nightmare key, small keys, stone beak, compass, map)
             while item_pool and self.thread_active:
@@ -849,6 +850,9 @@ class ItemShuffler(QtCore.QThread):
                                                    "reachable without it" + ''.join(
                                     f"\n  {l}: {self.logic_defs[l].get('condition-basic')}" for l in sorted(location_pool)
                                     if verbose))
+                            undos += 1
+                            if undos > 60 and self.settings.get('dungeon-of'):
+                                raise RuntimeError(f"can't place the items of D{i}: {undos} tries")
                             undo_location = placement_tracker.pop(0)
                             location_pool.append(undo_location)
                             locations.append(undo_location)

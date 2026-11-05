@@ -1,0 +1,6 @@
+Input Prompts (1.5A) by Kenney (www.kenney.nl): Nintendo Switch / Double switch_dpad.png and
+switch_dpad_none.png, used for the D-pad items HUD (runtime/ui/dpad_art.h holds their alpha).
+
+License: Creative Commons Zero, CC0 - http://creativecommons.org/publicdomain/zero/1.0/
+You can use this content for personal, educational, and commercial purposes.
+Support by crediting Kenney or www.kenney.nl (this is not a requirement).

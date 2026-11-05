@@ -13,6 +13,8 @@
           the map page shift of its floor (dungeon_map.tsv); door jumps / one-way doorways / room-shuffle letters are
           door_jumps.tsv, which the runtime already reads (runtime/hle/doorjump.c)
   settings  seed settings as logic tokens: S = on, F = off (a condition naming an off setting can't be met)
+  seen    (H rows) shop and Trendy Game checks: the flag the game sets on the first visit (the map icon's) and whether
+          the item there helps progress. Once the player has been inside, the tracker counts only those that do
 Excluded locations (junk only) are not listed, nor (dungeon room shuffle) checks the layout leaves out (settings
 absent-locations); a moved room's checks count for the dungeon it sits in now (settings dungeon-of, room_logic.py).
 Conditions are the seed's final logic.
@@ -231,7 +233,38 @@ def condition(node, levels):
     return ' | '.join(f'({p})' for p in parts) if parts else ''
 
 
-def build(seed_dir, romfs):
+# shops whose wares the player sees on walking in: check name prefix -> the GlobalFlags set on the first visit
+SEEN_AT = {'shop-slot': 'UI_FieldMapIcon_Shop', 'trendy-prize': 'UI_FieldMapIcon_GameShop'}
+NOT_PROGRESS = ('stone-beak', 'compass', 'map')  # (as seed_hints.py: dungeon items that open nothing)
+
+
+def seen_rows(checks, logic, flags, placements):
+    """(check, visit flag, 1 = its item helps progress) for the shop / Trendy Game checks. An item helps progress when
+    some logic condition reads it (or it is an instrument / Triforce piece) and it isn't junk."""
+    import hint_sheet as hs
+    import playthrough
+    word = re.compile(r'[A-Za-z0-9][A-Za-z0-9\-\[\]]*')
+    read = set(playthrough.INSTRUMENTS) | {hs.TRIFORCE}
+    for v in logic.values():
+        for k, c in v.items():
+            if k.startswith('condition-') and isinstance(c, str):
+                read.update(re.sub(r'\[\d+\]$', '', w) for w in word.findall(c))
+
+    def useful(item):
+        b = hs.base_item(item)
+        if hs.JUNK.match(b) or b.startswith(tuple(p + '-' for p in NOT_PROGRESS)):
+            return False
+        return b in read
+    out = []
+    for c in checks:
+        for pre, fl in SEEN_AT.items():
+            if c['n'].startswith(pre) and fl in flags:
+                item = placements.get(c['n'])
+                out.append((c['n'], flags[fl], 1 if item is None or useful(item) else 0))  # (unknown: keep it)
+    return out
+
+
+def build(seed_dir, romfs, placements=None):
     _las()
     import yaml
     from RandomizerCore.Tools import leb, oead_tools
@@ -515,6 +548,10 @@ def build(seed_dir, romfs):
             except Exception:
                 shifts[key] = (0.0, 0.0)
     rooms = [{'level': lv, 'cell': c, 'room': r, 'shift': shifts.get((lv, c), (0, 0))} for (lv, c), r in sorted(layout.items())]
+    if placements is None:  # (rebuilding an existing seed: what the walkthrough knows)
+        sp = os.path.join(seed_dir, 'spheres.json')
+        placements = {loc: item for sphere in json.load(open(sp)) for loc, item in sphere} if os.path.exists(sp) else {}
+    seen = seen_rows(checks, logic, flags, placements)
     out = {'settings': {k: 1 for k, v in settings.items() if v is True}, 'nodes': nodes, 'checks': checks,
            'groups': groups, 'rooms': rooms, 'logic': settings.get('logic', 'basic'),
            'off': sorted(k for k, v in settings.items() if v is False)}
@@ -539,6 +576,8 @@ def build(seed_dir, romfs):
                     f"\t{c.get('d') or '-'}\t{c.get('dc') or '-'}\t{c.get('ar', -1)}\t{c.get('dn') or '-'}\t{c.get('sp') or '-'}\n")
         for r in rooms:
             f.write(f"R\t{r['level']}\t{r['cell']}\t{r['room']}\t{r['shift'][0]:g}\t{r['shift'][1]:g}\n")
+        for name, fl, prog in seen:
+            f.write(f"H\t{name}\t{fl}\t{prog}\n")
     return len(checks), len(groups)
 
 

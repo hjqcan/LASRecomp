@@ -7,7 +7,8 @@
 //   on the houses (their own decal maps: Sale's, Marin and Tarin's, Schule's, the Seashell Mansion's, the fairy
 //   fountain's hedges). Not the houses' painted wood (Sale's green trim is in his house's atlas: it stays, as the
 //   Animal Village's painted roofs do).
-//   Grass: the ground's grass, tall grass Lawn_01 (the graveyard's too), grass tufts.
+//   Grass: the ground's grass, tall grass Lawn_01 (the graveyard's too), grass tufts, the single ground tiles drawn
+//   over it (ObjFieldTip*).
 //   Sand: the beaches, Yarna Desert, the sandy south around the Face Shrine, the shore lines.
 // The leaves flying off cut grass and bushes (effect sheets grass_00 / grass_01 / cut_lawn_00) get the same colour as
 // what was cut. Only greens move (a hue range): flowers, trunks, dirt, rocks keep theirs.
@@ -17,8 +18,10 @@
 #include "recolour.h"
 
 // (S_BEACH: the pale beach sand; S_LIME: the lime / olive foliage maps; S_LAWN: the tall grass - its own window: the
-// graveyard's is drawn dark teal; S_FERN: the Mysterious Woods' ferns, olive fronds beside a brown trunk in one map)
-enum { S_TREE = 16, S_PALM, S_BUSH, S_GRASS, S_SAND, S_BEACH, S_MYST, S_LIME, S_LAWN, S_FERN };
+// graveyard's is drawn dark teal; S_FERN: the Mysterious Woods' ferns, olive fronds beside a brown trunk in one map.
+// Never tinted, for the snow on the ground only (renderer.m, snow_cover_check): S_FACE the face trees around Crazy
+// Tracy's and the Tabahl Wasteland, S_ROCK the liftable rocks)
+enum { S_TREE = 16, S_PALM, S_BUSH, S_GRASS, S_SAND, S_BEACH, S_MYST, S_LIME, S_LAWN, S_FERN, S_FACE, S_ROCK };
 
 static bool ends_alb(const char *t) { size_t n = strlen(t); return n > 4 && !strcmp(t + n - 4, "_alb"); }
 static bool pre(const char *t, const char *p) { return !strncmp(t, p, strlen(p)); }
@@ -28,6 +31,8 @@ static int field(int source, const char *t) {  // Field.bntx (the overworld's te
     if (!ends_alb(t)) return 0;
     // the Mysterious Woods' trees (olive, ~50 degrees: outside the greens' range): the whole canopy map moves
     if (pre(t, "MI_MysteriousTree_01_")) return S_MYST;
+    if (pre(t, "MI_TabahlTree_01_")) return S_FACE;  // (the face trees: bark, nothing to tint)
+    if (pre(t, "MI_Rock_01_")) return S_ROCK;
     if (pre(t, "MI_Tree_01_") || pre(t, "MI_d2_2d_ha_") || pre(t, "MI_BdTel")) return S_TREE;
     // lime and olive foliage (60-110 degrees: at or past the canopies' window's edge)
     if (pre(t, "MI_RiverTree_02_") || pre(t, "MI_Leaf_01_") || pre(t, "MI_TravellersTree_01_") ||
@@ -69,7 +74,15 @@ static const RecolourSource k_sources[] = {
     {"region_common/actor/ObjLawn.bfres", field},
     {"region_common/actor/ObjPalmTree.bfres", field},
     {"region_common/actor/ObjMysteriousTree.bfres", field},
+    {"region_common/actor/ObjRock.bfres", field},
+    {"region_common/actor/ObjTabahlTree.bfres", field},
     {"region_common/actor/ObjSpeakTree.bfres", field},
+    // (single ground tiles placed over the level's ground, with their own copies of its maps: they stayed green under
+    // an autumn ground, issue #577)
+    {"region_common/actor/ObjFieldTipKanalet.bfres", field},
+    {"region_common/actor/ObjFieldTipMaze.bfres", field},
+    {"region_common/actor/ObjFieldTipMysterious.bfres", field},
+    {"region_common/actor/ObjFieldTipUkuku.bfres", field},
     {"region_common/effect/Common.ptcl", effect},
     {"region_common/effect/Player.ptcl", effect},
     {"region_common/effect/Object.ptcl", effect},
@@ -82,6 +95,7 @@ static const RecolourSource k_sources[] = {
 static bool tint(int cls, float t[8]) {
     uint32_t rgb;
     float sh, sf, vf;
+    if (cls == S_FACE || cls == S_ROCK) return false;
     if (cls == S_SAND || cls == S_BEACH) {  // (sand reads 30-50 degrees: only that range moves)
         if (!col_target(&g_settings.sand, COL_SLOT_SAND, &rgb)) return false;
         bool beach = cls == S_BEACH;  // typical: the desert / south (38, 0.8, 0.8), the pale beach (45, 0.25, 0.9)
@@ -119,4 +133,4 @@ static bool tint(int cls, float t[8]) {
 }
 
 const RecolourOption g_recolour_seasons = {"leaves / grass / sand", k_sources, (int)(sizeof k_sources / sizeof *k_sources), S_TREE,
-                                           S_FERN, tint};
+                                           S_ROCK, tint};

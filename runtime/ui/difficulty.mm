@@ -56,8 +56,9 @@ extern "C" void difficulty_draw(float scale) {
     opt_section("General");
     {
         // what the game is told the console's language is: its text follows this (runtime/settings.c), and the menus
-        // at once. Each language by its own name (the row leaves names it has no translation for as they are).
-        const char *code = settings_language(), *auto_name = "English";
+        // at once. Each language by its own name (the row leaves names it has no translation for as they are). The
+        // menus' own languages (pt-BR) have no game text: the game stays English.
+        const char *code = settings_menu_language(), *auto_name = "English";
         for (int i = 1; i < N_LANGUAGES; i++)
             if (!strcmp(code, g_language_codes[i])) auto_name = g_language_endonyms[i];
         char autol[64];
@@ -65,8 +66,10 @@ extern "C" void difficulty_draw(float scale) {
         const char *names[N_LANGUAGES];
         names[0] = autol;
         for (int i = 1; i < N_LANGUAGES; i++) names[i] = g_language_endonyms[i];
+        bool menus_only = strcmp(code, "en-US") && !strcmp(settings_language(), "en-US");
         if (opt_choice("Language", &g_settings.language, names, N_LANGUAGES, LANG_AUTO,
-                       "The language of the menus and the game's text. The game's text changes after a restart."))
+                       menus_only ? "The language of the menus. The game has no text in this language, so it stays English."
+                                  : "The language of the menus and the game's text. The game's text changes after a restart."))
             settings_save();
     }
     if (rt_hookshot_seed_forced()) {  // (the seed's logic counts on it: always on, the toggle greyed out)
@@ -98,12 +101,10 @@ extern "C" void difficulty_draw(float scale) {
             g_settings.walk_speed = mult[wi];
             settings_save();
         }
-        opt_indent(1);
         if (wi == 0) opt_disable_next();
         if (opt_toggle("Indoors", &g_settings.walk_speed_dungeons, false,
                        "Use the walk speed in houses, caves and dungeons too."))
             settings_save();
-        opt_indent(-1);
     }
     opt_section("Difficulty");
     static const char *const names[] = {LN("Half"), LN("Default"), LN("2x"), LN("3x"), LN("4x"), LN("5x"),
@@ -119,6 +120,9 @@ extern "C" void difficulty_draw(float scale) {
     }
     if (opt_toggle("One-hit KO", &g_settings.diff_ohko, false, "One hit and Link is down, no matter how many hearts he has."))
         settings_save();
+    if (opt_toggle("Hide Hero Mode icon", &g_settings.hide_hero_icon, false,
+                   "Hides the Hero Mode emblem in the corner of the screen while playing a Hero Mode file."))
+        settings_save();
 
     // run timer / LiveSplit (runtime/hle/run_timer.c, runtime/livesplit.c, runtime/ui/race_overlay.mm)
     opt_section("Speedrun");
@@ -130,21 +134,18 @@ extern "C" void difficulty_draw(float scale) {
                    locked ? "Turn this on before you load a save."
                           : "Shows a run timer in the corner, from the start of gameplay to the ending."))
         settings_save();
-    opt_indent(1);
     {  // (any time, also mid-session)
         static const char *const pos[] = {LN("Bottom left"), LN("Bottom right")};
         if (!g_settings.timer) opt_disable_next();
         if (opt_choice("Timer position", &g_settings.timer_pos, pos, 2, TIMER_POS_LEFT, "Which corner the timer sits in."))
             settings_save();
     }
-    opt_indent(-1);
     if (opt_toggle("LiveSplit", &g_settings.livesplit, false,
                    "Connects to LiveSplit's Server component. It starts the timer, splits on each instrument and stops "
                    "at the ending, with load times removed.")) {
         settings_save();
         livesplit_poke();
     }
-    opt_indent(1);
     {
         char d[512];  // (in the menus' language already: the row leaves it as it is)
         snprintf(d, sizeof d, "%s%s%s", L("The address LiveSplit's Server listens on, written as host:port."),
@@ -156,6 +157,5 @@ extern "C" void difficulty_draw(float scale) {
             settings_save();
         }
     }
-    opt_indent(-1);
     opt_end();
 }

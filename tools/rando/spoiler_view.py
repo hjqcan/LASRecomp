@@ -74,10 +74,11 @@ def pretty_loc(loc):
     m = re.match(r'^(D\d)-(.*)$', loc)
     if m:
         rest = m.group(2)
+        where = DPREFIX[m.group(1)]
         pm = re.match(r'^pot-(\d\d[A-H])-(\d+)$', rest)
         if pm:
-            return f'{DPREFIX[m.group(1)]}: pot {pm.group(2)} in room {pm.group(1)}'
-        return f'{DPREFIX[m.group(1)]}: ' + rest.replace('-', ' ')
+            return f'{where}: pot {pm.group(2)} in room {pm.group(1)}'
+        return f'{where}: ' + rest.replace('-', ' ')
     pm = re.match(r'^pot-([A-Za-z0-9]+)-(\d\d[A-H])-(\d+)$', loc)
     if pm:
         name = re.sub(r'(?<!^)(?=[A-Z])', ' ', pm.group(1))

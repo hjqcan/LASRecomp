@@ -1298,11 +1298,10 @@ def chaos_stub_count(cat, level, layout):
     return sum(1 for x in _chaos_sides(cat, layout, ENTRANCES[level]) if x[0] == 'stub')
 
 
-def chaos_pairs(cat, level, layout, entrance, rng, romfs_for_tiles=None, madness=False):
-    """Chaos: pairs every free doorway that isn't physically joined with another one (any room of the level, any
-    side) -> door_jumps rows (level, cell, side, own centre, partner centre, partner cell, partner side), both ways.
-    Pieces joined physically (incl. the stairs network) are linked first (a random spanning tree), the rest pair at
-    random. Coupled needs an even number of free sides (plan_all_chaos: _even_stubs); an odd one is refused (None)."""
+def chaos_pieces(cat, level, layout, entrance, rng, romfs_for_tiles=None):
+    """A Chaos layout's pieces (rooms joined physically, the stairs network as one) and their free doorways:
+    (comps {root: [pos]}, by_comp {root: [stub]}, follow {(cell, side): [stub]}); stub = (pos, cell, side, slot).
+    One free doorway per cell side is a stub, the side's others follow it (follow)."""
     pos = {cell_pos(k): k for k in layout}
     stairs = {cell_pos(c) for c, r in layout.items() if c == r and
               any(t in a for a in cat[r]['actors'] for t in ('Downstairs', 'Upstairs'))}
@@ -1340,6 +1339,15 @@ def chaos_pairs(cat, level, layout, entrance, rng, romfs_for_tiles=None, madness
     by_comp = {}
     for st_ in stubs:
         by_comp.setdefault(find(st_[0]), []).append(st_)
+    return comps, by_comp, follow
+
+
+def chaos_pairs(cat, level, layout, entrance, rng, romfs_for_tiles=None, madness=False):
+    """Chaos: pairs every free doorway that isn't physically joined with another one (any room of the level, any
+    side) -> door_jumps rows (level, cell, side, own centre, partner centre, partner cell, partner side), both ways.
+    Pieces joined physically (incl. the stairs network) are linked first (a random spanning tree), the rest pair at
+    random. Coupled needs an even number of free sides (plan_all_chaos: _even_stubs); an odd one is refused (None)."""
+    comps, by_comp, follow = chaos_pieces(cat, level, layout, entrance, rng, romfs_for_tiles)
     # drop-down-only doorways (inward_only: Link never leaves through one) never carry the spanning tree / the ring:
     # every piece hangs on by a doorway that works both ways, so the whole dungeon stays reachable and escapable; they
     # pair among the rest (one-way extras, in only)
@@ -1556,7 +1564,7 @@ def _even_stubs(cat, romfs, levels, out, pool, used, extra, rng):
       copy  a second copy of a room without checks (copy_fit) - write() gives it flags and actor keys of its own
     Returns [(kind, room, level, cell)], None if a dungeon stays odd (the round is drawn again)."""
     def odd(lv):
-        return chaos_stub_count(cat, lv, out[lv]) % 2 == 1
+        return chaos_stub_count(cat, lv, out[lv]) % 2 != 0
 
     def may_go(room, lv):
         return not room.startswith('Lv07EagleTower') or lv == 'Lv07EagleTower'  # (the tower's rooms stay in it)
@@ -1663,6 +1671,68 @@ def _even_stubs(cat, romfs, levels, out, pool, used, extra, rng):
     return fixes
 
 
+def chaos_place(cat, sub, romfs, levels, rng, pool, shuffle=False, even=True):
+    """Chaos placement for `levels` (plan(chaos=True) per dungeon, then every leftover room whose doorways can all jump
+    into an empty cell): ({level: layout}, rooms used, _even_stubs fixes), or None when a dungeon can't be built or a
+    layout has a dead end. even: each dungeon an even number of free doorway sides (Coupled). The
+    doorways are paired afterwards (chaos_pairs)."""
+    order = sorted(levels, key=lambda lv: -len(anchors_of(cat, lv)))
+    if shuffle:  # (later rounds: other orders)
+        rng.shuffle(order)
+    used, out, failed = set(), {}, []
+    for lv in order:
+        n = len(set(anchors_of(cat, lv)) | {ENTRANCES[lv]})
+        L = None
+        for add in (6, 3, 0):
+            L = L or plan(cat, lv, ENTRANCES[lv], sub, size=n + add, romfs=romfs, exclude=used, tries=12, chaos=True)
+        if L is None:
+            failed.append(lv)
+            continue
+        used |= {src for src in L.values() if src in pool}
+        out[lv] = L
+    if failed:
+        return None
+    # leftovers: rooms whose doorways can all jump go into empty cells (every room used once)
+    left = sorted(pool - used)
+    rng.shuffle(left)
+    extra = {}  # level -> cells of the single leftovers placed in it
+    share = {lv: sum(1 for k in pool if k.startswith(lv + '_')) for lv in levels}
+    for room in left:
+        # a TIED pair goes in as one piece (the first room, its partner one cell over: they join physically)
+        if any(rooms.neighbour(h, hs) == room for h, hs in TIED):
+            continue  # (placed with its head)
+        group = [(room, (0, 0))] + [(rooms.neighbour(room, hs), rooms.STEP[hs]) for h, hs in TIED if h == room]
+        if any(m not in pool or m in used for m, _ in group):
+            continue
+        if not all(chaos_free(cat, m, s, x[0]) for m, _ in group for s, v in openings(cat, m).items() for x in v
+                   if (m, s) not in PINNED):
+            continue
+        # the dungeon furthest below its share of the pool, then a random empty cell nobody's doorway faces
+        for lv in sorted(levels, key=lambda lv: (sum(1 for v in out[lv].values() if v in pool) - share[lv],
+                                                  rng.random())):
+            if room.startswith('Lv07EagleTower') and lv != 'Lv07EagleTower':
+                continue  # (the tower's rooms stay in the tower)
+            cells = _place_room(cat, romfs, lv, out[lv], group, rng)
+            if cells is None:
+                continue
+            used.update(m for m, _ in group)
+            if len(group) == 1:  # (a single leftover may move again to even out the doorways: _even_stubs)
+                extra.setdefault(lv, []).extend(cells)
+            break
+    # Coupled: every free doorway side needs a partner - a dungeon with an odd number of them gets one more (or
+    # one fewer) room (user 2026-10-27: a doorway leading back into itself looked broken)
+    fixes = _even_stubs(cat, romfs, levels, out, pool, used, extra, random.Random(sub + '-even')) if even else []
+    if fixes is None:
+        return None
+    # a doorway that can't jump (wide opening, one-way door...) needs its matching neighbour, else it leads
+    # into the void (user's seed De: 12 such): such a round is dropped
+    if any(dead_ends(cat, lv, out[lv]) for lv in levels):
+        return None
+    if any(not linked_all(cat, romfs, lv, out[lv]) for lv in levels):
+        return None
+    return out, used, fixes
+
+
 def plan_all_chaos(cat, seed, romfs, levels=None, rounds=None, madness=False, settings=None):
     """Chaos dungeon room shuffle for every dungeon of a seed: each room used once (no duplicates); physical
     placement keeps doorways that can't jump matched; free doorways are paired by chaos_pairs.
@@ -1679,60 +1749,10 @@ def plan_all_chaos(cat, seed, romfs, levels=None, rounds=None, madness=False, se
     for rnd in range(rounds):
         sub = seed if rnd == 0 else f'{seed}#{rnd}'
         rng = random.Random(sub + '-chaos')
-        order = sorted(levels, key=lambda lv: -len(anchors_of(cat, lv)))
-        if rnd:
-            rng.shuffle(order)
-        used, out, failed = set(), {}, []
-        for lv in order:
-            n = len(set(anchors_of(cat, lv)) | {ENTRANCES[lv]})
-            L = None
-            for add in (6, 3, 0):
-                L = L or plan(cat, lv, ENTRANCES[lv], sub, size=n + add, romfs=romfs, exclude=used, tries=12, chaos=True)
-            if L is None:
-                failed.append(lv)
-                continue
-            used |= {src for src in L.values() if src in pool}
-            out[lv] = L
-        if failed:
+        placed = chaos_place(cat, sub, romfs, levels, rng, pool, shuffle=rnd > 0, even=not madness)
+        if placed is None:
             continue
-        # leftovers: rooms whose doorways can all jump go into empty cells (every room used once)
-        left = sorted(pool - used)
-        rng.shuffle(left)
-        extra = {}  # level -> cells of the single leftovers placed in it
-        share = {lv: sum(1 for k in pool if k.startswith(lv + '_')) for lv in levels}
-        for room in left:
-            # a TIED pair goes in as one piece (the first room, its partner one cell over: they join physically)
-            if any(rooms.neighbour(h, hs) == room for h, hs in TIED):
-                continue  # (placed with its head)
-            group = [(room, (0, 0))] + [(rooms.neighbour(room, hs), rooms.STEP[hs]) for h, hs in TIED if h == room]
-            if any(m not in pool or m in used for m, _ in group):
-                continue
-            if not all(chaos_free(cat, m, s, x[0]) for m, _ in group for s, v in openings(cat, m).items() for x in v
-                       if (m, s) not in PINNED):
-                continue
-            # the dungeon furthest below its share of the pool, then a random empty cell nobody's doorway faces
-            for lv in sorted(levels, key=lambda lv: (sum(1 for v in out[lv].values() if v in pool) - share[lv],
-                                                      rng.random())):
-                if room.startswith('Lv07EagleTower') and lv != 'Lv07EagleTower':
-                    continue  # (the tower's rooms stay in the tower)
-                cells = _place_room(cat, romfs, lv, out[lv], group, rng)
-                if cells is None:
-                    continue
-                used.update(m for m, _ in group)
-                if len(group) == 1:  # (a single leftover may move again to even out the doorways: _even_stubs)
-                    extra.setdefault(lv, []).extend(cells)
-                break
-        # Coupled: every free doorway side needs a partner - a dungeon with an odd number of them gets one more (or
-        # one fewer) room (user 2026-10-27: a doorway leading back into itself looked broken)
-        fixes = [] if madness else _even_stubs(cat, romfs, levels, out, pool, used, extra, random.Random(sub + '-even'))
-        if fixes is None:
-            continue
-        # a doorway that can't jump (wide opening, one-way door...) needs its matching neighbour, else it leads
-        # into the void (user's seed De: 12 such): such a round is dropped
-        if any(dead_ends(cat, lv, out[lv]) for lv in levels):
-            continue
-        if any(not linked_all(cat, romfs, lv, out[lv]) for lv in levels):
-            continue
+        out, used, fixes = placed
         jumps = []
         import room_logic
         for lv in levels:

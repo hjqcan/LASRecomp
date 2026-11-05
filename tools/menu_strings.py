@@ -22,7 +22,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LANG_DIR = os.path.join(ROOT, 'runtime', 'ui', 'lang')
-CODES = ['ja', 'es', 'fr', 'de', 'it', 'nl', 'ru', 'ko', 'zh-Hans', 'zh-Hant']
+CODES = ['ja', 'es', 'fr', 'de', 'it', 'nl', 'ru', 'ko', 'zh-Hans', 'zh-Hant', 'pt-BR']
 
 # ---- C / C++ sources
 

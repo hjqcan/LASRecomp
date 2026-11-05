@@ -78,8 +78,7 @@ static uint32_t seed_seed(void) {  // Per seed: the randomizer seed's name (vani
 }
 
 static bool tint(int cls, float t[8]) {
-    extern bool cosmetics_seed_on(void);  // (a seed with its own cosmetics has them per seed)
-    int mode = cosmetics_seed_on() ? 1 : g_settings.enemy_colours;
+    int mode = g_settings.enemy_colours;
     if (mode <= 0 || mode >= N_ENEMY_COLOUR_MODES || cls < E_BASE || cls >= E_BASE + N_SPECIES) return false;
     uint32_t h = mix32((mode == 2 ? load_seed() : seed_seed()) ^ (uint32_t)(cls - E_BASE) * 0x27D4EB2Fu);
     float shift = 0.12f + (h >> 8) / 16777216.0f * 0.76f;  // (12-88% of the wheel: always clearly another colour)

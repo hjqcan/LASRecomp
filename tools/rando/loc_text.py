@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Our own message texts in every language the game has (the Escape Bottle, the Hint Sheet): the sentences are
-ours, written here per language; names of items and places come from the game's own message
+"""Our own message texts in every language the game has (the Escape Bottle, the Hint Sheet): the
+sentences are ours, written here per language; names of items and places come from the game's own message
 files of that language at generation time (UI.msbt ItemName_*, Glossary.msbt, Place.msbt), never stored here.
 
     lang_of(rel)                       'regionEU/EUde/message/System.msbt' -> 'de' (LANGS)

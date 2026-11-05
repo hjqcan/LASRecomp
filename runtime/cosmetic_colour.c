@@ -40,31 +40,15 @@ void col_format(const CosColour *c, char *out, size_t n) {
     else snprintf(out, n, "%s", g_col_names[c->pick >= 0 && c->pick < N_COL ? c->pick : 0]);
 }
 
-int (*g_col_seed_pick)(int slot, uint32_t *rgb);
-
-static int seed_pick(const CosColour *c, int slot, uint32_t *rgb) {
-    (void)c;  // (the seed's colour wins over the player's: the Cosmetics tab is locked while it's played)
-    if (!g_col_seed_pick) return COL_DEFAULT;
-    uint32_t v = 0;
-    int p = g_col_seed_pick(slot, &v);
-    if (p > COL_DEFAULT && p < COL_RANDOM) v = g_col_rgb[p];
-    else if (p != COL_CUSTOM) return COL_DEFAULT;
-    if (rgb) *rgb = v & 0xFFFFFF;
-    return p;
-}
-
-bool col_seed_rgb(const CosColour *c, int slot, uint32_t *rgb) { return seed_pick(c, slot, rgb) != COL_DEFAULT; }
-
-int col_pick(const CosColour *c, int slot) {
-    int p = seed_pick(c, slot, NULL);
-    return p ? p : c->pick;
-}
+void (*g_col_seed_check)(void);
 
 bool col_target(const CosColour *c, int slot, uint32_t *rgb) {
     static int picks[COL_SLOTS];
     static unsigned seed;
+    static time_t checked;
     if (slot < 0 || slot >= COL_SLOTS) return false;
-    if (col_seed_rgb(c, slot, rgb)) return true;  // (the seed's colour, if it has its own)
+    time_t now = time(NULL);
+    if (g_col_seed_check && now != checked) checked = now, g_col_seed_check();  // (a new seed's own set: once a second)
     if (c->pick != COL_RANDOM) picks[slot] = 0;
     if (c->pick == COL_CUSTOM) { *rgb = c->rgb & 0xFFFFFF; return true; }
     if (c->pick == COL_RANDOM) {

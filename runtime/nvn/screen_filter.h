@@ -10,10 +10,9 @@
 
 enum { SCREEN_FILTER_OFF, SCREEN_FILTER_GB, SCREEN_FILTER_GBC, SCREEN_FILTER_GRAY };
 
-// pf for the present shader (x: the mode; off in a seed with its own cosmetics)
-extern bool cosmetics_seed_on(void);  // runtime/cosmetics_seed.c
+// pf for the present shader (x: the mode)
 static inline void screen_filter_params(float pf[4]) {
-    pf[0] = cosmetics_seed_on() ? 0 : (float)g_settings.screen_filter;
+    pf[0] = (float)g_settings.screen_filter;
     pf[1] = pf[2] = pf[3] = 0;
 }
 

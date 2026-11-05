@@ -42,6 +42,14 @@ static _Atomic uint64_t rumble_frame_ms;
 static uint16_t rumble_last_lo, rumble_last_hi;
 static uint64_t rumble_last_ms;
 static bool rumble_warned;
+static _Atomic uint64_t rumble_pulse_until;  // a pulse of our own (input_rumble_pulse): until then, at least this
+static _Atomic uint32_t rumble_pulse_amp;    // (lo << 16 | hi)
+// A short rumble of our own (the Storm weather's thunder, runtime/nvn/weather.c): mixed in like the game's, with the
+// same rules (Rumble setting, its intensity, the menu, focus). Any thread.
+void input_rumble_pulse(uint16_t lo, uint16_t hi, uint32_t ms) {
+    atomic_store(&rumble_pulse_amp, (uint32_t)lo << 16 | hi);
+    atomic_store(&rumble_pulse_until, SDL_GetTicks() + ms);
+}
 
 static void rumble_clear(void) {
     SDL_LockSpinlock(&rumble_lock);
@@ -89,6 +97,11 @@ void input_rumble_poll(void) {
     if (suppress) memset(rumble_values, 0, sizeof rumble_values);
     else if (rumble_allowed) {
         rumble_mix(rumble_values, &lo, &hi);
+        if (now < atomic_load(&rumble_pulse_until)) {
+            uint32_t p = atomic_load(&rumble_pulse_amp);
+            if ((p >> 16) > lo) lo = (uint16_t)(p >> 16);
+            if ((p & 0xFFFF) > hi) hi = (uint16_t)(p & 0xFFFF);
+        }
         int pct = g_settings.rumble_strength;  // (Controls tab: Intensity)
         if (pct > 0 && pct < 100) lo = (uint16_t)(lo * pct / 100), hi = (uint16_t)(hi * pct / 100);
     }
@@ -202,7 +215,7 @@ static void recompute_pad(void) {
     }
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
-        if (g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT && (host >> g_bind_pad[i] & 1)) b |= 1ull << i;
+        if ((unsigned)bind_pad_host(i) < PADB_HOST_COUNT && (host >> bind_pad_host(i) & 1)) b |= 1ull << i;
     pad_buttons = b;
     if (!pad || host_test) { pad_lx = test_lx, pad_ly = test_ly, pad_rx = pad_ry = 0; return; }
     pad_lx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX);
@@ -220,7 +233,7 @@ static _Atomic uint64_t tap_buttons;   // released while unseen: the game's next
 static uint64_t pad_bits(int host) {   // the game buttons bound to host button `host` (SDL button / PADB_*TRIGGER)
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
-        if (g_bind_pad[i] == host) b |= 1ull << i;
+        if (bind_pad_host(i) == host) b |= 1ull << i;
     return b;
 }
 static void note_press(uint64_t down, uint64_t up) {
@@ -795,6 +808,10 @@ static void fill_state(Cpu *c) {
     }
     int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly) + script_ly);
     int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry) + script_ry);
+    if (!menu) {  // d-pad items (setting): the Items page assigns, play uses (runtime/hle/dpad_items.c; before mirroring:
+        extern uint64_t dpad_items_input(uint64_t b);  // the d-pad as held)
+        b = dpad_items_input(b);
+    }
     extern bool mirror_input(void);  // mirror mode, the world on screen (runtime/hle/mirror.c): left and right swap
     bool mirrored = !menu && mirror_input();
     if (mirrored) {
@@ -804,7 +821,7 @@ static void fill_state(Cpu *c) {
     }
     // d-pad / arrow keys walk (setting) while the stick is at rest. "At rest" has a dead zone: a controller's stick
     // never reads exactly 0 (a DualSense rests at a few hundred), which used to turn the d-pad off altogether.
-    if (!menu && g_settings.dpad_move && (int64_t)lx * lx + (int64_t)ly * ly < 8000ll * 8000) {
+    if (!menu && g_settings.dpad_mode == DPAD_MOVE && (int64_t)lx * lx + (int64_t)ly * ly < 8000ll * 8000) {
         uint64_t d = key_buttons | pad_buttons | script_buttons;
         int dx = (int)((d >> BTN_RIGHT) & 1) - (int)((d >> BTN_LEFT) & 1);
         if (mirrored) dx = -dx;

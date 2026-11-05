@@ -57,8 +57,12 @@ const char *const k_zh_hans[][2] = {
 const char *const k_zh_hant[][2] = {
 #include "lang/zh-Hant.inc"
     {NULL, NULL}};
+const char *const k_pt_br[][2] = {
+#include "lang/pt-BR.inc"
+    {NULL, NULL}};
 // by g_language_codes index (Auto and English: none)
-const Pair *const k_tables[N_LANGUAGES] = {NULL, k_ja, NULL, k_es, k_fr, k_de, k_it, k_nl, k_ru, k_ko, k_zh_hans, k_zh_hant};
+const Pair *const k_tables[N_LANGUAGES] = {NULL, k_ja, NULL, k_es, k_fr, k_de, k_it, k_nl, k_ru, k_ko, k_zh_hans, k_zh_hant,
+                                           k_pt_br};
 enum { L_JA = 1, L_EN = 2, L_RU = 8, L_KO = 9, L_ZH_HANS = 10, L_ZH_HANT = 11 };
 
 struct Table {
@@ -112,7 +116,7 @@ void missing(const char *en) {
 int i18n_lang(void) {
     if (g_lang < 0 || g_lang_setting != g_settings.language) {
         g_lang_setting = g_settings.language;
-        const char *code = settings_language();
+        const char *code = settings_menu_language();
         if (const char *e = getenv("LARECOMP_MENU_LANG")) code = e;  // (test) the menus alone, in that language
         g_lang = L_EN;
         for (int i = 1; i < N_LANGUAGES; i++)

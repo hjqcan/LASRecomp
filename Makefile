@@ -97,11 +97,20 @@ EXE      := $(B)/lasrecomp.exe
 DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
 OSFLAGS  := -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S -DWIN32_LEAN_AND_MEAN -DNOMINMAX \
             $(if $(RELEASE),-DLARECOMP_ZIP_BUILD)  # (the log's [info] line: the release zip)
+# ARM64 (MSYS2 CLANGARM64): the guest's FP/SIMD as inline asm, as on Apple Silicon and Linux aarch64
+WINARCH  := $(firstword $(subst -, ,$(shell $(CC) -dumpmachine)))
+ifeq ($(WINARCH),aarch64)
+GENSIMD  := --simd asm
+else
 GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA for the lifted FP/SIMD code (simd.h); override for older CPUs
+endif
 GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
 LDFLAGS  := -fuse-ld=lld -Wl,--stack,16777216 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
             -lvulkan-1 -lws2_32 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared \
             $(if $(RELEASE),-Wl$(comma)--subsystem$(comma)windows -Wl$(comma)--strip-debug)  # release: no console window (log -> lasrecomp.log + lasrecomp-backup-*.log), no debug info
+ifeq ($(WINARCH),aarch64)
+LDFLAGS  += -lpthread  # (winpthreads: linked implicitly by UCRT64's toolchain, not by CLANGARM64's)
+endif
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
 BACKEND_OBJ += $(B)/rt/platform/windows_rc.o  # the .exe's icon (Explorer, taskbar)
@@ -263,8 +272,13 @@ dmg: app
 # with build/deps-win/bin first (the FFmpeg DLL names are the same as MSYS2's GPL ones). vulkan-1.dll is left
 # out: every Vulkan driver installs the loader in System32. Saves, seeds and game files go next to the exe at run time.
 # Needs: Windows 10+ x64, a Vulkan 1.3 driver, an AVX2 CPU (GENARCH x86-64-v3; checked at startup).
+# ARM64 (experimental, from an MSYS2 CLANGARM64 shell): the same steps give LAS Recomp-<version>-windows-arm64.zip; its
+# helpers are built with an x64 Python 3.12 (RANDO_PY=...: capstone / unicorn have no ARM64 Windows wheels) and run
+# under emulation, everything else is ARM64.
 DIST     := build/dist/LAS Recomp
 WIN_B    := build/win-release
+# the zip's platform name, as the update check names it (runtime/ui/launcher.mm LARECOMP_PLATFORM)
+WINZIP   := windows$(if $(filter aarch64,$(WINARCH)),-arm64)
 deps-windows:
 	tools/build_deps_windows.sh
 dist:
@@ -288,7 +302,7 @@ dist:
 	cp third_party/fonts/DejaVu/LICENSE "$(DIST)/DejaVu-LICENSE.txt"
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
 	cp -R build/helper/rando-gen "$(DIST)/"
-	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/lasrecomp.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
+	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/lasrecomp.exe | awk '(/ucrt64/ || /clangarm64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
 	    xargs -I{} cp -u {} "$(DIST)/"
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
 	# (no path of this machine inside: build/deps-win, debug info, zig's runtime. Not on CI: its paths name no one)
@@ -296,9 +310,9 @@ dist:
 	    case "$$(basename "$$(cygpath -u "$$USERPROFILE")")" in runner|runneradmin) h= ;; *) h=$$(cygpath -m "$$USERPROFILE") ;; esac; \
 	    ! grep -rlaiF -e "$(CURDIR)" -e "$$(cygpath -m '$(CURDIR)')" -e "$$(cygpath -w '$(CURDIR)')" \
 	        $${h:+-e "$$h" -e "$$(cygpath -w "$$h")"} "$(DIST)"; fi
-	cd build/dist && if command -v zip >/dev/null; then zip -qr "LAS Recomp-$(VERSION)-windows.zip" "LAS Recomp"; \
-	    else /c/Windows/System32/tar.exe -a -cf "LAS Recomp-$(VERSION)-windows.zip" "LAS Recomp"; fi
-	@echo "build/dist/LAS Recomp-$(VERSION)-windows.zip"
+	cd build/dist && if command -v zip >/dev/null; then zip -qr "LAS Recomp-$(VERSION)-$(WINZIP).zip" "LAS Recomp"; \
+	    else /c/Windows/System32/tar.exe -a -cf "LAS Recomp-$(VERSION)-$(WINZIP).zip" "LAS Recomp"; fi
+	@echo "build/dist/LAS Recomp-$(VERSION)-$(WINZIP).zip"
 
 # Seed generator as a standalone helper, so players need no Python: build/helper/rando-gen/ (rando-gen[.exe] +
 # _internal/), frozen by PyInstaller from tools/rando/rando_gen.spec in its own venv (build/rando-venv). Ship the

@@ -14,6 +14,7 @@
 
 #include "imgui.h"
 #include "i18n.h"
+#include "live_preview.h"
 #include "option_rows.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
@@ -82,9 +83,15 @@ static void push(const QEvent &e) {
 
 bool menu_is_open(void) { return g_open.load(); }
 static void set_open(bool open);
+static int g_tab = -1000, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab; -1000: the first tab)
 extern "C" void menu_test_open(void) {
     set_open(true);
     if (getenv("LARECOMP_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("LARECOMP_MENU_TAB")); }
+    // (test) LARECOMP_PREVIEW=<row label>: that row's live preview opens straight away (its page: LARECOMP_MENU_TAB)
+    if (const char *row = getenv("LARECOMP_PREVIEW")) {
+        if (getenv("LARECOMP_MENU_TAB")) g_tab = atoi(getenv("LARECOMP_MENU_TAB"));
+        preview_open(row, -1);
+    }
 }
 
 void menu_tabs_focus(bool first_tab);
@@ -100,7 +107,7 @@ static void set_open(bool open) {
         menu_tabs_focus(!opened);  // selected one
         opened = true;
     }
-    else { settings_save(); osk_cancel(); g_text_busy = false; }
+    else { settings_save(); osk_cancel(); g_text_busy = false; preview_reset(); }
 }
 
 static ImGuiKey key_from_scancode(SDL_Scancode sc) {
@@ -275,6 +282,28 @@ bool menu_handle_event(const SDL_Event *e) {
     }
 }
 
+// Remember window size (Video tab): the window opens at the size it had when LAS Recomp last quit. The size is taken
+// at exit (every quit ends in exit()), not in fullscreen or maximized - those keep the last plain window's size.
+static SDL_Window *g_remember_win;
+static void remember_at_exit(void) {
+    if (!g_settings.remember_window || !g_remember_win) return;
+    SDL_WindowFlags fl = SDL_GetWindowFlags(g_remember_win);
+    int w, h;
+    if ((fl & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_MINIMIZED)) || !SDL_GetWindowSize(g_remember_win, &w, &h))
+        return;
+    if (w == g_settings.window_w && h == g_settings.window_h) return;
+    g_settings.window_w = w, g_settings.window_h = h;
+    settings_save();
+}
+extern "C" void rt_window_size(int *w, int *h) {  // before the window is made: the remembered size, if it's on
+    if (g_settings.remember_window && g_settings.window_w >= 320 && g_settings.window_h >= 180)
+        *w = g_settings.window_w, *h = g_settings.window_h;
+}
+extern "C" void rt_window_remember(void *w) {
+    if (!g_remember_win) atexit(remember_at_exit);
+    g_remember_win = (SDL_Window *)w;
+}
+
 extern "C" uint32_t g_window_resize_request;  // (test scripts: runtime/hle/input.c "resize")
 void menu_apply_window_requests(void *win) {
     SDL_Window *w = (SDL_Window *)win;
@@ -308,7 +337,6 @@ void menu_set_scene(id<MTLTexture> tex, const float uv[4]) {
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
 static ImFont *g_font, *g_font_big;
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Baloo 2); everything else keeps g_font
-static int g_tab = -1000, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab; -1000: the first tab)
 static int g_focus_tab = -99;  // put the nav cursor on this tab next frame (-100: the selected one; -99: none)
 static int g_focus_frames;
 
@@ -485,7 +513,8 @@ static void tab_display(void) {
     opt_begin("##video", scale);
     opt_section("Display");
     const char *aspects[] = {LN("Unlocked"), LN("Original 16:9")};
-    opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
+    preview_text(LN("Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9."), NULL);
+    opt_preview("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
                "Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps "
                "the game's 16:9 view with bars.");
     bool fs = g_settings.fullscreen;
@@ -493,10 +522,22 @@ static void tab_display(void) {
         g_settings.fullscreen = fs;
         g_want_fullscreen_apply.store(true);
     }
-    opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
+    static const char *fps_corners[] = {LN("Off"), LN("Top left"), LN("Top right"), LN("Bottom left"), LN("Bottom right")};
+    opt_choice("Show FPS", &g_settings.show_fps, fps_corners, N_FPS_CORNERS, FPS_OFF,
+               "Shows the frame rate in a corner of the screen.");
     opt_toggle("Frame Generation", &g_settings.frame_interp, false,
                "Experimental. Draws extra images between the game's frames for smoother motion. Some visual glitches "
                "are possible.");
+    {   // (a live preview, as an Off / On choice)
+        static const char *oo[] = {LN("Off"), LN("On")};
+        int rb = g_settings.blur_removal;
+        if (opt_preview("Remove blur", &rb, oo, 2, 0, "Turns off the tilt-shift blur at the top and bottom of the screen."))
+            g_settings.blur_removal = rb;
+    }
+    opt_toggle("Pause on focus lost", &g_settings.pause_unfocused, false,
+               "The game pauses while its window isn't in front.");
+    opt_toggle("Remember window size", &g_settings.remember_window, false,
+               "The window opens at the size it was when you quit.");
 
     opt_section("Rendering");
     // display order -> RES_* (the ini / enum order predates the menu order)
@@ -531,7 +572,11 @@ static void tab_display(void) {
             snprintf(dyn, sizeof dyn, L("Dynamic is at %.0f%% of the display right now."), output_scale_dynamic_factor() * 100);
             snprintf(d + n, sizeof d - n, " %s", dyn);
         }
-        if (opt_choice("Internal resolution", &ri, res, NRES, rdef, d, false))
+        char note[32];  // (the preview's value: "50% (800×450)", its text the user's - 2026-11-03)
+        snprintf(note, sizeof note, "%.0f×%.0f", 1920.0 * sx, 1080.0 * sy);
+        preview_text(LN("Configure the resolution used for rendering the game. Higher values are more demanding on "
+                        "your graphics hardware."), note);
+        if (opt_preview("Internal resolution", &ri, res, NRES, rdef, d, false))
             g_settings.res_mode = res_mode[ri], g_settings.res_auto = false;
     }
     {   // each OS's own upscaler next to bilinear (UPSCALE_SHARP: MetalFX on macOS, AMD FSR 1 on Windows)
@@ -552,44 +597,40 @@ static void tab_display(void) {
             ud = udm;
             opt_disable_next();
         }
-        if (opt_choice("Upscaler", &ui, ups, 2, g_default_upscaler == UPSCALE_BILINEAR ? 0 : 1, ud))
+        preview_text(LN("Configure how the game is scaled up to fit your window."), NULL);
+        if (opt_preview("Upscaler", &ui, ups, 2, g_default_upscaler == UPSCALE_BILINEAR ? 0 : 1, ud))
             g_settings.upscaler = ui ? UPSCALE_SHARP : UPSCALE_BILINEAR, g_settings.upscaler_auto = false;
     }
     static const char *aa[] = {LN("Off"), LN("SMAA")};
-    opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
+    preview_text(LN("Configure the smoothing of jagged edges. SMAA keeps textures sharp."), NULL);
+    opt_preview("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
                "Smooths jagged edges. SMAA keeps textures sharp and helps most at a lower internal resolution.");
 
-    opt_section("Game");
-    opt_toggle("Remove blur", &g_settings.blur_removal, false,
-               "Turns off the tilt-shift blur at the top and bottom of the screen.");
-    opt_toggle("Hide Hero Mode icon", &g_settings.hide_hero_icon, false,
-               "Hides the Hero Mode emblem in the corner of the screen while playing a Hero Mode file.");
     opt_end();
 }
 
-extern "C" bool cosmetics_seed_on(void);  // runtime/cosmetics_seed.c
+extern "C" bool cosmetics_seed_on(void);      // runtime/cosmetics_seed.c
+extern "C" void cosmetics_seed_apply(void);
+extern "C" bool weather_cycle_on(void);       // runtime/nvn/weather_cycle.c
 
 // Cosmetics: tunic / heart colours, live (runtime/nvn/texpatch.c), and recolours by draw (runtime/nvn/recolour*.c);
-// a seed made with "Random cosmetics" has its own, and the page is locked while it's played (rows greyed out, showing
-// the seed's): the player's own choices stay saved for another seed or vanilla
+// a seed made with "Random cosmetics" puts its own set into the rows the first time it's played (cosmetics_seed.c),
+// and they stay the player's to change: "Seed's look" puts the seed's back, "Default all" the game's own
 static void tab_cosmetics(void) {
     opt_begin("##cosmetics", ImGui::GetFontSize() / 34);
     CosColour *rows[] = {&g_settings.tunic, &g_settings.hearts, &g_settings.hair, &g_settings.skin, &g_settings.shield,
                          &g_settings.leaves, &g_settings.grass, &g_settings.sand, &g_settings.water,
                          &g_settings.fences, &g_settings.walls, &g_settings.houses};
-    bool seed = cosmetics_seed_on();
-    if (seed) {
-        opt_disable_next();
-        opt_action("This seed picked your look. Commit to it!", "", NULL, false);
-    } else {
-        if (opt_button("Randomize all", "Picks a random color for everything below."))
-            for (CosColour *c : rows) c->pick = 1 + rand() % (COL_RANDOM - 1);  // (a named colour: shown as what it is)
-        if (opt_button("Default all", "Puts everything on this page back to the game's normal look.")) {
-            for (CosColour *c : rows) c->pick = COL_DEFAULT;
-            g_settings.enemy_colours = 0;
-            g_settings.screen_filter = 0;
-        }
+    if (opt_button("Randomize all", "Picks a random color for everything below."))
+        for (CosColour *c : rows) c->pick = 1 + rand() % (COL_RANDOM - 1);  // (a named colour: shown as what it is)
+    if (opt_button("Default all", "Puts everything on this page back to the game's normal look.")) {
+        for (CosColour *c : rows) c->pick = COL_DEFAULT;
+        g_settings.enemy_colours = 0;
+        g_settings.screen_filter = 0;
+        g_settings.weather = 0;
     }
+    if (cosmetics_seed_on() && opt_button("Seed's look", "Puts everything on this page back to this seed's look."))
+        cosmetics_seed_apply();
     opt_section("Colors");
     opt_colour("Tunic color", &g_settings.tunic, COL_SLOT_TUNIC, "Link's tunic color.");
     opt_colour("Heart color", &g_settings.hearts, COL_SLOT_HEARTS, "The color of the hearts on the HUD.");
@@ -604,14 +645,12 @@ static void tab_cosmetics(void) {
                                              LN("Cherry blossom"), LN("Mixed")};
         static const int preset[4][3] = {{COL_DEFAULT, COL_DEFAULT, COL_DEFAULT}, {2, 3, 3}, {10, 10, 10},
                                          {9, COL_DEFAULT, COL_DEFAULT}};
-        int cur = 4;  // (as shown: a row on Default shows the seed's colour, if it has its own)
+        int cur = 4;
         for (int i = 0; i < 4; i++)
-            if (col_pick(&g_settings.leaves, COL_SLOT_LEAVES) == preset[i][0] &&
-                col_pick(&g_settings.grass, COL_SLOT_GRASS) == preset[i][1] &&
-                col_pick(&g_settings.sand, COL_SLOT_SAND) == preset[i][2])
+            if (g_settings.leaves.pick == preset[i][0] && g_settings.grass.pick == preset[i][1] &&
+                g_settings.sand.pick == preset[i][2])
                 cur = i;
         int v = cur;
-        if (seed) opt_disable_next();
         if (opt_choice("Season", &v, names, 5, 0, "Sets the leaves, grass and sand colors below.") && v != cur) {
             if (v == 4) v = cur == 0 ? 3 : 0;  // (Mixed is never chosen: past the ends, back round)
             g_settings.leaves.pick = preset[v][0];
@@ -627,32 +666,39 @@ static void tab_cosmetics(void) {
     opt_colour("Wall color", &g_settings.walls, COL_SLOT_WALLS, "The overworld's cliff walls and ledges.");
     opt_colour("House color", &g_settings.houses, COL_SLOT_HOUSES, "The roofs of the village houses.");
     opt_section("Enemies");
-    {   // (a seed with its own cosmetics: "Seed", its enemies are per seed; and no screen filter)
-        const char *modes[N_ENEMY_COLOUR_MODES];
-        for (int i = 0; i < N_ENEMY_COLOUR_MODES; i++) modes[i] = g_enemy_colour_modes[i];
+    opt_choice("Enemy colors", &g_settings.enemy_colours, g_enemy_colour_modes, N_ENEMY_COLOUR_MODES, 0,
+               "Gives each kind of enemy a new color. Enemies whose color shows how strong they are keep theirs.");
+    opt_section("Screen");
+    opt_preview("Screen filter", &g_settings.screen_filter, g_screen_filters, N_SCREEN_FILTERS, 0,
+               "Puts a filter over the whole screen, HUD included.");
+#ifdef __APPLE__  // (the Metal renderer draws it; Vulkan: not yet - the setting does nothing there)
+    {   // (the seed's weather cycle: "Seed", the seed's weather - locked)
+        const char *names[N_WEATHERS];
+        for (int i = 0; i < N_WEATHERS; i++) names[i] = g_weathers[i];
+        bool cycle = weather_cycle_on();
         int shown = 0;
-        if (seed) modes[0] = LN("Seed"), opt_disable_next();
-        opt_choice("Enemy colors", seed ? &shown : &g_settings.enemy_colours, modes, N_ENEMY_COLOUR_MODES, 0,
-                   "Gives each kind of enemy a new color. Enemies whose color shows how strong they are keep theirs.");
-        opt_section("Screen");
-        if (seed) opt_disable_next();
-        opt_choice("Screen filter", seed ? &shown : &g_settings.screen_filter, g_screen_filters, N_SCREEN_FILTERS, 0,
-                   "Puts a filter over the whole screen, HUD included.");
+        if (cycle) names[0] = LN("Seed"), opt_disable_next();
+        opt_choice("Weather", cycle ? &shown : &g_settings.weather, names, N_WEATHERS, 0,
+                   cycle ? "This seed picked the weather. Commit to it!" : "Rain, snow, a storm or a blizzard on the overworld.");
     }
+#endif
     opt_end();
 }
 
 static void tab_audio(void) {
     opt_begin("##audio", ImGui::GetFontSize() / 34);
-    opt_section("Sound");
+    opt_section("Volume");
     float pct = roundf(g_settings.volume * 100);
     if (opt_slider("Volume", &pct, 0, 200, 5, 100, "%g%%",
                    "The game's volume. 100% is normal, higher is louder."))
         g_settings.volume = pct / 100.0f;
-    opt_toggle("Room reverb", &g_settings.reverb, true,
-               "The game's echo in caves, dungeons and big rooms.");
     opt_toggle("Movie audio", &g_settings.movie_audio, true,
                "Sound in the opening and ending movies. Changes the next time a movie plays.");
+    opt_section("Effects");
+    opt_toggle("Enable reverb", &g_settings.reverb, true,
+               "The game's echo in caves, dungeons and big rooms.");
+    opt_toggle("LAS Recomp menu sounds", &g_settings.menu_sounds, true,
+               "Sounds when you move around and pick things in LAS Recomp's menus.");
     opt_end();
 }
 
@@ -766,6 +812,9 @@ extern "C" void race_overlay_draw(ImVec2 display, ImFont *font, float scale);
 extern "C" bool pickup_flyin_wanted(void);  // (silent pickups: pickup_flyin.mm)
 extern "C" void pickup_flyin_draw(ImVec2 display, ImFont *font, float scale);
 extern "C" bool race_overlay_key(char *out, size_t cap);
+extern "C" bool dpad_overlay_wanted(void);  // (d-pad items' HUD cross: dpad_overlay.mm)
+extern "C" void dpad_overlay_key(char *out, size_t cap);
+extern "C" void dpad_overlay_draw(ImVec2 display, ImFont *font, float scale);
 
 // ---- reusing the overlay's last drawing (LARECOMP_OVERLAY_CACHE=0: off, a new ImGui frame every present as before)
 // While only the FPS counter and / or the run timer are up (no menu, no input, nothing interactive or animated), the
@@ -776,7 +825,7 @@ extern "C" bool race_overlay_key(char *out, size_t cap);
 // The FPS counter then shows the same average as ImGui's io.Framerate (the last 60 frame times), sampled twice a
 // second instead of every frame.
 static int g_ov_cache = -1;
-static char g_ov_key[96];
+static char g_ov_key[288];
 static int g_ov_same;  // frames built in a row with g_ov_key
 static float g_fps_dt[60];
 static int g_fps_n, g_fps_i;
@@ -899,6 +948,16 @@ static void focus_check(bool down, bool up, bool any_down, int focused_tab, int 
 }
 
 // The tab bar and its pages, into the current window: the in-game menu, and the start screen's Settings (in_game
+// The live preview (live_preview.h) of a row on the page shown: instead of the tabs, until it closes. The pages with
+// opt_preview rows: Video, Cosmetics.
+static void preview_page(void) {
+    if (g_tab == 0) tab_display();
+    else if (g_tab == 7) tab_cosmetics();
+}
+bool menu_preview_frame(float scale, ImFont *font, ImFont *font_big) {
+    return preview_active() && (preview_draw(scale, font, font_big, preview_page), true);
+}
+
 // false: nothing of the game is loaded yet - the tabs that need it are greyed out; prelaunch: the start screen's own
 // first tab, game files and fonts, drawn by launcher.mm).
 static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
@@ -1104,8 +1163,8 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
 
 // Whether menu_render draws anything: the menu, the keyboard, an overlay (FPS, inventory, tracker, chaos, race, a
 // pickup card).
-static bool render_needed(bool open, bool kbd, bool inv, bool trk, bool trkd, bool chaos, bool race, bool flyin) {
-    return open || kbd || g_settings.show_fps || inv || trk || trkd || chaos || race || flyin;
+static bool render_needed(bool open, bool kbd, bool inv, bool trk, bool trkd, bool chaos, bool race, bool flyin, bool dpad) {
+    return open || kbd || g_settings.show_fps || inv || trk || trkd || chaos || race || flyin || dpad;
 }
 
 #ifdef __APPLE__
@@ -1123,12 +1182,13 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool kbd = g_kbd.load() == 1;
     bool race = race_overlay_wanted();  // (run timer, race seed hash: race_overlay.mm)
     bool flyin = pickup_flyin_wanted() && !open;  // (a silent pickup's card)
+    bool dpad = !open && dpad_overlay_wanted();
 #ifdef __APPLE__
     plastic_perf_note(cb, open);  // (LARECOMP_UI_PERF test only)
 #else
     plastic_perf_note_vk(open);
 #endif
-    if (!render_needed(open, kbd, inv, trk, trkd, chaos, race, flyin)) {
+    if (!render_needed(open, kbd, inv, trk, trkd, chaos, race, flyin, dpad)) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         g_ov_same = 0;  // (shown again: built afresh first)
         return;
@@ -1153,14 +1213,16 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     key[0] = 0;
     if (g_ov_cache) {
         fps_note(now, io.DeltaTime);
-        char rk[64];
-        // (only the FPS counter and the run timer; input only reaches ImGui while the menu or the name entry is up)
+        char rk[64], dk[160] = "";
+        // (only the FPS counter, the run timer and the d-pad cross; input only reaches ImGui while the menu or the name
+        // entry is up)
         if (!open && !kbd && !inv && !trk && !trkd && !chaos && !flyin && race_overlay_key(rk, sizeof rk)) {
             pthread_mutex_lock(&q_lock);
             bool events = !q_events.empty();
             pthread_mutex_unlock(&q_lock);
-            if (!events) snprintf(key, sizeof key, "%.0fx%.0f fps %d %.0f | %s", tw, th, (int)g_settings.show_fps,
-                                  g_settings.show_fps ? g_fps_shown : 0.0, rk);
+            if (dpad) dpad_overlay_key(dk, sizeof dk);
+            if (!events) snprintf(key, sizeof key, "%.0fx%.0f fps %d %.0f | %s | %s", tw, th, (int)g_settings.show_fps,
+                                  g_settings.show_fps ? g_fps_shown : 0.0, rk, dk);
         }
         ImDrawData *dd = ImGui::GetDrawData();
         if (key[0] && g_ov_same >= 3 && !strcmp(key, g_ov_key) && dd && dd->Valid) {
@@ -1227,7 +1289,11 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui::NewFrame();
 
     if (g_settings.show_fps) {
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 16 * scale, 16 * scale), 0, ImVec2(1, 0));
+        int c = g_settings.show_fps;
+        bool right = c == FPS_TOP_RIGHT || c == FPS_BOTTOM_RIGHT, bottom = c == FPS_BOTTOM_LEFT || c == FPS_BOTTOM_RIGHT;
+        float m = 16 * scale;
+        ImGui::SetNextWindowPos(ImVec2(right ? io.DisplaySize.x - m : m, bottom ? io.DisplaySize.y - m : m), 0,
+                                ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f));
         ImGui::SetNextWindowBgAlpha(0.5f);
         ImGui::Begin("##fps", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                         ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
@@ -1236,6 +1302,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (race) race_overlay_draw(io.DisplaySize, g_menu_font_big, scale);
+    if (dpad) dpad_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont(), scale);
     if (flyin) pickup_flyin_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont(), scale);
     if (trk) tracker_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     if (chaos) chaos_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
@@ -1248,7 +1315,10 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         ImGui::GetStyle() = menu_style;
         plastic_widgets(true);
     }
-    if (open) {
+    if (open && preview_active()) {  // (the live preview: the game, a panel at the bottom)
+        menu_preview_frame(scale, g_menu_font, g_menu_font_big);
+        menu_sfx_frame(true);
+    } else if (open) {
         // dim the game behind the menu
         ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
                                                       IM_COL32(0, 0, 0, (int)(plastic_theme().dim * 255)));

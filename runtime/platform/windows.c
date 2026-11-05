@@ -13,6 +13,15 @@
 
 void rt_crash_explain(char *out, size_t n, const char *log_path);  // runtime/crash_explain.c
 
+// The faulting instruction and stack pointer in an exception's CONTEXT (its registers differ per arch)
+#if defined(__aarch64__) || defined(_M_ARM64)
+#define CTX_PC(c) ((c)->Pc)
+#define CTX_SP(c) ((c)->Sp)
+#else
+#define CTX_PC(c) ((c)->Rip)
+#define CTX_SP(c) ((c)->Rsp)
+#endif
+
 // ---- guest address space
 // The window is reserved up front and committed per region (plat_commit from the loader / kernel). Anything
 // the guest touches outside a committed region is committed on its first access by the exception handler
@@ -42,7 +51,7 @@ static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *ep) {
     uint64_t fa = er->ExceptionInformation[1];
     // (not for an execute fault: on a read-write page, retrying it would fault again forever)
     if (er->ExceptionInformation[0] != EXCEPTION_EXECUTE_FAULT && lazy_commit(fa)) return EXCEPTION_CONTINUE_EXECUTION;
-    if (g_report_crashes && rt_fault_watch(fa, ep->ContextRecord->Rip)) return EXCEPTION_CONTINUE_EXECUTION;
+    if (g_report_crashes && rt_fault_watch(fa, CTX_PC(ep->ContextRecord))) return EXCEPTION_CONTINUE_EXECUTION;
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -477,13 +486,17 @@ static void log_to_file_without_console(void) {
 }
 
 // The recompiled game code is built for x86-64-v3 (Makefile GENARCH: AVX2, FMA, BMI2): say so instead of crashing
-// with an illegal instruction on an older CPU.
+// with an illegal instruction on an older CPU. ARM64 runs the guest's FP/SIMD as its own instructions: nothing to check.
 static void require_cpu(void) {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    return;
+#else
     __builtin_cpu_init();
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2")) return;
     MessageBoxA(NULL, "LAS Recomp needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or newer).",
                 "LAS Recomp", MB_ICONERROR | MB_OK);
     ExitProcess(1);
+#endif
 }
 
 // Fatal error (rt_fatal_trace): what happened in plain words (runtime/crash_explain.c) in a message box, when there is
@@ -679,12 +692,16 @@ static LONG WINAPI unhandled_filter(EXCEPTION_POINTERS *ep) {
     uint64_t fa = er->NumberParameters >= 2 ? er->ExceptionInformation[1] : 0;
     char what[48];
     snprintf(what, sizeof what, "exception %08lx", er->ExceptionCode);
+#if defined(__aarch64__) || defined(_M_ARM64)
+    uint64_t lr = ep->ContextRecord->Lr;
+#else
     // x64 has no link register: report the return address on top of the stack (valid at function entry).
     uint64_t lr = 0;
     MEMORY_BASIC_INFORMATION mi;
-    if (VirtualQuery((void *)(uintptr_t)ep->ContextRecord->Rsp, &mi, sizeof mi) && mi.State == MEM_COMMIT)
-        lr = *(uint64_t *)(uintptr_t)ep->ContextRecord->Rsp;
-    rt_fault_report(what, fa, ep->ContextRecord->Rip, lr);
+    if (VirtualQuery((void *)(uintptr_t)CTX_SP(ep->ContextRecord), &mi, sizeof mi) && mi.State == MEM_COMMIT)
+        lr = *(uint64_t *)(uintptr_t)CTX_SP(ep->ContextRecord);
+#endif
+    rt_fault_report(what, fa, CTX_PC(ep->ContextRecord), lr);
 }
 
 void plat_crash_handler_install(void) {

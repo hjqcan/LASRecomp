@@ -31,6 +31,7 @@ static const int kPetComp[NPETS] = {C_ROOSTER, C_MARIN, C_GHOST};  // pets.py OR
 
 static int g_nflags = -1;  // flags.tsv entries read (per seed: read again after an in-place reboot)
 static int g_ghost_item = -1;  // settings.json "ghost-item" (per seed)
+static int g_marin_stays = -1;  // settings.json "marin-stays" (per seed): Marin keeps following after the Walrus
 static int flag_index(const char *name) {
     static char names[64][32];
     static int idx[64];
@@ -70,7 +71,7 @@ int pets_current(void) { return *(volatile uint8_t *)(uintptr_t)COMPANION; }
 
 static bool ghost_item(void) {
     if (g_ghost_item >= 0) return g_ghost_item;
-    g_ghost_item = 0;
+    g_ghost_item = g_marin_stays = 0;
     char p[600], buf[16384];
     snprintf(p, sizeof p, "%s/settings.json", rando_seed_dir() ? rando_seed_dir() : ".");
     FILE *f = rando_seed_dir() ? fopen(p, "r") : NULL;
@@ -78,7 +79,15 @@ static bool ghost_item(void) {
     size_t n = fread(buf, 1, sizeof buf - 1, f);
     fclose(f);
     buf[n] = 0;
+    g_marin_stays = strstr(buf, "\"marin-stays\": true") != NULL;
     return g_ghost_item = strstr(buf, "\"ghost-item\": true") != NULL;
+}
+
+// story flag after which companion c can't be called back (Marin: none in "marin-stays" seeds, pets.py)
+static bool marin_stays(void) { return ghost_item(), g_marin_stays > 0; }  // (read with "ghost-item")
+static const char *gone_flag(int c) {
+    if (c == C_MARIN && marin_stays()) return NULL;
+    return kComp[c].gone;
 }
 
 // Items-page Ghost slot: -1 none (not an item in this seed / not found), 0 found, 1 laid to rest and his Owl's
@@ -93,7 +102,7 @@ int pets_callable(int out[5]) {
     int n = 0;
     for (int c = C_BOWWOW; c <= C_ROOSTER; c++)
         if (pets_current() == c || (flag_get(kComp[c].found) && !(c == C_GHOST && ghost_item()) &&
-                                    !(kComp[c].gone && flag_get(kComp[c].gone))))
+                                    !(gone_flag(c) && flag_get(gone_flag(c)))))
             out[n++] = c;
     return n;
 }
@@ -301,4 +310,4 @@ int rt_pet_item(int n) {
 }
 
 // (seed switch: the next seed's flags.tsv and settings)
-RT_ON_RESET(pets_reset) { g_nflags = -1, g_ghost_item = -1, g_bad_pets = -1, g_swap = 0, g_slot = -1; }
+RT_ON_RESET(pets_reset) { g_nflags = -1, g_ghost_item = -1, g_marin_stays = -1, g_bad_pets = -1, g_swap = 0, g_slot = -1; }
