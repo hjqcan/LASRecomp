@@ -41,7 +41,7 @@ typedef struct {
     bool reverb;         // room reverb effect
     bool movie_audio;
     bool show_fps;
-    bool frame_interp;   // Frame Generation: extra images between the game's frames (runtime/nvn/interp.c; Metal)
+    bool frame_interp;   // Frame Generation: extra images between the game's frames (runtime/nvn/interp.c)
     int frame_gen_cap;   // its images a second at most (90 / 120 / 144 / 240; 0: the display's refresh rate)
     bool dpad_move;      // the d-pad (and arrow keys) move Link like the stick
     bool rumble;         // controller vibration from the game (runtime/hle/input.c)

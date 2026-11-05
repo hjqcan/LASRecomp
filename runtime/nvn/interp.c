@@ -61,11 +61,7 @@ int interp_wanted(void) {
         if (env >= 0) LOG("[interp] LARECOMP_INTERP=%s\n", e);
     }
     if (env >= 0) return env;
-#ifdef __APPLE__
     return g_settings.frame_interp ? INTERP_ON : INTERP_OFF;
-#else
-    return INTERP_OFF;  // (Metal only so far)
-#endif
 }
 
 typedef struct {

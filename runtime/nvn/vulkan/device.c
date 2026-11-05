@@ -590,6 +590,7 @@ void vk_pipeline_cache_save(void) {
 }
 
 // ================================================================== swapchain
+static bool sc_interp;  // (the swapchain was made for Frame Generation: FIFO; the menu's toggle makes a new one)
 static VkPresentModeKHR present_mode(void) {
     // MAILBOX by default: the game paces itself (vi.c's emulated 60 Hz vsync), and with FIFO every submission
     // queued behind the one waiting for a window image, so the game's fence waits followed the presentation engine:
@@ -598,7 +599,8 @@ static VkPresentModeKHR present_mode(void) {
     // Frame Generation (frame interpolation, backend_present_now) presents its in-betweens before the frame's image,
     // one display refresh apart: FIFO, where they queue (mailbox would replace them before they were shown).
     const char *e = getenv("LARECOMP_VK_PRESENT");
-    if (!e && interp_wanted() == INTERP_ON) e = "fifo";
+    sc_interp = interp_wanted() == INTERP_ON;
+    if (!e && sc_interp) e = "fifo";
     VkPresentModeKHR want = !e || !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
     uint32_t n = 0;
@@ -718,7 +720,8 @@ bool vk_frame_begin(const float clear[4]) {
     // on the same swapchain are not allowed at the same time - and it may have asked for a new swapchain
     WAITING(rec_wait_presents(rec_presents_queued()));
     if (rec_present_recreate()) recreate_swapchain();
-    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height) recreate_swapchain();
+    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height ||
+        sc_interp != (interp_wanted() == INTERP_ON)) recreate_swapchain();
     if (!g_vk.swapchain) return false;
     static int trace = -1;
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
@@ -1133,6 +1136,7 @@ static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
     // which held it at 30)
     int mids = hz >= 100 ? (int)lround(hz / 60.0) - 1 : 0;
     if (mids > 3) mids = 3;
+    if (g_settings.frame_gen_cap > 0 && mids > g_settings.frame_gen_cap / 60 - 1) mids = g_settings.frame_gen_cap / 60 - 1;  // (Frame rate cap)
     if (mids < 1) { ip_not_made[IP_CAPPED] += hz_cap > 0; mids_last = 0; ip_hz = 0; return 0; }
     ip_hz = hz;
     if (mids != mids_last) settle = slow_checks = 0;
