@@ -1029,7 +1029,7 @@ static uint64_t ip_log_last;
 static uint64_t ip_last_present;
 // (stats, ip_log: where the window's presents fell short of the refresh rate - gaps over 1.5 refresh periods, waits
 // that overslept by over half a period, and in-betweens not made, by reason)
-enum { IP_NOT_ALLOWED, IP_LOCKED, IP_NO_HOLD, IP_NOT_PREPARED, IP_CAPPED, IP_NO_BLEND, IP_NREASONS };
+enum { IP_NOT_ALLOWED, IP_LOCKED, IP_NO_HOLD, IP_NOT_PREPARED, IP_CAPPED, IP_NO_BLEND, IP_NO_GPU, IP_NREASONS };
 static uint64_t ip_presents, ip_gaps, ip_overslept, ip_not_made[IP_NREASONS];
 static double ip_gap_max;
 static void ip_space(void) {
@@ -1057,7 +1057,7 @@ static void ip_log(void) {
     if (!ip_log_last) ip_log_last = now;
     if (now - ip_log_last < 2000000000ull) return;
     double dt = (now - ip_log_last) / 1e9;
-    static const char *why[IP_NREASONS] = {"cut", "busy", "no copy", "not prepared", "lower display rate", "no blend"};
+    static const char *why[IP_NREASONS] = {"cut", "busy", "no copy", "not prepared", "lower display rate", "no blend", "no GPU time"};
     char nm[200] = "";
     int o = 0;
     for (int i = 0; i < IP_NREASONS; i++)
@@ -1071,12 +1071,16 @@ static void ip_log(void) {
 }
 static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's image), placed as the last image
     static const float black[4] = {0, 0, 0, 1};
-    if (!vk_frame_begin(black)) return;
-    VkCommandBuffer cb = vk_cmd();
-    vk_present_draw(cb, b, ip_place.vx, ip_place.vy, ip_place.vw, ip_place.vh, ip_place.pv);
-    menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
-    ip_space();
-    vk_frame_end(NULL);
+    extern bool vk_ip_mid;  // (exec.c: its GPU time is the in-between's)
+    vk_ip_mid = true;
+    if (vk_frame_begin(black)) {
+        VkCommandBuffer cb = vk_cmd();
+        vk_present_draw(cb, b, ip_place.vx, ip_place.vy, ip_place.vw, ip_place.vh, ip_place.pv);
+        menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
+        ip_space();
+        vk_frame_end(NULL);
+    }
+    vk_ip_mid = false;
 }
 static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
     static uint64_t prev_ns;
@@ -1143,16 +1147,35 @@ static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
     if (mids > 3) mids = 3;
     ip_rate = hz;
     if (mids < 1) { ip_not_made[IP_CAPPED] += hz_cap > 0; mids_last = 0; ip_hz = 0; return 0; }
-    ip_hz = hz;
     if (mids != mids_last) settle = slow_checks = 0;
     mids_last = mids;
+    // The GPU's time goes to the game's frames first (as on Metal, metal.m): in-betweens only in what a game frame
+    // leaves of its interval - the game's own GPU time (pace.c; the in-betweens' submissions aren't counted there,
+    // exec.c) against an in-between's, replay and window image. Fewer than the refresh rate wants: evenly spaced, each
+    // shown longer. LARECOMP_INTERP_GPU_BUDGET=0: all made (research).
+    int allowed = mids;
+    {
+        static int budget_on = -1;
+        if (budget_on < 0) { const char *e = getenv("LARECOMP_INTERP_GPU_BUDGET"); budget_on = !e || atoi(e); }
+        extern double pace_gpu_frame_ms(void);
+        double game = pace_gpu_frame_ms(), img = interp_image_gpu_ms();
+        double D = fmin(fmax(interval_ns / 1e6, 16.667), 50);
+        if (budget_on && game >= 0 && img > 0) {
+            double left = 0.9 * D - game;
+            allowed = left > 0 ? (int)(left / img) : 0;
+            if (allowed > mids) allowed = mids;
+        }
+    }
+    for (int m = allowed; m < mids; m++) interp_note_no_gpu();
+    if (allowed < 1) { ip_not_made[IP_NO_GPU]++; ip_hz = 0; return 0; }
+    ip_hz = hz * (allowed + 1) / (mids + 1);  // (presents spaced for the images made)
     if (!interp_replays_allowed(frame, total_frames, now)) { ip_not_made[IP_NOT_ALLOWED]++; return 0; }
     if (!interp_replay_lock()) { ip_not_made[IP_LOCKED]++; return 0; }
     int made = 0;
     if (ip_hold(b, false)) {
         extern void renderer_interp_replay(void);
-        for (int m = 1; m <= mids; m++) {
-            if (!interp_prepare((float)m / (float)(mids + 1))) break;
+        for (int m = 1; m <= allowed; m++) {
+            if (!interp_prepare((float)m / (float)(allowed + 1))) break;
             renderer_interp_replay();
             ip_present_mid(b);
             made++;

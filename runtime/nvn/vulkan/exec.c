@@ -77,6 +77,7 @@ typedef struct {
     bool main_begun, upload_begun, ts;  // ts: GPU timestamps written (the GPU timer)
     bool ts_skip;                       // (waits on the window image: not counted, see vk_gpu_total_ns)
     bool ts_win;                        // the window image's submission: a 3rd timestamp after its acquire wait
+    bool ts_interp;                     // Frame Generation's: an in-between's replay or its window image (vk_ip_mid)
     uint64_t seq;
     // (its descriptor pools: record.c, per slot)
 } Sub;
@@ -284,7 +285,10 @@ static uint64_t gpu_total_ns, gpu_last_end;  // ns counted; (ticks) the latest s
 static uint64_t gpu_win_ns, gpu_span_ns, gpu_frames, span_from;  // window submissions: ns, frame spans' ns, count; (ticks)
 static bool gpu_timer_on;
 
-static void gpu_timer_add(const uint64_t *t, bool skip, bool win) {
+bool vk_ip_mid;  // (device.c: an in-between's window image is being made)
+// Frame Generation's submissions (interp): their GPU time is the in-betweens' (interp.c, its GPU budget), not the
+// game's - counted as the game's, pacing and dynamic resolution saw the in-betweens as the game's own work.
+static void gpu_timer_add(const uint64_t *t, bool skip, bool win, bool interp) {
     double per = g_vk.props.limits.timestampPeriod;
     uint64_t t0 = t[0], t1 = t[1], tw = win ? t[2] : 0;
     if (g_vk.ts_bits < 64) { uint64_t m = (1ull << g_vk.ts_bits) - 1; t0 &= m, t1 &= m, tw &= m; }
@@ -294,6 +298,15 @@ static void gpu_timer_add(const uint64_t *t, bool skip, bool win) {
     uint64_t prev_end = gpu_last_end;
     uint64_t from = t0 > gpu_last_end ? t0 : gpu_last_end;
     if (t1 > gpu_last_end) gpu_last_end = t1;
+    if (interp) {
+        uint64_t f = win && tw >= t0 && tw <= t1 ? (tw > prev_end ? tw : prev_end) : from;
+        if (t1 > f) {
+            double ms = (double)(t1 - f) * per / 1e6;
+            if (win) interp_compose_gpu(ms);
+            else interp_replay_gpu(ms);
+        }
+        return;
+    }
     if (win) {  // from after the image was acquired (and the work before it ended), to the end
         if (tw >= t0 && tw <= t1) {
             uint64_t wf = tw > prev_end ? tw : prev_end;
@@ -350,8 +363,8 @@ static Sub *sub(void) {
             uint64_t t[3];
             uint32_t nq = s->ts_win ? 3 : 2;
             if (vkGetQueryPoolResults(g_vk.dev, prof_qp, (uint32_t)cur_sub * 3, nq, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
-                gpu_timer_add(t, s->ts_skip, s->ts_win);
-            s->ts = s->ts_skip = s->ts_win = false;
+                gpu_timer_add(t, s->ts_skip, s->ts_win, s->ts_interp);
+            s->ts = s->ts_skip = s->ts_win = s->ts_interp = false;
         }
         rec_reset_pools(cur_sub);  // (its sets went with the submission; the recorder resets in order)
         pthread_mutex_lock(&seq_lock);
@@ -504,6 +517,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     }
     vk_cmd();  // (an empty main buffer still carries the semaphores)
     s->ts_skip = wait != VK_NULL_HANDLE;
+    s->ts_interp = g_interp_replaying || vk_ip_mid;
     if (s->ts_win && !s->ts_skip) s->ts_win = false;  // (not the window image's after all: counted as game work)
     if (s->ts) rec_CmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, prof_qp, (uint32_t)cur_sub * 3 + 1);
     rec_EndCommandBuffer(s->main);
