@@ -41,5 +41,6 @@ if [ "${CI:-}" != true ]; then  # (no path of this machine inside: FFmpeg's conf
         ! grep -qaiF -e "$PWD" -e "$(cygpath -m "$PWD")" -e "$(cygpath -w "$PWD")" "$f" || { echo "$f holds a path of this machine"; exit 1; }
     done
 fi
-grep -q 'GPL version 3\|--enable-gpl' "$P/lib/pkgconfig/libavcodec.pc" && { echo "deps-win: FFmpeg is not LGPL"; exit 1; }
+# (the DLL's own license and configure line: avcodec_license(), avcodec_configuration(); its .pc file has neither)
+grep -qa 'GPL version 3\|--enable-gpl' "$P"/bin/avcodec-*.dll && { echo "deps-win: FFmpeg is not LGPL"; exit 1; }
 echo "deps-win: $(ls "$P/bin"/*.dll | xargs -n1 basename | tr '\n' ' ')"
