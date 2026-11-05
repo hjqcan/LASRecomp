@@ -302,6 +302,8 @@ def run_issue():
             if MARKER in (c.get("body") or "") and c["user"]["login"] == "github-actions[bot]": mine = c
             continue
         found += [(u, f"comment from {c['created_at'][:10]}", c["html_url"]) for u in attachments(c.get("body"))]
+    seen = set()  # (a quote reply repeats the quoted comment's links: each log once, where it was attached)
+    found = [f for f in found if f[0] not in seen and not seen.add(f[0])]
     if not found: print("no lasrecomp log attached: nothing to do"); return
     newest = list(reversed(found))[:MAX_LOGS]
     entries = []
