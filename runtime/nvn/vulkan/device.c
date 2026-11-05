@@ -1024,6 +1024,7 @@ static bool ip_hold(TexBackend *b, bool restore) {  // false: no copy (no memory
 static double ip_hz;            // (ip_mids: the refresh rate the in-betweens are made for; 0: none being made)
 static double ip_rate;          // (stats: the refresh rate in use, learned or the display's - with in-betweens or not)
 static bool ip_restart;         // (Frame Generation was off: nothing learned or counted before counts)
+static bool ip_new_interval, ip_new_rate;  // (ip_mids, after a restart: the game's interval and the display's rate measured again)
 static uint64_t ip_log_last;
 static uint64_t ip_last_present;
 // (stats, ip_log: where the window's presents fell short of the refresh rate - gaps over 1.5 refresh periods, waits
@@ -1082,13 +1083,7 @@ static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
     static double interval_ns;  // (smoothed: the game's frame interval)
     static double win_sum, win_max;  // (the raw intervals of the current 30-frame check)
     uint64_t now = plat_now_ns();
-    static bool relearn;
-    if (ip_restart) {  // (turned on again: the game's interval measured again, the stats from now)
-        ip_restart = false, relearn = true;
-        prev_ns = 0, interval_ns = 0, ip_last_present = ip_log_last = 0;
-        ip_presents = ip_gaps = ip_overslept = 0, ip_gap_max = 0;
-        memset(ip_not_made, 0, sizeof ip_not_made);
-    }
+    if (ip_new_interval) prev_ns = 0, interval_ns = 0, ip_new_interval = false;
     if (prev_ns && now > prev_ns) {
         double d = (double)(now - prev_ns);
         interval_ns = interval_ns > 0 && d < 4 * interval_ns ? interval_ns + (d - interval_ns) * 0.1 : d;
@@ -1108,7 +1103,7 @@ static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
     static double hz_seen, hz_cap, hz_env = -1;
     static int mids_last, settle, slow_checks, full_rate, retry_after = 600;
     if (hz_env < 0) hz_env = getenv("LARECOMP_INTERP_HZ") ? atof(getenv("LARECOMP_INTERP_HZ")) : 0;
-    if (relearn) hz_seen = 0, mids_last = 0, relearn = false;  // (a learned rate starts over: logged and measured again)
+    if (ip_new_rate) hz_seen = 0, mids_last = 0, ip_new_rate = false;  // (a learned rate starts over: logged and measured again)
     SDL_DisplayID did = SDL_GetDisplayForWindow(window);
     const SDL_DisplayMode *dm = did ? SDL_GetCurrentDisplayMode(did) : NULL;
     double hz = dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60;
@@ -1186,6 +1181,12 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         bool repeat = rq_on() ? rq_present_is_repeat() : direct_repeat;
         int want = interp_wanted();
         if (!repeat) {
+            if (want == INTERP_ON && ip_restart) {  // (turned on again: the stats from now, and measured again)
+                ip_restart = false, ip_new_interval = ip_new_rate = true;
+                ip_last_present = ip_log_last = 0;
+                ip_presents = ip_gaps = ip_overslept = 0, ip_gap_max = 0;
+                memset(ip_not_made, 0, sizeof ip_not_made);
+            }
             bool blend = interp_frame_end(want != INTERP_OFF);
             if (want == INTERP_ON) {
                 if (blend) interp_note_images(ip_mids(b, frame));
