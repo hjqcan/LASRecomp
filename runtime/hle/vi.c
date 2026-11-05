@@ -10,7 +10,8 @@ static uint32_t vsync_r, vsync_w;
 static KEvent *vsync_event;
 uint32_t vi_vsync_handle(void) { return vsync_r; }
 volatile uint64_t g_vsync_count;  // vsyncs signalled so far (runtime/hle/framepace.c, runtime/nvn/pace.c)
-volatile uint64_t g_vsync_ns;     // plat_now_ns() of the latest (stored after the count: count >= the vsync it's from)
+volatile uint64_t g_vsync_ns;     // plat_now_ns() of the latest (stored after the count: count >= the vsync it's from;
+                                  // also frame interpolation's game timeline)
 uint64_t g_native_window;
 
 static void *vsync_thread(void *arg) {

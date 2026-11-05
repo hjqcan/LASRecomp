@@ -190,6 +190,11 @@ static uint64_t pace_scene(void) {
     return h ? h : 1;
 }
 
+// The game's own GPU time per frame (pace_frame's moving average, ms; -1: no GPU timer) - frame interpolation's
+// in-betweens get what is left of a frame (metal.m ip_present)
+static double gpu_avg = -1;
+double pace_gpu_frame_ms(void) { return gpu_avg; }
+
 void pace_frame(void) {
     spike_test();
     static int on = -1;
@@ -212,7 +217,6 @@ void pace_frame(void) {
     // (A frame's GPU time is read a few frames late and in bursts: the average smooths that.)
     extern int64_t pace_gpu_ns(void);
     static int64_t last_gpu = -1;
-    static double gpu_avg = -1;  // ms (-1: no GPU timer)
     int64_t gpu = pace_gpu_ns();
     double gpu_ms = gpu >= 0 && last_gpu >= 0 && gpu >= last_gpu ? (gpu - last_gpu) / 1e6 : -1;
     last_gpu = gpu;

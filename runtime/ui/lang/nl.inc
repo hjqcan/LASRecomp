@@ -479,6 +479,8 @@
 {"Fullscreen", "Volledig scherm"},
 {"Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.", "Vult het scherm. Je kunt ook op F11, Alt+Enter of Cmd+Ctrl+F drukken."},
 {"Show FPS", "FPS tonen"},
+{"Frame Generation", "Framegeneratie"},
+{"Experimental. Draws extra images between the game's frames for smoother motion, up to your display's refresh rate. On a 120 Hz display the game shows 120 fps. Some visual glitches are possible.", "Experimenteel. Tekent extra beelden tussen de frames van het spel voor vloeiendere beweging, tot de verversingssnelheid van je scherm. Op een 120 Hz-scherm toont het spel 120 fps. Grafische fouten zijn mogelijk."},
 {"Rendering", "Rendering"},
 {"Match display", "Zoals scherm"},
 {"Dynamic", "Dynamisch"},

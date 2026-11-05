@@ -525,6 +525,9 @@ static void tab_display(void) {
     static const char *fps_corners[] = {LN("Off"), LN("Top left"), LN("Top right"), LN("Bottom left"), LN("Bottom right")};
     opt_choice("Show FPS", &g_settings.show_fps, fps_corners, N_FPS_CORNERS, FPS_OFF,
                "Shows the frame rate in a corner of the screen.");
+    opt_toggle("Frame Generation", &g_settings.frame_interp, false,
+               "Experimental. Draws extra images between the game's frames for smoother motion, up to your display's "
+               "refresh rate. On a 120 Hz display the game shows 120 fps. Some visual glitches are possible.");
     {   // (a live preview, as an Off / On choice)
         static const char *oo[] = {LN("Off"), LN("On")};
         int rb = g_settings.blur_removal;
@@ -1200,7 +1203,9 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     io.DisplaySize = ImVec2((float)tw, (float)th);
     io.DisplayFramebufferScale = ImVec2(1, 1);
     static double last;
-    double now = SDL_GetTicks() / 1000.0;
+    // (nanoseconds: two images drawn within a millisecond - an in-between and its frame on Vulkan - counted the gap as
+    // 1/60 s, and 120 images a second showed as 70 fps)
+    double now = SDL_GetTicksNS() / 1e9;
     io.DeltaTime = last > 0 && now > last ? (float)(now - last) : 1.0f / 60;
     last = now;
     if (g_ov_cache < 0) g_ov_cache = !getenv("LARECOMP_OVERLAY_CACHE") || atoi(getenv("LARECOMP_OVERLAY_CACHE")) != 0;

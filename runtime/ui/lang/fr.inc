@@ -479,6 +479,8 @@
 {"Fullscreen", "Plein écran"},
 {"Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.", "Remplit l'écran. Tu peux aussi appuyer sur F11, Alt+Entrée ou Cmd+Ctrl+F."},
 {"Show FPS", "Afficher FPS"},
+{"Frame Generation", "Génération d'images"},
+{"Experimental. Draws extra images between the game's frames for smoother motion, up to your display's refresh rate. On a 120 Hz display the game shows 120 fps. Some visual glitches are possible.", "Expérimental. Ajoute des images entre celles du jeu pour un mouvement plus fluide, jusqu'à la fréquence de rafraîchissement de ton écran. Sur un écran 120 Hz, le jeu affiche 120 fps. Des défauts visuels sont possibles."},
 {"Rendering", "Rendu"},
 {"Match display", "Comme l'écran"},
 {"Dynamic", "Dynamique"},

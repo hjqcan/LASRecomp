@@ -59,6 +59,7 @@ typedef struct {
     char *msl;              // complete MSL or GLSL source (MSL entry "main0", GLSL "main"); NULL on failure
     uint32_t cbuf_mask;     // hardware constant buffers read
     uint32_t cbuf_size[18];
+    uint32_t cbuf_used[18]; // bytes read at fixed offsets (the block's declared end; 0 when indexed with a register)
     uint32_t cbuf_dynamic;  // cbufs indexed with a register: bind the whole buffer
     int ntex;
     ShaderTexture tex[64];

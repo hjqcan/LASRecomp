@@ -19,6 +19,7 @@
 #include "../renderer.h"
 #include "../pace.h"
 #include "../shader_prep.h"
+#include "../interp.h"
 #include <pthread.h>
 #include <dirent.h>
 
@@ -927,12 +928,17 @@ void vk_pipeline_cache_save(void) {
 }
 
 // ================================================================== swapchain
+static bool sc_interp;  // (the swapchain was made for Frame Generation: FIFO; the menu's toggle makes a new one)
 static VkPresentModeKHR present_mode(void) {
     // MAILBOX by default: the game paces itself (vi.c's emulated 60 Hz vsync), and with FIFO every submission
     // queued behind the one waiting for a window image, so the game's fence waits followed the presentation engine:
     // a throttled / captured / busy compositor slowed the whole game (4-21 fps with the GPU mostly idle; mailbox:
     // 60). No tearing. LARECOMP_VK_PRESENT=fifo|immediate|mailbox to choose.
+    // Frame Generation (frame interpolation, backend_present_now) presents its in-betweens before the frame's image,
+    // one display refresh apart: FIFO, where they queue (mailbox would replace them before they were shown).
     const char *e = getenv("LARECOMP_VK_PRESENT");
+    sc_interp = interp_wanted() == INTERP_ON;
+    if (!e && sc_interp) e = "fifo";
     VkPresentModeKHR want = !e || !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
     uint32_t n = 0;
@@ -1052,7 +1058,8 @@ bool vk_frame_begin(const float clear[4]) {
     // on the same swapchain are not allowed at the same time - and it may have asked for a new swapchain
     WAITING(rec_wait_presents(rec_presents_queued()));
     if (rec_present_recreate()) recreate_swapchain();
-    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height) recreate_swapchain();
+    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height ||
+        sc_interp != (interp_wanted() == INTERP_ON)) recreate_swapchain();
     if (!g_vk.swapchain) return false;
     static int trace = -1;
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
@@ -1264,7 +1271,7 @@ static uint64_t frames, total_frames, g_frame_counter;
 uint64_t renderer_present_count(void) { return total_frames; }  // (the game thread's frame: the HLE hooks')
 // The frame whose work is being translated (rqueue.h rq_frame): "once per frame" state of the translation. Without the
 // render thread, total_frames.
-uint64_t renderer_exec_frame(void) { return rq_current_item() ? rq_frame() : total_frames; }
+uint64_t renderer_exec_frame(void) { return (rq_current_item() ? rq_frame() : total_frames) + interp_replay_salt(); }
 uint64_t vk_frame_counter(void) { return renderer_exec_frame(); }  // (the translation's: g_frame_counter == total_frames)
 static float g_shot_crop[4] = {0, 0, 1, 1};
 static double last_fps_time;
@@ -1275,10 +1282,11 @@ const float *vk_shot_crop(void) { return g_shot_crop; }
 void backend_present(NvnTexture *t);
 void *backend_pool_push(void) { return NULL; }
 void backend_pool_pop(void *p) { (void)p; }
+static bool direct_repeat;  // (render thread off) backend_represent's present
 void backend_represent(void) {
     if (!g_last_presented) { SDL_Delay(16); return; }
     if (rq_on()) rq_present(g_last_presented, total_frames, false);
-    else backend_present_now(g_last_presented, total_frames);
+    else { direct_repeat = true; backend_present_now(g_last_presented, total_frames); direct_repeat = false; }
 }
 
 // (LARECOMP_VK_PROF) the present's time by part, per frame in the fps line ("present/frame"): submit = the frame's
@@ -1307,6 +1315,216 @@ static const char *pp_text(void) {
     return s;
 }
 
+// ---- frame interpolation's in-betweens (runtime/nvn/interp.c; Metal: metal.m ip_present, with a presenter thread)
+// Inline: before a game frame's image, its in-betweens (between the previous frame and this one) are made - each a
+// replay of the frame's lists with blended uniforms into the game's own targets - and presented, each with the
+// previous image's placement; FIFO (present_mode) shows each for one refresh. The frame's image is set aside first
+// (a copy) and put back before it is presented. In-betweens per frame: the refresh rate over the game's 60, less one
+// (120 Hz: 1, 240 Hz: 3), from 100 Hz.
+static struct { bool ok; float vx, vy, vw, vh, pv[8]; } ip_place;  // (the last image's placement in the window)
+static VkImage ip_held;
+static VmaAllocation ip_held_mem;
+static uint32_t ip_held_w, ip_held_h;
+static VkFormat ip_held_fmt;
+static bool ip_hold(TexBackend *b, bool restore) {  // false: no copy (no memory)
+    if (!restore && (!ip_held || ip_held_w != b->width || ip_held_h != b->height || ip_held_fmt != b->format)) {
+        if (ip_held) { rec_drain(); vkDeviceWaitIdle(g_vk.dev); vmaDestroyImage(g_vk.vma, ip_held, ip_held_mem); ip_held = VK_NULL_HANDLE; }
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = b->format,
+                                .extent = {b->width, b->height, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateImage(g_vk.vma, &ci, &ai, &ip_held, &ip_held_mem, NULL) != VK_SUCCESS) { ip_held = VK_NULL_HANDLE; return false; }
+        ip_held_w = b->width, ip_held_h = b->height, ip_held_fmt = b->format;
+        VkCommandBuffer cb = vk_cmd();
+        VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                    .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, .dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .image = ip_held,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+        rec_CmdPipelineBarrier2(cb, &di);
+    }
+    if (!ip_held) return false;
+    vk_end_pass();
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkImageCopy r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .extent = {b->width, b->height, 1}};
+    if (restore) rec_CmdCopyImage(cb, ip_held, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+    else rec_CmdCopyImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, ip_held, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+    vk_full_barrier(cb);
+    return true;
+}
+// Presents one refresh period apart (Frame Generation on): an in-between and its frame's image presented back to back
+// - within a millisecond - left their spacing to FIFO, and through the compositor (and Parsec on top) some were merged
+// or dropped: 120 presents a second showed as jerky motion. Each waits until a period after the one before
+// (LARECOMP_INTERP_SPACING=0: not, research).
+static double ip_hz;            // (ip_mids: the refresh rate the in-betweens are made for; 0: none being made)
+static double ip_rate;          // (stats: the refresh rate in use, learned or the display's - with in-betweens or not)
+static bool ip_restart;         // (Frame Generation was off: nothing learned or counted before counts)
+static bool ip_new_interval, ip_new_rate;  // (ip_mids, after a restart: the game's interval and the display's rate measured again)
+static uint64_t ip_log_last;
+static uint64_t ip_last_present;
+// (stats, ip_log: where the window's presents fell short of the refresh rate - gaps over 1.5 refresh periods, waits
+// that overslept by over half a period, and in-betweens not made, by reason)
+enum { IP_NOT_ALLOWED, IP_LOCKED, IP_NO_HOLD, IP_NOT_PREPARED, IP_CAPPED, IP_NO_BLEND, IP_NO_GPU, IP_NREASONS };
+static uint64_t ip_presents, ip_gaps, ip_overslept, ip_not_made[IP_NREASONS];
+static double ip_gap_max;
+static void ip_space(void) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_INTERP_SPACING") || atoi(getenv("LARECOMP_INTERP_SPACING"));
+    uint64_t now = plat_now_ns();
+    if (on && ip_hz > 0 && ip_last_present) {
+        uint64_t target = ip_last_present + (uint64_t)(0.97e9 / ip_hz);
+        if (now < target && target - now < 50000000ull) {
+            WAITING(SDL_DelayPrecise(target - now));
+            now = plat_now_ns();
+            ip_overslept += now > target && now - target > 0.5e9 / ip_hz;
+        }
+    }
+    if (ip_hz > 0 && ip_last_present && now > ip_last_present) {
+        double gap = (now - ip_last_present) / 1e6;
+        ip_gaps += gap > 1.5e3 / ip_hz;
+        ip_gap_max = fmax(ip_gap_max, gap);
+    }
+    ip_presents++;
+    ip_last_present = now;
+}
+static void ip_log(void) {
+    uint64_t now = plat_now_ns();
+    if (!ip_log_last) ip_log_last = now;
+    if (now - ip_log_last < 2000000000ull) return;
+    double dt = (now - ip_log_last) / 1e9;
+    static const char *why[IP_NREASONS] = {"cut", "busy", "no copy", "not prepared", "lower display rate", "no blend", "no GPU time"};
+    char nm[200] = "";
+    int o = 0;
+    for (int i = 0; i < IP_NREASONS; i++)
+        if (ip_not_made[i]) o += snprintf(nm + o, sizeof nm - (size_t)o, " %s %llu", why[i], (unsigned long long)ip_not_made[i]);
+    if (ip_rate > 0 || o)
+        LOG("[interp] presents %.1f/s for %.0f Hz, gaps over 1.5 refreshes %llu (longest %.1f ms), waits overslept %llu | frames without in-betweens:%s\n",
+            ip_presents / dt, ip_rate, (unsigned long long)ip_gaps, ip_gap_max, (unsigned long long)ip_overslept, o ? nm : " none");
+    ip_presents = ip_gaps = ip_overslept = 0, ip_gap_max = 0;
+    memset(ip_not_made, 0, sizeof ip_not_made);
+    ip_log_last = now;
+}
+static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's image), placed as the last image
+    static const float black[4] = {0, 0, 0, 1};
+    extern bool vk_ip_mid;  // (exec.c: its GPU time is the in-between's)
+    vk_ip_mid = true;
+    if (vk_frame_begin(black)) {
+        VkCommandBuffer cb = vk_cmd();
+        vk_present_draw(cb, b, ip_place.vx, ip_place.vy, ip_place.vw, ip_place.vh, ip_place.pv);
+        menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
+        ip_space();
+        vk_frame_end(NULL);
+    }
+    vk_ip_mid = false;
+}
+static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
+    static uint64_t prev_ns;
+    static double interval_ns;  // (smoothed: the game's frame interval)
+    static double win_sum, win_max;  // (the raw intervals of the current 30-frame check)
+    uint64_t now = plat_now_ns();
+    if (ip_new_interval) prev_ns = 0, interval_ns = 0, ip_new_interval = false;
+    if (prev_ns && now > prev_ns) {
+        double d = (double)(now - prev_ns);
+        interval_ns = interval_ns > 0 && d < 4 * interval_ns ? interval_ns + (d - interval_ns) * 0.1 : d;
+        win_sum += d, win_max = fmax(win_max, d);
+    }
+    prev_ns = now;
+    if (!ip_place.ok || interval_ns <= 0 || !b || !b->image || b->depth > 1 || b->layers > 1) return 0;
+    // The refresh rate the window's presents really get: the display's own (SDL), unless the frames with in-betweens
+    // showed fewer - a virtual display (Parsec: 120 Hz reported, presents paced at 60) held each image two refreshes
+    // and the game fell to its 30 fps mode. Learned from those frames, kept while the display reports the same rate.
+    // In-betweens only from 100 Hz: never at the cost of the game's own 60.
+    // (gameplay only, three 30-frame checks in a row, each steady - no frame over 1.5x the check's average: a movie's,
+    // a load's or a resolution change's hitches aren't the display. A cap is tried again after 10 s of the game at its
+    // 60 - 20 s, 40 s... up to 5 min each time it comes back: an 8x resolution scale's slow frames learned 61 Hz once,
+    // and nothing measured again.)
+    // LARECOMP_INTERP_HZ=<hz> (tests): that refresh rate, nothing learned.
+    static double hz_seen, hz_cap, hz_env = -1;
+    static int mids_last, settle, slow_checks, full_rate, retry_after = 600;
+    if (hz_env < 0) hz_env = getenv("LARECOMP_INTERP_HZ") ? atof(getenv("LARECOMP_INTERP_HZ")) : 0;
+    if (ip_new_rate) hz_seen = 0, mids_last = 0, ip_new_rate = false;  // (a learned rate starts over: logged and measured again)
+    SDL_DisplayID did = SDL_GetDisplayForWindow(window);
+    const SDL_DisplayMode *dm = did ? SDL_GetCurrentDisplayMode(did) : NULL;
+    double hz = dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60;
+    if (hz != hz_seen) {
+        LOG("[interp] display %u: %.2f Hz (SDL)%s\n", (unsigned)did, hz, hz_env > 0 ? " - LARECOMP_INTERP_HZ overrides it" : "");
+        hz_seen = hz, hz_cap = 0, settle = slow_checks = full_rate = 0, retry_after = 600;
+    }
+    if (hz_env > 0) hz = hz_env;
+    extern int game_in_play(void);      // hle/warp.c
+    extern bool world_on_screen(void);  // hle/mirror.c
+    bool playing = hz_env <= 0 && game_in_play() && world_on_screen();
+    if (playing && mids_last > 0 && ++settle >= 30) {  // (30 frames with in-betweens)
+        double expect = (mids_last + 1) * 1e9 / (hz_cap > 0 ? fmin(hz, hz_cap) : hz), mean = win_sum / settle;
+        bool steady = win_max < 1.5 * mean;
+        settle = 0;
+        slow_checks = steady && mean > 1.3 * expect ? slow_checks + 1 : 0;
+        if (slow_checks >= 3) {
+            hz_cap = (mids_last + 1) * 1e9 / mean;
+            slow_checks = full_rate = 0;
+            static int nlog;
+            if (nlog++ < 10) LOG("[interp] the display shows %.0f images a second, not %.0f: in-betweens for %.0f Hz\n", hz_cap, hz, hz_cap);
+        }
+    }
+    if (!playing || mids_last == 0 || settle == 0) win_sum = win_max = 0;  // (a check counts its own 30 frames)
+    if (hz_cap > 0 && hz_cap < hz) {  // (trying the display's rate again)
+        full_rate = playing && interval_ns < 1.1e9 / 60 ? full_rate + 1 : 0;
+        if (full_rate >= retry_after) {
+            LOG("[interp] trying %.0f Hz again (the game held 60 for %d s)\n", hz, retry_after / 60);
+            hz_cap = 0, full_rate = settle = slow_checks = 0;
+            retry_after = retry_after * 2 > 18000 ? 18000 : retry_after * 2;
+        }
+    }
+    if (hz_env <= 0 && hz_cap > 0 && hz_cap < hz) hz = hz_cap;
+    // (counted for the game's own 60, not the measured interval: a game slowed to its 30 fps mode got more in-betweens,
+    // which held it at 30)
+    int mids = hz >= 100 ? (int)lround(hz / 60.0) - 1 : 0;
+    if (mids > 3) mids = 3;
+    ip_rate = hz;
+    if (mids < 1) { ip_not_made[IP_CAPPED] += hz_cap > 0; mids_last = 0; ip_hz = 0; return 0; }
+    if (mids != mids_last) settle = slow_checks = 0;
+    mids_last = mids;
+    // The GPU's time goes to the game's frames first (as on Metal, metal.m): in-betweens only in what a game frame
+    // leaves of its interval - the game's own GPU time (pace.c; the in-betweens' submissions aren't counted there,
+    // exec.c) against an in-between's, replay and window image. Fewer than the refresh rate wants: evenly spaced, each
+    // shown longer. LARECOMP_INTERP_GPU_BUDGET=0: all made (research).
+    int allowed = mids;
+    {
+        static int budget_on = -1;
+        if (budget_on < 0) { const char *e = getenv("LARECOMP_INTERP_GPU_BUDGET"); budget_on = !e || atoi(e); }
+        extern double pace_gpu_frame_ms(void);
+        double game = pace_gpu_frame_ms(), img = interp_image_gpu_ms();
+        double D = fmin(fmax(interval_ns / 1e6, 16.667), 50);
+        if (budget_on && game >= 0 && img > 0) {
+            double left = 0.9 * D - game;
+            allowed = left > 0 ? (int)(left / img) : 0;
+            if (allowed > mids) allowed = mids;
+        }
+    }
+    for (int m = allowed; m < mids; m++) interp_note_no_gpu();
+    if (allowed < 1) { ip_not_made[IP_NO_GPU]++; ip_hz = 0; return 0; }
+    ip_hz = hz * (allowed + 1) / (mids + 1);  // (presents spaced for the images made)
+    if (!interp_replays_allowed(frame, total_frames, now)) { ip_not_made[IP_NOT_ALLOWED]++; return 0; }
+    if (!interp_replay_lock()) { ip_not_made[IP_LOCKED]++; return 0; }
+    int made = 0;
+    if (ip_hold(b, false)) {
+        extern void renderer_interp_replay(void);
+        for (int m = 1; m <= allowed; m++) {
+            if (!interp_prepare((float)m / (float)(allowed + 1))) break;
+            renderer_interp_replay();
+            ip_present_mid(b);
+            made++;
+        }
+        ip_hold(b, true);
+        if (!made) ip_not_made[IP_NOT_PREPARED]++;
+    } else ip_not_made[IP_NO_HOLD]++;
+    interp_replay_unlock();
+    return made;
+}
+
 // The GPU side of a present (the render thread when it's on, rqueue.c): the present pass, the overlay, shots.
 // frame: the number of this present (the game thread's frame when it was queued).
 void backend_present_now(NvnTexture *t, uint64_t frame) {
@@ -1319,6 +1537,28 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
     // Its GPU time is counted, and the window image's submission's from after its wait (exec.c gpu_timer_add)
     renderer_submit();
     pp_mark(PP_SUBMIT);
+    {   // frame interpolation (runtime/nvn/interp.c): the frame's draws matched with the previous frame's and logged,
+        // and with it on, its in-betweens presented (ip_mids)
+        bool repeat = rq_on() ? rq_present_is_repeat() : direct_repeat;
+        int want = interp_wanted();
+        if (!repeat) {
+            if (want == INTERP_ON && ip_restart) {  // (turned on again: the stats from now, and measured again)
+                ip_restart = false, ip_new_interval = ip_new_rate = true;
+                ip_last_present = ip_log_last = 0;
+                ip_presents = ip_gaps = ip_overslept = 0, ip_gap_max = 0;
+                memset(ip_not_made, 0, sizeof ip_not_made);
+            }
+            bool blend = interp_frame_end(want != INTERP_OFF);
+            if (want == INTERP_ON) {
+                if (blend) interp_note_images(ip_mids(b, frame));
+                else ip_not_made[IP_NO_BLEND]++, interp_note_images(0);
+            }
+            interp_frame_rotate();
+            if (want != INTERP_OFF) interp_log_stats();
+            if (want == INTERP_ON) ip_log();
+            else ip_restart = true, ip_hz = ip_rate = 0;  // (off: the next on starts fresh)
+        }
+    }
     static const float black[4] = {0, 0, 0, 1};
     uint64_t t0 = SDL_GetTicksNS();
     bool have = vk_frame_begin(black);
@@ -1376,6 +1616,8 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         VkCommandBuffer cb = vk_cmd();
         float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
         memcpy(g_shot_crop, crop, sizeof crop);
+        ip_place.ok = true, ip_place.vx = (float)vx, ip_place.vy = (float)vy, ip_place.vw = (float)vw, ip_place.vh = (float)vh;
+        memcpy(ip_place.pv, pv, sizeof ip_place.pv);
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
         pp_mark(PP_BLIT);
         static long menu_at = -1;
@@ -1387,6 +1629,7 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("LARECOMP_WINDOW_SHOT") ? atol(getenv("LARECOMP_WINDOW_SHOT")) : 0;
         bool shot = win_shot && (long)frame + 1 == win_shot;
+        ip_space();
         vk_frame_end(shot ? "build/window.png" : NULL);
         if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) exit_after_shot();
     } else {

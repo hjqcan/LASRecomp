@@ -15,6 +15,7 @@
 #include "nvn.h"
 #include "renderer.h"
 #include "pace.h"
+#include "interp.h"
 #include "shader_prep.h"
 #include "recolour.h"
 #include "slowframe.h"
@@ -23,6 +24,173 @@
 static id<MTLDevice> dev;
 static id<MTLCommandBuffer> cmdbuf;
 static id<MTLRenderCommandEncoder> enc;
+
+// ---- frame interpolation's tape (runtime/nvn/interp.c): while a frame is logged, its render work is recorded as the
+// Metal calls it made, and an in-between plays them back with the blended uniform copies bound in place of the
+// frame's - instead of translating the frame's command lists again, which was most of an in-between's CPU time
+// (texture pool lookups, state hashing, uniform copies: 4-9 ms an image in the field, the game held back to 20-30 fps).
+// Copies between textures are recorded as blocks that encode them again. Calls on `enc` go through the E_* wrappers.
+// LARECOMP_INTERP_TAPE=0: replays translate the lists again (the old path).
+enum { TP_PASS, TP_END, TP_PIPE, TP_DSS, TP_STREF, TP_STREF2, TP_BLENDC, TP_CULL, TP_WIND, TP_FILL, TP_BIAS,
+       TP_VIEWPORT, TP_SCISSOR, TP_BUF, TP_BYTES, TP_TEX, TP_SMP, TP_DRAW, TP_DRAWI, TP_BLOCK };
+typedef struct {
+    uint8_t op, stage; uint16_t idx;
+    int32_t obj, cb;  // tape_objs index (-1: nil); the uniform copy a TP_BUF binds (interp.c's, -1: none)
+    uint64_t a, b, c, d;
+    float f[6];
+} TapeOp;
+static TapeOp *tape; static uint32_t tape_n, tape_cap;
+static NSMutableArray *tape_objs;
+static uint8_t *tape_bytes; static uint64_t tape_nbytes, tape_capbytes;
+static bool tape_rec, tape_ok;  // recording now; the tape holds the whole frame
+static int tape_mute;           // (encodes the replays don't make: a readback's downscale)
+static uint64_t ring_gen, tape_ring_gen;  // ring_reset's count (a reset rewrites the ring the tape binds)
+// The frame's copy of dynamic geometry it reads in place (iv_geometry): the next buffer bind / indexed draw is recorded
+// with it - by the time an in-between is made the game has rewritten that memory (the torches' flames in Tail Cave
+// drawn with the next frame's particles: 2% of the image)
+static id<MTLBuffer> iv_sub_buf;
+static uint64_t iv_sub_off;
+// LARECOMP_INTERP_INPLACE_CHECK=1 (debug): game memory the tape reads in place (vertex / index buffers), with a hash
+// of it at the frame - checked when an in-between is made and when the next frame starts: rewritten by then, the
+// in-between drew with the game's newer data
+typedef struct { uint64_t addr, size, hash; } InPlace;
+static InPlace *ip_list; static uint32_t ip_n, ip_cap;
+static int ip_check = -1;
+static uint64_t range_hash(uint64_t addr, uint64_t size);
+static void tape_note_inplace(uint64_t addr, uint64_t size);
+
+static TapeOp *tp_push(int op) {
+    if (tape_n == tape_cap) {
+        if (tape_cap >= (4u << 20)) { tape_ok = false; tape_n = 0; }  // (a runaway frame: no tape)
+        else { tape_cap = tape_cap ? tape_cap * 2 : 16384; tape = realloc(tape, sizeof *tape * tape_cap); }
+    }
+    TapeOp *o = &tape[tape_n++];
+    memset(o, 0, sizeof *o);
+    o->op = (uint8_t)op, o->obj = o->cb = -1;
+    return o;
+}
+static int32_t tp_obj(id o) {
+    if (!o) return -1;
+    [tape_objs addObject:o];
+    return (int32_t)tape_objs.count - 1;
+}
+static bool tp_on(void) { return tape_rec && !tape_mute; }
+static void inplace_check(const char *when) {
+    if (ip_check <= 0 || !ip_n) return;
+    static uint64_t checks[2], changed[2], bytes[2], binds[2];
+    static double last;
+    int k = when[0] == 'n';
+    uint32_t n = 0; uint64_t b = 0;
+    for (uint32_t i = 0; i < ip_n; i++)
+        if (range_hash(ip_list[i].addr, ip_list[i].size) != ip_list[i].hash) {
+            if (n < 3 && changed[k] < 40) LOG("[inplace] %s: %llx+%llu rewritten since the frame\n", when, (unsigned long long)ip_list[i].addr, (unsigned long long)ip_list[i].size);
+            n++, b += ip_list[i].size;
+        }
+    checks[k]++, binds[k] += ip_n;
+    if (n) changed[k]++, bytes[k] += b;
+    extern uint64_t plat_now_ns(void);
+    double now = plat_now_ns() / 1e9;
+    if (now - last > 2) {
+        last = now;
+        LOG("[inplace] at the in-between: %llu of %llu checks found rewritten data (%.0f binds/frame); at the next frame: %llu of %llu\n",
+            (unsigned long long)changed[0], (unsigned long long)checks[0], checks[0] ? (double)binds[0] / checks[0] : 0,
+            (unsigned long long)changed[1], (unsigned long long)checks[1]);
+        memset(checks, 0, sizeof checks), memset(changed, 0, sizeof changed), memset(bytes, 0, sizeof bytes), memset(binds, 0, sizeof binds);
+    }
+}
+static void tape_note_inplace(uint64_t addr, uint64_t size) {
+    if (ip_check < 0) ip_check = getenv("LARECOMP_INTERP_INPLACE_CHECK") && atoi(getenv("LARECOMP_INTERP_INPLACE_CHECK"));
+    if (ip_check <= 0 || !tp_on() || !size) return;
+    if (ip_n == ip_cap) { ip_cap = ip_cap ? ip_cap * 2 : 4096; ip_list = realloc(ip_list, sizeof *ip_list * ip_cap); }
+    ip_list[ip_n++] = (InPlace){addr, size & ~7ull, range_hash(addr, size & ~7ull)};
+}
+static void tape_begin(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("LARECOMP_INTERP_TAPE"); on = !e || atoi(e); }
+    inplace_check("next frame");
+    ip_n = 0;
+    tape_n = 0, tape_nbytes = 0;
+    if (!tape_objs) tape_objs = [NSMutableArray new];
+    [tape_objs removeAllObjects];
+    tape_rec = tape_ok = on;
+    iv_sub_buf = nil;
+    tape_ring_gen = ring_gen;
+}
+void renderer_tape_close(void) { tape_rec = false; }  // (the present: the frame is complete)
+static void tape_block(void (^b)(void)) { if (tp_on()) tp_push(TP_BLOCK)->obj = tp_obj(b); }
+
+static void E_pipe(id<MTLRenderPipelineState> p) { [enc setRenderPipelineState:p]; if (tp_on()) tp_push(TP_PIPE)->obj = tp_obj(p); }
+static void E_dss(id<MTLDepthStencilState> d) { [enc setDepthStencilState:d]; if (tp_on()) tp_push(TP_DSS)->obj = tp_obj(d); }
+static void E_stref(uint32_t v) { [enc setStencilReferenceValue:v]; if (tp_on()) tp_push(TP_STREF)->a = v; }
+static void E_stref2(uint32_t f, uint32_t b) {
+    [enc setStencilFrontReferenceValue:f backReferenceValue:b];
+    if (tp_on()) { TapeOp *o = tp_push(TP_STREF2); o->a = f, o->b = b; }
+}
+static void E_blendc(const float *c) {
+    [enc setBlendColorRed:c[0] green:c[1] blue:c[2] alpha:c[3]];
+    if (tp_on()) memcpy(tp_push(TP_BLENDC)->f, c, 16);
+}
+static void E_cull(MTLCullMode m) { [enc setCullMode:m]; if (tp_on()) tp_push(TP_CULL)->a = m; }
+static void E_wind(MTLWinding w) { [enc setFrontFacingWinding:w]; if (tp_on()) tp_push(TP_WIND)->a = w; }
+static void E_fill(MTLTriangleFillMode m) { [enc setTriangleFillMode:m]; if (tp_on()) tp_push(TP_FILL)->a = m; }
+static void E_bias(float bias, float slope, float clamp) {
+    [enc setDepthBias:bias slopeScale:slope clamp:clamp];
+    if (tp_on()) { TapeOp *o = tp_push(TP_BIAS); o->f[0] = bias, o->f[1] = slope, o->f[2] = clamp; }
+}
+static void E_viewport(MTLViewport v) {
+    [enc setViewport:v];
+    if (tp_on()) { TapeOp *o = tp_push(TP_VIEWPORT); o->f[0] = (float)v.originX, o->f[1] = (float)v.originY, o->f[2] = (float)v.width,
+                   o->f[3] = (float)v.height, o->f[4] = (float)v.znear, o->f[5] = (float)v.zfar; }
+}
+static void E_scissor(MTLScissorRect r) {
+    [enc setScissorRect:r];
+    if (tp_on()) { TapeOp *o = tp_push(TP_SCISSOR); o->a = r.x, o->b = r.y, o->c = r.width, o->d = r.height; }
+}
+// cb: the uniform copy it binds (interp_last_cb), size its length - a replay binds the blended copy instead
+static void E_cbuf(int stage, id<MTLBuffer> b, uint64_t off, int idx, int32_t cbi, uint64_t size) {
+    if (stage == 0) [enc setVertexBuffer:b offset:off atIndex:idx];
+    else [enc setFragmentBuffer:b offset:off atIndex:idx];
+    if (tp_on()) {
+        if (iv_sub_buf) b = iv_sub_buf, off = iv_sub_off, iv_sub_buf = nil;
+        TapeOp *o = tp_push(TP_BUF); o->stage = (uint8_t)stage, o->idx = (uint16_t)idx, o->obj = tp_obj(b), o->a = off, o->cb = cbi, o->b = size;
+    }
+}
+static void E_buf(int stage, id<MTLBuffer> b, uint64_t off, int idx) { E_cbuf(stage, b, off, idx, -1, 0); }
+static void E_bytes(int stage, const void *p, uint64_t len, int idx) {
+    if (stage == 0) [enc setVertexBytes:p length:len atIndex:idx];
+    else [enc setFragmentBytes:p length:len atIndex:idx];
+    if (!tp_on()) return;
+    if (tape_nbytes + len > tape_capbytes) { tape_capbytes = (tape_nbytes + len) * 2 + 65536; tape_bytes = realloc(tape_bytes, tape_capbytes); }
+    memcpy(tape_bytes + tape_nbytes, p, len);
+    TapeOp *o = tp_push(TP_BYTES);
+    o->stage = (uint8_t)stage, o->idx = (uint16_t)idx, o->a = tape_nbytes, o->b = len;
+    tape_nbytes += len;
+}
+static void E_tex(int stage, id<MTLTexture> t, int idx) {
+    if (stage == 0) [enc setVertexTexture:t atIndex:idx];
+    else [enc setFragmentTexture:t atIndex:idx];
+    if (tp_on()) { TapeOp *o = tp_push(TP_TEX); o->stage = (uint8_t)stage, o->idx = (uint16_t)idx, o->obj = tp_obj(t); }
+}
+static void E_smp(int stage, id<MTLSamplerState> sm, int idx) {
+    if (stage == 0) [enc setVertexSamplerState:sm atIndex:idx];
+    else [enc setFragmentSamplerState:sm atIndex:idx];
+    if (tp_on()) { TapeOp *o = tp_push(TP_SMP); o->stage = (uint8_t)stage, o->idx = (uint16_t)idx, o->obj = tp_obj(sm); }
+}
+static void E_draw(MTLPrimitiveType pt, uint32_t first, uint32_t count, uint32_t inst, uint32_t base_inst) {
+    [enc drawPrimitives:pt vertexStart:first vertexCount:count instanceCount:inst baseInstance:base_inst];
+    if (tp_on()) { TapeOp *o = tp_push(TP_DRAW); o->idx = (uint16_t)pt, o->a = first, o->b = count, o->c = inst, o->d = base_inst; }
+}
+static void E_drawi(MTLPrimitiveType pt, uint32_t count, MTLIndexType it, id<MTLBuffer> ib, uint64_t ioff, uint32_t inst,
+                    int32_t base_vertex, uint32_t base_inst) {
+    [enc drawIndexedPrimitives:pt indexCount:count indexType:it indexBuffer:ib indexBufferOffset:ioff instanceCount:inst
+                    baseVertex:base_vertex baseInstance:base_inst];
+    if (tp_on()) {
+        if (iv_sub_buf) ib = iv_sub_buf, ioff = iv_sub_off, iv_sub_buf = nil;
+        TapeOp *o = tp_push(TP_DRAWI);
+        o->idx = (uint16_t)pt, o->stage = (uint8_t)it, o->obj = tp_obj(ib), o->a = count, o->b = ioff, o->c = inst,
+        o->d = (uint64_t)(uint32_t)base_vertex | (uint64_t)base_inst << 32;
+    }
+}
 static id<MTLRenderPipelineState> clear_pipes[64];
 static NSMutableDictionary<NSString *, id> *cache;
 // (stats) GPU wait time by cause: 0 = guest fence (nvnSyncWait), 1 = full flush (CPU reads GPU results / ring), 2 = sync all
@@ -34,9 +202,12 @@ static double stat_gpu_s;
 // GPU busy time (dynamic resolution: output_scale.c; the "gpu" of the [metal] stats line), ns so far: the game's
 // command buffers, the window image's (metal.m backend_present), and the plain sum of their spans (diagnostics)
 uint64_t g_gpu_total_ns, g_gpu_win_ns, g_gpu_sum_ns;
-// Frame pacing (pace.c): the GPU's busy time so far, the game's command buffers and the window image's (renderer_gpu_busy).
+uint64_t g_gpu_interp_ns;  // (the part of both that made frame interpolation's in-betweens: replays and their composes)
+// Frame pacing (pace.c): the GPU's busy time so far, the game's command buffers and the window image's (renderer_gpu_busy)
+// - without the in-betweens': they give way to the game's frames (metal.m ip_present), so they must not hold it at 30.
 int64_t pace_gpu_ns(void) {
-    return (int64_t)(__atomic_load_n(&g_gpu_total_ns, __ATOMIC_RELAXED) + __atomic_load_n(&g_gpu_win_ns, __ATOMIC_RELAXED));
+    return (int64_t)(__atomic_load_n(&g_gpu_total_ns, __ATOMIC_RELAXED) + __atomic_load_n(&g_gpu_win_ns, __ATOMIC_RELAXED) -
+                     __atomic_load_n(&g_gpu_interp_ns, __ATOMIC_RELAXED));
 }
 // (forward: texture-lifetime cleanup and stats, defined further down)
 static int g_views_live;
@@ -289,6 +460,7 @@ static void end_pass(void) {
     if (enc) {
         [enc endEncoding];
         enc = nil;
+        if (tp_on()) tp_push(TP_END);
         if (g_debug_frame && st.rt.ncolor && st.rt.color[0] && st.rt.color[0]->backend) {
             id<MTLTexture> t = renderer_texture(st.rt.color[0], nil, true);
             id<MTLCommandBuffer> c = cmdbuf;
@@ -480,8 +652,12 @@ void renderer_submit(void) {
     if (cmdbuf) {
         id<MTLCommandBuffer> c = cmdbuf;
         cmdbuf = nil;
+        bool replay = g_interp_replaying;
         [c addCompletedHandler:^(id<MTLCommandBuffer> done) {
-            stat_gpu_s += renderer_gpu_busy(done, false) / 1e9;
+            // (frame interpolation's replays count as the game's work: Dynamic budgets the frame and its in-betweens)
+            uint64_t ns = renderer_gpu_busy(done, false);
+            stat_gpu_s += ns / 1e9;
+            if (replay) { interp_replay_gpu((done.GPUEndTime - done.GPUStartTime) * 1e3); __atomic_add_fetch(&g_gpu_interp_ns, ns, __ATOMIC_RELAXED); }
             if (done.error) LOG("[metal] command buffer error: %s\n", done.error.localizedDescription.UTF8String);
         }];
         [c commit];
@@ -857,6 +1033,7 @@ static void begin_pass(void) {
     if (chunk < 0) { const char *e = ENV("LARECOMP_CHUNK_PASSES"); chunk = e ? atoi(e) : 8; }
     if (chunk > 0 && cmdbuf && ++g_passes_in_cb >= chunk) renderer_submit();
     enc = [cb() renderCommandEncoderWithDescriptor:rp];
+    if (tp_on()) tp_push(TP_PASS)->obj = tp_obj(rp);
     opening_pass = false;
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
     stat_passes++;
@@ -895,7 +1072,7 @@ static void apply_scissor(void) {
     if (pass_rt_h && y + sh > pass_rt_h) sh = pass_rt_h - y;
     if (sw < 0) sw = 0;
     if (sh < 0) sh = 0;
-    [enc setScissorRect:(MTLScissorRect){(NSUInteger)x, (NSUInteger)y, (NSUInteger)sw, (NSUInteger)sh}];
+    E_scissor((MTLScissorRect){(NSUInteger)x, (NSUInteger)y, (NSUInteger)sw, (NSUInteger)sh});
 }
 
 // ------------------------------------------------------------------ clears (full-screen triangle)
@@ -1030,19 +1207,19 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
         dd.frontFaceStencil = sd;
         dd.backFaceStencil = sd;
     }
-    [enc setRenderPipelineState:pipe];
-    [enc setDepthStencilState:[dev newDepthStencilStateWithDescriptor:dd]];
-    [enc setStencilReferenceValue:sval];
-    [enc setCullMode:MTLCullModeNone];
+    E_pipe(pipe);
+    E_dss([dev newDepthStencilStateWithDescriptor:dd]);
+    E_stref(sval);
+    E_cull(MTLCullModeNone);
     int w, h;
     pass_size(&w, &h);
-    [enc setViewport:(MTLViewport){0, 0, w, h, 0, 1}];
+    E_viewport((MTLViewport){0, 0, w, h, 0, 1});
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
     apply_scissor();
     float d4[4] = {dval, 0, 0, 0};
-    [enc setVertexBytes:d4 length:16 atIndex:0];
-    if (index >= 0) [enc setFragmentBytes:color length:16 atIndex:0];
-    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    E_bytes(0, d4, 16, 0);
+    if (index >= 0) E_bytes(1, color, 16, 0);
+    E_draw(MTLPrimitiveTypeTriangle, 0, 3, 1, 0);
 }
 
 // ------------------------------------------------------------------ shaders (debug dump)
@@ -1099,7 +1276,7 @@ static uint64_t ring_alloc(const void *data, uint64_t size) {
     return aligned;
 }
 
-static void ring_reset(void) { ring_off = 0; }
+static void ring_reset(void) { ring_off = 0; ring_gen++; }
 
 // (debug) LARECOMP_LOG_BINDS=1: guest memory the GPU reads in place, per frame (bytes bound; distinct ranges once),
 // and the ranges of the previous frame whose contents the game rewrote by the time this frame is translated: with
@@ -1179,19 +1356,100 @@ static bool dyn_copy(uint64_t addr, uint64_t size) {
     stat_vcopy++; stat_vcopy_bytes += size;
     return true;
 }
+// Frame interpolation: the per-frame geometry above as the frame drew it, for its replays (letsgo-recomp 0.6.0: a
+// replay's draw binds the vertex and index data frame N's same draw had). In place, a replay - encoded after the
+// frame and run later still on a busy GPU - reads whatever the game has written there for its next frames by then
+// (the ring is reused once the frame's fence passed), and its depth pre-pass and colour pass could read different
+// data. The frame copies each such range at its bind (~25 KB a frame); a replay binds the copies in bind order.
+// (The stats line "replay geometry" counts them, and those the game had already rewritten when the replay was
+// encoded - none in the beach runs; the GPU reads later still.) LARECOMP_INTERP_GEO_COPY=0: in place (research).
+typedef struct { uint64_t addr, size, off; __unsafe_unretained id<MTLBuffer> buf; } IvRec;
+static IvRec *iv_log; static uint32_t iv_n, iv_cap, iv_rp;
+static uint64_t iv_serial = ~0ull, iv_off, iv_binds, iv_differed, iv_missed;
+static NSMutableArray *iv_bufs;  // (holds the frame's chunks until the next frame's first copy)
+static __unsafe_unretained id<MTLBuffer> iv_chunk;
+#define IV_CHUNK (1u << 20)
+void renderer_interp_geo_stats(uint64_t *binds, uint64_t *differed, uint64_t *missed) {
+    *binds = iv_binds, *differed = iv_differed, *missed = iv_missed;
+    iv_binds = iv_differed = iv_missed = 0;
+}
+static bool iv_geometry(uint64_t addr, uint64_t size, id<MTLBuffer> __strong *buf, uint64_t *off) {
+    static int on = -1;
+    if (on < 0) { const char *x = ENV("LARECOMP_INTERP_GEO_COPY"); on = !x || atoi(x) != 0; }
+    if (!on || !g_interp_log || size > IV_CHUNK) return false;
+    extern int nvn_pool_flags_at(uint64_t addr);
+    if ((nvn_pool_flags_at(addr) & 0x13) != 0x12) return false;  // (static meshes: cached pools, in place)
+    if (!g_interp_replaying) {
+        if (interp_frame_serial() != iv_serial) {
+            iv_serial = interp_frame_serial();
+            iv_n = 0, iv_off = IV_CHUNK, iv_bufs = [NSMutableArray array], iv_chunk = nil;
+        }
+        uint64_t o = (iv_off + 255) & ~255ull;
+        if (!iv_chunk || o + size > IV_CHUNK) {
+            id<MTLBuffer> c = [dev newBufferWithLength:IV_CHUNK options:MTLResourceStorageModeShared];
+            [iv_bufs addObject:c];
+            iv_chunk = c, o = 0;
+        }
+        memcpy((uint8_t *)iv_chunk.contents + o, (const void *)(uintptr_t)addr, size);
+        iv_off = o + size;
+        if (iv_n == iv_cap) { iv_cap = iv_cap ? iv_cap * 2 : 1024; iv_log = realloc(iv_log, sizeof *iv_log * iv_cap); }
+        iv_log[iv_n++] = (IvRec){addr, size, o, iv_chunk};
+        if (tp_on()) iv_sub_buf = iv_chunk, iv_sub_off = o;  // (the tape binds the copy)
+        return false;  // (the frame itself reads in place, as before)
+    }
+    if (interp_frame_serial() != iv_serial) { iv_missed++; return false; }
+    for (uint32_t j = iv_rp; j < iv_n && j < iv_rp + 32; j++)
+        if (iv_log[j].addr == addr && iv_log[j].size == size) {
+            iv_rp = j + 1;
+            iv_binds++;
+            if (memcmp((uint8_t *)iv_log[j].buf.contents + iv_log[j].off, (const void *)(uintptr_t)addr, size)) iv_differed++;
+            *buf = iv_log[j].buf, *off = iv_log[j].off;
+            return true;
+        }
+    iv_missed++;
+    return false;
+}
+// The tape's copy of small vertex / index data the frame reads in place from cached pools too: the game rewrites
+// some of it for its next frame by the time an in-between runs (quads of 16 to 224 bytes, at 80-100 of 120
+// in-betweens a second): drawn with half-written corners, a quad became a thin black line across the screen now and
+// then, at full speed only. Big ranges are static meshes. LARECOMP_INTERP_TAPE_COPY=<bytes>: the largest copied (0: none).
+static void tape_copy_small(uint64_t addr, uint64_t size) {
+    static int64_t max = -1;
+    if (max < 0) { const char *x = ENV("LARECOMP_INTERP_TAPE_COPY"); max = x ? atoll(x) : 65536; }
+    if (!tp_on() || g_interp_replaying || !size || size > (uint64_t)max) return;
+    if (interp_frame_serial() != iv_serial) {
+        iv_serial = interp_frame_serial();
+        iv_n = 0, iv_off = IV_CHUNK, iv_bufs = [NSMutableArray array], iv_chunk = nil;
+    }
+    uint64_t o = (iv_off + 255) & ~255ull;
+    if (!iv_chunk || o + size > IV_CHUNK) {
+        id<MTLBuffer> c = [dev newBufferWithLength:IV_CHUNK options:MTLResourceStorageModeShared];
+        [iv_bufs addObject:c];
+        iv_chunk = c, o = 0;
+    }
+    memcpy((uint8_t *)iv_chunk.contents + o, (const void *)(uintptr_t)addr, size);
+    iv_off = o + size;
+    iv_sub_buf = iv_chunk, iv_sub_off = o;  // (the tape binds the copy)
+}
+
 static void bind_guest(id<MTLRenderCommandEncoder> e, bool vertex_stage, uint64_t addr, uint64_t size, int index) {
     if (addr >= HEAP_BASE && addr + size <= HEAP_BASE + HEAP_MAX && (addr & 3) == 0) {
         bind_note(0, addr, size);  // (LARECOMP_LOG_BINDS: the race detector still reports the rewrites; copied, they are harmless)
         snap_note_vertex_bind(addr, size);
+        id<MTLBuffer> ivb; uint64_t ivo;
+        if (iv_geometry(addr, size, &ivb, &ivo)) {
+            E_buf(vertex_stage ? 0 : 1, ivb, ivo, index);
+            return;
+        }
         if (!dyn_copy(addr, size)) {
-            if (vertex_stage) [e setVertexBuffer:g_guest_buffer offset:addr - HEAP_BASE atIndex:index];
-            else [e setFragmentBuffer:g_guest_buffer offset:addr - HEAP_BASE atIndex:index];
+            tape_copy_small(addr, size);
+            if (!iv_sub_buf) tape_note_inplace(addr, size);
+            E_buf(vertex_stage ? 0 : 1, g_guest_buffer, addr - HEAP_BASE, index);
             return;
         }
     }
     uint64_t off = ring_alloc((void *)(uintptr_t)addr, size);
-    if (vertex_stage) [e setVertexBuffer:ring offset:off atIndex:index];
-    else [e setFragmentBuffer:ring offset:off atIndex:index];
+    E_buf(vertex_stage ? 0 : 1, ring, off, index);
 }
 
 static int attr_kind(uint32_t fmt) {
@@ -1966,11 +2224,15 @@ static void resolve_feedback(Prog *pr) {
                 dst = [dev newTextureWithDescriptor:d];
                 copies[key] = dst;
             }
-            id<MTLBlitCommandEncoder> b = [cb() blitCommandEncoder];
-            [b copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
-                    sourceSize:MTLSizeMake(src.width, src.height, 1) toTexture:dst destinationSlice:0 destinationLevel:0
-             destinationOrigin:MTLOriginMake(0, 0, 0)];
-            [b endEncoding];
+            void (^copy)(void) = ^{
+                id<MTLBlitCommandEncoder> b = [cb() blitCommandEncoder];
+                [b copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+                        sourceSize:MTLSizeMake(src.width, src.height, 1) toTexture:dst destinationSlice:0 destinationLevel:0
+                 destinationOrigin:MTLOriginMake(0, 0, 0)];
+                [b endEncoding];
+            };
+            copy();
+            tape_block(copy);
             feedback_tex[nfeedback] = t;
             feedback_copy[nfeedback++] = dst;
             if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
@@ -2025,6 +2287,7 @@ static void bind_textures(int stage, ShaderInfo *si) {
         if (i < 64) { tex_wh[stage][i][0] = tex_wh[stage][i][1] = 0; tex_fr[stage][i][0] = tex_fr[stage][i][1] = 1; }
         if (h && st.tpool && tic < (uint32_t)st.tpool->count) {
             NvnTexEntry *e = &((NvnTexEntry *)st.tpool->entries)[tic];
+            if (g_interp_log) e = (NvnTexEntry *)interp_texentry(stage, i, e, sizeof *e);  // (frame interpolation: the frame's entry)
             if (e->tex) tex = sampled_texture(e->tex, &e->view, e->has_view, st_->type);
             else if (e->dead_format) nvn_dead_slot_sampled(e, tic);
             if (e->tex && stage == 1) {
@@ -2126,16 +2389,16 @@ static void bind_textures(int stage, ShaderInfo *si) {
             if (gt) renderer_save_game_texture(gt, tex, path, apath);
             else { renderer_save_texture(tex, path); renderer_save_texture_alpha(tex, apath); }
         }
-        if (stage == 0) { [enc setVertexTexture:tex atIndex:i]; [enc setVertexSamplerState:smp atIndex:i]; }
-        else if (mapped) { [enc setFragmentTexture:tex atIndex:i]; msmp[i] = smp; mdesc[i] = sd; }
-        else { [enc setFragmentTexture:tex atIndex:i]; [enc setFragmentSamplerState:smp atIndex:i]; }
+        if (stage == 0) { E_tex(0, tex, i); E_smp(0, smp, i); }
+        else if (mapped) { E_tex(1, tex, i); msmp[i] = smp; mdesc[i] = sd; }
+        else { E_tex(1, tex, i); E_smp(1, smp, i); }
     }
     if (mapped && stage == 1) {
         __strong id<MTLSamplerState> slot[MSL_MAX_SAMPLERS];
         uint32_t map[64];
         int ns = sampler_slots(si->ntex, msmp, mdesc, slot, map);
-        for (int k = 0; k < MSL_MAX_SAMPLERS; k++) [enc setFragmentSamplerState:k < ns ? slot[k] : default_sampler() atIndex:k];
-        [enc setFragmentBytes:map length:(NSUInteger)si->ntex * 4 atIndex:SMAP_BUFFER_INDEX];
+        for (int k = 0; k < MSL_MAX_SAMPLERS; k++) E_smp(1, k < ns ? slot[k] : default_sampler(), k);
+        E_bytes(1, map, (NSUInteger)si->ntex * 4, SMAP_BUFFER_INDEX);
     }
 }
 
@@ -2367,8 +2630,18 @@ static void snap_note_vertex_bind(uint64_t addr, uint64_t size) {  // (LARECOMP_
             n++; LOG("[snap] vertex bind %llx+%llu overlaps copied %llx+%llu (%s, frame %llu)\n", (unsigned long long)addr, (unsigned long long)size, (unsigned long long)rs_tab[i].addr, (unsigned long long)rs_tab[i].size, addr < rs_tab[i].addr ? "from outside" : "inside", (unsigned long long)renderer_exec_frame());
         }
 }
+// The table's current address for a range, read only (a replay whose draw wasn't found in the log): its copy, or the
+// original when it has none (in place, or a per-frame block copied without an entry).
+static uint64_t snap_lookup(uint64_t addr, uint64_t size) {
+    if (!snap_on()) return addr;
+    for (int i = 0; i < nrs; i++)
+        if (rs_tab[i].addr == addr && rs_tab[i].size == size) return rs_tab[i].mode != RS_PLACE && rs_tab[i].copy ? rs_tab[i].copy : addr;
+    return addr;
+}
+static uint64_t g_bound_sbuf[2][16];  // the storage addresses the current draw's stages bound (copy or original)
 // The address a binder of [addr, addr+size) uses: the original or its copy (cs_slot: bound by a compute dispatch)
 static uint64_t snap_storage(uint64_t addr, uint64_t size, bool cs_slot) {
+    if (g_interp_replaying) return snap_lookup(addr, size);  // (replays never create, age, release or remake entries)
     if (!snap_on() || !addr || !size || size > SNAP_RING / 8 || addr < HEAP_BASE || addr + size > snap_ring_base) return addr;
     extern int nvn_pool_flags_at(uint64_t addr);
     int pf = nvn_pool_flags_at(addr);
@@ -2478,6 +2751,7 @@ static uint64_t snap_storage(uint64_t addr, uint64_t size, bool cs_slot) {
 }
 
 static void bind_cbufs(int stage, ShaderInfo *si) {
+    for (int i = 0; i < 16; i++) g_bound_sbuf[stage][i] = st.sbuf[stage][i].addr;  // (no driver constants: read in place)
     for (int k = 0; k < 18; k++) {
         if (!(si->cbuf_mask & (1u << k))) continue;
         if (k == 0) {
@@ -2485,18 +2759,38 @@ static void bind_cbufs(int stage, ShaderInfo *si) {
             // per hardware stage at 0x110 + 0x100 * stage (vertex 0, fragment 4)
             uint32_t drv[0x800 / 4] = {0};
             uint32_t base = 0x110 + 0x100 * (stage == 1 ? 4 : 0);
+            // The storage addresses the draw reads: the real frame takes them from the snapshot table (copies of what
+            // the CPU rewrites) and logs them with the draw; a replay binds the frame's own (its copies, made when it
+            // ran) and never touches the table - running it there (a "frame" 2^40 ahead) released every copy and
+            // remade them from live memory: the in-betweens 44% darker, the beach sand teal (2026-10-26).
+            uint64_t sav[16];
+            bool reads = false;
+            for (int i = 0; i < 16; i++) { sav[i] = st.sbuf[stage][i].addr; reads |= sav[i] && (si->ssbo_read & (1u << i)); }
+            if (reads && g_interp_replaying) {
+                const uint64_t *lg = interp_cbuf(4 + stage, 0, 0, sav, sizeof sav, 0);
+                if (lg != sav) memcpy(sav, lg, sizeof sav);
+                else for (int i = 0; i < 16; i++) if (sav[i] && (si->ssbo_read & (1u << i))) sav[i] = snap_lookup(sav[i], st.sbuf[stage][i].size);
+            } else if (reads) {
+                for (int i = 0; i < 16; i++)
+                    if (sav[i] && (si->ssbo_read & (1u << i))) {
+                        bind_note(2, sav[i], st.sbuf[stage][i].size);
+                        uint64_t orig = sav[i];
+                        sav[i] = snap_storage(sav[i], st.sbuf[stage][i].size, false);
+                        if (sav[i] == orig) tape_note_inplace(orig, st.sbuf[stage][i].size < (1u << 20) ? st.sbuf[stage][i].size : (1u << 20));  // (the check, LARECOMP_INTERP_INPLACE_CHECK)
+                    }
+                if (g_interp_log) interp_cbuf(4 + stage, 0, 0, sav, sizeof sav, 0);
+            }
+            memcpy(g_bound_sbuf[stage], sav, sizeof sav);
             for (int i = 0; i < 16; i++) {
                 uint32_t *e = &drv[(base + 16 * i) / 4];
-                uint64_t sa = st.sbuf[stage][i].addr;
-                if (sa && (si->ssbo_read & (1u << i))) { bind_note(2, sa, st.sbuf[stage][i].size); sa = snap_storage(sa, st.sbuf[stage][i].size, false); }
+                uint64_t sa = sav[i];
                 e[0] = (uint32_t)sa;
                 e[1] = (uint32_t)(sa >> 32);
                 e[2] = (uint32_t)st.sbuf[stage][i].size;
             }
             uint64_t size = si->cbuf_size[0] > sizeof drv ? sizeof drv : (si->cbuf_size[0] ? si->cbuf_size[0] : 256);
             uint64_t off = ring_alloc(drv, size);
-            if (stage == 0) [enc setVertexBuffer:ring offset:off atIndex:0];
-            else [enc setFragmentBuffer:ring offset:off atIndex:0];
+            E_buf(stage, ring, off, 0);
             continue;
         }
         if (k == 1) {  // compiler constants stored after the shader code
@@ -2504,8 +2798,7 @@ static void bind_cbufs(int stage, ShaderInfo *si) {
             uint64_t size = ss->const_size ? ss->const_size : 16;
             if (size < si->cbuf_size[1]) size = si->cbuf_size[1];
             uint64_t off = ring_alloc((void *)(uintptr_t)(ss->code_addr + ss->const_offset), size);
-            if (stage == 0) [enc setVertexBuffer:ring offset:off atIndex:1];
-            else [enc setFragmentBuffer:ring offset:off atIndex:1];
+            E_buf(stage, ring, off, 1);
             continue;
         }
         int idx = k - cbuf_base;
@@ -2514,16 +2807,21 @@ static void bind_cbufs(int stage, ShaderInfo *si) {
         if (!r.addr) {
             static const uint8_t zeros[0x10000];
             uint64_t off = ring_alloc(zeros, size ? size : 256);
-            if (stage == 0) [enc setVertexBuffer:ring offset:off atIndex:k];
-            else [enc setFragmentBuffer:ring offset:off atIndex:k];
+            E_buf(stage, ring, off, k);
             continue;
         }
         if ((si->cbuf_dynamic & (1u << k)) && r.size) size = r.size > 0x10000 ? 0x10000 : r.size;  // indexed: whole buffer
         if (size > r.size && r.size) size = r.size;
         if (size < 16) size = 16;
-        uint64_t off = ring_alloc((void *)(uintptr_t)r.addr, size);  // snapshot, as later CPU writes must not leak in
-        if (stage == 0) [enc setVertexBuffer:ring offset:off atIndex:k];
-        else [enc setFragmentBuffer:ring offset:off atIndex:k];
+        const void *src = (const void *)(uintptr_t)r.addr;
+        int32_t cbi = -1;
+        if (g_interp_log) {  // (frame interpolation: logged / blended copy; compared over the bytes the shader reads)
+            uint64_t used = si->cbuf_used[k] && si->cbuf_used[k] < size ? si->cbuf_used[k] : size;
+            src = interp_cbuf(stage, k, idx, src, size, used);
+            cbi = interp_last_cb();
+        }
+        uint64_t off = ring_alloc(src, size);  // snapshot, as later CPU writes must not leak in
+        E_cbuf(stage, ring, off, k, cbi, size);
     }
 }
 
@@ -2898,7 +3196,7 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
     LOG(" | fubo0:");
     for (int i = 0; i < 6; i++)
         if (st.ubuf[1][i].addr) { const float *f = (const float *)(uintptr_t)st.ubuf[1][i].addr; LOG(" f%d=[%g %g %g %g]", i, f[0], f[1], f[2], f[3]); }
-    LOG(" | ssbo:");
+    LOG(" | gmem v%d f%d ssbo_read v%#x f%#x ssbo:", pr->vi->uses_gmem, pr->fi->uses_gmem, pr->vi->ssbo_read, pr->fi->ssbo_read);
     for (int sg = 0; sg < 2; sg++)
         for (int i = 0; i < 16; i++)
             if (st.sbuf[sg][i].addr) LOG(" %c%d(%llx,%llu)", sg ? 'f' : 'v', i, st.sbuf[sg][i].addr, st.sbuf[sg][i].size);
@@ -4027,7 +4325,7 @@ static void draw_one(CmdRec *r, bool indexed) {
     pipe_tab[pslot].key = phash;
     pipe_tab[pslot].pipe = (__bridge void *)pipe;  // retained by the cache dictionary
     }
-    [enc setRenderPipelineState:pipe];
+    E_pipe(pipe);
 
     // Decal colour passes (issue #52): the game draws floor decals twice with the same negative polygon offset - a
     // depth pre-pass, then the colour pass with depth test EQUAL and no depth writes. An M4 (macOS 26.4) lands the two
@@ -4094,24 +4392,24 @@ static void draw_one(CmdRec *r, bool indexed) {
         dss = [dev newDepthStencilStateWithDescriptor:dd];
         cache[dk] = dss;
     }
-    [enc setDepthStencilState:dss];
+    E_dss(dss);
     last_dsk = dsk;
     last_dss = dss;
     if (sc_mark) {  // (the game's reference where its pass op was a replace, 0 for a zero; bits 6-7 the mark, 1-3 a shaken tree)
         uint32_t ops = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16, ref[2];
         for (int f = 0; f < 2; f++)
             ref[f] = (st.ds[3] && ((f ? ops >> 20 : ops >> 8) & 0xF) == 3 ? st.stencil_ref[f] & 0x31 : 0) | (sc_mark == 2 ? 0x80 : sc_mark == 3 ? 0x40 : sc_mark == 4 ? 0xC0 : 0) | (uint32_t)sc_tree << 1;
-        [enc setStencilFrontReferenceValue:ref[0] backReferenceValue:ref[1]];
-    } else [enc setStencilFrontReferenceValue:st.stencil_ref[0] backReferenceValue:st.stencil_ref[1]];
-    [enc setBlendColorRed:st.blend_color[0] green:st.blend_color[1] blue:st.blend_color[2] alpha:st.blend_color[3]];
+        E_stref2(ref[0], ref[1]);
+    } else E_stref2(st.stencil_ref[0], st.stencil_ref[1]);
+    E_blendc(st.blend_color);
 
     // rasterizer
     uint8_t cull = st.poly[0];
     if (vkey.flip_x) cull = 0;  // (mirror mode's composite: one full-screen quad, either winding)
-    [enc setCullMode:cull == 1 ? MTLCullModeFront : cull == 2 ? MTLCullModeBack : MTLCullModeNone];
+    E_cull(cull == 1 ? MTLCullModeFront : cull == 2 ? MTLCullModeBack : MTLCullModeNone);
     bool ccw = st.poly[1] == 1;
-    [enc setFrontFacingWinding:(ccw != vkey.flip_y) ? MTLWindingCounterClockwise : MTLWindingClockwise];
-    [enc setTriangleFillMode:st.poly[2] == 1 ? MTLTriangleFillModeLines : MTLTriangleFillModeFill];
+    E_wind((ccw != vkey.flip_y) ? MTLWindingCounterClockwise : MTLWindingClockwise);
+    E_fill(st.poly[2] == 1 ? MTLTriangleFillModeLines : MTLTriangleFillModeFill);
     {   // polygon offset (decals on floors: without it they z-fight). Enables: bit 2 = fill (NVN PolygonOffsetEnable)
         static float last[3] = {0, 0, 0};
         float f[3] = {0, 0, 0};
@@ -4124,7 +4422,7 @@ static void draw_one(CmdRec *r, bool indexed) {
         static int nlog;
         if ((st.poly[3] & 4) && nlog < 3 && getenv("LARECOMP_LOG_BIAS")) { nlog++; LOG("[bias] factor %g units %g clamp %g\n", st.poly_offset[0], st.poly_offset[1], st.poly_offset[2]); }
         if (memcmp(f, last, sizeof f) || enc != last_bias_enc) {
-            [enc setDepthBias:f[1] slopeScale:f[0] clamp:f[2]];
+            E_bias(f[1], f[0], f[2]);
             memcpy(last, f, sizeof f);
             last_bias_enc = enc;
         }
@@ -4133,6 +4431,42 @@ static void draw_one(CmdRec *r, bool indexed) {
     float zn = st.depth_range[0][0], zf = st.depth_range[0][1];
 
     // resources
+    if (g_interp_log) {  // (frame interpolation, runtime/nvn/interp.c: the draw's identity across frames)
+        // LARECOMP_INTERP_KEY=<mask> (research): 1 draw arguments, 2 index buffer address, 4 programs, 8 vertex buffer 0
+        // address, 16 target object, 32 target class (format, depth-only, aspect: not the size - Dynamic resolution
+        // changes the targets' size between frames, and keyed by size every draw of such a frame went unmatched: a
+        // cut, an interval without in-betweens; Dusklight keys by the object, never by a target). Default 37: the
+        // game's render-target objects and its dynamic geometry's buffers change from frame to frame (measured: 44%
+        // matched with them, 100% without, Mabe Village).
+        static int kmask = -1;
+        if (kmask < 0) kmask = getenv("LARECOMP_INTERP_KEY") ? atoi(getenv("LARECOMP_INTERP_KEY")) : 37;
+        uint64_t args[7];
+        memcpy(args, r->x, sizeof args);
+        if (indexed && !(kmask & 2)) args[3] = 0;
+        NvnTexture *kt = st.rt.ncolor ? st.rt.color[0] : st.rt.depth;
+        uint64_t key = (kmask & 1) ? hmix(1469598103934665603ull, args, sizeof args) : 1469598103934665603ull;
+        uint64_t ids[5] = {(kmask & 4) ? st.program->stages[0].code_addr : 0, (kmask & 4) ? st.program->stages[1].code_addr : 0,
+                           (kmask & 8) ? st.vbuf[0].addr : 0, (kmask & 16) ? (uint64_t)(uintptr_t)kt : 0,
+                           (kmask & 32) && kt ? (uint64_t)kt->format << 32 | (st.rt.ncolor ? 0 : 1u << 31) | (kt->height ? kt->width * 16 / kt->height : 0) : 0};
+        uint64_t fkey = hmix(key, ids, sizeof ids);
+        {   // LARECOMP_INTERP_LOG_KEYS=1 (research): each key's components once
+            static int on = -1; static uint64_t seen[4096]; static int nseen;
+            if (on < 0) on = getenv("LARECOMP_INTERP_LOG_KEYS") != NULL;
+            if (on) {
+                bool known = false;
+                for (int i = 0; i < nseen; i++) if (seen[i] == fkey) { known = true; break; }
+                if (!known && nseen < 4096) {
+                    seen[nseen++] = fkey;
+                    LOG("[interp-key] %016llx vs %llx fs %llx fshash %016llx mode %llu count %llu inst %llu rt %ux%u ncolor %d fmt %#x depth %p dswrite %d ub0 %u ub1 %u ub2 %u ub3 %u ntex %d\n",
+                        (unsigned long long)fkey, st.program->stages[0].code_addr, st.program->stages[1].code_addr, (unsigned long long)g_cur_fs_hash,
+                        r->x[0], r->x[2], indexed ? r->x[6] : r->x[4], kt ? kt->width : 0, kt ? kt->height : 0, st.rt.ncolor,
+                        kt ? kt->format : 0, (void *)st.rt.depth, st.ds[0] && st.ds[1], (unsigned)st.ubuf[0][0].size, (unsigned)st.ubuf[0][1].size,
+                        (unsigned)st.ubuf[0][2].size, (unsigned)st.ubuf[0][3].size, pr->fi->ntex);
+                }
+            }
+        }
+        interp_draw(fkey, st.rt.ncolor == 0);
+    }
     bind_cbufs(0, pr->vi);
     bind_cbufs(1, pr->fi);
     // (debug, LARECOMP_LOG_BINDS) shaders loading global memory read through pointers in their uniform buffers: note
@@ -4156,15 +4490,26 @@ static void draw_one(CmdRec *r, bool indexed) {
             }
         }
     }
-    if (pr->vi->uses_gmem) [enc setVertexBuffer:g_guest_buffer offset:0 atIndex:GMEM_BUFFER_INDEX];
+    if (g_interp_log && !g_interp_replaying && (pr->vi->uses_gmem || pr->fi->uses_gmem))  // (frame interpolation: the storage read live)
+        for (int s_ = 0; s_ < 2; s_++) {
+            ShaderInfo *si = s_ ? pr->fi : pr->vi;
+            if (!si->uses_gmem) continue;
+            // (only what the draw read in place: a snapshot copy is the frame's own, and the replays bind that copy, so
+            // the game rewriting the original meanwhile - the tiled light lists, rewritten for the next frame while
+            // this one is drawn - can't reach them; checked, it cut the in-betweens for seconds at a time)
+            for (int i = 0; i < 16; i++)
+                if ((si->ssbo_read & (1u << i)) && st.sbuf[s_][i].addr && g_bound_sbuf[s_][i] == st.sbuf[s_][i].addr)
+                    interp_storage(st.sbuf[s_][i].addr, st.sbuf[s_][i].size);
+        }
+    if (pr->vi->uses_gmem) E_buf(0, g_guest_buffer, 0, GMEM_BUFFER_INDEX);
     static id<MTLBuffer> dbgvs;
     bool dbg_this = maxwell_dbg_vs && (const uint8_t *)(uintptr_t)st.program->stages[0].code_addr == maxwell_dbg_vs;
     if (dbg_this) {
         if (!dbgvs) dbgvs = [dev newBufferWithLength:2 * 64 * 8 * 16 options:MTLResourceStorageModeShared];
         memset(dbgvs.contents, 0xff, 2 * 64 * 8 * 16);
-        [enc setVertexBuffer:dbgvs offset:0 atIndex:DBG_VS_BUFFER_INDEX];
+        E_buf(0, dbgvs, 0, DBG_VS_BUFFER_INDEX);
     }
-    if (pr->fi->uses_gmem) [enc setFragmentBuffer:g_guest_buffer offset:0 atIndex:GMEM_BUFFER_INDEX];
+    if (pr->fi->uses_gmem) E_buf(1, g_guest_buffer, 0, GMEM_BUFFER_INDEX);
     bind_textures(0, pr->vi);
     bind_textures(1, pr->fi);
     extern bool pets_hide_item_cursor(void);  // (the cursor is on the companion card: runtime/hle/pets.c)
@@ -4239,7 +4584,7 @@ static void draw_one(CmdRec *r, bool indexed) {
         float k = widescreen_effect_stretch(g_cur_fs_hash);
         double vx = vp[0] * vp_sx + vp_ox, vw = vp[2] * vp_sx;
         if (k > 1.0f) { vx -= vw * (k - 1) / 2; vw *= k; }
-        [enc setViewport:(MTLViewport){vx, vp[1] * vp_sy + vp_oy, vw, vp[3] * vp_sy, zn, zf}];
+        E_viewport((MTLViewport){vx, vp[1] * vp_sy + vp_oy, vw, vp[3] * vp_sy, zn, zf});
     }
     apply_scissor();
     if (pr->fi->uses_rscale) {  // [0] = render target scale, [1 + i] = scale of texture i
@@ -4248,7 +4593,7 @@ static void draw_one(CmdRec *r, bool indexed) {
             rs[1 + i][0] = tex_sc[1][i][0]; rs[1 + i][1] = tex_sc[1][i][1]; rs[1 + i][2] = tex_fr[1][i][0]; rs[1 + i][3] = tex_fr[1][i][1];
         }
         if (fkey.flip_x) rs[65][0] = (float)st.rt.color[0]->width;  // (mirror mode: the composite's width, guest pixels)
-        [enc setFragmentBytes:rs length:(NSUInteger)(fkey.flip_x ? 66 : 1 + pr->fi->ntex) * 16 atIndex:RSCALE_BUFFER_INDEX];
+        E_bytes(1, rs, (NSUInteger)(fkey.flip_x ? 66 : 1 + pr->fi->ntex) * 16, RSCALE_BUFFER_INDEX);
     }
     // (uniform buffer 2 = the model matrix - only when the vertex shader reads it: a binding left from an earlier draw
     // is another object's matrix)
@@ -4326,15 +4671,15 @@ static void draw_one(CmdRec *r, bool indexed) {
             escape_bottle_tint(draw_bottle, (const float *)(uintptr_t)st.ubuf[0][u].addr, (uint32_t)st.ubuf[0][u].size, tint);
         }
         if (draw_heart) { extern void texpatch_heart_tint(int kind, float tint[8]); texpatch_heart_tint(draw_heart, tint); }
-        [enc setFragmentBytes:tint length:sizeof tint atIndex:19];
+        E_bytes(1, tint, sizeof tint, 19);
     }
     for (int s = 0; s < 12; s++) {
         if (!(used_streams & (1u << s))) continue;
         Range v = st.vbuf[s];
         if (v.addr) bind_guest(enc, true, v.addr, v.size ? v.size : 16, 18 + s);
-        else { static const float zero[4]; [enc setVertexBytes:zero length:16 atIndex:18 + s]; }
+        else { static const float zero[4]; E_bytes(0, zero, 16, 18 + s); }
     }
-    if (used_streams & (1u << 31)) { static const float zero[4] = {0, 0, 0, 1}; [enc setVertexBytes:zero length:16 atIndex:30]; }
+    if (used_streams & (1u << 31)) { static const float zero[4] = {0, 0, 0, 1}; E_bytes(0, zero, 16, 30); }
 
     // Instanced draws with item spots among their instances (bushsanity: bushes are drawn in batches, each instance's
     // model matrix in vertex storage buffer 0, indexed by instance id): drawn as runs of instances, gold runs tinted.
@@ -4371,7 +4716,7 @@ static void draw_one(CmdRec *r, bool indexed) {
         extern void pot_gold_tint(float tint[8]);
         if (run_gold[ri]) pot_gold_tint(tint);
         else recolour_tint_draw(draw_recolour, tint);
-        [enc setFragmentBytes:tint length:sizeof tint atIndex:19];
+        E_bytes(1, tint, sizeof tint, 19);
     }
     // draw
     bool native;
@@ -4380,12 +4725,11 @@ static void draw_one(CmdRec *r, bool indexed) {
     if (!indexed) {
         uint32_t first = (uint32_t)r->x[1], count = (uint32_t)r->x[2], base_inst = base_all + run_at[ri], inst = run_n[ri];
         if (native) {
-            [enc drawPrimitives:pt vertexStart:first vertexCount:count instanceCount:inst baseInstance:base_inst];
+            E_draw(pt, first, count, inst, base_inst);
         } else if (mode == 6 || mode == 7 || mode == 9) {
             uint32_t n;
             id<MTLBuffer> ib = expand_indices(mode, count, NULL, 0, first, &n);
-            [enc drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:n indexType:MTLIndexTypeUInt32 indexBuffer:ib
-                     indexBufferOffset:0 instanceCount:inst baseVertex:0 baseInstance:base_inst];
+            E_drawi(MTLPrimitiveTypeTriangle, n, MTLIndexTypeUInt32, ib, 0, inst, 0, base_inst);
         } else { stat_skipped++; return; }
     } else {
         uint32_t itype = (uint32_t)r->x[1], count = (uint32_t)r->x[2];
@@ -4399,13 +4743,17 @@ static void draw_one(CmdRec *r, bool indexed) {
             uint64_t ioff;
             bool in_heap = iaddr >= HEAP_BASE && iaddr + (uint64_t)count * isz <= HEAP_BASE + HEAP_MAX && (iaddr % isz) == 0;
             if (in_heap) { bind_note(1, iaddr, (uint64_t)count * isz); snap_note_vertex_bind(iaddr, (uint64_t)count * isz); }
-            if (in_heap && !dyn_copy(iaddr, (uint64_t)count * isz)) {
+            id<MTLBuffer> ivb; uint64_t ivo;
+            if (in_heap && iv_geometry(iaddr, (uint64_t)count * isz, &ivb, &ivo)) {
+                ib = ivb; ioff = ivo;
+            } else if (in_heap && !dyn_copy(iaddr, (uint64_t)count * isz)) {
                 ib = g_guest_buffer; ioff = iaddr - HEAP_BASE;
+                tape_copy_small(iaddr, (uint64_t)count * isz);
+                if (!iv_sub_buf) tape_note_inplace(iaddr, (uint64_t)count * isz);
             } else {
                 ioff = ring_alloc((void *)(uintptr_t)iaddr, (uint64_t)count * isz); ib = ring;
             }
-            [enc drawIndexedPrimitives:pt indexCount:count indexType:it indexBuffer:ib indexBufferOffset:ioff
-                         instanceCount:inst baseVertex:base_vertex baseInstance:base_inst];
+            E_drawi(pt, count, it, ib, ioff, inst, base_vertex, base_inst);
         } else {
             uint32_t n;
             id<MTLBuffer> ib;
@@ -4419,8 +4767,7 @@ static void draw_one(CmdRec *r, bool indexed) {
                 ib = expand_indices(mode, count, (const void *)(uintptr_t)iaddr, (int)itype, 0, &n);
                 pt = MTLPrimitiveTypeTriangle;
             }
-            [enc drawIndexedPrimitives:pt indexCount:n indexType:MTLIndexTypeUInt32 indexBuffer:ib indexBufferOffset:0
-                         instanceCount:inst baseVertex:base_vertex baseInstance:base_inst];
+            E_drawi(pt, n, MTLIndexTypeUInt32, ib, 0, inst, base_vertex, base_inst);
         }
     }
     }  // runs
@@ -5127,7 +5474,6 @@ static void draw_copy(id<MTLTexture> s, int sx0, int sy0, int sw, int sh, id<MTL
     rp.colorAttachments[0].texture = d;
     rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
-    id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:rp];
     NSString *key = [NSString stringWithFormat:@"copy %lu", (unsigned long)d.pixelFormat];
     id<MTLRenderPipelineState> pipe = cache[key];
     if (!pipe) {
@@ -5147,15 +5493,21 @@ static void draw_copy(id<MTLTexture> s, int sx0, int sy0, int sw, int sh, id<MTL
         sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
         lin = [dev newSamplerStateWithDescriptor:sd];
     }
-    float r[4] = {(float)sx0 / s.width, (float)sy0 / s.height, (float)sw / s.width, (float)sh / s.height};
-    [e setRenderPipelineState:pipe];
-    [e setViewport:(MTLViewport){dx0, dy0, dw, dh, 0, 1}];
-    [e setVertexBytes:r length:16 atIndex:0];
-    [e setFragmentTexture:s atIndex:0];
-    [e setFragmentSamplerState:linear ? lin : near atIndex:0];
-    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    [e endEncoding];
-    stat_passes++;
+    id<MTLSamplerState> smp = linear ? lin : near;
+    void (^copy)(void) = ^{
+        float r[4] = {(float)sx0 / s.width, (float)sy0 / s.height, (float)sw / s.width, (float)sh / s.height};
+        id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:rp];
+        [e setRenderPipelineState:pipe];
+        [e setViewport:(MTLViewport){dx0, dy0, dw, dh, 0, 1}];
+        [e setVertexBytes:r length:16 atIndex:0];
+        [e setFragmentTexture:s atIndex:0];
+        [e setFragmentSamplerState:smp atIndex:0];
+        [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [e endEncoding];
+        stat_passes++;
+    };
+    copy();
+    tape_block(copy);
 }
 
 static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
@@ -5185,7 +5537,9 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
         td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
         td.storageMode = MTLStorageModePrivate;
         id<MTLTexture> small = [dev newTextureWithDescriptor:td];
+        tape_mute++;  // (replays make no readbacks)
         draw_copy(tex, 0, 0, (int)lroundf(t->width * tsx), (int)lroundf(t->height * tsy), small, 0, 0, t->width, t->height, true);
+        tape_mute--;
         tex = small;
     }
     id<MTLBlitCommandEncoder> b = [cb() blitCommandEncoder];
@@ -5247,7 +5601,6 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
             drp.stencilAttachment.loadAction = MTLLoadActionLoad;
             drp.stencilAttachment.storeAction = MTLStoreActionStore;
         }
-        id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:drp];
         NSString *key = [NSString stringWithFormat:@"copydepth %lu", (unsigned long)d.pixelFormat];
         id<MTLRenderPipelineState> pipe = cache[key];
         if (!pipe) {
@@ -5289,16 +5642,23 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
         id<MTLTexture> sdepth = s;
         if (s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 || s.pixelFormat == MTLPixelFormatDepth24Unorm_Stencil8)
             sdepth = [s newTextureViewWithPixelFormat:s.pixelFormat];
-        float r[4] = {(float)sx0 / s.width, (float)sy0 / s.height, (float)sw / s.width, (float)sh / s.height};
-        [e setRenderPipelineState:pipe];
-        [e setDepthStencilState:always];
-        [e setViewport:(MTLViewport){dx0, dy0, dw, dh, 0, 1}];
-        [e setVertexBytes:r length:16 atIndex:0];
-        [e setFragmentTexture:sdepth atIndex:0];
-        [e setFragmentSamplerState:up ? dlin : dnear atIndex:0];
-        [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-        [e endEncoding];
-        stat_passes++;
+        id<MTLSamplerState> smp = up ? dlin : dnear;
+        id<MTLDepthStencilState> dss = always;
+        void (^copy)(void) = ^{
+            float r[4] = {(float)sx0 / s.width, (float)sy0 / s.height, (float)sw / s.width, (float)sh / s.height};
+            id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:drp];
+            [e setRenderPipelineState:pipe];
+            [e setDepthStencilState:dss];
+            [e setViewport:(MTLViewport){dx0, dy0, dw, dh, 0, 1}];
+            [e setVertexBytes:r length:16 atIndex:0];
+            [e setFragmentTexture:sdepth atIndex:0];
+            [e setFragmentSamplerState:smp atIndex:0];
+            [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            [e endEncoding];
+            stat_passes++;
+        };
+        copy();
+        tape_block(copy);
         static int dbgc = -1;
         if (dbgc < 0) dbgc = getenv("LARECOMP_DEBUG_DEPTHCOPY") != NULL;
         if (dbgc) {
@@ -5322,11 +5682,15 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
         return;
     }
     if (renderer_format_is_depth(dt->format) || (s.pixelFormat == d.pixelFormat && sw == dw && sh == dh && s.sampleCount == d.sampleCount)) {
-        id<MTLBlitCommandEncoder> b = [cb() blitCommandEncoder];
-        [b copyFromTexture:s sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(sx0, sy0, 0)
-                sourceSize:MTLSizeMake(MIN(sw, dw), MIN(sh, dh), 1) toTexture:d destinationSlice:0 destinationLevel:0
-         destinationOrigin:MTLOriginMake(dx0, dy0, 0)];
-        [b endEncoding];
+        void (^copy)(void) = ^{
+            id<MTLBlitCommandEncoder> b = [cb() blitCommandEncoder];
+            [b copyFromTexture:s sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(sx0, sy0, 0)
+                    sourceSize:MTLSizeMake(MIN(sw, dw), MIN(sh, dh), 1) toTexture:d destinationSlice:0 destinationLevel:0
+             destinationOrigin:MTLOriginMake(dx0, dy0, 0)];
+            [b endEncoding];
+        };
+        copy();
+        tape_block(copy);
         return;
     }
     draw_copy(s, sx0, sy0, sw, sh, d, dx0, dy0, dw, dh, flags & 1);
@@ -5510,6 +5874,8 @@ static void exec_list(uint64_t handle, int depth) {
             }
             break;
         case CMD_DISPATCH:
+            if (g_interp_replaying) break;  // (a replayed frame: the frame's compute results are already there)
+            if (g_interp_log) for (int i = 0; i < 16; i++) if (st.sbuf[5][i].addr) interp_dispatch_output(st.sbuf[5][i].addr, st.sbuf[5][i].size);
             dispatch_compute((uint32_t)r->x[0], (uint32_t)r->x[1], (uint32_t)r->x[2]);
             if (st.program) {
                 static uint64_t seen[16];
@@ -5553,9 +5919,11 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_DRAW_ELEMENTS: draw(r, true); break;
         case CMD_UPDATE_UNIFORM_BUFFER:
             // (buffer, size, offset, dataSize, data): apply the update in command order
+            if (g_interp_replaying) break;  // (replay: the draws read their logged uniform copies)
             memcpy((void *)(uintptr_t)(r->x[0] + r->x[2]), x, r->x[3]);
             break;
         case CMD_FENCE_SYNC: {
+            if (g_interp_replaying) break;  // (replays leave the game's fences, counters and memory alone)
             // The CPU may read GPU-written memory (compute results) once the fence is signaled.
             static int fence_flush = -1;
             if (fence_flush < 0) fence_flush = getenv("LARECOMP_FENCE_FLUSH") ? 1 : 0;
@@ -5565,6 +5933,7 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         }
         case CMD_REPORT_COUNTER: {
+            if (g_interp_replaying) break;
             uint64_t *out = (uint64_t *)(uintptr_t)r->x[1];
             static uint32_t seen;
             uint32_t type = (uint32_t)r->x[0];
@@ -5607,8 +5976,9 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         }
         case CMD_COPY_BUFFER_TO_TEXTURE: copy_buffer_to_texture(r->x[0], x); break;
-        case CMD_COPY_TEXTURE_TO_BUFFER: copy_texture_to_buffer(x, r->x[3]); break;
+        case CMD_COPY_TEXTURE_TO_BUFFER: if (!g_interp_replaying) copy_texture_to_buffer(x, r->x[3]); break;
         case CMD_COPY_BUFFER_TO_BUFFER:
+            if (g_interp_replaying) break;
             { static int nlog; if (nlog++ < 40 && ENV("LARECOMP_LOG_BINDS")) LOG("[copybuf] frame %llu %llx -> %llx %llu bytes\n", (unsigned long long)renderer_exec_frame(), r->x[0], r->x[1], r->x[2]); }
             renderer_flush();
             memmove((void *)(uintptr_t)r->x[1], (void *)(uintptr_t)r->x[0], r->x[2]);
@@ -5768,7 +6138,95 @@ void renderer_reset(void) {
     st_defaults();
 }
 
+// Frame interpolation (runtime/nvn/interp.c): the bound state at the frame's first list, and a replay of the frame's
+// lists with the logged (blended) uniforms - the game's own state is restored after it. The caller holds
+// interp_replay_lock and has set the render scale the frame was drawn at.
+static __typeof__(st) st_frame_begin;
+void renderer_interp_replay(void) {
+    const uint64_t *h;
+    uint32_t n = interp_handles(&h);
+    __typeof__(st) st_end = st;
+    bool log = g_interp_log;
+    st = st_frame_begin;
+    g_interp_log = true;
+    iv_rp = 0;
+    interp_replay_begin();
+    @autoreleasepool {
+        for (uint32_t i = 0; i < n; i++) exec_list(h[i], 0);
+        renderer_submit();
+    }
+    interp_replay_end();
+    g_interp_log = log;
+    st = st_end;
+}
+
+// An in-between from the frame's tape (above, E_*): false when there is none (the setting came on mid-frame, a runaway
+// frame, a full flush reset the ring it binds) - the caller translates the lists again.
+bool renderer_interp_tape_replay(void) {
+    if (!tape_ok || !tape_n || tape_rec || tape_ring_gen != ring_gen) return false;
+    inplace_check("in-between");
+    interp_replay_begin();
+    @autoreleasepool {
+        id<MTLRenderCommandEncoder> e = nil;
+        NSArray *objs = tape_objs;
+        #define OBJ(o) ((o)->obj >= 0 ? objs[(NSUInteger)(o)->obj] : nil)
+        for (uint32_t i = 0; i < tape_n; i++) {
+            const TapeOp *o = &tape[i];
+            switch (o->op) {
+            case TP_PASS: e = [cb() renderCommandEncoderWithDescriptor:OBJ(o)]; break;
+            case TP_END: [e endEncoding]; e = nil; break;
+            case TP_BLOCK: ((void (^)(void))OBJ(o))(); break;
+            case TP_PIPE: [e setRenderPipelineState:OBJ(o)]; break;
+            case TP_DSS: [e setDepthStencilState:OBJ(o)]; break;
+            case TP_STREF: [e setStencilReferenceValue:(uint32_t)o->a]; break;
+            case TP_STREF2: [e setStencilFrontReferenceValue:(uint32_t)o->a backReferenceValue:(uint32_t)o->b]; break;
+            case TP_BLENDC: [e setBlendColorRed:o->f[0] green:o->f[1] blue:o->f[2] alpha:o->f[3]]; break;
+            case TP_CULL: [e setCullMode:(MTLCullMode)o->a]; break;
+            case TP_WIND: [e setFrontFacingWinding:(MTLWinding)o->a]; break;
+            case TP_FILL: [e setTriangleFillMode:(MTLTriangleFillMode)o->a]; break;
+            case TP_BIAS: [e setDepthBias:o->f[0] slopeScale:o->f[1] clamp:o->f[2]]; break;
+            case TP_VIEWPORT: [e setViewport:(MTLViewport){o->f[0], o->f[1], o->f[2], o->f[3], o->f[4], o->f[5]}]; break;
+            case TP_SCISSOR: [e setScissorRect:(MTLScissorRect){(NSUInteger)o->a, (NSUInteger)o->b, (NSUInteger)o->c, (NSUInteger)o->d}]; break;
+            case TP_BUF: {
+                id<MTLBuffer> b = OBJ(o);
+                uint64_t off = o->a;
+                const void *bl = o->cb >= 0 ? interp_tape_cb(o->cb) : NULL;  // (the blended copy, NULL: the frame's own)
+                if (bl) { off = ring_alloc(bl, o->b); b = ring; }
+                if (o->stage == 0) [e setVertexBuffer:b offset:off atIndex:o->idx];
+                else [e setFragmentBuffer:b offset:off atIndex:o->idx];
+                break;
+            }
+            case TP_BYTES:
+                if (o->stage == 0) [e setVertexBytes:tape_bytes + o->a length:o->b atIndex:o->idx];
+                else [e setFragmentBytes:tape_bytes + o->a length:o->b atIndex:o->idx];
+                break;
+            case TP_TEX:
+                if (o->stage == 0) [e setVertexTexture:OBJ(o) atIndex:o->idx];
+                else [e setFragmentTexture:OBJ(o) atIndex:o->idx];
+                break;
+            case TP_SMP:
+                if (o->stage == 0) [e setVertexSamplerState:OBJ(o) atIndex:o->idx];
+                else [e setFragmentSamplerState:OBJ(o) atIndex:o->idx];
+                break;
+            case TP_DRAW:
+                [e drawPrimitives:(MTLPrimitiveType)o->idx vertexStart:o->a vertexCount:o->b instanceCount:o->c baseInstance:o->d];
+                break;
+            case TP_DRAWI:
+                [e drawIndexedPrimitives:(MTLPrimitiveType)o->idx indexCount:o->a indexType:(MTLIndexType)o->stage indexBuffer:OBJ(o)
+                       indexBufferOffset:o->b instanceCount:o->c baseVertex:(int32_t)(uint32_t)o->d baseInstance:(uint32_t)(o->d >> 32)];
+                break;
+            }
+        }
+        #undef OBJ
+        if (e) [e endEncoding];
+        renderer_submit();
+    }
+    interp_replay_end();
+    return true;
+}
+
 void backend_execute(uint64_t handle) {
+    if (interp_list_submitted(handle)) { st_frame_begin = st; tape_begin(); }
     @autoreleasepool {
         exec_list(handle, 0);
         static int sync_submit = -1;

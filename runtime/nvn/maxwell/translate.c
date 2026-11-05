@@ -2318,6 +2318,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     info->msl = s.buf;
     info->attr_mask = c->in_attr_mask;
     info->out_mask = stage == STAGE_FRAGMENT ? c->omap_target : c->out_attr_mask;
+    for (int i = 0; i < 18; i++) info->cbuf_used[i] = (info->cbuf_dynamic & (1u << i)) ? 0 : c->cbuf_need[i] * 16;
     free(c->body.buf);
     free(c);
     return info;
