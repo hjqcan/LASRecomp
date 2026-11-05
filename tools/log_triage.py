@@ -63,7 +63,7 @@ NOTABLE = [
     ("guest heap imported in chunks (not enough GPU memory for one import)", re.compile(r"\[vk\] guest heap: .*(ran out of memory|imported in chunks)")),
     ("no BC texture formats", re.compile(r"no BC texture formats")),
     ("GPU device fault", re.compile(r"\[vk\] device fault")),
-    ("shaders not found or failed in preparation", re.compile(r"\[shader\] prepared \d+, not found [1-9]|\[shader\] prepared .*\(([1-9]\d*) failed")),
+    ("shaders not found or failed in preparation", re.compile(r"\[shader\] prepared \d+ \+ \d+ seen before, not found [1-9]|\[shader\] prepared .*\(([1-9]\d*) failed")),
     ("shader translation failed", re.compile(r"translate failed|pipeline failed|\[shader\] stale program")),
     ("frame pacing switched to the game's 30 fps mode", re.compile(r"\[pace\] frames don't fit")),
     ("slow shader builds (stutter)", re.compile(r"\[shader\] slow build")),
@@ -105,8 +105,8 @@ def parse(text):
             for g in lines[:i]:
                 mm = re.match(r"^\[vk\] gpu \d+: (.+) \(api ([\d.]+)\)", g)
                 if mm and mm.group(1) == r["gpu"]: r["api"] = mm.group(2)
-        elif m := re.match(r"^\[vk\] device: driver (\S+) \(([^)]*)\)", ln):
-            r["driver"] = f"{m.group(2)} {m.group(1)}"
+        elif m := re.match(r"^\[vk\] driver (.+?)(?:; |$)", ln):  # ("[vk] driver NVIDIA 617.42; graphics pipeline library: ...")
+            r["driver"] = m.group(1)
         elif m := re.match(r"^\[metal\] (.+), heap buffer \d+ MB", ln):
             r["gpu"], r["backend"] = m.group(1), "Metal"
         elif ln.startswith("[settings] ") and " GPU: upscaler " in ln:
