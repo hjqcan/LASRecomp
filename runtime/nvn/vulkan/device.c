@@ -1022,6 +1022,9 @@ static bool ip_hold(TexBackend *b, bool restore) {  // false: no copy (no memory
 // or dropped: 120 presents a second showed as jerky motion. Each waits until a period after the one before
 // (LARECOMP_INTERP_SPACING=0: not, research).
 static double ip_hz;            // (ip_mids: the refresh rate the in-betweens are made for; 0: none being made)
+static double ip_rate;          // (stats: the refresh rate in use, learned or the display's - with in-betweens or not)
+static bool ip_restart;         // (Frame Generation was off: nothing learned or counted before counts)
+static uint64_t ip_log_last;
 static uint64_t ip_last_present;
 // (stats, ip_log: where the window's presents fell short of the refresh rate - gaps over 1.5 refresh periods, waits
 // that overslept by over half a period, and in-betweens not made, by reason)
@@ -1049,22 +1052,21 @@ static void ip_space(void) {
     ip_last_present = now;
 }
 static void ip_log(void) {
-    static uint64_t last;
     uint64_t now = plat_now_ns();
-    if (!last) last = now;
-    if (now - last < 2000000000ull) return;
-    double dt = (now - last) / 1e9;
+    if (!ip_log_last) ip_log_last = now;
+    if (now - ip_log_last < 2000000000ull) return;
+    double dt = (now - ip_log_last) / 1e9;
     static const char *why[IP_NREASONS] = {"cut", "busy", "no copy", "not prepared", "lower display rate", "no blend"};
     char nm[200] = "";
     int o = 0;
     for (int i = 0; i < IP_NREASONS; i++)
         if (ip_not_made[i]) o += snprintf(nm + o, sizeof nm - (size_t)o, " %s %llu", why[i], (unsigned long long)ip_not_made[i]);
-    if (ip_hz > 0 || o)
+    if (ip_rate > 0 || o)
         LOG("[interp] presents %.1f/s for %.0f Hz, gaps over 1.5 refreshes %llu (longest %.1f ms), waits overslept %llu | frames without in-betweens:%s\n",
-            ip_presents / dt, ip_hz, (unsigned long long)ip_gaps, ip_gap_max, (unsigned long long)ip_overslept, o ? nm : " none");
+            ip_presents / dt, ip_rate, (unsigned long long)ip_gaps, ip_gap_max, (unsigned long long)ip_overslept, o ? nm : " none");
     ip_presents = ip_gaps = ip_overslept = 0, ip_gap_max = 0;
     memset(ip_not_made, 0, sizeof ip_not_made);
-    last = now;
+    ip_log_last = now;
 }
 static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's image), placed as the last image
     static const float black[4] = {0, 0, 0, 1};
@@ -1080,6 +1082,13 @@ static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
     static double interval_ns;  // (smoothed: the game's frame interval)
     static double win_sum, win_max;  // (the raw intervals of the current 30-frame check)
     uint64_t now = plat_now_ns();
+    static bool relearn;
+    if (ip_restart) {  // (turned on again: the game's interval measured again, the stats from now)
+        ip_restart = false, relearn = true;
+        prev_ns = 0, interval_ns = 0, ip_last_present = ip_log_last = 0;
+        ip_presents = ip_gaps = ip_overslept = 0, ip_gap_max = 0;
+        memset(ip_not_made, 0, sizeof ip_not_made);
+    }
     if (prev_ns && now > prev_ns) {
         double d = (double)(now - prev_ns);
         interval_ns = interval_ns > 0 && d < 4 * interval_ns ? interval_ns + (d - interval_ns) * 0.1 : d;
@@ -1099,6 +1108,7 @@ static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
     static double hz_seen, hz_cap, hz_env = -1;
     static int mids_last, settle, slow_checks, full_rate, retry_after = 600;
     if (hz_env < 0) hz_env = getenv("LARECOMP_INTERP_HZ") ? atof(getenv("LARECOMP_INTERP_HZ")) : 0;
+    if (relearn) hz_seen = 0, mids_last = 0, relearn = false;  // (a learned rate starts over: logged and measured again)
     SDL_DisplayID did = SDL_GetDisplayForWindow(window);
     const SDL_DisplayMode *dm = did ? SDL_GetCurrentDisplayMode(did) : NULL;
     double hz = dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60;
@@ -1136,6 +1146,7 @@ static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
     // which held it at 30)
     int mids = hz >= 100 ? (int)lround(hz / 60.0) - 1 : 0;
     if (mids > 3) mids = 3;
+    ip_rate = hz;
     if (mids < 1) { ip_not_made[IP_CAPPED] += hz_cap > 0; mids_last = 0; ip_hz = 0; return 0; }
     ip_hz = hz;
     if (mids != mids_last) settle = slow_checks = 0;
@@ -1183,6 +1194,7 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
             interp_frame_rotate();
             if (want != INTERP_OFF) interp_log_stats();
             if (want == INTERP_ON) ip_log();
+            else ip_restart = true, ip_hz = ip_rate = 0;  // (off: the next on starts fresh)
         }
     }
     static const float black[4] = {0, 0, 0, 1};
