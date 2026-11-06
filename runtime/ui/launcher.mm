@@ -194,7 +194,8 @@ static bool file_exists(const std::string &p) {
 // The game's RomFS (the same in every supported version) has exactly ROMFS_FILES files: a copy with fewer is incomplete (a copy or unzip that
 // stopped partway) and the game crashes on the first one it misses (issues #24, #35). Only the number ships.
 // Their sizes add up to game_romfs_bytes() (per version): every file there with another total is a damaged or
-// changed file (issue #391). The game still plays then; the start screen says so.
+// changed file (issue #391). The game still plays then; the start screen says so. Files that aren't the game's are
+// counted but their bytes left out (issue #553: an extra file beside the game's isn't a changed one).
 // With check (base: where the path inside romfs starts), the files that aren't the game's are named in the log, the
 // first ROMFS_ODD_LOGGED of them (check->odd counts them all), and copies of the game code at the romfs root
 // (game_romfs_exefs_copy, game: the game folder) are left out of the count and the bytes (check->copies).
@@ -216,9 +217,11 @@ static int count_files(const std::string &dir, int depth = 0, uint64_t *bytes = 
                 continue;
             }
             n++;
-            if (bytes) *bytes += (uint64_t)st.st_size;
-            if (check && !game_romfs_check_file(check->check, p.c_str() + check->base, (uint64_t)st.st_size) &&
-                check->odd++ < ROMFS_ODD_LOGGED)
+            uint64_t size = (uint64_t)st.st_size;
+            if (!check) {
+                if (bytes) *bytes += size;
+            } else if (!game_romfs_check_file(check->check, p.c_str() + check->base, size, bytes) &&
+                       check->odd++ < ROMFS_ODD_LOGGED)
                 fprintf(stderr, "[launcher] romfs: not one of the game's files: %s (%llu bytes)\n", p.c_str() + check->base,
                         (unsigned long long)st.st_size);
         }

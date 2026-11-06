@@ -52,8 +52,10 @@ uint64_t game_romfs_bytes(const GameVersion *v);
 // check does nothing), pass every file found (path relative to romfs, '/' separators) and end it.
 typedef struct GameRomfsCheck GameRomfsCheck;
 GameRomfsCheck *game_romfs_check_begin(const GameVersion *v);
-// false: not one of this version's files (another name, or another size)
-bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size);
+// false: not one of this version's files (another name, or another size). bytes (or NULL): the game's files' sizes
+// summed, the ones that aren't the game's left out (an extra file alone isn't a changed game file: issue #553; a game
+// file of another size is missing to game_romfs_check_end). With no check (c NULL) every file is added.
+bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size, uint64_t *bytes);
 // How many of this version's files weren't passed (missing, or changed: another size); frees c.
 int game_romfs_check_end(GameRomfsCheck *c);
 // The table's hash of a file (tools/romfs_files.py hashes the same way).
