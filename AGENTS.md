@@ -7,16 +7,24 @@
   - The game's NVN graphics are drawn with Metal on macOS and Vulkan on Windows and Linux (`runtime/nvn/`).
   - The randomizer and most features live in `runtime/hle/`, `runtime/ui/` and `tools/rando/`.
   - [README.md](README.md) is the player-facing page. [CONTRIBUTING.md](CONTRIBUTING.md) has the layout, building,
-    tests and pull request rules. Read it before your first change.
+    tests and pull request rules.
+
+- **Required reading.** Before you change anything, read all of [CONTRIBUTING.md](CONTRIBUTING.md) and
+  [docs/architecture.md](docs/architecture.md). Then read the doc for the area you are working in from the table
+  below ([debug-hooks](docs/debug-hooks.md), [vulkan-gpu-defaults](docs/vulkan-gpu-defaults.md),
+  [save-format](docs/save-format.md), the build guides). Don't skim them or work from guesses about how the project
+  is set up. If what you find in the code disagrees with a doc, say so in your pull request.
 
 - **Where to start:**
 
   | Task | Read first |
   |---|---|
+  | How the parts fit together | [docs/architecture.md](docs/architecture.md) |
   | Building | README "Building from source", [docs/BUILD-windows.md](docs/BUILD-windows.md), [docs/linux.md](docs/linux.md) |
-  | A crash or hang | the log (`lasrecomp.log` in the data folder): the crash line names the guest address (`main+0x...`). Map it with `tools/sym.py` and read the code there before changing anything |
-  | Rendering | `runtime/nvn/cmdbuf.c` (recording), `renderer.m` / `metal.m` (Metal), `vulkan/exec.c` (Vulkan), `maxwell/translate.c` (shaders) |
+  | A crash or hang | the log (`lasrecomp.log` in the data folder): the crash line names the guest address (`main+0x...`). Map it with `tools/sym.py` and read the code there before changing anything. Debug switches: [docs/debug-hooks.md](docs/debug-hooks.md) |
+  | Rendering | `runtime/nvn/cmdbuf.c` (recording), `renderer.m` / `metal.m` (Metal), `vulkan/exec.c` (Vulkan), `maxwell/translate.c` (shaders); per-GPU Vulkan defaults: [docs/vulkan-gpu-defaults.md](docs/vulkan-gpu-defaults.md) |
   | Game behaviour or a new feature | `runtime/hle/` and the hooks in `tools/patches.py` and `runtime/hle/hooks.c` |
+  | Saves | [docs/save-format.md](docs/save-format.md), `runtime/services/fs.c` |
   | Game addresses | CONTRIBUTING "Project layout" (`runtime/game_addresses/`, `GA(NAME)`, `tools/version_map.py`) |
   | Randomizer logic | `tools/rando/` and `third_party/LAS-Randomizer` (local changes marked "LAS Recomp") |
   | Menu text | `python3 tools/menu_strings.py check` |
@@ -50,8 +58,8 @@
   - A rendering fix on Metal usually needs the Vulkan counterpart, and the other way round. Say in the pull
     request which backend you tested.
   - Workarounds for one GPU or driver go in the per-GPU defaults in `runtime/nvn/vulkan/exec.c`
-    (`vk_exec_init`), keyed by vendor ID. Each one has a `LARECOMP_VK_*` switch to turn it off, and a comment
-    saying which driver it was tested on.
+    (`vk_exec_init`), keyed by vendor ID. Each one has a `LARECOMP_VK_*` switch to turn it off, a comment saying
+    which driver it was tested on, and a row in [docs/vulkan-gpu-defaults.md](docs/vulkan-gpu-defaults.md).
   - macOS is Metal only. Don't add a MoltenVK path.
   - Minimums: macOS 15 on Apple Silicon; Windows and Linux with Vulkan 1.3; x86 CPUs with AVX2 and FMA.
 
