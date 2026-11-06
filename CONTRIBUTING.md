@@ -53,6 +53,13 @@ In short: set up your own game files (v1.0.0, v1.0.1 or v1.1.0) on the start scr
 them, then `make -j10`. The randomizer needs its Python environment in
 `third_party/LAS-Randomizer/venv`.
 
+## More documentation
+
+- [docs/architecture.md](docs/architecture.md): how the parts fit together, from the game files to the renderer
+- [docs/debug-hooks.md](docs/debug-hooks.md): the `LARECOMP_*` environment variables for testing and debugging
+- [docs/vulkan-gpu-defaults.md](docs/vulkan-gpu-defaults.md): Vulkan settings that differ per GPU, and their switches
+- [docs/save-format.md](docs/save-format.md): the save file layout and checksums
+
 ## Project layout
 
 - `tools/gen.py` - the recompiler: translates the game's executables into C (`generated/`, never committed).
