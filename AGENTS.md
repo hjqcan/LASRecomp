@@ -76,7 +76,9 @@
 
 - **Menus and text.**
   - Settings get short labels and vanilla defaults: no presets, no paragraphs.
-  - New text is written in English.
+  - New text is written in English only. Don't edit the translation tables (`runtime/ui/lang/`): we fill them for
+    every language before each release, and untranslated text shows in English until then. A fix to an existing
+    translation from a native speaker is welcome as its own pull request.
   - Player-facing text (menus, README, release notes, issue replies) is plain and short.
 
 - **Code.**
