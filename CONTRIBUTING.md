@@ -8,6 +8,8 @@ contributions are all welcome.
 > anything in between are equally welcome - what matters is that a change works, is tested, and follows the rules
 > below.
 
+If you work with a coding agent, point it at [AGENTS.md](AGENTS.md) too.
+
 ## The one hard rule: no Nintendo files
 
 Nothing owned by Nintendo may ever be committed or attached to an issue or pull request:
