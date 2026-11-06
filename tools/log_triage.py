@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Log triage for GitHub issues: a short summary of the lasrecomp.log files attached to an issue.
 
-.github/workflows/log_triage.yml runs it when an issue is opened / edited or a comment is added. It reads the issue
+.github/workflows/log_triage.yml runs it when an issue or a comment is added or edited. It reads the issue
 and its comments through the GitHub API, downloads the attached logs (github.com/user-attachments/files/... links
 whose file name starts with "lasrecomp", at most MAX_BYTES each), and keeps ONE bot comment per issue up to date
 with a summary of the newest logs, plus a "log: crash" / "log: device-lost" / "log: ok" label for the newest one.
