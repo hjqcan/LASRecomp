@@ -3817,7 +3817,8 @@ static bool gmem_import(uint64_t size) {
 // itself, through its own DRM file as for any vkMapMemory. Else the memory is exported as a dma-buf and that is
 // mmapped there - which some systems refuse (issue #92: RX 6800 XT, Mesa 25.0.7, "Permission denied"), and then
 // the whole heap was a userptr import again.
-// Default on for RADV; LARECOMP_VK_HEAP_DMABUF=0 off, =1 on any Linux driver with dma-buf export or placed maps.
+// Default on for RADV and Mesa's PanVK (issue #483); LARECOMP_VK_HEAP_DMABUF=0 off, =1 on any Linux driver with dma-buf
+// export or placed maps. LARECOMP_VK_NO_GMEM: off.
 // LARECOMP_VK_HEAP_PLACED=0: the dma-buf mapping even where placed maps exist (tests).
 #ifdef __linux__
 static bool gmem_dmabuf;  // the heap is the driver's memory mapped at HEAP_BASE
@@ -3873,7 +3874,7 @@ static void heap_unmap_placed(void) {
 static bool heap_dmabuf_wanted(void) {
     if (!g_vk.dev || !(g_vk.dmabuf || g_vk.map_placed) || getenv("LARECOMP_VK_NO_GMEM")) return false;
     const char *e = getenv("LARECOMP_VK_HEAP_DMABUF");
-    return e ? atoi(e) != 0 : strstr(g_vk.props.deviceName, "RADV") != NULL;
+    return e ? atoi(e) != 0 : g_vk.heap_dmabuf_default;
 }
 static bool guest_heap_dmabuf_try(void) {
     if (gmem_buf || !heap_dmabuf_wanted()) return false;

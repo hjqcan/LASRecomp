@@ -102,13 +102,12 @@ static bool lazy_heap_predicted(bool budget_ext, bool *probe) {
         return true;
 #endif
 #ifdef __linux__
-    // RADV with the dma-buf heap (exec.c guest_heap_dmabuf): no import at all, so whole_import_fits doesn't apply; any
+    // RADV / PanVK with the dma-buf heap (exec.c guest_heap_dmabuf): no import at all, so whole_import_fits doesn't apply; any
     // cached host-visible memory type will do, as there (a heap's reported size is only the driver's split: a ROG Ally
     // has 3305 MB for 3328, and the allocation works). Lazy chunks over it would never be imported: every shader access
     // a miss, and the render thread remaking the chunk set each frame (15 ms a frame on the Ally).
     const char *d = getenv("LARECOMP_VK_HEAP_DMABUF");
-    bool radv = strstr(g_vk.props.deviceName, "RADV") != NULL;
-    if ((d ? atoi(d) != 0 : radv) && (g_vk.dmabuf || g_vk.map_placed)) {
+    if ((d ? atoi(d) != 0 : g_vk.heap_dmabuf_default) && (g_vk.dmabuf || g_vk.map_placed)) {
         VkPhysicalDeviceMemoryProperties mp;
         vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
         const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
@@ -690,6 +689,10 @@ static void create_device(void) {
         if (pbin_ext) pbp.pNext = pr.pNext, pr.pNext = &pbp;
 #endif
         vkGetPhysicalDeviceProperties2(g_vk.phys, &pr);
+        // the heap as driver memory (exec.c guest_heap_dmabuf) by default: RADV, and PanVK (Mali-G610, Mesa 27.0-devel,
+        // issue #483: an 81-minute run without faults, the Field 15 -> 21 fps, ~85% fewer uploads). PanVK's device name
+        // is the GPU's ("Mali-G610 MC4"), hence the driver ID.
+        g_vk.heap_dmabuf_default = strstr(g_vk.props.deviceName, "RADV") != NULL || drv.driverID == VK_DRIVER_ID_MESA_PANVK;
 #ifdef VK_EXT_graphics_pipeline_library
         if (gpl_ext)
             snprintf(gpl, sizeof gpl, "%s (fast linking %s, independent interpolation decoration %s)",
