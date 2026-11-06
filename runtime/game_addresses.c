@@ -125,8 +125,11 @@ uint64_t game_romfs_hash(const char *rel, uint64_t size) {
     return h;
 }
 
-bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size) {
-    if (!c) return true;
+bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size, uint64_t *bytes) {
+    if (!c) {
+        if (bytes) *bytes += size;
+        return true;
+    }
     uint64_t h = game_romfs_hash(rel, size);
     size_t lo = 0, hi = ROMFS_ENTRIES;
     while (lo < hi) {
@@ -136,6 +139,7 @@ bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size) {
     }
     if (lo == ROMFS_ENTRIES || romfs_files[lo].hash != h || !(romfs_files[lo].versions & c->version)) return false;
     c->seen[lo] = 1;
+    if (bytes) *bytes += size;
     return true;
 }
 
