@@ -5,6 +5,9 @@
 and its comments through the GitHub API, downloads the attached logs (github.com/user-attachments/files/... links
 whose file name starts with "lasrecomp", at most MAX_BYTES each), and keeps ONE bot comment per issue up to date
 with a summary of the newest logs, plus a "log: crash" / "log: device-lost" / "log: ok" label for the newest one.
+Shader variants the shipped list lacks ("[shader] record ..." lines) are listed in the comment, folded, and the issue
+gets the "log: new shaders" label, so they can be merged into runtime/nvn/shader_variants.txt
+(tools/shader_list_merge.py).
 
 Everything in an issue and in a log is untrusted data: it is only ever parsed here, never run or handed to a shell.
 Excerpts quoted in the comment are cut short, put in code spans, and have file paths reduced to their last part.
@@ -30,6 +33,8 @@ MAX_LOGS = 3                  # newest logs summarised per comment
 LABELS = {"crash": ("log: crash", "b60205", "Newest attached log ends in a crash or hang"),
           "device-lost": ("log: device-lost", "d93f0b", "Newest attached log ends with the GPU device lost"),
           "ok": ("log: ok", "0e8a16", "Newest attached log ends with a clean exit")}
+SHADER_LABEL = ("log: new shaders", "5319e7", "Attached log has shader variants the shipped list lacks")
+MAX_RECORDS = 500             # shader records listed per comment
 ATTACH_RE = re.compile(r"https://github\.com/user-attachments/files/\d+/[A-Za-z0-9._%+-]+")
 REDIRECT_HOSTS = ("objects.githubusercontent.com",)  # (where github.com/user-attachments/files/... redirects)
 
@@ -55,6 +60,8 @@ BUILD_RE = re.compile(r"LAS[ ._-]?Recomp[ ._-]((?:beta_\d+(?:[._-]\d+)?)|(?:v\d+
 # 6-Core Processor 6 cores / 12 threads, 31.7 GB RAM, zip" - the build; the OS, CPU and RAM; the package when known
 INFO_RE = re.compile(r"^\[info\] LAS Recomp ([^\s,]+), (.+?(?:GB RAM|RAM unknown))(?:, (.+))?$")
 MS_RE = re.compile(r"([\d.]+)\s*ms")
+# runtime/nvn/shader_seen.c shader_seen_note: "[shader] record G vs=... fs=... f=1 ..." (hashes and pipeline state only)
+RECORD_RE = re.compile(r"^\[shader\] record ([GC] [A-Za-z0-9=,:./+ -]{1,400})$")
 
 # notable lines: (label, regex); each is reported once, with its count and first line
 NOTABLE = [
@@ -78,7 +85,7 @@ def parse(text):
     lines = text.splitlines()
     r = {"backend": None, "gpu": None, "gpus": [], "api": None, "driver": None, "os": None, "cpu": None,
          "system": None, "build": None, "settings": None, "swapchain": None, "integrated": False, "fps": [], "slow": [],
-         "notable": {}, "seed": None, "end": None, "end_line": None, "lines": len(lines)}
+         "notable": {}, "records": [], "seed": None, "end": None, "end_line": None, "lines": len(lines)}
     fatal = exc = crash_head = None
     devlost = hang = closed = False
     for i, ln in enumerate(lines):
@@ -135,6 +142,8 @@ def parse(text):
             hang = True
         elif m := re.match(r'^\[rando\] seed "([^"]+)" active(?:, seed ID (\S+))?', ln):
             r["seed"] = m.group(1) + (f" (seed ID {m.group(2)})" if m.group(2) else "")
+        elif m := RECORD_RE.match(ln.rstrip()):
+            r["records"].append(m.group(1).strip())
         elif ln.strip() == "window closed":
             closed = True
         for label, rx in NOTABLE:
@@ -206,11 +215,20 @@ def summarise(r):
             return float(m.group(1)) if m else 0.0
         worst = max(r["slow"], key=ms)
         out.append(f"- **Slow frames:** {len(r['slow'])} `[slow]` lines; worst: {code(worst, 140)}")
+    if r["records"]:
+        g = sum(1 for x in r["records"] if x[0] == "G")
+        out.append(f"- **New shader variants:** {len(r['records'])} the shipped list lacks ({g} pipelines, "
+                   f"{len(r['records']) - g} compute)")
     if r["notable"]:
         out.append("- **Notable lines:**")
         for label, (n, first) in r["notable"].items():
             out.append(f"  - {label}{f' ({n}x)' if n > 1 else ''}: {code(first, 140)}")
     return "\n".join(out)
+
+
+def shader_records(entries):
+    """every shader record in the summarised logs, once, sorted (the shipped list's order)"""
+    return sorted({x for _, r in entries if isinstance(r, dict) for x in r["records"]})
 
 
 def render(entries, total):
@@ -224,6 +242,12 @@ def render(entries, total):
     for k, (src, r) in enumerate(entries):
         out += ["", f"#### {'Newest log' if k == 0 else 'Earlier log'}: {src}"]
         out.append(summarise(r) if isinstance(r, dict) else f"- Could not read this log: {clean(r, 120)}")
+    recs = shader_records(entries)
+    if recs:
+        out += ["", "<details><summary>Shader variants the shipped list lacks (" + str(len(recs)) + ")</summary>", "",
+                "```"] + recs[:MAX_RECORDS] + ["```", ""]
+        if len(recs) > MAX_RECORDS: out.append(f"({len(recs) - MAX_RECORDS} more in the logs.)")
+        out.append("</details>")
     if total > len(entries):
         out += ["", f"({total - len(entries)} earlier log{'s' if total - len(entries) > 1 else ''} on this issue not summarised.)"]
     return "\n".join(out) + "\n"
@@ -321,6 +345,7 @@ def run_issue():
         label = LABELS["crash"][0] if first["end"] in ("crash", "hang") else LABELS["device-lost"][0] if first["end"] == "device-lost" \
             else LABELS["ok"][0] if first["end"] == "ok" else None
     print(body)
+    if shader_records(entries): print(f"label: {SHADER_LABEL[0]}")
     print(f"label: {label or '(none)'}; existing bot comment: {mine['html_url'] if mine else '(none)'}")
     if dry:
         print("dry run: nothing posted")
@@ -338,12 +363,18 @@ def run_issue():
         if name in have and name != label:
             api.call("DELETE", f"issues/{num}/labels/{urllib.parse.quote(name)}")
     if label and label not in have:
-        try:
-            name, color, desc = next(v for v in LABELS.values() if v[0] == label)
-            api.call("POST", "labels", {"name": name, "color": color, "description": desc})
-        except urllib.error.HTTPError as e:
-            if e.code != 422: raise  # (422: it exists already)
-        api.call("POST", f"issues/{num}/labels", {"labels": [label]})
+        add_label(api, num, next(v for v in LABELS.values() if v[0] == label))
+    if shader_records(entries) and SHADER_LABEL[0] not in have:  # (only added, never removed: the issue watch keys on it)
+        add_label(api, num, SHADER_LABEL)
+
+
+def add_label(api, num, spec):
+    name, color, desc = spec
+    try:
+        api.call("POST", "labels", {"name": name, "color": color, "description": desc})
+    except urllib.error.HTTPError as e:
+        if e.code != 422: raise  # (422: it exists already)
+    api.call("POST", f"issues/{num}/labels", {"labels": [name]})
 
 
 def main():
@@ -353,6 +384,7 @@ def main():
             with open(p, encoding="utf-8", errors="replace") as f:
                 entries.append((os.path.basename(p), parse(f.read())))
         sys.stdout.write(render(entries[:MAX_LOGS], len(entries)))
+        if shader_records(entries[:MAX_LOGS]): print("label:", SHADER_LABEL[0])
         print("label:", {"crash": "log: crash", "hang": "log: crash", "device-lost": "log: device-lost", "ok": "log: ok"}
               .get(entries[0][1]["end"], "(none)"))
     elif len(sys.argv) == 2 and sys.argv[1] == "issue":
