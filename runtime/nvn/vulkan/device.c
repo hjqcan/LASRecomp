@@ -693,6 +693,12 @@ static void create_device(void) {
         // issue #483: an 81-minute run without faults, the Field 15 -> 21 fps, ~85% fewer uploads). PanVK's device name
         // is the GPU's ("Mali-G610 MC4"), hence the driver ID.
         g_vk.heap_dmabuf_default = strstr(g_vk.props.deviceName, "RADV") != NULL || drv.driverID == VK_DRIVER_ID_MESA_PANVK;
+        // command buffers released before each begin (record.c begin_cb_run) by default on Arm's own driver: the implicit
+        // reset of vkBeginCommandBuffer keeps the memory vkCmdBeginRendering allocates (64 KB blocks of host memory), so
+        // the process grew by ~490 MB an hour, until it ran out of memory (libmali g29p1 on RK3588; PanVK and Turnip don't).
+        const char *cbr = getenv("LARECOMP_VK_CB_RELEASE");
+        g_vk.cb_release = cbr ? atoi(cbr) != 0 : drv.driverID == VK_DRIVER_ID_ARM_PROPRIETARY;
+        if (g_vk.cb_release) LOG("[vk] command buffers release their memory at each begin%s\n", cbr ? " (LARECOMP_VK_CB_RELEASE)" : ": Arm's driver");
 #ifdef VK_EXT_graphics_pipeline_library
         if (gpl_ext)
             snprintf(gpl, sizeof gpl, "%s (fast linking %s, independent interpolation decoration %s)",
