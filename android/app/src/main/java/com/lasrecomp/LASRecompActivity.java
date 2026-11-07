@@ -45,6 +45,15 @@ public class LASRecompActivity extends SDLActivity {
             copyAssets("res", new File(getFilesDir(), "res"));
             Os.setenv("LARECOMP_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir, true);
             Os.setenv("LARECOMP_GEN_DIR", new File(getFilesDir(), "gen").getAbsolutePath(), true);
+            // the desktop's debug and test switches (docs/debug-hooks.md) from the launch:
+            //   adb shell am start -n com.lasrecomp.android/com.lasrecomp.LASRecompActivity --es LARECOMP_LOG_SKIPS 1
+            Bundle extras = getIntent() != null ? getIntent().getExtras() : null;
+            if (extras != null)
+                for (String k : extras.keySet())
+                    if (k.startsWith("LARECOMP_") && extras.get(k) != null) {
+                        Os.setenv(k, String.valueOf(extras.get(k)), true);
+                        Log.i(TAG, "launch switch " + k + "=" + extras.get(k));
+                    }
         } catch (IOException | ErrnoException e) {
             Log.e(TAG, "setting up the app's files: " + e);
         }
