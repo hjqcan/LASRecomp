@@ -70,7 +70,8 @@ val prepareLasRecomp by tasks.registering {
         "DejaVuSans-Bold.ttf" to "third_party/fonts/DejaVu/DejaVuSans-Bold.ttf",
         "DejaVu-LICENSE.txt" to "third_party/fonts/DejaVu/LICENSE",
         "icon.png" to "docs/icon/icon_1024.png").mapValues { repo.resolve(it.value) }
-    val libs = listOf("libSDL3.so", "libshaderc_shared.so").map { deps.resolve("lib/$it") } +
+    val libs = listOf("libSDL3.so", "libshaderc_shared.so", "libavcodec.so", "libavformat.so", "libavutil.so",
+                      "libswscale.so").map { deps.resolve("lib/$it") } +
         // the game code builder's programs and libraries (android/deps/build_gen_deps.sh): Python and its launcher,
         // the generator's native libraries, zig - lib*.so, the only files Android runs from an app
         listOf("python/libpymain.so", "python/libpython3.14.so", "lib/libcapstone.so", "lib/libunicorn.so",

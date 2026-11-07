@@ -4,7 +4,9 @@
 #   SDL3 (shared, plus its Java side of the same version), shaderc (one shared library, glslang and SPIRV-Tools
 #   inside), the headers of Vulkan (newer than the NDK's) and the Vulkan Memory Allocator, and volk (built into the
 #   app: Android's libvulkan.so exports Vulkan 1.1 only before API 33, so every function comes through volk).
-# FFmpeg comes with the movies later. Needs bash, curl, Python 3 and the Android SDK with NDK 30.0.16248370 and CMake
+#   FFmpeg (shared, LGPL only): the desktop builds' version and configuration (tools/linux/build_deps.sh), for the
+#   game's movies (runtime/hle/movie.c) and the start screen's background frame.
+# Needs bash, curl, Python 3 and the Android SDK with NDK 30.0.16248370 and CMake
 # 3.30.4 (ANDROID_HOME, default ~/Library/Android/sdk on macOS, ~/Android/Sdk elsewhere). Each part is skipped when its
 # output exists (delete out/ to redo). From LASRecompAndroid by mamcjr (MIT).
 set -euo pipefail
@@ -16,9 +18,9 @@ W=$D/work
 mkdir -p "$S" "$P/include" "$P/lib" "$W"
 
 case "$(uname -s)" in
-    Darwin) SDK_DEFAULT=$HOME/Library/Android/sdk; EXE= ;;
-    MINGW*|MSYS*|CYGWIN*) SDK_DEFAULT=${LOCALAPPDATA:-$HOME}/Android/Sdk; EXE=.exe ;;
-    *) SDK_DEFAULT=$HOME/Android/Sdk; EXE= ;;
+    Darwin) SDK_DEFAULT=$HOME/Library/Android/sdk; EXE=; HOST=darwin-x86_64 ;;
+    MINGW*|MSYS*|CYGWIN*) SDK_DEFAULT=${LOCALAPPDATA:-$HOME}/Android/Sdk; EXE=.exe; HOST=windows-x86_64 ;;
+    *) SDK_DEFAULT=$HOME/Android/Sdk; EXE=; HOST=linux-x86_64 ;;
 esac
 SDK=${ANDROID_HOME:-$SDK_DEFAULT}
 SDK=${SDK//\\//}
@@ -45,6 +47,8 @@ fetch https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sd
       6d1bb65e49520344cc0a48af3dc02e993781efff14c7ebdcb8ae9fa23ddf7e83 Vulkan-Headers-1.4.350.1.tar.gz
 fetch https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.3.0.tar.gz \
       c4f6bbe6b5a45c2eb610ca9d231158e313086d5b1a40c9922cb42b597419b14e VulkanMemoryAllocator-3.3.0.tar.gz
+fetch https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz \
+      8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e ffmpeg-9.0.2.tar.xz
 fetch https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.350.1.tar.gz \
       078a9411298e4e0f60f5f5398c890783427c25a414619294ca8e69587bbd5eae volk-1.4.350.1.tar.gz
 
@@ -90,6 +94,29 @@ if [ ! -f "$P/lib/libshaderc_shared.so" ]; then
     cp "$W/shaderc/libshaderc/include/shaderc/"*.h "$P/include/shaderc/"
     cp "$W/shaderc/build/libshaderc/libshaderc_shared.so" "$P/lib/"
 fi
+
+# FFmpeg: configure is a Unix shell script (WSL on Windows). Shared libraries without version suffixes (libavcodec.so,
+# not .so.62): Android loads what the APK ships by its exact file name. From LASRecompAndroid by mamcjr (MIT).
+if [ ! -f "$P/lib/libavcodec.so" ]; then
+    case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) echo "FFmpeg: run this script in WSL"; exit 1 ;; esac
+    unpack ffmpeg-9.0.2.tar.xz ffmpeg
+    TC=$NDK/toolchains/llvm/prebuilt/$HOST/bin
+    (cd "$W/ffmpeg" && ./configure --prefix="$P" --enable-cross-compile --target-os=android --arch=aarch64 --cpu=armv8-a \
+        --cc="$TC/aarch64-linux-android$API-clang" --cxx="$TC/aarch64-linux-android$API-clang++" \
+        --nm="$TC/llvm-nm" --ar="$TC/llvm-ar" --ranlib="$TC/llvm-ranlib" --strip="$TC/llvm-strip" \
+        --extra-ldflags=-Wl,-z,max-page-size=16384 \
+        --enable-shared --disable-static --enable-pic \
+        --disable-autodetect --disable-programs --disable-doc --disable-network --disable-avdevice --disable-avfilter \
+        --disable-swresample --disable-everything \
+        --enable-protocol=file --enable-demuxer=matroska,mov \
+        --enable-decoder=vp9,vp8,vorbis,opus,h264,aac --enable-parser=vp9,vp8,vorbis,opus,h264,aac)
+    sed -i.orig -e 's/^SLIBNAME_WITH_MAJOR=.*/SLIBNAME_WITH_MAJOR=$(SLIBNAME)/' \
+        -e 's/^SLIBNAME_WITH_VERSION=.*/SLIBNAME_WITH_VERSION=$(SLIBNAME)/' -e 's/^SLIB_INSTALL_NAME=.*/SLIB_INSTALL_NAME=$(SLIBNAME)/' \
+        -e 's/^SLIB_INSTALL_LINKS=.*/SLIB_INSTALL_LINKS=/' "$W/ffmpeg/ffbuild/config.mak"
+    (cd "$W/ffmpeg" && make -j"$JOBS" && make install)
+fi
+# (the library's own license line: avcodec_license())
+grep -qa 'GPL version 3\|--enable-gpl' "$P/lib/libavcodec.so" && { echo "deps: FFmpeg is not LGPL"; exit 1; }
 
 echo "deps: $P"
 ls "$P/lib"

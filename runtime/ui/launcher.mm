@@ -36,11 +36,9 @@
 #include "imgui_impl_sdl3.h"
 
 extern "C" {
-#ifndef LARECOMP_NO_FFMPEG  // (Android until the movies come in: the start screen without its background frame)
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libswscale/swscale.h>
-#endif
 #include "platform.h"
 #include "paths.h"
 #include "gamebuild.h"
@@ -778,9 +776,6 @@ typedef void *GpuDevice;
 static int g_bg_w, g_bg_h;
 
 static void load_background(GpuDevice dev) {
-#ifdef LARECOMP_NO_FFMPEG
-    (void)dev;
-#else
     std::string path = g_root + "/romfs/region_common/movie/title.webm";
     AVFormatContext *fmt = NULL;
     if (avformat_open_input(&fmt, path.c_str(), NULL, NULL) < 0) return;
@@ -827,7 +822,6 @@ static void load_background(GpuDevice dev) {
         avcodec_free_context(&cc);
     }
     avformat_close_input(&fmt);
-#endif
 }
 
 // ------------------------------------------------------------------ seeds

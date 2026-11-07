@@ -2,8 +2,8 @@
 
 The Android port is coming in pieces, from [mamcjr's LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)
 (MIT). What is here so far: the app opens the start screen, the player picks their game files folder with Android's own
-folder picker, and the setup copies them in and builds the game code on the device. Still to come: the movies, touch
-controls and per-GPU Vulkan settings.
+folder picker, and the setup copies them in and builds the game code on the device; the game starts, movies included.
+Still to come: touch controls and per-GPU Vulkan settings.
 
 Nothing from the game ships in the app. The game code is built on the device from the player's own extracted game
 files, as on the desktop.
@@ -13,7 +13,7 @@ files, as on the desktop.
 Needs the Android SDK with NDK 30.0.16248370, CMake 3.30.4 and platform 36, JDK 17 or newer, bash, curl and Python 3.
 
 ```
-bash android/deps/build_deps.sh        # SDL3, shaderc, volk, Vulkan headers for arm64 (once)
+bash android/deps/build_deps.sh        # SDL3, shaderc, volk, Vulkan headers, FFmpeg for arm64 (once)
 bash android/deps/build_gen_deps.sh    # the game code builder: Python, capstone, unicorn, lz4, zig (once)
 cd android && ./gradlew assembleDebug  # android/app/build/outputs/apk/debug/app-debug.apk
 ```

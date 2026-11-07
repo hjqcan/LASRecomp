@@ -62,10 +62,13 @@ add_library(SDL3 SHARED IMPORTED)
 set_target_properties(SDL3 PROPERTIES IMPORTED_LOCATION ${DEPS}/lib/libSDL3.so)
 add_library(shaderc_shared SHARED IMPORTED)
 set_target_properties(shaderc_shared PROPERTIES IMPORTED_LOCATION ${DEPS}/lib/libshaderc_shared.so)
+foreach(lib avcodec avformat avutil swscale)  # (FFmpeg, LGPL: the movies and the start screen's background frame)
+    add_library(${lib} SHARED IMPORTED)
+    set_target_properties(${lib} PROPERTIES IMPORTED_LOCATION ${DEPS}/lib/lib${lib}.so)
+endforeach()
 
 file(GLOB RT_SRC ${R}/runtime/*.c ${R}/runtime/*.cpp ${R}/runtime/hle/*.c ${R}/runtime/services/*.c ${R}/runtime/nvn/*.c
      ${R}/runtime/nvn/maxwell/*.c)
-list(REMOVE_ITEM RT_SRC ${R}/runtime/hle/movie.c)  # (FFmpeg comes with the movies)
 file(GLOB VK_SRC ${R}/runtime/nvn/vulkan/*.c ${R}/runtime/nvn/vulkan/*.cpp)
 file(GLOB UI_SRC ${R}/runtime/ui/*.mm)
 set(IMGUI ${R}/third_party/imgui)
@@ -84,11 +87,11 @@ set_source_files_properties(${R}/runtime/nvn/shader_prep.c PROPERTIES COMPILE_DE
 target_include_directories(main PRIVATE ${R}/runtime ${R}/runtime/nvn ${IMGUI} ${IMGUI}/backends ${DEPS}/include ${DEPS}/volk ${INC}
                            ${R}/third_party/smaa/Textures)
 # every Vulkan function through volk (runtime/nvn/vulkan/vk.h), ImGui's and VMA's too
-target_compile_definitions(main PRIVATE LARECOMP_DYN_BASE LARECOMP_NO_FFMPEG VK_USE_PLATFORM_ANDROID_KHR VK_NO_PROTOTYPES
+target_compile_definitions(main PRIVATE LARECOMP_DYN_BASE VK_USE_PLATFORM_ANDROID_KHR VK_NO_PROTOTYPES
     IMGUI_IMPL_VULKAN_USE_VOLK VMA_STATIC_VULKAN_FUNCTIONS=0 VMA_DYNAMIC_VULKAN_FUNCTIONS=1)
 target_compile_options(main PRIVATE -fno-strict-aliasing -Wall -Wno-unused-function -Wno-format  # (as on Linux)
     $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>)
 # -z nostart-stop-gc: tables in named sections found through
 # __start_ / __stop_ symbols (runtime/hle.h, ipc.h, main.c); 16 KB pages (Android 15+)
-target_link_libraries(main PRIVATE SDL3 shaderc_shared android log dl m)
+target_link_libraries(main PRIVATE SDL3 shaderc_shared avcodec avformat avutil swscale android log dl m)
 target_link_options(main PRIVATE -Wl,-z,nostart-stop-gc -Wl,-z,max-page-size=16384)

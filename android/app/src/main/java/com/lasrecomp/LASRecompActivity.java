@@ -36,7 +36,7 @@ public class LASRecompActivity extends SDLActivity {
 
     @Override
     protected String[] getLibraries() {
-        return new String[] {"SDL3", "shaderc_shared", "main"};
+        return new String[] {"SDL3", "shaderc_shared", "avutil", "avcodec", "avformat", "swscale", "main"};
     }
 
     @Override
