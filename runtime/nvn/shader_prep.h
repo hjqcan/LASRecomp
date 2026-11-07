@@ -111,7 +111,8 @@ void renderer_prepare_end(void);  // all builds done (e.g. keep the pipeline cac
 
 // Prepares every record of the shipped list (LARECOMP_SHADER_LIST=<file>: that list instead) from the game files in
 // romfs (the extracted romfs folder), then the player's own list (shader_seen_*). progress(done, total) is called now
-// and then; *cancel (any thread) stops it early (builds already started finish in the background). Logs
+// and then: total is the number of variants this run prepares (0 while the game files are indexed), done only goes
+// up and reaches total when the last build is done; *cancel (any thread) stops it early (builds already started finish in the background). Logs
 // "[shader] prepared N + M seen before, not found K". Returns false
 // when it couldn't start (no list, no GPU device).
 bool shader_prep_run(const char *romfs, void (*progress)(int done, int total), const volatile int *cancel);
