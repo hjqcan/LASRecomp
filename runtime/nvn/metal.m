@@ -2299,13 +2299,20 @@ void ui_window_init(void) {
 // until the setting changes. Called on the main thread by the start screen and the game's event loops.
 void ui_metal_hud_apply(void) {
     static int applied = -1;
+    static double applied_scale;
     bool on = g_settings.metal_hud;
-    if (!layer || on == applied) return;
-    bool first = applied < 0;
+    // Apple sizes the HUD as a share of the drawable's width (0.2), which on a 5120x1440 window is ~1000 px wide:
+    // the share a 16:9 window of the same height would get instead (the key only takes a number, not a string)
+    CGSize ds = layer ? layer.drawableSize : CGSizeZero;
+    double scale = ds.width > ds.height * 16 / 9 ? 0.2 * (ds.height * 16 / 9) / ds.width : 0.2;
+    if (!layer || (on == applied && (!on || fabs(scale - applied_scale) < 0.001))) return;
+    bool first = applied < 0, toggled = on != applied;
     applied = on;
+    applied_scale = scale;
     if (first && !on && !getenv("LARECOMP_METAL_HUD")) return;
-    layer.developerHUDProperties = @{@"mode": on ? @"default" : @"disabled", @"logging": @"disabled"};
-    if (!first || on)
+    layer.developerHUDProperties = @{@"mode": on ? @"default" : @"disabled", @"logging": @"disabled",
+                                     @"MTL_HUD_SCALE": @(scale)};
+    if (toggled && (!first || on))
         LOG("[metal] HUD %s%s\n", on ? "on" : "off", on && !getenv("MTL_HUD_ENABLED") ? " (after a restart)" : "");
 }
 
