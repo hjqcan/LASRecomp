@@ -46,7 +46,7 @@ adb shell am start -n com.lasrecomp.android/com.lasrecomp.LASRecompActivity
 adb logcat -s LASRecomp
 ```
 
-The desktop's debug switches ([debug-hooks.md](debug-hooks.md)) are passed with the launch:
+The desktop's debug switches ([debug-hooks.md](debug-hooks.md)) are passed with the launch (debug builds only):
 `adb shell am start -n com.lasrecomp.android/com.lasrecomp.LASRecompActivity --es LARECOMP_LOG_SKIPS 1`.
 
 The emulator draws the start screen and the movies, but not the game's world: its Vulkan goes to the Mac through

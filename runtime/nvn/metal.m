@@ -2292,6 +2292,30 @@ void ui_window_init(void) {
     layer.framebufferOnly = getenv("LARECOMP_WINDOW_SHOT") ? NO : YES;  // (frame interpolation's shots: their own image)
 }
 
+// The Metal HUD setting (Video tab): Apple's performance overlay, shown and hidden at once through the layer. The
+// system draws it into the drawable at present, so our own screenshots (their own textures) never show it. Its
+// library is only there when the app started with MTL_HUD_ENABLED=1 (runtime/main.c metal_hud_relaunch); without it
+// the layer's properties do nothing until a restart. MTL_HUD_ENABLED=1 set by hand: the HUD stays as Apple shows it
+// until the setting changes. Called on the main thread by the start screen and the game's event loops.
+void ui_metal_hud_apply(void) {
+    static int applied = -1;
+    static double applied_scale;
+    bool on = g_settings.metal_hud;
+    // Apple sizes the HUD as a share of the drawable's width (0.2), which on a 5120x1440 window is ~1000 px wide:
+    // the share a 16:9 window of the same height would get instead (the key only takes a number, not a string)
+    CGSize ds = layer ? layer.drawableSize : CGSizeZero;
+    double scale = ds.width > ds.height * 16 / 9 ? 0.2 * (ds.height * 16 / 9) / ds.width : 0.2;
+    if (!layer || (on == applied && (!on || fabs(scale - applied_scale) < 0.001))) return;
+    bool first = applied < 0, toggled = on != applied;
+    applied = on;
+    applied_scale = scale;
+    if (first && !on && !getenv("LARECOMP_METAL_HUD")) return;
+    layer.developerHUDProperties = @{@"mode": on ? @"default" : @"disabled", @"logging": @"disabled",
+                                     @"MTL_HUD_SCALE": @(scale)};
+    if (toggled && (!first || on))
+        LOG("[metal] HUD %s%s\n", on ? "on" : "off", on && !getenv("MTL_HUD_ENABLED") ? " (after a restart)" : "");
+}
+
 SDL_Window *ui_window(void) { return window; }
 bool ui_window_focused(void) { return window && (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS); }  // (any thread, for a log)
 void *ui_metal_layer(void) { return (__bridge void *)layer; }
@@ -2334,6 +2358,7 @@ int ui_run(void) {
             input_handle_event(&e);
         }
         menu_apply_window_requests(window);
+        ui_metal_hud_apply();
         input_rumble_poll();
         input_led_poll();
         input_pad_poll();
