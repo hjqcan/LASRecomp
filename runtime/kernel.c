@@ -114,7 +114,7 @@ typedef struct { uint64_t addr, size; uint32_t type, perm; } Region;
 static Region regions[1024];
 static int nregions;
 static uint64_t heap_size;
-static uint64_t tls_next = TLS_BASE;
+static uint64_t tls_used;  // (from TLS_BASE: an offset, as the window can move - rt.h)
 uint64_t kernel_heap_size(void) { return heap_size; }  // bytes from HEAP_BASE set by SetHeapSize
 // Writable guest data regions (heap, mapped/physical memory, module .data): for debug/runtime memory scans.
 int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
@@ -216,8 +216,8 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
     t->cpu.thread = t;
     pthread_mutex_lock(&g_klock);  // (two guest threads may create threads at once: one id and TLS slot each)
     t->id = next_thread_id++;
-    t->tlr = tls_next;
-    tls_next += 0x200;
+    t->tlr = TLS_BASE + tls_used;
+    tls_used += 0x200;
     t->cpu.tpidrro = t->tlr;
     t->anext = g_threads;
     g_threads = t;
@@ -1029,7 +1029,7 @@ void kernel_reset(void) {
     memset(handles, 0, sizeof handles);
     nregions = 0;
     heap_size = 0;
-    tls_next = TLS_BASE;
+    tls_used = 0;
     next_thread_id = 0x50;
     g_rt_unwind = 0;
     pthread_mutex_unlock(&g_klock);

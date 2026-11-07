@@ -74,6 +74,15 @@ static const GameLibTables *open_lib(const char *path, const char *want) {
         snprintf(g_error, sizeof g_error, "%s was built for another version", path);
         return NULL;  // (left loaded: nothing of it runs)
     }
+#if defined(LARECOMP_DYN_BASE) && !defined(_WIN32)
+    // its addresses follow the guest window wherever it is (gen.py --dyn-base: lasgame_gb; rt.h)
+    void (*set_base)(uint64_t) = (void (*)(uint64_t))dlsym(h, "lasgame_set_guest_base");
+    if (!set_base) {
+        snprintf(g_error, sizeof g_error, "%s wasn't generated for a moving guest window (gen.py --dyn-base)", path);
+        return NULL;
+    }
+    set_base(GUEST_LO);
+#endif
     return t;
 }
 

@@ -425,6 +425,9 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         add(&a, base[i]);
         add(&a, g->out);
         if (i == 1) { add(&a, "--hle"); add(&a, t.hle); }
+#ifdef LARECOMP_DYN_BASE
+        add(&a, "--dyn-base");  // (rt.h: the window moves; the library follows it)
+#endif
         g->p = spawn_proc(a.v, g->log, true);
         args_free(&a);
         if (!g->p) { snprintf(why, why_size, LN("the game code builder didn't start")); ok = false; }

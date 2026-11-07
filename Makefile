@@ -124,6 +124,16 @@ GAMELIB_LDFLAGS := -shared -fuse-ld=lld $(B)/lasrecomp.dll.a
 GAMELIB_SHARED := -shared  # (+ the import library: runtime/gamebuild.c)
 endif
 
+# DYN_BASE=1: the guest window starts where the process has room instead of at 0x70_0000_0000 (runtime/rt.h), as on
+# Android; on the desktop it is for testing that path. The game code is generated with gen.py --dyn-base, and the
+# define is part of GENFLAGS so such a library has its own id.
+ifneq ($(DYN_BASE),)
+GENSIMD  += --dyn-base
+GENFLAGS += -DLARECOMP_DYN_BASE
+OSFLAGS  += -DLARECOMP_DYN_BASE
+DYNFLAG  := -DLARECOMP_DYN_BASE
+endif
+
 # GAMELIB_ID: what the game code library is built from (the generator, the headers it is compiled against, the
 # flags). A library with another id is rebuilt by the start screen, never loaded.
 GAMELIB_SRCS := tools/game_addresses.py runtime/game_addresses/versions.h $(wildcard runtime/game_addresses/patches_v*.h) tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py \
@@ -145,7 +155,7 @@ RT_OBJ   := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/
 # no path of this machine in what ships: debug info and __FILE__ name the checkout as "." (Windows: its C:/ form too)
 PATHMAP  := -ffile-prefix-map=$(CURDIR)=. $(if $(filter windows,$(PLATFORM)),-ffile-prefix-map=$(shell cygpath -m '$(CURDIR)')=.)
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn $(DEPINC) $(OSFLAGS) $(PATHMAP)
-CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn $(DEPINC) $(PATHMAP)
+CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn $(DEPINC) $(PATHMAP) $(DYNFLAG)
 
 all: $(EXE) $(if $(GEN_SRC),$(GAMELIB))
 
