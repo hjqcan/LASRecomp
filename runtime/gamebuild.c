@@ -13,6 +13,7 @@
 #include <signal.h>
 #endif
 
+#include "game_addresses.h"
 #include "gamelib.h"
 #include "paths.h"
 #include "platform.h"
@@ -174,6 +175,85 @@ static void android_env(const char *work) {
     setenv("HOME", work, 1);
     snprintf(v, sizeof v, "%s/zig/lib", gen);
     setenv("ZIG_LIB_DIR", v, 1);
+}
+
+// Hot / cold: compiling the generated C at -O1 is most of the setup's minutes on a phone, and most of the game's
+// functions never run in a play session. gamelib-src/hot_functions.txt (the functions play sessions entered, from
+// LASRecomp-Android-Plus by Nycolazs, MIT) keeps those at -O1; every other function in a generated file gets optnone,
+// the -O0 code generator, about 2.3x faster to compile. The list was made on the game's 1.0.0: other versions (no
+// list for them yet) build all at -O1 as before, and so does LARECOMP_GAMEBUILD_HOT=0. It changes how fast the code
+// builds, not what it does. From LASRecompAndroid by mamcjr (MIT).
+static uint64_t *g_hot;
+static size_t g_nhot;
+static unsigned long long g_cold_fns, g_all_fns;
+
+static int cmp_u64(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+static void load_hot(const char *path) {
+    free(g_hot), g_hot = NULL, g_nhot = 0, g_cold_fns = g_all_fns = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    size_t cap = 0;
+    char line[64];
+    while (fgets(line, sizeof line, f)) {
+        if (!strchr(line, '\n'))  // (a longer line - a comment: its rest isn't another address)
+            for (int ch; (ch = fgetc(f)) != EOF && ch != '\n';) {}
+        if (line[0] == '#') continue;
+        const char *p = line;  // "main <offset>" / "sdk <offset>": the module's base plus that
+        uint64_t base = 0;
+        if (!strncmp(p, "main ", 5)) base = 0x7000000000ull, p += 5;
+        else if (!strncmp(p, "sdk ", 4)) base = 0x7004000000ull, p += 4;
+        char *end;
+        uint64_t a = base + strtoull(p, &end, 16);
+        if (end == p) continue;
+        if (g_nhot == cap) g_hot = realloc(g_hot, sizeof *g_hot * (cap = cap ? cap * 2 : 4096));
+        g_hot[g_nhot++] = a;
+    }
+    fclose(f);
+    qsort(g_hot, g_nhot, sizeof *g_hot, cmp_u64);
+}
+
+// A generated file's cold functions ("void f_<address>(Cpu *c) {" at a line's start) get optnone, in place. A function
+// marked already (a reused file) starts its line with the attribute and isn't matched again.
+static bool mark_cold(const char *src) {
+    FILE *f = fopen(src, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *d = n > 0 ? malloc((size_t)n + 1) : NULL;
+    bool ok = d && fread(d, 1, (size_t)n, f) == (size_t)n;
+    fclose(f);
+    if (!ok) { free(d); return false; }
+    d[n] = 0;
+    char tmp[1200];
+    snprintf(tmp, sizeof tmp, "%s.cold", src);
+    FILE *o = fopen(tmp, "wb");
+    if (!o) { free(d); return false; }
+    static const char attr[] = "__attribute__((optnone, noinline)) ";
+    const char *p = d, *copied = d;
+    bool changed = false;
+    while ((p = strstr(p, "\nvoid f_"))) {
+        p++;  // (the line's start)
+        char *end;
+        uint64_t a = strtoull(p + 7, &end, 16);
+        if (strncmp(end, "(Cpu *c) {", 10)) continue;  // (a declaration: "...;")
+        g_all_fns++;
+        if (bsearch(&a, g_hot, g_nhot, sizeof *g_hot, cmp_u64)) continue;
+        g_cold_fns++;
+        changed = true;
+        ok = ok && fwrite(copied, 1, (size_t)(p - copied), o) == (size_t)(p - copied) && fputs(attr, o) >= 0;
+        copied = p;
+    }
+    ok = ok && fwrite(copied, 1, (size_t)(d + n - copied), o) == (size_t)(d + n - copied);
+    if (fclose(o) != 0) ok = false;
+    free(d);
+    if (ok && changed && rename(tmp, src) == 0) return true;
+    remove(tmp);
+    return ok;
 }
 #else
 static bool find_tools(Tools *t) {
@@ -447,6 +527,14 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
 #ifdef __ANDROID__
     mkdir(work, 0755);
     android_env(work);
+    {
+        const GameVersion *gv = game_version_of(game_dir);
+        const char *e = getenv("LARECOMP_GAMEBUILD_HOT"), *gen = getenv("LARECOMP_GEN_DIR");
+        char hot[1200];
+        snprintf(hot, sizeof hot, "%s/gamelib-src/hot_functions.txt", gen);
+        load_hot(e && !atoi(e) ? "" : gv && !strcmp(gv->key, "v1_0_0") ? hot : "");
+        LOG("[gamebuild] hot functions: %zu%s\n", g_nhot, g_nhot ? " (the rest compiled with optnone)" : " (all at -O1)");
+    }
 #endif
     if (t.zig) {  // keep its caches with this installation; the explicit Clear action removes them too
         char zc[1200];
@@ -558,6 +646,9 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         // compiles
         while (nrun < jobs && next < units.n) {
             Unit *u = &units.u[next];
+#ifdef __ANDROID__  // (before the cache hashes the file; unit 0 is the shipped entry file)
+            if (next > 0 && g_nhot && !mark_cold(u->src)) LOG("[gamebuild] couldn't mark cold functions in %s\n", u->src);
+#endif
             int cached = build_cache_object(cache, u->stem, u->src, u->source_hash);
             if (cached < 0) { snprintf(why, why_size, LN("A generated source file is missing or unreadable.")); ok = false; break; }
             if (cached && next != 0) { done_bytes += u->bytes; ++reused; ++next; continue; }
@@ -679,6 +770,9 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     free(units.u);
     build_cache_close(cache);
     LOG("[gamebuild] reused %d objects, compiled %d objects\n", reused, compiled);
+#ifdef __ANDROID__
+    if (g_nhot) LOG("[gamebuild] %llu of %llu functions cold (optnone)\n", g_cold_fns, g_all_fns);
+#endif
     LOG("[gamebuild] %s in %.0fs\n", ok ? "done" : cancelled ? "cancelled" : "failed", (double)(plat_now_ns() - t0) / 1e9);
     if (ok && o->progress) o->progress(1, LN("Finishing..."));
     return ok;
