@@ -198,7 +198,8 @@ without touching the installed game, your game files or your saves.
   the rumble test running in CI (#299), Linux builds finding their own SDL3 (#437), font re-imports that no longer
   empty the font (#490), a message box on Linux for a CPU without AVX2 (#491), the build and system in the log bot's
   summary (#582), an FFmpeg licence check that really checks (#583), the GPU driver in the log bot's summary (#588),
-  and each attached log counted once (#589)
+  each attached log counted once (#589), the game files check in the log bot's summary (#600), and summaries for
+  logs attached by editing a comment (#601)
 - **[@ky1vstar](https://github.com/ky1vstar)** - a much faster Linux ARM release build (#319)
 - **[@theb0rg](https://github.com/theb0rg)** - the fix for AMD integrated graphics on Windows (#335)
 - **[@gtf-dot](https://github.com/gtf-dot)** - the game-text font on Linux (#330)
