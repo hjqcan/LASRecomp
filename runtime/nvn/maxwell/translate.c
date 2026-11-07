@@ -28,7 +28,7 @@ bool maxwell_gmem_lazy;
 bool maxwell_gmem_fs_miss;
 bool maxwell_glsl_stack_vars = true;
 bool maxwell_glsl_structured;  // static stacks + structured control flow by default (exec.c: Mali, Adreno)
-bool maxwell_glsl_push;  // c1 inlined + push constants by default (exec.c: Mali)
+bool maxwell_glsl_push;  // c1 inlined + push constants by default (exec.c: Mali, Adreno)
 const uint8_t *maxwell_const_data;
 uint32_t maxwell_const_size;
 bool maxwell_gmem_mirror;  // (shader.h)
@@ -2318,6 +2318,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     info->msl = s.buf;
     info->attr_mask = c->in_attr_mask;
     info->out_mask = stage == STAGE_FRAGMENT ? c->omap_target : c->out_attr_mask;
+    for (int i = 0; i < 18; i++) info->cbuf_used[i] = (info->cbuf_dynamic & (1u << i)) ? 0 : c->cbuf_need[i] * 16;
     free(c->body.buf);
     free(c);
     return info;

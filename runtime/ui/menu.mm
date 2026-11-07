@@ -14,6 +14,7 @@
 
 #include "imgui.h"
 #include "i18n.h"
+#include "live_preview.h"
 #include "option_rows.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
@@ -63,7 +64,7 @@ static std::atomic<bool> g_text_busy{false};  // a text field / the on-screen ke
 static std::atomic<bool> g_want_fullscreen_apply{false};
 
 struct QEvent {
-    enum { KEY, ANALOG, MOUSE_POS, MOUSE_BUTTON, WHEEL, TEXT } kind;
+    enum { KEY, ANALOG, MOUSE_POS, MOUSE_BUTTON, WHEEL, TEXT, RELEASE_ALL } kind;
     ImGuiKey key;
     bool down;
     float value, x, y;
@@ -89,6 +90,7 @@ enum { BAR_SETTINGS, BAR_WARP, BAR_EDITOR, BAR_RESET, BAR_QUIT, BAR_CLOSE, BAR_N
 static std::atomic<int> g_page{-1};  // the entry whose page is open (-1: the bar alone)
 static int g_bar_cur;  // the bar's cursor (render thread)
 static void page_open(int page);
+static int g_tab = -1000, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab; -1000: the first tab)
 static int g_ask = -1;  // the bar's Reset or Quit asked (render thread): ask_popup
 extern "C" void menu_test_open(void) {
     set_open(true);
@@ -98,6 +100,11 @@ extern "C" void menu_test_open(void) {
     int t = getenv("LARECOMP_MENU_TAB") ? atoi(getenv("LARECOMP_MENU_TAB")) : -1;
     page_open(t == 4 ? BAR_WARP : t == 2 ? BAR_EDITOR : t == 9 ? BAR_QUIT : t == 10 ? BAR_RESET : BAR_SETTINGS);
     if (t >= 0 && t != 2 && t != 4 && t != 9 && t != 10) { extern int g_tab_request_ext; g_tab_request_ext = t; }
+    // (test) LARECOMP_PREVIEW=<row label>: that row's live preview opens straight away (its page: LARECOMP_MENU_TAB)
+    if (const char *row = getenv("LARECOMP_PREVIEW")) {
+        if (t >= 0) g_tab = t;
+        preview_open(row, -1);
+    }
 }
 
 void menu_tabs_focus(bool first_tab);
@@ -108,7 +115,10 @@ static void set_open(bool open) {
     menu_sfx_play(open ? MENU_SFX_OPEN : MENU_SFX_CLOSE);
     input_reset();  // nothing held while the menu had focus leaks into the game
     bind_capture_cancel();
-    if (!open) { settings_save(); osk_cancel(); g_text_busy = false; }
+    // nor the other way round: the releases of what was held when it closed never reach the menu (it isn't capturing
+    // then), so it starts with nothing held - else the cursor kept scrolling, or a press went missing, on the next open
+    { QEvent q = {}; q.kind = QEvent::RELEASE_ALL; push(q); }
+    if (!open) { settings_save(); osk_cancel(); g_text_busy = false; preview_reset(); }
 }
 
 static void page_open(int page) {
@@ -188,7 +198,7 @@ static int kbd_cut(char *s, int max_units) {
 extern "C" bool menu_input_captured(void) { return capturing(); }
 
 bool menu_handle_event(const SDL_Event *e) {
-    static bool back_down, start_down;
+    static uint32_t pad_held;  // (controller buttons down, by bit: the menu's two-button shortcuts)
     if (g_open.load() && bind_capture_event(e)) return true;  // Controls tab waiting for a new binding: it takes the press
     if (e->type == SDL_EVENT_KEY_DOWN) g_last_pad = false;
     if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) g_last_pad = true;
@@ -237,9 +247,10 @@ bool menu_handle_event(const SDL_Event *e) {
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: {
         bool down = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
-        if (e->gbutton.button == SDL_GAMEPAD_BUTTON_BACK) back_down = down;
-        if (e->gbutton.button == SDL_GAMEPAD_BUTTON_START) start_down = down;
-        if (down && !typing && ((back_down && start_down) || e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE)) {
+        if (e->gbutton.button < 32) pad_held = down ? pad_held | 1u << e->gbutton.button : pad_held & ~(1u << e->gbutton.button);
+        // the player's shortcuts (Controls > Configure inputs > Open menu; Home and Back + Start by default). A Home
+        // that isn't one goes on below, not taken (#591: it opens Steam's and other launchers' overlays).
+        if (down && !typing && bind_menu_pressed(e->gbutton.button, pad_held)) {
             set_open(!g_open.load());
             return true;
         }
@@ -350,7 +361,6 @@ void menu_set_scene(id<MTLTexture> tex, const float uv[4]) {
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
 static ImFont *g_font, *g_font_big;
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Baloo 2); everything else keeps g_font
-static int g_tab = -1000, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab; -1000: the first tab)
 static int g_focus_tab = -99;  // put the nav cursor on this tab next frame (-100: the selected one; -99: none)
 static int g_focus_frames;
 
@@ -506,6 +516,9 @@ static void drain_events(ImGuiIO &io) {
     std::vector<QEvent> ev;
     ev.swap(q_events);
     pthread_mutex_unlock(&q_lock);
+    // a rebind (Controls tab) takes every release while it waits: the confirm press that started it, a stick let go
+    static bool capture_was;
+    if (bind_capture_active(NULL, NULL, NULL) != capture_was) capture_was = !capture_was, ui_pad_release_all(io);
     for (const QEvent &q : ev) {
         switch (q.kind) {
         case QEvent::KEY: io.AddKeyEvent(q.key, q.down); break;
@@ -514,6 +527,7 @@ static void drain_events(ImGuiIO &io) {
         case QEvent::MOUSE_BUTTON: io.AddMouseButtonEvent(q.button, q.down); break;
         case QEvent::WHEEL: io.AddMouseWheelEvent(q.x, q.y); break;
         case QEvent::TEXT: io.AddInputCharactersUTF8(q.text); break;
+        case QEvent::RELEASE_ALL: ui_pad_release_all(io); break;
         }
     }
 }
@@ -527,7 +541,8 @@ static void tab_display(void) {
     opt_begin("##video", scale);
     opt_section("Display");
     const char *aspects[] = {LN("Unlocked"), LN("Original 16:9")};
-    opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
+    preview_text(LN("Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9."), NULL);
+    opt_preview("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
                "Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps "
                "the game's 16:9 view with bars.");
     bool fs = g_settings.fullscreen;
@@ -538,8 +553,15 @@ static void tab_display(void) {
     static const char *fps_corners[] = {LN("Off"), LN("Top left"), LN("Top right"), LN("Bottom left"), LN("Bottom right")};
     opt_choice("Show FPS", &g_settings.show_fps, fps_corners, N_FPS_CORNERS, FPS_OFF,
                "Shows the frame rate in a corner of the screen.");
-    opt_toggle("Remove blur", &g_settings.blur_removal, false,
-               "Turns off the tilt-shift blur at the top and bottom of the screen.");
+    opt_toggle("Frame Generation", &g_settings.frame_interp, false,
+               "Experimental. Draws extra images between the game's frames for smoother motion, up to your display's "
+               "refresh rate. On a 120 Hz display the game shows 120 fps. Some visual glitches are possible.");
+    {   // (a live preview, as an Off / On choice)
+        static const char *oo[] = {LN("Off"), LN("On")};
+        int rb = g_settings.blur_removal;
+        if (opt_preview("Remove blur", &rb, oo, 2, 0, "Turns off the tilt-shift blur at the top and bottom of the screen."))
+            g_settings.blur_removal = rb;
+    }
     opt_toggle("Pause on focus lost", &g_settings.pause_unfocused, false,
                "The game pauses while its window isn't in front.");
     opt_toggle("Remember window size", &g_settings.remember_window, false,
@@ -578,7 +600,11 @@ static void tab_display(void) {
             snprintf(dyn, sizeof dyn, L("Dynamic is at %.0f%% of the display right now."), output_scale_dynamic_factor() * 100);
             snprintf(d + n, sizeof d - n, " %s", dyn);
         }
-        if (opt_choice("Internal resolution", &ri, res, NRES, rdef, d, false))
+        char note[32];  // (the preview's value: "50% (800×450)", its text the user's - 2026-11-03)
+        snprintf(note, sizeof note, "%.0f×%.0f", 1920.0 * sx, 1080.0 * sy);
+        preview_text(LN("Configure the resolution used for rendering the game. Higher values are more demanding on "
+                        "your graphics hardware."), note);
+        if (opt_preview("Internal resolution", &ri, res, NRES, rdef, d, false))
             g_settings.res_mode = res_mode[ri], g_settings.res_auto = false;
     }
     {   // each OS's own upscaler next to bilinear (UPSCALE_SHARP: MetalFX on macOS, AMD FSR 1 on Windows)
@@ -599,11 +625,13 @@ static void tab_display(void) {
             ud = udm;
             opt_disable_next();
         }
-        if (opt_choice("Upscaler", &ui, ups, 2, g_default_upscaler == UPSCALE_BILINEAR ? 0 : 1, ud))
+        preview_text(LN("Configure how the game is scaled up to fit your window."), NULL);
+        if (opt_preview("Upscaler", &ui, ups, 2, g_default_upscaler == UPSCALE_BILINEAR ? 0 : 1, ud))
             g_settings.upscaler = ui ? UPSCALE_SHARP : UPSCALE_BILINEAR, g_settings.upscaler_auto = false;
     }
     static const char *aa[] = {LN("Off"), LN("SMAA")};
-    opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
+    preview_text(LN("Configure the smoothing of jagged edges. SMAA keeps textures sharp."), NULL);
+    opt_preview("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
                "Smooths jagged edges. SMAA keeps textures sharp and helps most at a lower internal resolution.");
 
     opt_end();
@@ -651,8 +679,8 @@ static void tab_cosmetics(void) {
                 g_settings.sand.pick == preset[i][2])
                 cur = i;
         int v = cur;
-        if (opt_choice("Season", &v, names, 5, 0, "Sets the leaves, grass and sand colors below.") && v != cur) {
-            if (v == 4) v = cur == 0 ? 3 : 0;  // (Mixed is never chosen: past the ends, back round)
+        // (Mixed is never chosen: it's there only while the colours match no season; Right stops at Cherry blossom)
+        if (opt_choice("Season", &v, names, cur == 4 ? 5 : 4, 0, "Sets the leaves, grass and sand colors below.") && v != cur) {
             g_settings.leaves.pick = preset[v][0];
             g_settings.grass.pick = preset[v][1];
             g_settings.sand.pick = preset[v][2];
@@ -669,7 +697,7 @@ static void tab_cosmetics(void) {
     opt_choice("Enemy colors", &g_settings.enemy_colours, g_enemy_colour_modes, N_ENEMY_COLOUR_MODES, 0,
                "Gives each kind of enemy a new color. Enemies whose color shows how strong they are keep theirs.");
     opt_section("Screen");
-    opt_choice("Screen filter", &g_settings.screen_filter, g_screen_filters, N_SCREEN_FILTERS, 0,
+    opt_preview("Screen filter", &g_settings.screen_filter, g_screen_filters, N_SCREEN_FILTERS, 0,
                "Puts a filter over the whole screen, HUD included.");
 #ifdef __APPLE__  // (the Metal renderer draws it; Vulkan: not yet - the setting does nothing there)
     {   // (the seed's weather cycle: "Seed", the seed's weather - locked)
@@ -978,6 +1006,16 @@ static void focus_check(bool down, bool up, bool any_down, int focused_tab, int 
 }
 
 // The tab bar and its pages, into the current window: the in-game menu, and the start screen's Settings (in_game
+// The live preview (live_preview.h) of a row on the page shown: instead of the tabs, until it closes. The pages with
+// opt_preview rows: Video, Cosmetics.
+static void preview_page(void) {
+    if (g_tab == 0) tab_display();
+    else if (g_tab == 7) tab_cosmetics();
+}
+bool menu_preview_frame(float scale, ImFont *font, ImFont *font_big) {
+    return preview_active() && (preview_draw(scale, font, font_big, preview_page), true);
+}
+
 // false: nothing of the game is loaded yet - the tabs that need it are greyed out; prelaunch: the start screen's own
 // first tab, game files and fonts, drawn by launcher.mm). only: one page alone, without the tab bar (the in-game menu
 // bar's Warp, Save Editor and Quit).
@@ -999,7 +1037,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float), int o
     int cur = 0;  // g_tab / g_tab_request hold ids
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
     if (!tabs[cur].on) cur = 0;
-    // L/R (or Q/E) switch tabs, skipping greyed-out ones (not while typing: Q / E are letters then, and the on-screen
+    // L/R (or Q/E) switch tabs, skipping greyed-out ones and stopping at the first / last (not while typing: Q / E are letters then, and the on-screen
     // keyboard has the controller)
     static const int cycle = getenv("LARECOMP_MENU_TAB_CYCLE") ? atoi(getenv("LARECOMP_MENU_TAB_CYCLE")) : 0;
     static int cycle_frames, cycle_i;  // (test) <frames>: each tab in turn, that many frames each (screenshot series)
@@ -1011,9 +1049,9 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float), int o
     if (!any_popup && !typing && only == -1000) {
         int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
                  : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1 : 0;
-        if (step) {
-            int i = cur;
-            do i = (i + step + ntabs) % ntabs; while (!tabs[i].on);
+        int i = cur;
+        if (step) do i += step; while (i >= 0 && i < ntabs && !tabs[i].on);
+        if (step && i >= 0 && i < ntabs) {
             g_tab_request = tabs[i].id;
             // the cursor goes onto the new tab (left behind on the tab bar, A on it switched straight back - user
             // 2026-10-11; left in the old page, it stayed on a row that is gone, and Down went on from where that row
@@ -1303,7 +1341,9 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     io.DisplaySize = ImVec2((float)tw, (float)th);
     io.DisplayFramebufferScale = ImVec2(1, 1);
     static double last;
-    double now = SDL_GetTicks() / 1000.0;
+    // (nanoseconds: two images drawn within a millisecond - an in-between and its frame on Vulkan - counted the gap as
+    // 1/60 s, and 120 images a second showed as 70 fps)
+    double now = SDL_GetTicksNS() / 1e9;
     io.DeltaTime = last > 0 && now > last ? (float)(now - last) : 1.0f / 60;
     last = now;
     if (g_ov_cache < 0) g_ov_cache = !getenv("LARECOMP_OVERLAY_CACHE") || atoi(getenv("LARECOMP_OVERLAY_CACHE")) != 0;
@@ -1413,8 +1453,11 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         ImGui::GetStyle() = menu_style;
         plastic_widgets(true);
     }
-    if (!open) g_bar_t0 = -1;
-    if (open) {
+    if (!open || preview_active()) g_bar_t0 = -1;
+    if (open && preview_active()) {  // (the live preview: the game, a panel at the bottom)
+        menu_preview_frame(scale, g_menu_font, g_menu_font_big);
+        menu_sfx_frame(true);
+    } else if (open) {
         // A page open: the bar goes up and the page has the whole screen (user 2026-11-03); B brings the bar down again
         int page = g_page.load();
         if (page < 0) bar_draw(io, scale), ask_popup(scale);

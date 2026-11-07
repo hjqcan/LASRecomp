@@ -256,6 +256,29 @@ int weather_snow_tree(const float pos[3]) {
     return 0;
 }
 
+// (a sample of the vertex data - its start and middle - hashed each frame it is drawn; changed within the last 2 s:
+// animated. Unknown at first: still, until it has moved)
+bool weather_snow_animated(uint64_t key, const void *vtx, uint64_t size, uint64_t frame) {
+    enum { N = 256, PART = 512 };
+    static struct { uint64_t key, hash, seen, moved; } t[N];
+    if (!key || !vtx || !size) return false;
+    uint32_t k = (uint32_t)(key * 0x9E3779B97F4A7C15ull >> 56);
+    int i = 0;
+    while (i < 8 && t[(k + i) & (N - 1)].key && t[(k + i) & (N - 1)].key != key) i++;
+    if (i == 8) i = 0, t[k & (N - 1)].key = 0;  // (full here: the first slot taken over)
+    k = (k + i) & (N - 1);
+    const uint8_t *p = vtx;
+    uint64_t n = size < PART ? size : PART, h = 0xcbf29ce484222325ull;
+    for (uint64_t j = 0; j < n; j++) h = (h ^ p[j]) * 0x100000001b3ull;
+    for (uint64_t j = size / 2, e = size / 2 + n < size ? size / 2 + n : size; j < e; j++) h = (h ^ p[j]) * 0x100000001b3ull;
+    if (t[k].key != key) t[k].key = key, t[k].hash = h, t[k].seen = frame, t[k].moved = 0;
+    else if (t[k].seen != frame) {
+        if (h != t[k].hash) t[k].moved = frame;
+        t[k].hash = h, t[k].seen = frame;
+    }
+    return t[k].moved && frame - t[k].moved < 120;
+}
+
 static void shake_tree(float x, float z, float within) {  // (the tree nearest x, z: its snow off, a burst falling)
     int best = -1;
     float bd = within * within;
@@ -558,7 +581,7 @@ static bool link_free(Cpu *c, uint64_t link) {
         uint64_t so = id < 0x40 ? LD64(link + 0x1340 + 8 * (uint64_t)id) : 0, vt = so ? LD64(so) : 0, ti = vt ? LD64(vt - 8) : 0;
         const char *name = ti ? (const char *)(uintptr_t)LD64(ti + 8) : NULL;
         LOG("[weather] link state %u (%s) vt main+%llx iframes %g nohit %u filter %#x\n", id, name ? name : "?",
-            (unsigned long long)(vt ? vt - 0x7000000000ull : 0), *(const float *)(uintptr_t)(link + 0x1e80),
+            (unsigned long long)(vt ? vt - MAIN_BASE : 0), *(const float *)(uintptr_t)(link + 0x1e80),
             LD8(link + 0x1b8c) & 1, link_hit(c, link, false));
     }
     return id < 32 && ((1u << id) & (1u << 0 | 1u << 1 | 1u << 2 | 1u << 10 | 1u << 26));

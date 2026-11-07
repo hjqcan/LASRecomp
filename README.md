@@ -74,7 +74,7 @@ Known issues and their status are on the [GitHub issues page](https://github.com
 - Higher resolutions, a "match your display" option and dynamic resolution, with MetalFX (Mac) or FSR 1 (Windows and Linux) upscaling and SMAA anti-aliasing.
 - Shaders are prepared ahead of time, so new areas don't stutter.
 - A start screen where you pick vanilla or a randomizer seed, set up your game files and choose your settings.
-- In-game menu: F1, or Minus + Plus on a controller.
+- In-game menu: F1, or Home or Minus + Plus on a controller. The controller buttons can be changed in Controls.
 - Switch between vanilla and any randomizer seed without restarting.
 - Keyboard and controller support, with every button remappable. Button prompts match your controller (Xbox, PlayStation or Nintendo).
 - Controller rumble, and the light bar on PlayStation controllers shows Link's health.
@@ -196,7 +196,10 @@ without touching the installed game, your game files or your saves.
 - **[@rkammoun](https://github.com/rkammoun)** - the fix for the black walls in the Ukuku Prairie cave on Mac (#215, #216)
 - **[@NevesHenry](https://github.com/NevesHenry)** - a clear message on Linux when no file window can open (#298),
   the rumble test running in CI (#299), Linux builds finding their own SDL3 (#437), font re-imports that no longer
-  empty the font (#490), and a message box on Linux for a CPU without AVX2 (#491)
+  empty the font (#490), a message box on Linux for a CPU without AVX2 (#491), the build and system in the log bot's
+  summary (#582), an FFmpeg licence check that really checks (#583), the GPU driver in the log bot's summary (#588),
+  each attached log counted once (#589), the game files check in the log bot's summary (#600), and summaries for
+  logs attached by editing a comment (#601)
 - **[@ky1vstar](https://github.com/ky1vstar)** - a much faster Linux ARM release build (#319)
 - **[@theb0rg](https://github.com/theb0rg)** - the fix for AMD integrated graphics on Windows (#335)
 - **[@gtf-dot](https://github.com/gtf-dot)** - the game-text font on Linux (#330)
@@ -205,7 +208,8 @@ without touching the installed game, your game files or your saves.
   cheats and save editor (#453)
 - **[@wimw85](https://github.com/wimw85)** - much faster game code setup on the Steam Deck and other PCs (#434)
 - **[@missionfloyd](https://github.com/missionfloyd)** - a much smaller game code build, without debug info (#487)
-- **[@wolfchimneyrock](https://github.com/wolfchimneyrock)** - full speed on ARM Mali graphics (#527), the CPU and GPU working in parallel on Mali (#529), and faster render passes on Mali (#528, #534), a cheaper FSR upscale (#532), the game on the big cores of ARM and Intel hybrid CPUs on Linux (#533), no more flickering grass and shadows on Mali (#546), the game starting on Snapdragon (Adreno) devices (#561), much faster shaders on Mali and Adreno (#562, #563), faster graphics memory on Mali with Mesa (#564), and GPU tuning tools for Vulkan (#565)
+- **[@wolfchimneyrock](https://github.com/wolfchimneyrock)** - full speed on ARM Mali graphics (#527), the CPU and GPU working in parallel on Mali (#529), and faster render passes on Mali (#528, #534), a cheaper FSR upscale (#532), the game on the big cores of ARM and Intel hybrid CPUs on Linux (#533), no more flickering grass and shadows on Mali (#546), the game starting on Snapdragon (Adreno) devices (#561), much faster shaders on Mali and Adreno (#562, #563, #579), faster graphics memory on Mali with Mesa (#564), GPU tuning tools for Vulkan (#565), and no more memory leak on Arm's Mali driver (#607)
+- **[@mamcjr](https://github.com/mamcjr)** - the Android port ([LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)), which we are bringing in piece by piece, starting with a guest window that can move
 
 Thanks also to everyone who reports issues and tests builds. Your logs and screenshots find most of the bugs.
 

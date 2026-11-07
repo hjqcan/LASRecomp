@@ -534,8 +534,11 @@ void rec_UpdateDescriptorSets(uint32_t n, const VkWriteDescriptorSet *w) {
 
 // ================================================================== command buffers, submissions, presents
 static void begin_cb_run(const void *p) {
+    VkCommandBuffer cb = *(const VkCommandBuffer *)p;
+    // (g_vk.cb_release, device.c: Arm's driver keeps vkCmdBeginRendering's memory across the implicit reset below)
+    if (g_vk.cb_release) VK_CHECK(vkResetCommandBuffer(cb, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT));
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    VK_CHECK(vkBeginCommandBuffer(*(const VkCommandBuffer *)p, &bi));
+    VK_CHECK(vkBeginCommandBuffer(cb, &bi));
 }
 void rec_BeginCommandBuffer(VkCommandBuffer cb) {
     if (on <= 0) { begin_cb_run(&cb); return; }

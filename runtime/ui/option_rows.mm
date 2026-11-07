@@ -18,6 +18,7 @@ extern "C" {
 #include "../menu_sfx.h"
 }
 #include "i18n.h"
+#include "live_preview.h"
 #include "option_rows.h"
 #include "osk.h"
 #include "plastic.h"
@@ -285,11 +286,24 @@ bool opt_toggle(const char *label, bool *v, bool def, const char *desc) {
 }
 
 bool opt_choice(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap) {
+    return opt_preview(label, v, names, n, def, desc, wrap, false);
+}
+
+// (opt_choice, with preview: A / a click on the row opens the live preview instead of stepping)
+bool opt_preview(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap,
+                 bool preview) {
+    bool scan = preview && preview_scanning(), off = g_next_disabled;
     int cur = *v >= 0 && *v < n ? *v : 0;
-    int step = row(label, names[cur], cur != def, desc, true, true);
+    // (preview: a chevron - A / a click / Right opens it, the value doesn't step here)
+    int step = row(label, names[cur], cur != def, desc, true, !preview, preview);
+    if (scan) return preview_row(label, v, names, n, def, desc, wrap, off);  // (row: only read, as the others)
+    if (preview) {
+        if (step == 2 && !g_collect) preview_open(label, opt_item_nav_focused() ? (int)g_rows.size() - 1 : -1);
+        return false;
+    }
     if (!step) return false;
     int nv = cur + (step == 2 ? 1 : step);
-    nv = wrap ? (nv + n) % n : nv < 0 ? 0 : nv >= n ? n - 1 : nv;
+    nv = wrap && step == 2 ? nv % n : nv < 0 ? 0 : nv >= n ? n - 1 : nv;
     if (nv == cur) return false;
     step_sfx(step);
     *v = nv;
@@ -592,6 +606,13 @@ static bool is_tab(ImGuiID id) {
     return false;
 }
 
+// (a mouse click on a scroll bar plays nothing)
+static bool on_scrollbar(ImGuiContext &g) {
+    ImGuiWindow *w = g.HoveredWindow;
+    return w && (g.HoveredId == ImGui::GetWindowScrollbarID(w, ImGuiAxis_Y) ||
+                 g.HoveredId == ImGui::GetWindowScrollbarID(w, ImGuiAxis_X));
+}
+
 extern "C" void menu_sfx_frame(bool back_ok) {
     ImGuiContext &g = *ImGui::GetCurrentContext();
     static ImGuiContext *ctx;  // (the start screen's and the game's overlay are two)
@@ -602,7 +623,7 @@ extern "C" void menu_sfx_frame(bool back_ok) {
     if (!ui_text_busy() && cap < 0) {
         if (back_ok && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
             menu_sfx_play(MENU_SFX_CANCEL);
-        else if (g.NavActivatePressedId || (ImGui::IsMouseClicked(0) && g.HoveredId))
+        else if (g.NavActivatePressedId || (ImGui::IsMouseClicked(0) && g.HoveredId && !on_scrollbar(g)))
             menu_sfx_play(is_tab(g.NavActivatePressedId ? g.NavActivatePressedId : g.HoveredId) ? MENU_SFX_TAB
                                                                                                 : MENU_SFX_DECIDE);
         else if (g.NavCursorVisible && g.NavId && last && g.NavId != last)

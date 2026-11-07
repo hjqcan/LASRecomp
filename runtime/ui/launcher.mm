@@ -194,7 +194,8 @@ static bool file_exists(const std::string &p) {
 // The game's RomFS (the same in every supported version) has exactly ROMFS_FILES files: a copy with fewer is incomplete (a copy or unzip that
 // stopped partway) and the game crashes on the first one it misses (issues #24, #35). Only the number ships.
 // Their sizes add up to game_romfs_bytes() (per version): every file there with another total is a damaged or
-// changed file (issue #391). The game still plays then; the start screen says so.
+// changed file (issue #391). The game still plays then; the start screen says so. Files that aren't the game's are
+// counted but their bytes left out (issue #553: an extra file beside the game's isn't a changed one).
 // With check (base: where the path inside romfs starts), the files that aren't the game's are named in the log, the
 // first ROMFS_ODD_LOGGED of them (check->odd counts them all), and copies of the game code at the romfs root
 // (game_romfs_exefs_copy, game: the game folder) are left out of the count and the bytes (check->copies).
@@ -216,9 +217,11 @@ static int count_files(const std::string &dir, int depth = 0, uint64_t *bytes = 
                 continue;
             }
             n++;
-            if (bytes) *bytes += (uint64_t)st.st_size;
-            if (check && !game_romfs_check_file(check->check, p.c_str() + check->base, (uint64_t)st.st_size) &&
-                check->odd++ < ROMFS_ODD_LOGGED)
+            uint64_t size = (uint64_t)st.st_size;
+            if (!check) {
+                if (bytes) *bytes += size;
+            } else if (!game_romfs_check_file(check->check, p.c_str() + check->base, size, bytes) &&
+                       check->odd++ < ROMFS_ODD_LOGGED)
                 fprintf(stderr, "[launcher] romfs: not one of the game's files: %s (%llu bytes)\n", p.c_str() + check->base,
                         (unsigned long long)st.st_size);
         }
@@ -802,6 +805,7 @@ static int g_refocus = MAIN;  // back on the main page: select the item of the p
 static bool g_menu_small;  // sub pages: buttons in the small font
 void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, void (*prelaunch)(float));  // menu.mm
 void menu_style_begin(float scale);  // (menu.mm: the menu's look, until menu_style_end)
+bool menu_preview_frame(float scale, ImFont *font, ImFont *font_big);  // (menu.mm: true while a live preview is up)
 void menu_style_end(void);
 void menu_tabs_focus(bool first_tab);
 extern int g_tab_request_ext;
@@ -1659,6 +1663,9 @@ extern "C" void launcher_run(const char *root) {
             page = MAIN;
             g_play_pending = true;
         }
+        // a rebind takes every release while it waits (menu.mm drain_events): nothing held when it starts or ends
+        static bool capture_was;
+        if (bind_capture_active(NULL, NULL, NULL) != capture_was) capture_was = !capture_was, ui_pad_release_all(io);
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             input_cursor_event(&e);  // (pad / key: the cursor hides; ImGui's backend leaves it so, below)
@@ -1842,8 +1849,8 @@ extern "C" void launcher_run(const char *root) {
                     sparkle(dl, ImVec2(play_at.x + w - h * 0.32f, play_at.y + h * 0.08f), h * 0.11f, k2 * 0.8f, -t * 0.8f);
                 }
                 ImGui::SetWindowFontScale(1.0f);
-                if (pressed && arrow && ImGui::IsMouseReleased(0)) {  // (a mouse click on an arrow: cycle)
-                    choice = (choice + arrow + (int)choices.size()) % (int)choices.size();
+                if (pressed && arrow && ImGui::IsMouseReleased(0)) {  // (a mouse click on an arrow: a step, to the ends)
+                    choice = std::max(0, std::min(choice + arrow, (int)choices.size() - 1));
                     pressed = false;
                 }
                 // first PLAY ever: the aspect ratio question, then how to reach our menu, then the game
@@ -1861,9 +1868,9 @@ extern "C" void launcher_run(const char *root) {
                 if (menu_tip(s)) play = true;
                 if (hov && status.empty()) {
                     if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft))
-                        choice = (choice + (int)choices.size() - 1) % (int)choices.size();
+                        choice = std::max(choice - 1, 0);
                     if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight))
-                        choice = (choice + 1) % (int)choices.size();
+                        choice = std::min(choice + 1, (int)choices.size() - 1);
                     // left / right are ours while PLAY is selected: ImGui's navigation would otherwise take them too,
                     // find nothing beside PLAY and scroll the window (PLAY loses its highlight, the cycling stops)
                     ImGuiID own = ImGui::GetID("##play_lr");
@@ -1886,6 +1893,8 @@ extern "C" void launcher_run(const char *root) {
                 ImGui::SetCursorPosX(x0);
                 if (menu_item(L("QUIT"), true)) exit(0);
                 g_menu_gap = 0.35f;
+            } else if (page == SETTINGS && menu_preview_frame(ds.y / 1080.0f, g_font_small, g_font_menu)) {
+                pieces = true;  // (a row's live preview, live_preview.h: the panel at the bottom instead of the window)
             } else if (page == SETTINGS) {
                 // the in-game menu's tabs (runtime/ui/menu.mm), in a window like the in-game one; tabs that need a
                 // loaded game say so

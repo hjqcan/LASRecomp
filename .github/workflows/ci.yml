@@ -124,6 +124,12 @@ jobs:
         run: |
           python3 -m venv tools/venv && tools/venv/bin/pip install -q unicorn capstone lz4
           tools/venv/bin/python tools/test_simd.py --encodings 3000 --cases 4 --jobs "$(nproc)"
+      # (the moving guest window the Android port needs, runtime/rt.h: the generator's --dyn-base output, and the app
+      # built with it, so the desktop build stays as it was and the other one keeps compiling)
+      - name: Generator --dyn-base (moving guest window)
+        run: tools/venv/bin/python tools/test_dyn_base.py
+      - name: App builds with DYN_BASE=1
+        run: make -j"$(nproc)" build/dyn/lasrecomp B=build/dyn DYN_BASE=1 DEPS="$HOME/sdl3"
 
 
   # Linux aarch64 (experimental builds): the same app build and tests natively on an arm64 runner. Left out: the

@@ -5,6 +5,7 @@
 
 #include "../kernel.h"
 #include "nvn.h"
+#include "interp.h"
 #include "rqueue.h"
 
 void renderer_sync(void);
@@ -278,7 +279,7 @@ int nvn_pool_flags_at(uint64_t addr) {
         if (addr >= pools[i].storage && addr < pools[i].storage + pools[i].size) return (int)pools[i].flags;
     return -1;
 }
-NVN(nvnMemoryPoolFinalize) { free(HOST(NvnPool, A(0))); SET_HOST(A(0), 0); }
+NVN(nvnMemoryPoolFinalize) { interp_free_begin(INTERP_FREE_POOL, HOST(NvnPool, A(0)) ? HOST(NvnPool, A(0))->size : 0); free(HOST(NvnPool, A(0))); SET_HOST(A(0), 0); interp_free_end(); }
 NVN(nvnMemoryPoolSetDebugLabel) { (void)c; }
 NVN(nvnMemoryPoolMap) { RET(HOST(NvnPool, A(0))->storage); }
 NVN(nvnMemoryPoolGetBufferAddress) { RET(HOST(NvnPool, A(0))->storage); }  // GPU address == CPU address
@@ -581,7 +582,7 @@ NVN(nvnSamplerInitialize) {
     SET_HOST(A(0), d);
     RET(1);
 }
-NVN(nvnSamplerFinalize) { free(HOST(NvnSamplerDesc, A(0))); SET_HOST(A(0), 0); }
+NVN(nvnSamplerFinalize) { interp_free_begin(INTERP_FREE_SAMPLER, 0); free(HOST(NvnSamplerDesc, A(0))); SET_HOST(A(0), 0); interp_free_end(); }
 NVN(nvnSamplerSetDebugLabel) { (void)c; }
 #define SMP HOST(NvnSamplerDesc, A(0))
 NVN(nvnSamplerGetMinMagFilter) { *(uint32_t *)AP(1) = SMP->min_filter; *(uint32_t *)AP(2) = SMP->mag_filter; }
@@ -711,7 +712,7 @@ NvnDescPool *nvn_find_pool(NvnDescPool **reg, uint64_t guest_pool) {
 
 // ================================================================== programs
 NVN(nvnProgramInitialize) { SET_HOST(A(0), calloc(1, sizeof(NvnProgram))); RET(1); }
-NVN(nvnProgramFinalize) { free(HOST(NvnProgram, A(0))); SET_HOST(A(0), 0); }
+NVN(nvnProgramFinalize) { interp_free_begin(INTERP_FREE_PROGRAM, 0); free(HOST(NvnProgram, A(0))); SET_HOST(A(0), 0); interp_free_end(); }
 NVN(nvnProgramSetDebugLabel) { (void)c; }
 NVN(nvnProgramSetSampleShading) { (void)c; }
 NVN(nvnProgramSetSubroutineLinkage) { RET(1); }

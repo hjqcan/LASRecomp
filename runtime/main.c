@@ -40,11 +40,32 @@ static void rtld_init_main(Cpu *c) { module_init(c, &g_modules[0]); }
 // LARECOMP_REEXEC_FORCE=1 (test): the first process skips the reservation once and starts again, as when the range is
 // taken (the new process has LARECOMP_REEXEC set and reserves normally).
 #define REEXEC_FORCED "forced by LARECOMP_REEXEC_FORCE"
+#ifdef LARECOMP_DYN_BASE
+uint64_t g_guest_lo = GUEST_CANON;
+// The window's start (rt.h). LARECOMP_GUEST_BASE=<hex> (test) asks for one; otherwise a start other than GUEST_CANON
+// first, so a desktop DYN_BASE build always runs the game away from its own addresses. The game was made for a 39-bit
+// address space, so the window ends below 2^39; 4 GB aligned keeps ADRP's page offsets the same as the game's.
+static bool reserve_dyn_window(void) {
+    uint64_t want[3] = {0, GUEST_CANON + 0x100000000ull, GUEST_CANON};  // (macOS: room up to ~0x77_2000_0000)
+    const char *e = getenv("LARECOMP_GUEST_BASE");
+    if (e && *e) want[0] = strtoull(e, NULL, 16);
+    for (int i = 0; i < 3; i++) {
+        uint64_t lo = want[i];
+        if (!lo || (lo & 0xFFFFFFFFull) || lo + GUEST_SIZE > (1ull << 39)) continue;
+        if (plat_reserve_guest(lo, lo + GUEST_SIZE)) { g_guest_lo = lo; return true; }
+    }
+    return false;
+}
+#endif
 __attribute__((constructor(101))) static void reserve_guest_space(void) {
     const char *force = getenv("LARECOMP_REEXEC_FORCE");
     bool forced = force && *force && strcmp(force, "0") && !getenv("LARECOMP_REEXEC");
     if (forced) setenv("LARECOMP_REEXEC_WHY", REEXEC_FORCED, 1);
+#ifdef LARECOMP_DYN_BASE
+    else if (reserve_dyn_window()) return;
+#else
     else if (plat_reserve_guest(GUEST_LO, GUEST_HI)) return;
+#endif
     else setenv("LARECOMP_REEXEC_WHY", "", 0);  // (the platform may have said what holds the range; else nothing more)
     const char *tries = getenv("LARECOMP_REEXEC");
     int n = tries ? atoi(tries) : 0;
@@ -203,6 +224,9 @@ static void log_startup_info(void) {
 
 int main(int argc, char **argv) {
     plat_init();
+#ifdef LARECOMP_DYN_BASE
+    LOG("[boot] guest window %llx-%llx (moving: rt.h)\n", (unsigned long long)GUEST_LO, (unsigned long long)GUEST_HI);
+#endif
     log_startup_info();
     if (getenv("LARECOMP_REEXEC")) {  // (reserve_guest_space started this process again)
         const char *why = getenv("LARECOMP_REEXEC_WHY"), *n = getenv("LARECOMP_REEXEC");

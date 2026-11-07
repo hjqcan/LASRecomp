@@ -244,15 +244,25 @@ static void note_press(uint64_t down, uint64_t up) {
     }
 }
 
-// Forget held keys (the menu took focus); the gamepad is re-read on its next event.
+// Forget held keys (the menu took focus); the gamepad's buttons too, and its sticks are read again (input_pad_poll):
+// the menu took its events, so what it held before the menu stayed held for the game
+static _Atomic bool pad_stale;
 void input_reset(void) {
+    pad_stale = true;
     press_unseen = 0, tap_buttons = 0;
     rumble_clear();
     memset(keys_down, 0, sizeof keys_down);
     recompute_keyboard();
 }
 
+void input_pad_poll(void) {
+    if (!atomic_exchange(&pad_stale, false)) return;
+    recompute_pad();
+    pad_buttons = 0;  // (a button still held from the menu - the B that closed it - isn't a press for the game)
+}
+
 volatile int g_debug_frame_request;  // F9: dump the next frame's passes (build/pass_*.png) + draw log
+volatile int g_interp_ring_request;  // F10 or backslash (F10 can be a media key on a Mac): save frame interpolation's recent images (LARECOMP_INTERP_RING, metal.m)
 
 // Events a test pushes (LARECOMP_HOST_INPUT type: / sdlkey: / sdlpad: / sdlaxis: / mouse:) carry this device id: they go the whole way, menu first.
 #define TEST_DEVICE 0x7E57u
@@ -432,6 +442,7 @@ void input_handle_event(const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP: {
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) g_debug_frame_request = 1;
+        if (e->type == SDL_EVENT_KEY_DOWN && (e->key.scancode == SDL_SCANCODE_F10 || e->key.scancode == SDL_SCANCODE_BACKSLASH) && !e->key.repeat) g_interp_ring_request = 1;
         if (e->key.scancode < SDL_SCANCODE_COUNT) keys_down[e->key.scancode] = e->type == SDL_EVENT_KEY_DOWN;
         uint64_t before = key_buttons;
         recompute_keyboard();
@@ -512,7 +523,8 @@ static _Atomic int32_t script_lx, script_ly, script_rx, script_ry;
 // "frame:resize:<W>x<H>" resizes the window to W x H points (menu_apply_window_requests: the main thread).
 // LARECOMP_BIND_TEST="frame:pad|key:<input>:<host>,..." starts a rebind capture of <input> (bind_* name: a, zl,
 //   ls_up...) at that frame (the Controls tab shows it waiting) and presses <host> 90 frames later ("esc" cancels,
-//   "wait" lets it time out); "frame:reset:pad|key" resets to the defaults.
+//   "wait" lets it time out); "frame:reset:pad|key" resets to the defaults. The menu's shortcuts (menu1, menu2) take
+//   "back+start" (both down, then up) and "clear" (clears it instead of a capture).
 static void push_key(SDL_Scancode sc, SDL_Keymod mod, bool down) {
     SDL_Event e;
     memset(&e, 0, sizeof e);
@@ -655,9 +667,13 @@ static void host_test_frame(uint64_t frame) {
         for (char *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
             unsigned long start = 0;
             char dev[8] = "", in[16] = "", host[40] = "";
-            if (sscanf(tok, "%lu:%7[a-z]:%15[a-z_]:%39[^:]", &start, dev, in, host) < 3) continue;
+            if (sscanf(tok, "%lu:%7[a-z]:%15[a-z_0-9]:%39[^:]", &start, dev, in, host) < 3) continue;
             if (!strcmp(dev, "reset")) { if (frame == start) bind_reset(!strcmp(in, "key") ? BIND_DEV_KEY : BIND_DEV_PAD); continue; }
-            int d = !strcmp(dev, "key") ? BIND_DEV_KEY : BIND_DEV_PAD;
+            int d = !strcmp(dev, "key") ? BIND_DEV_KEY : BIND_DEV_PAD, slot = bind_slot_from_name(in);
+            if (!strcmp(host, "clear")) {
+                if (frame == start && slot >= BIND_MENU_1) LOG("[input] test: clear %s -> %d\n", in, bind_menu_clear(slot - BIND_MENU_1));
+                continue;
+            }
             if (frame == start) {
                 LOG("[input] test: capture %s %s\n", dev, in);
                 bind_capture_begin(d, bind_slot_from_name(in));
@@ -679,7 +695,16 @@ static void host_test_frame(uint64_t frame) {
                         e.gbutton.button = (Uint8)h;
                     }
                 }
+                const char *plus = strchr(host, '+');
+                int h2 = plus ? bind_pad_from_name(plus + 1) : -1;
+                if (plus) *(char *)plus = 0, e.gbutton.button = (Uint8)bind_pad_from_name(host);
                 bind_capture_event(&e);
+                if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {  // (a menu shortcut takes a pair, or a button let go)
+                    int h1 = e.gbutton.button;
+                    if (h2 >= 0) e.gbutton.button = (Uint8)h2, bind_capture_event(&e);
+                    e.type = SDL_EVENT_GAMEPAD_BUTTON_UP, e.gbutton.button = (Uint8)h1, bind_capture_event(&e);
+                    if (h2 >= 0) e.gbutton.button = (Uint8)h2, bind_capture_event(&e);
+                }
             }
         }
     }

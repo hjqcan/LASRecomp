@@ -9,7 +9,8 @@
 // The file is in the shipped list's format (G / C lines, shader_rec_format) plus one header line
 // "# shader_seen game <id>": the id of the game files' shaders (shader_seen_prep_done), so a game update drops the
 // records whose shaders are gone. Records hold no translator id (they are in NVN terms), so a new translator keeps
-// them. Only hashes and pipeline state, as in the shipped list: no game data, no paths.
+// them. Only hashes and pipeline state, as in the shipped list: no game data, no paths. The same goes for the
+// "[shader] record ..." log lines (shader_seen_note).
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -190,6 +191,9 @@ void shader_seen_note(const ShaderRec *r) {
     shader_rec_format(r, line, sizeof line);
     pthread_mutex_lock(&q_lock);
     if (hs_add(&q_seen, line_hash(line, strlen(line)))) {
+        // Each record the shipped list lacks goes in the log too (once a run, already in the player's file or not),
+        // so a log attached to an issue can be merged into the list like a shader_seen.txt (tools/shader_list_merge.py).
+        if (!shader_seen_shipped(line)) LOG("[shader] record %s\n", line);
         if (q_n == q_cap) q_tab = realloc(q_tab, sizeof *q_tab * (q_cap = q_cap ? q_cap * 2 : 256));
         q_tab[q_n++] = strdup(line);
         if (!writer_started) {

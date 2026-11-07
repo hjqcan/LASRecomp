@@ -171,11 +171,14 @@ void rq_watch(const char *what, uint64_t arg) {
 
 // Wait on cv while !ready(arg); guest: give up while the kernel stops the threads. Caller holds the lock. A wait of
 // 2 s and more is logged with the queue's state (a stuck render thread shows up instead of a silent hang).
+static _Atomic int game_waiting;  // game threads waiting on the render thread (cv_done): rq_game_waiting
 static void wait_until(pthread_cond_t *cv, bool (*ready)(uint64_t), uint64_t arg, bool guest, const char *what) {
     uint64_t t0 = 0;
     bool warned = false;
     bool noted = what && !ready(arg);
     if (noted) rq_watch(what, arg);
+    bool counted = cv == &cv_done && !ready(arg);
+    if (counted) atomic_fetch_add(&game_waiting, 1);
     while (!ready(arg)) {
         if (guest && g_rt_unwind) break;
         struct timespec ts;
@@ -195,8 +198,10 @@ static void wait_until(pthread_cond_t *cv, bool (*ready)(uint64_t), uint64_t arg
                     (unsigned long long)q_cur, presents_pending);
         }
     }
+    if (counted) atomic_fetch_sub(&game_waiting, 1);
     if (noted) rq_watch(NULL, 0);
 }
+bool rq_game_waiting(void) { return atomic_load(&game_waiting) > 0; }
 
 static bool has_room(uint64_t a) { (void)a; return q_enq - q_done < RQ_CAP; }
 static bool no_present(uint64_t a) { (void)a; return presents_pending == 0; }
@@ -382,10 +387,16 @@ uint64_t rq_wait_item(uint64_t q) {
     uint64_t t0 = plat_now_ns(), gs;
     lock_timed();
     if (q > q_enq) q = q_enq;
+    extern uint64_t interp_replay_ns(uint64_t now);
+    uint64_t r0 = interp_replay_ns(t0);
     wait_until(&cv_done, item_done, q, true, "fence (its list not translated yet)");
     gs = q_done >= q ? gpu_seq_of[q % RQ_HIST] : renderer_issued_seq();  // (gave up: whatever is queued)
     pthread_mutex_unlock(&lock);
-    g_rq_wait_ns += plat_now_ns() - t0;
+    uint64_t t1 = plat_now_ns(), r1 = interp_replay_ns(t1);
+    g_rq_wait_ns += t1 - t0;
+    // (frame interpolation: the render thread's replays while this waited are the extra images' work, not the game's -
+    // the frame pacer counts that part as idle)
+    if (r1 > r0) g_blocked_ns += r1 - r0 < t1 - t0 ? r1 - r0 : t1 - t0;
     return gs;
 }
 
@@ -421,6 +432,12 @@ uint64_t rq_fence_seq(void) {
 }
 
 uint64_t rq_frame(void) { return exec_frame; }
+
+bool rq_present_is_repeat(void) {  // (the render thread, in a present) backend_represent's: the last frame again
+    if (!atomic_load(&started) || !pthread_equal(pthread_self(), thread)) return false;
+    const Item *it = &items[q_cur % RQ_CAP];
+    return it->kind == IT_PRESENT && !it->advance;
+}
 
 uint64_t rq_current_item(void) {
     if (!atomic_load(&started) || !pthread_equal(pthread_self(), thread)) return 0;
