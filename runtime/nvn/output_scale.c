@@ -419,6 +419,26 @@ static void dyn_update(double now, double game_ms, double win_ms, double lines) 
 double output_scale_dynamic_factor(void) { return g_dyn; }
 double output_scale_dynamic_hold_fps(void) { return g_hold_dt > 0 ? 1000 / g_hold_dt : 0; }
 
+// The game's ambient occlusion is drawn at a quarter of 1080p (480x270, then blurred, and a 240x135 level) and kept at
+// that size at every render scale (issue #356: scaled with it, its sample pattern fell apart - see metal.m tex_ao).
+// Stretched over a large frame it is soft and flickers at the edges of objects (issue #602). High draws it at the size
+// of the depth it is made from (the depth pyramid's 960x540 level, at the render scale) - twice the Switch's at 1x and
+// up, at four times the AO's cost (a sixteenth of a 4K frame's pixels) - and never below the Switch's size. The
+// shaders are told the real pixel grid (maxwell/translate.c ao_grid_fix). By the allocation scale `al`, which Dynamic
+// resolution keeps (no reallocation at its steps). LARECOMP_AO_SCALE=<n> (test): n times the Switch's size.
+float output_scale_ao(float al) {
+    static int mode = -1;  // (-1: unread, 0: the setting, 1: scaled with the frame, 2: LARECOMP_AO_SCALE)
+    static float test;
+    if (mode < 0) {
+        const char *e = getenv("LARECOMP_AO_SCALE");
+        test = e ? (float)atof(e) : 0;
+        mode = getenv("LARECOMP_AO_SCALED") ? 1 : test >= 1 && test <= 4 ? 2 : 0;
+    }
+    if (mode == 1) return 0;
+    if (mode == 2) return test;
+    return g_settings.ao_quality == AO_HIGH ? fminf(2, fmaxf(1, 2 * al)) : 1;
+}
+
 void output_scale_log(unsigned long long frame, double dw, double dh, const OutScale *o) {
     static double psx, psy, pdw, pdh;
     static int nlog;

@@ -101,6 +101,7 @@ typedef struct TexBackend {
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
     uint32_t wgen;  // page write tracking generation at the last upload check (textures.c)
     bool scalable, presented;
+    bool ao;             // (scalable) the game's ambient occlusion: at its own scale (textures.c tex_ao)
     uint64_t touched_frame, frame_cleared;
     uint32_t level_gen;
     float sx, sy;        // the scale the contents were drawn at (scalable textures)
