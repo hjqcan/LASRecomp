@@ -334,6 +334,11 @@ void menu_apply_window_requests(void *win) {
     g_pixel_density = SDL_GetWindowPixelDensity(w);
     static bool text_input;
     bool want_text = capturing();
+#ifdef __ANDROID__
+    // There, text input brings up the on-screen keyboard, which also takes the hardware keyboard's keys: only while
+    // something takes text (a text field in the menu, the game's name entry), not whenever the menu is open
+    want_text = g_kbd.load() == 1 || (ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput);  // (none between the start screen and the game)
+#endif
     if (want_text != text_input) {
         if (want_text) SDL_StartTextInput(w);
         else SDL_StopTextInput(w);
