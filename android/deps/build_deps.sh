@@ -76,6 +76,27 @@ if [ ! -f "$P/lib/libSDL3.so" ]; then
     rm -rf "$P/java" && mkdir -p "$P/java/org/libsdl"
     cp -r "$W/sdl/android-project/app/src/main/java/org/libsdl/app" "$P/java/org/libsdl/"
 fi
+# SDL's Java side, patched: it takes any input device with a D-pad source for a game controller, and Android reports a
+# keyboard with arrow keys so - a physical keyboard then came in as a gamepad (its keys partly as buttons, Xbox prompts)
+# instead of the keyboard the desktop's bindings use. A full keyboard that isn't also a gamepad or joystick stays one.
+SCM="$P/java/org/libsdl/app/SDLControllerManager.java"
+if ! grep -q 'LAS Recomp: a keyboard' "$SCM"; then
+    python3 - "$SCM" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+a = "        int sources = device.getSources();\n"
+assert s.count(a) == 1, "SDLControllerManager.isDeviceSDLJoystick changed: check the patch"
+s = s.replace(a, a + """        // LAS Recomp: a keyboard (letters) with arrow keys reports a D-pad source; it stays a keyboard unless it is also
+        // a gamepad or joystick (android/deps/build_deps.sh)
+        if (device.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC &&
+            (sources & InputDevice.SOURCE_GAMEPAD) != InputDevice.SOURCE_GAMEPAD &&
+            (sources & InputDevice.SOURCE_CLASS_JOYSTICK) == 0) {
+            return false;
+        }
+""")
+open(p, "w").write(s)
+PY
+fi
 
 # shaderc as one shared library, as on Linux / Windows; its DEPS file pins glslang / SPIRV-Tools / SPIRV-Headers
 if [ ! -f "$P/lib/libshaderc_shared.so" ]; then
