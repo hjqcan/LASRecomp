@@ -3,6 +3,7 @@
 // HLE registrations are suppressed so unrelated runtime functions can be dropped.
 #include <SDL3/SDL.h>
 static void input_reset(void);
+static void input_pad_poll(void);
 static void input_load_user_mappings(void);
 static bool input_user_blocked(const SDL_Event *e);
 static int input_pad_family(void);

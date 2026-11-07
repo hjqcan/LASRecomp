@@ -244,12 +244,21 @@ static void note_press(uint64_t down, uint64_t up) {
     }
 }
 
-// Forget held keys (the menu took focus); the gamepad is re-read on its next event.
+// Forget held keys (the menu took focus); the gamepad's buttons too, and its sticks are read again (input_pad_poll):
+// the menu took its events, so what it held before the menu stayed held for the game
+static _Atomic bool pad_stale;
 void input_reset(void) {
+    pad_stale = true;
     press_unseen = 0, tap_buttons = 0;
     rumble_clear();
     memset(keys_down, 0, sizeof keys_down);
     recompute_keyboard();
+}
+
+void input_pad_poll(void) {
+    if (!atomic_exchange(&pad_stale, false)) return;
+    recompute_pad();
+    pad_buttons = 0;  // (a button still held from the menu - the B that closed it - isn't a press for the game)
 }
 
 volatile int g_debug_frame_request;  // F9: dump the next frame's passes (build/pass_*.png) + draw log

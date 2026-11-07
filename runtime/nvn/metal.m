@@ -2336,6 +2336,7 @@ int ui_run(void) {
         menu_apply_window_requests(window);
         input_rumble_poll();
         input_led_poll();
+        input_pad_poll();
         int w, h;
         SDL_GetWindowSizeInPixels(window, &w, &h);
         layer.drawableSize = CGSizeMake(w, h);

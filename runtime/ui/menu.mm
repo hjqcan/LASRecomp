@@ -64,7 +64,7 @@ static std::atomic<bool> g_text_busy{false};  // a text field / the on-screen ke
 static std::atomic<bool> g_want_fullscreen_apply{false};
 
 struct QEvent {
-    enum { KEY, ANALOG, MOUSE_POS, MOUSE_BUTTON, WHEEL, TEXT } kind;
+    enum { KEY, ANALOG, MOUSE_POS, MOUSE_BUTTON, WHEEL, TEXT, RELEASE_ALL } kind;
     ImGuiKey key;
     bool down;
     float value, x, y;
@@ -101,6 +101,9 @@ static void set_open(bool open) {
     menu_sfx_play(open ? MENU_SFX_OPEN : MENU_SFX_CLOSE);
     input_reset();  // nothing held while the menu had focus leaks into the game
     bind_capture_cancel();
+    // nor the other way round: the releases of what was held when it closed never reach the menu (it isn't capturing
+    // then), so it starts with nothing held - else the cursor kept scrolling, or a press went missing, on the next open
+    { QEvent q = {}; q.kind = QEvent::RELEASE_ALL; push(q); }
     if (open) {
         save_editor_on_open();
         static bool opened;  // the controller's cursor: the first tab (Controls) the first time this session, later the
@@ -493,6 +496,9 @@ static void drain_events(ImGuiIO &io) {
     std::vector<QEvent> ev;
     ev.swap(q_events);
     pthread_mutex_unlock(&q_lock);
+    // a rebind (Controls tab) takes every release while it waits: the confirm press that started it, a stick let go
+    static bool capture_was;
+    if (bind_capture_active(NULL, NULL, NULL) != capture_was) capture_was = !capture_was, ui_pad_release_all(io);
     for (const QEvent &q : ev) {
         switch (q.kind) {
         case QEvent::KEY: io.AddKeyEvent(q.key, q.down); break;
@@ -501,6 +507,7 @@ static void drain_events(ImGuiIO &io) {
         case QEvent::MOUSE_BUTTON: io.AddMouseButtonEvent(q.button, q.down); break;
         case QEvent::WHEEL: io.AddMouseWheelEvent(q.x, q.y); break;
         case QEvent::TEXT: io.AddInputCharactersUTF8(q.text); break;
+        case QEvent::RELEASE_ALL: ui_pad_release_all(io); break;
         }
     }
 }
@@ -652,8 +659,8 @@ static void tab_cosmetics(void) {
                 g_settings.sand.pick == preset[i][2])
                 cur = i;
         int v = cur;
-        if (opt_choice("Season", &v, names, 5, 0, "Sets the leaves, grass and sand colors below.") && v != cur) {
-            if (v == 4) v = cur == 0 ? 3 : 0;  // (Mixed is never chosen: past the ends, back round)
+        // (Mixed is never chosen: it's there only while the colours match no season; Right stops at Cherry blossom)
+        if (opt_choice("Season", &v, names, cur == 4 ? 5 : 4, 0, "Sets the leaves, grass and sand colors below.") && v != cur) {
             g_settings.leaves.pick = preset[v][0];
             g_settings.grass.pick = preset[v][1];
             g_settings.sand.pick = preset[v][2];
@@ -976,7 +983,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     int cur = 0;  // g_tab / g_tab_request hold ids
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
     if (!tabs[cur].on) cur = 0;
-    // L/R (or Q/E) switch tabs, skipping greyed-out ones (not while typing: Q / E are letters then, and the on-screen
+    // L/R (or Q/E) switch tabs, skipping greyed-out ones and stopping at the first / last (not while typing: Q / E are letters then, and the on-screen
     // keyboard has the controller)
     static const int cycle = getenv("LARECOMP_MENU_TAB_CYCLE") ? atoi(getenv("LARECOMP_MENU_TAB_CYCLE")) : 0;
     static int cycle_frames, cycle_i;  // (test) <frames>: each tab in turn, that many frames each (screenshot series)
@@ -988,9 +995,9 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     if (!any_popup && !typing) {
         int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
                  : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1 : 0;
-        if (step) {
-            int i = cur;
-            do i = (i + step + ntabs) % ntabs; while (!tabs[i].on);
+        int i = cur;
+        if (step) do i += step; while (i >= 0 && i < ntabs && !tabs[i].on);
+        if (step && i >= 0 && i < ntabs) {
             g_tab_request = tabs[i].id;
             // the cursor goes onto the new tab (left behind on the tab bar, A on it switched straight back - user
             // 2026-10-11; left in the old page, it stayed on a row that is gone, and Down went on from where that row
