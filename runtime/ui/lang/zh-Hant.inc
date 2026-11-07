@@ -403,6 +403,8 @@
 {"Setting up the game files...", "正在設定遊戲檔案..."},
 {"Cancelling...", "正在取消..."},
 {"Cancel", "取消"},
+{"Return to Launcher", "返回啟動器"},
+{"Reset Game", "重設遊戲"},
 {"Skipping...", "正在略過..."},
 {"Skip", "略過"},
 {"Shaders will compile while you play instead, so expect some pop-in.", "著色器會改在遊玩時編譯，畫面可能會出現延遲載入。"},

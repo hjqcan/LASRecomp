@@ -517,7 +517,8 @@ static _Atomic int32_t script_lx, script_ly, script_rx, script_ry;
 //   at frame, up `frames` later): they reach menus and the on-screen keyboard first, as a player's would.
 // "frame:sdlaxis:<axis>=<value>:frames" holds a controller axis (SDL name: righty, leftx...; raw units, -32768..32767,
 //   y down) as real events, back to 0 `frames` later.
-// "frame:mouse:<dx>/<dy>" moves the mouse by that many points, "frame:mouse:click" clicks it (real events).
+// "frame:mouse:<dx>/<dy>" moves the mouse by that many points, "frame:mouse:@<x>/<y>" to that point of the window
+//   (clicks then go there, not to the real mouse), "frame:mouse:click" clicks it (real events).
 // "frame:shot:<name>" saves the window (game + menus) to build/<name>.png.
 // "frame:resize:<W>x<H>" resizes the window to W x H points (menu_apply_window_requests: the main thread).
 // LARECOMP_BIND_TEST="frame:pad|key:<input>:<host>,..." starts a rebind capture of <input> (bind_* name: a, zl,
@@ -552,8 +553,14 @@ static void test_push(uint64_t frame, unsigned long start, unsigned long len, co
     if (!strcmp(dev, "mouse")) {
         if (frame != start) return;
         float mx, my, dx = 0, dy = 0;
+        static float at_x = -1, at_y;  // (the last "@x/y": clicks go there, wherever the real mouse is)
         SDL_GetMouseState(&mx, &my);
-        if (!strcmp(arg, "click")) {
+        if (at_x >= 0) mx = at_x, my = at_y;
+        if (arg[0] == '@') {
+            sscanf(arg + 1, "%f/%f", &at_x, &at_y);
+            e.type = SDL_EVENT_MOUSE_MOTION;
+            e.motion.which = TEST_DEVICE, e.motion.x = at_x, e.motion.y = at_y, e.motion.xrel = at_x - mx, e.motion.yrel = at_y - my;
+        } else if (!strcmp(arg, "click")) {
             e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
             e.button.which = TEST_DEVICE, e.button.button = SDL_BUTTON_LEFT, e.button.down = true, e.button.clicks = 1;
             e.button.x = mx, e.button.y = my;
@@ -561,6 +568,7 @@ static void test_push(uint64_t frame, unsigned long start, unsigned long len, co
             e.type = SDL_EVENT_MOUSE_BUTTON_UP, e.button.down = false;
         } else {
             sscanf(arg, "%f/%f", &dx, &dy);
+            if (at_x >= 0) at_x += dx, at_y += dy;
             e.type = SDL_EVENT_MOUSE_MOTION;
             e.motion.which = TEST_DEVICE, e.motion.x = mx + dx, e.motion.y = my + dy, e.motion.xrel = dx, e.motion.yrel = dy;
         }
