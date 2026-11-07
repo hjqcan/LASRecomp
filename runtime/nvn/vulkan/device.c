@@ -972,9 +972,26 @@ static VkPresentModeKHR present_mode(void) {
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
+#ifdef __ANDROID__
+static bool recreate_surface(void);
+#endif
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
+#ifdef __ANDROID__
+    {   // (the window can go while the swapchain is made - the app sent to the background at start: made again, or
+        // no swapchain until the window is back)
+        VkResult r = g_vk.surface ? vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps)
+                                  : VK_ERROR_SURFACE_LOST_KHR;
+        if (r == VK_ERROR_SURFACE_LOST_KHR) {
+            if (!recreate_surface()) return;
+            r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps);
+        }
+        if (r == VK_ERROR_SURFACE_LOST_KHR) return;
+        VK_CHECK(r);
+    }
+#else
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
+#endif
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
 #ifdef __ANDROID__
