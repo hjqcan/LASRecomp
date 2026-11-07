@@ -502,15 +502,23 @@ jobs:
         uses: actions/cache@v4
         with:
           path: android/deps/out
-          key: android-deps-${{ hashFiles('android/deps/build_deps.sh') }}
-      - name: Dependencies (SDL3, shaderc, volk, Vulkan headers)
+          key: android-deps-${{ hashFiles('android/deps/build_deps.sh', 'android/deps/build_gen_deps.sh', 'android/gen/**') }}
+      - name: Dependencies (SDL3, shaderc, volk, Vulkan headers; the game code builder)
         if: steps.deps.outputs.cache-hit != 'true'
-        run: bash android/deps/build_deps.sh
+        run: |
+          bash android/deps/build_deps.sh
+          bash android/deps/build_gen_deps.sh
       - name: App builds
         run: cd android && ./gradlew assembleDebug --console=plain
+      # (the game code builder in assets/gen.zip: Python's library, the bindings, zig's lib/, the generator and the
+      # headers - checked file by file too)
       - name: The APK holds no game files
         run: |
-          unzip -Z1 android/app/build/outputs/apk/debug/app-debug.apk |
-            grep -vE '^(META-INF/|res/|classes[0-9]*\.dex$|AndroidManifest\.xml$|resources\.arsc$|lib/arm64-v8a/lib(main|SDL3|shaderc_shared)\.so$|assets/res/(Baloo2-SemiBold\.ttf|Baloo2-OFL\.txt|BIZUDPGothic-Regular\.ttf|BIZUDPGothic-OFL\.txt|DejaVuSans(-Bold)?\.ttf|DejaVu-LICENSE\.txt|icon\.png)$)' \
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          unzip -Z1 "$APK" |
+            grep -vE '^(META-INF/|res/|classes[0-9]*\.dex$|AndroidManifest\.xml$|resources\.arsc$|lib/arm64-v8a/lib(main|SDL3|shaderc_shared|avcodec|avformat|avutil|swscale|pymain|python3\.14|capstone|unicorn|lz4|zig)\.so$|assets/gen\.zip$|assets/res/(Baloo2-SemiBold\.ttf|Baloo2-OFL\.txt|BIZUDPGothic-Regular\.ttf|BIZUDPGothic-OFL\.txt|DejaVuSans(-Bold)?\.ttf|DejaVu-LICENSE\.txt|icon\.png)$)' \
             > unexpected.txt || true
+          unzip -p "$APK" assets/gen.zip > gen.zip && unzip -Z1 gen.zip |
+            grep -vE '^(python/|site/|zig/|tools/(gen|lifter|analyze|nso|passes|patches|simd_c|game_addresses)\.py$|tools/(rando/)?$|tools/rando/patch_variants\.json$|runtime/(game_addresses/)?$|runtime/game_addresses/[a-z0-9_]+\.h$|gamelib-src/(cpu|simd|simd_fp|gamelib)\.h$|gamelib-src/gamelib_entry\.c$|gamelib-src/hle_symbols\.txt$|gamelib-src/$)' \
+            | sed 's#^#gen.zip: #' >> unexpected.txt || true
           if [ -s unexpected.txt ]; then echo "unexpected files in the APK:"; cat unexpected.txt; exit 1; fi

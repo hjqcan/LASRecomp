@@ -58,7 +58,45 @@ bool gamelib_present(const char *game_dir) {
     return false;
 }
 
+#ifdef __ANDROID__
+// Android mounts shared storage (the data folder, where the setup builds the library) noexec: dlopen refuses a library
+// there. It is loaded from a copy in the app's internal storage, made again when the built one changed (its size and
+// time, kept next to the copy).
+#include <SDL3/SDL.h>
+#include <sys/stat.h>
+static const char *loadable_copy(const char *path) {
+    static char dst[1100];
+    const char *in = SDL_GetAndroidInternalStoragePath();
+    struct stat st;
+    if (!in || stat(path, &st) != 0) return path;
+    snprintf(dst, sizeof dst, "%s/%s", in, GAMELIB_NAME);
+    if (!strcmp(dst, path)) return path;
+    char stamp[1200], want[64], have[64] = "";
+    snprintf(stamp, sizeof stamp, "%s.from", dst);
+    snprintf(want, sizeof want, "%lld:%lld", (long long)st.st_size, (long long)st.st_mtime);
+    FILE *f = fopen(stamp, "rb");
+    if (f) { size_t n = fread(have, 1, sizeof have - 1, f); have[n] = 0; fclose(f); }
+    if (strcmp(have, want) || !exists(dst)) {
+        char tmp[1200];
+        snprintf(tmp, sizeof tmp, "%s.tmp", dst);
+        FILE *a = fopen(path, "rb"), *b = fopen(tmp, "wb");
+        bool ok = a && b;
+        static char buf[1 << 20];
+        for (size_t n; ok && (n = fread(buf, 1, sizeof buf, a)) > 0;) ok = fwrite(buf, 1, n, b) == n;
+        if (a) fclose(a);
+        if (b) ok &= fclose(b) == 0;
+        if (!ok || rename(tmp, dst) != 0) { remove(tmp); LOG("[gamelib] couldn't copy %s to %s\n", path, dst); return path; }
+        if ((f = fopen(stamp, "wb"))) { fputs(want, f); fclose(f); }
+        LOG("[gamelib] copied to internal storage to load it: %s\n", dst);
+    }
+    return dst;
+}
+#endif
+
 static const GameLibTables *open_lib(const char *path, const char *want) {
+#ifdef __ANDROID__
+    path = loadable_copy(path);
+#endif
 #ifdef _WIN32
     HMODULE h = LoadLibraryA(path);
     if (!h) { snprintf(g_error, sizeof g_error, "can't load %s (error %lu)", path, GetLastError()); return NULL; }

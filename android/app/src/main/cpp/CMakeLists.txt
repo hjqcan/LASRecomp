@@ -11,9 +11,13 @@ if(NOT EXISTS ${DEPS}/lib/libSDL3.so)
     message(FATAL_ERROR "run android/deps/build_deps.sh first")
 endif()
 
-# ids the Makefile computes from the sources (runtime/gamelib.h, gamebuild.c, shader_prep.c); the game code flags are
-# the Makefile's GENFLAGS with the moving window
-set(GAMELIB_CFLAGS "-O1 -g0 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -mllvm -disable-licm-promotion -fPIC -DLARECOMP_DYN_BASE")
+# ids the Makefile computes from the sources (runtime/gamelib.h, gamebuild.c, shader_prep.c). The game code flags (built
+# on the device by runtime/gamebuild.c with zig for aarch64-linux-musl): the Makefile's GENFLAGS with the moving window,
+# and from LASRecompAndroid by mamcjr (MIT): -dag-maps-huge-region=500 (the scheduler's dependency graph of huge runs of
+# stores was quadratic: one file 4.3 s -> 0.7 s), no UBSan or stack protector (zig cc adds them on its own; memory a
+# phone's build doesn't have). Linked -nostdlib against libmain.so: Android's linker resolves its libc calls through it.
+set(GAMELIB_CFLAGS "-O1 -g0 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -mllvm -disable-licm-promotion -fPIC -DLARECOMP_DYN_BASE -mllvm -dag-maps-huge-region=500 -fno-sanitize=undefined -fno-stack-protector")
+set(GAMELIB_SHARED "-shared -nostdlib -Wl,-z,max-page-size=16384")
 function(las_id out len)
     set(t "")
     foreach(f ${ARGN})
@@ -35,7 +39,7 @@ las_id(GAMELIB_ID 16 tools/game_addresses.py runtime/game_addresses/versions.h $
        tools/gamelib_entry.c runtime/hle/hle_symbols.txt runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h
        "${GAMELIB_CFLAGS}\n")
 las_id(GAMELIB_BASE_ID 16 runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/fetch_zig.sh
-       "${GAMELIB_CFLAGS} -shared\n")
+       "${GAMELIB_CFLAGS} ${GAMELIB_SHARED}\n")
 las_id(TRANSLATOR_ID 12 runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h)
 
 # a text file as a C string, one "...\n" literal per line (as the Makefile makes them; CRs dropped)
@@ -58,10 +62,13 @@ add_library(SDL3 SHARED IMPORTED)
 set_target_properties(SDL3 PROPERTIES IMPORTED_LOCATION ${DEPS}/lib/libSDL3.so)
 add_library(shaderc_shared SHARED IMPORTED)
 set_target_properties(shaderc_shared PROPERTIES IMPORTED_LOCATION ${DEPS}/lib/libshaderc_shared.so)
+foreach(lib avcodec avformat avutil swscale)  # (FFmpeg, LGPL: the movies and the start screen's background frame)
+    add_library(${lib} SHARED IMPORTED)
+    set_target_properties(${lib} PROPERTIES IMPORTED_LOCATION ${DEPS}/lib/lib${lib}.so)
+endforeach()
 
 file(GLOB RT_SRC ${R}/runtime/*.c ${R}/runtime/*.cpp ${R}/runtime/hle/*.c ${R}/runtime/services/*.c ${R}/runtime/nvn/*.c
      ${R}/runtime/nvn/maxwell/*.c)
-list(REMOVE_ITEM RT_SRC ${R}/runtime/hle/movie.c)  # (FFmpeg comes with the movies)
 file(GLOB VK_SRC ${R}/runtime/nvn/vulkan/*.c ${R}/runtime/nvn/vulkan/*.cpp)
 file(GLOB UI_SRC ${R}/runtime/ui/*.mm)
 set(IMGUI ${R}/third_party/imgui)
@@ -73,18 +80,18 @@ add_library(main SHARED ${RT_SRC} ${R}/runtime/platform/linux.c ${R}/runtime/pla
 set_source_files_properties(${UI_SRC} PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-xc++")
 set_source_files_properties(${R}/runtime/gamelib.c PROPERTIES COMPILE_DEFINITIONS "GAMELIB_ID=\"${GAMELIB_ID}\"")
 set_source_files_properties(${R}/runtime/gamebuild.c PROPERTIES COMPILE_DEFINITIONS
-    "GAMELIB_ID=\"${GAMELIB_ID}\";GAMELIB_BASE_ID=\"${GAMELIB_BASE_ID}\";GAMELIB_CFLAGS=\"${GAMELIB_CFLAGS}\";GAMELIB_SHARED=\"-shared\"")
+    "GAMELIB_ID=\"${GAMELIB_ID}\";GAMELIB_BASE_ID=\"${GAMELIB_BASE_ID}\";GAMELIB_CFLAGS=\"${GAMELIB_CFLAGS}\";GAMELIB_SHARED=\"${GAMELIB_SHARED}\"")
 set_source_files_properties(${R}/runtime/nvn/shader_prep.c PROPERTIES COMPILE_DEFINITIONS
     "SHADER_TRANSLATOR_ID=\"${TRANSLATOR_ID}\"")
 
 target_include_directories(main PRIVATE ${R}/runtime ${R}/runtime/nvn ${IMGUI} ${IMGUI}/backends ${DEPS}/include ${DEPS}/volk ${INC}
                            ${R}/third_party/smaa/Textures)
 # every Vulkan function through volk (runtime/nvn/vulkan/vk.h), ImGui's and VMA's too
-target_compile_definitions(main PRIVATE LARECOMP_DYN_BASE LARECOMP_NO_FFMPEG VK_USE_PLATFORM_ANDROID_KHR VK_NO_PROTOTYPES
+target_compile_definitions(main PRIVATE LARECOMP_DYN_BASE VK_USE_PLATFORM_ANDROID_KHR VK_NO_PROTOTYPES
     IMGUI_IMPL_VULKAN_USE_VOLK VMA_STATIC_VULKAN_FUNCTIONS=0 VMA_DYNAMIC_VULKAN_FUNCTIONS=1)
 target_compile_options(main PRIVATE -fno-strict-aliasing -Wall -Wno-unused-function -Wno-format  # (as on Linux)
     $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>)
 # -z nostart-stop-gc: tables in named sections found through
 # __start_ / __stop_ symbols (runtime/hle.h, ipc.h, main.c); 16 KB pages (Android 15+)
-target_link_libraries(main PRIVATE SDL3 shaderc_shared android log dl m)
+target_link_libraries(main PRIVATE SDL3 shaderc_shared avcodec avformat avutil swscale android log dl m)
 target_link_options(main PRIVATE -Wl,-z,nostart-stop-gc -Wl,-z,max-page-size=16384)

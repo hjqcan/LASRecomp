@@ -15,6 +15,8 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.DocumentsContract;
+import android.system.ErrnoException;
+import android.system.Os;
 import android.util.Log;
 
 import org.libsdl.app.SDLActivity;
@@ -26,24 +28,75 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 public class LASRecompActivity extends SDLActivity {
     private static final String TAG = "LASRecomp";
 
     @Override
     protected String[] getLibraries() {
-        return new String[] {"SDL3", "shaderc_shared", "main"};
+        return new String[] {"SDL3", "shaderc_shared", "avutil", "avcodec", "avformat", "swscale", "main"};
     }
 
     @Override
     protected void onCreate(Bundle state) {
         try {
             copyAssets("res", new File(getFilesDir(), "res"));
-        } catch (IOException e) {
-            Log.e(TAG, "copying the app's resources: " + e);
+            Os.setenv("LARECOMP_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir, true);
+            Os.setenv("LARECOMP_GEN_DIR", new File(getFilesDir(), "gen").getAbsolutePath(), true);
+        } catch (IOException | ErrnoException e) {
+            Log.e(TAG, "setting up the app's files: " + e);
         }
+        unpackBuilder();
         super.onCreate(state);
         setWindowStyle(true);  // (SDL's immersive full screen: no status or navigation bar)
+    }
+
+    // The game code builder's files (assets/gen.zip: Python's standard library, the bindings, the generator, zig's lib/,
+    // the headers) into <internal files>/gen, once per install or update, on a thread of its own: tens of thousands of
+    // files. gen/.ready marks it done (runtime/gamebuild.c waits for it).
+    private void unpackBuilder() {
+        File dir = new File(getFilesDir(), "gen"), ready = new File(dir, ".ready");
+        String stamp;
+        try {
+            stamp = Long.toString(getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime);
+        } catch (Exception e) {
+            stamp = "?";
+        }
+        try (InputStream in = new java.io.FileInputStream(ready)) {
+            if (new String(in.readAllBytes()).equals(stamp)) return;
+        } catch (IOException e) {
+            // (not unpacked yet, or from another install)
+        }
+        final String id = stamp;
+        new Thread(() -> {
+            long t0 = System.nanoTime();
+            ready.delete();
+            deleteTree(dir);
+            byte[] buf = new byte[1 << 16];
+            try (ZipInputStream z = new ZipInputStream(new java.io.BufferedInputStream(getAssets().open("gen.zip"), 1 << 16))) {
+                for (ZipEntry e; (e = z.getNextEntry()) != null; ) {
+                    File f = new File(dir, e.getName());
+                    if (!f.getCanonicalPath().startsWith(dir.getCanonicalPath() + File.separator)) continue;
+                    if (e.isDirectory()) { f.mkdirs(); continue; }
+                    f.getParentFile().mkdirs();
+                    try (OutputStream o = new FileOutputStream(f)) {
+                        for (int k; (k = z.read(buf)) > 0; ) o.write(buf, 0, k);
+                    }
+                }
+                try (OutputStream o = new FileOutputStream(ready)) { o.write(id.getBytes()); }
+                Log.i(TAG, "game code builder unpacked in " + (System.nanoTime() - t0) / 1000000 + " ms");
+            } catch (IOException e) {
+                Log.e(TAG, "unpacking the game code builder: " + e);
+            }
+        }, "unpack-builder").start();
+    }
+
+    private static void deleteTree(File f) {
+        File[] kids = f.listFiles();
+        if (kids != null) for (File k : kids) deleteTree(k);
+        f.delete();
     }
 
     private void copyAssets(String from, File to) throws IOException {
