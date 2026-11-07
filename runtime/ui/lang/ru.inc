@@ -403,6 +403,8 @@
 {"Setting up the game files...", "Установка файлов игры..."},
 {"Cancelling...", "Отмена..."},
 {"Cancel", "Отмена"},
+{"Return to Launcher", "Вернуться в лаунчер"},
+{"Reset Game", "Сбросить игру"},
 {"Skipping...", "Пропуск..."},
 {"Skip", "Пропустить"},
 {"Shaders will compile while you play instead, so expect some pop-in.", "Тогда шейдеры будут компилироваться во время игры, и возможны подтормаживания."},

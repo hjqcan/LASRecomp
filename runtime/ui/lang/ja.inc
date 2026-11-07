@@ -403,6 +403,8 @@
 {"Setting up the game files...", "ゲームファイルをセットアップ中..."},
 {"Cancelling...", "キャンセル中..."},
 {"Cancel", "キャンセル"},
+{"Return to Launcher", "ランチャーに戻る"},
+{"Reset Game", "ゲームをリセット"},
 {"Skipping...", "スキップ中..."},
 {"Skip", "スキップ"},
 {"Shaders will compile while you play instead, so expect some pop-in.", "かわりにプレイ中にシェーダーをコンパイルするので、カクつきや表示の遅れが出ます。"},
