@@ -428,9 +428,14 @@ static void build_progress(double f, const char *step) {
 static std::atomic<float> g_prep_frac{-1};  // -1: not preparing
 static volatile int g_prep_skip;
 static bool g_prep_skip_ask;  // Skip pressed: "are you sure?" in front of the bar (LARECOMP_LAUNCHER_SHOT=<f>:skipask)
-static void prep_progress(int done, int total) { g_prep_frac = total ? (float)done / (float)total : 0.0f; }
+// The variants prepared and their total (done << 32 | total), one value so the bar and the count always agree
+static std::atomic<uint64_t> g_prep_count{0};
+static void prep_progress(int done, int total) {
+    g_prep_count = (uint64_t)(uint32_t)done << 32 | (uint32_t)total;
+    g_prep_frac = total ? (float)done / (float)total : 0.0f;
+}
 static void prepare_shaders(bool background = false) {
-    g_prep_skip = 0, g_prep_frac = 0;
+    g_prep_skip = 0, g_prep_count = 0, g_prep_frac = 0;
     if (!background) set_job(LN("Preparing shaders"));
     shader_prep_run((g_root + "/romfs").c_str(), prep_progress, &g_prep_skip);
     g_prep_frac = -1;
@@ -1207,6 +1212,10 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
     float f = test_busy && g_prep_frac < 0 ? 0.42f : prep_wait && g_prep_frac < 0 ? 0.99f : extract_progress();
     // (while the game code is built: what's happening, on whose files - runtime/gamebuild.c)
     bool preparing = g_prep_frac >= 0 || prep_wait, recompiling = g_build_frac >= 0 && !preparing;
+    uint64_t pc = g_prep_count;
+    unsigned prep_done = (unsigned)(pc >> 32), prep_total = (unsigned)pc;
+    bool count = preparing && g_prep_frac >= 0 && prep_total;  // (the total is known once the game files are indexed)
+    if (count) f = (float)prep_done / (float)prep_total;      // (the bar from the same numbers as the count)
     const char *title = preparing ? L("Preparing shaders") : g_auto_update ? L("Updating the game")
                       : recompiling ? L("Recompiling the game") : L("Setting up the game files");
     const char *const notes[] = {L("This only needs to be done once and may take a while.")};
@@ -1232,7 +1241,24 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
     else snprintf(line, sizeof line, "%s   %d%%", test_busy ? L("Setting up the game files...") : shown(job).c_str(),
                   (int)(f * 100));
     ImVec2 ls = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, line);
-    fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ls.x) * 0.5f, bb.y + 26 * sc), IM_COL32(220, 216, 205, 255), line);
+    float ty = bb.y + 26 * sc;
+    if (count) {  // "42%  ·  666/1585", the count muted. Fixed places (no jitter as the digits change): the
+        // percentage right-aligned before the dot, the variants done right-aligned before the "/", room for the widest
+        auto w = [&](const char *t) { return g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, t).x; };
+        float dig = 0;
+        for (char d[2] = "0"; d[0] <= '9'; d[0]++) dig = fmaxf(dig, w(d));
+        char tot[16], dn[16];
+        snprintf(tot, sizeof tot, "/%u", prep_total), snprintf(dn, sizeof dn, "%u", prep_done);
+        const char *sep = "  \xc2\xb7  ";
+        float wp = 3 * dig + w("%"), wd = (float)strlen(tot + 1) * dig;
+        float x = (a.x + b.x - (wp + w(sep) + wd + w(tot))) * 0.5f;
+        ImU32 muted = IM_COL32(150, 148, 140, 255);
+        fg->AddText(g_font_small, sfs, ImVec2(x + wp - ls.x, ty), IM_COL32(220, 216, 205, 255), line);
+        fg->AddText(g_font_small, sfs, ImVec2(x + wp, ty), muted, sep);
+        float xs = x + wp + w(sep) + wd;  // (the "/")
+        fg->AddText(g_font_small, sfs, ImVec2(xs - w(dn), ty), muted, dn);
+        fg->AddText(g_font_small, sfs, ImVec2(xs, ty), muted, tot);
+    } else fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ls.x) * 0.5f, ty), IM_COL32(220, 216, 205, 255), line);
     for (int i = 0; i < nnotes; i++) {
         ImVec2 ns = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, notes[i]);
         fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ns.x) * 0.5f, bb.y + 26 * sc + (i + 1) * line_h + 14 * sc),
@@ -1587,8 +1613,8 @@ extern "C" void launcher_run(const char *root) {
         const char *pg = strchr(getenv("LARECOMP_LAUNCHER_SHOT"), ':');
         if (pg && (!strncmp(pg + 1, "settings", 8) || !strcmp(pg + 1, "askdelete"))) page = SETTINGS, menu_tabs_focus(true);
         if (pg && !strcmp(pg + 1, "setup")) page = SETUP;
-        if (pg && !strcmp(pg + 1, "preparing")) page = SETUP, g_prep_frac = 0.42f, set_job(LN("Preparing shaders"));
-        if (pg && !strcmp(pg + 1, "skipask")) page = SETUP, g_prep_frac = 0.42f, set_job(LN("Preparing shaders")), g_prep_skip_ask = true;
+        if (pg && !strcmp(pg + 1, "preparing")) page = SETUP, prep_progress(666, 1585), set_job(LN("Preparing shaders"));
+        if (pg && !strcmp(pg + 1, "skipask")) page = SETUP, prep_progress(666, 1585), set_job(LN("Preparing shaders")), g_prep_skip_ask = true;
         if (pg && !strncmp(pg + 1, "fail", 4)) page = SETUP, set_failure(atoi(pg + 5));  // (the failure messages)
         if (pg && !strncmp(pg + 1, "settings", 8) && pg[9] == ':') g_tab_request_ext = atoi(pg + 10);  // settings:<tab>
         if (pg && !strcmp(pg + 1, "delete")) page = SETUP, g_confirm_delete = true;
