@@ -615,8 +615,14 @@ static void present_run(const void *p) {
         if (n++ < 20) LOG("[vk] vkQueuePresentKHR took %llu ms\n", (unsigned long long)(dt / 1000000));
     }
     __atomic_fetch_add(&g_vk_frame_waits[3], 1, __ATOMIC_RELAXED);
+#ifdef __ANDROID__
+    // (SUBOPTIMAL every frame there: the swapchain is left unrotated on purpose, device.c create_swapchain)
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR)
+        atomic_store_explicit(&present_recreate, 1, memory_order_release);
+#else
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) atomic_store_explicit(&present_recreate, 1, memory_order_release);
-    else if (r != VK_SUCCESS) {
+#endif
+    else if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
         static int n;
         if (n++ < 10) LOG("[vk] present failed: %d\n", r);
         if (r == VK_ERROR_DEVICE_LOST) { vk_device_fault_report(); FATAL("vkQueuePresentKHR: device lost\n"); }

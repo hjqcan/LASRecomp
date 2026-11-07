@@ -483,3 +483,34 @@ jobs:
         run: python tools/test_windows_logs.py
       - name: Vulkan synchronization failure regression
         run: python tools/test_vulkan_sync_errors.py
+
+  # Android (arm64): the app (android/, libmain.so with the moving guest window) builds with the NDK, and the APK holds
+  # only the runtime, SDL, shaderc and the shipped fonts and icon - nothing of the game, whose code is built on the
+  # device from the player's own extracted files.
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: NDK and CMake
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.16248370" "cmake;3.30.4" "platforms;android-36" > /dev/null
+      - name: Dependencies cache
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: android/deps/out
+          key: android-deps-${{ hashFiles('android/deps/build_deps.sh') }}
+      - name: Dependencies (SDL3, shaderc, volk, Vulkan headers)
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: bash android/deps/build_deps.sh
+      - name: App builds
+        run: cd android && ./gradlew assembleDebug --console=plain
+      - name: The APK holds no game files
+        run: |
+          unzip -Z1 android/app/build/outputs/apk/debug/app-debug.apk |
+            grep -vE '^(META-INF/|res/|classes[0-9]*\.dex$|AndroidManifest\.xml$|resources\.arsc$|lib/arm64-v8a/lib(main|SDL3|shaderc_shared)\.so$|assets/res/(Baloo2-SemiBold\.ttf|Baloo2-OFL\.txt|BIZUDPGothic-Regular\.ttf|BIZUDPGothic-OFL\.txt|DejaVuSans(-Bold)?\.ttf|DejaVu-LICENSE\.txt|icon\.png)$)' \
+            > unexpected.txt || true
+          if [ -s unexpected.txt ]; then echo "unexpected files in the APK:"; cat unexpected.txt; exit 1; fi

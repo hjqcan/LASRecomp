@@ -129,6 +129,10 @@ static void default_home(char *root, size_t n) {
     if (t && *t) { snprintf(root, n, "%s", t); return; }
 #ifdef _WIN32
     exe_dir(root, n);
+#elif defined(__ANDROID__)
+    // the app's external files folder (Android/data/<package>/files): reachable over USB and from file managers
+    const char *ext = SDL_GetAndroidExternalStoragePath();
+    snprintf(root, n, "%s", ext ? ext : SDL_GetAndroidInternalStoragePath());
 #elif defined(__linux__)
     // (the AppImage is read-only): $XDG_DATA_HOME/lasrecomp, ~/.local/share/lasrecomp by default
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
@@ -466,6 +470,9 @@ const char *rt_data_root_fixed(void) {
     const char *env = getenv("LARECOMP_DATA_ROOT");
     if (env && *env) return LN("Set by LARECOMP_DATA_ROOT.");
     if (g_dev) return LN("A source checkout uses its own folder.");
+#ifdef __ANDROID__
+    return LN("On Android this is the app's own folder.");
+#endif
     return NULL;
 }
 
