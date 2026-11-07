@@ -2975,7 +2975,7 @@ static VkSpan rscale_dedupe(int sg, const float rs[66][4], int nt) {
 #define SNAP_HALF (8ull << 20)
 #define SNAP_RING (2 * SNAP_HALF)
 enum { RS_PROBE, RS_COPY, RS_PLACE };
-typedef struct { uint64_t addr, size, copy, pristine, hash, frame, seg_hash[3]; uint32_t gen, level, wgen, looks; uint8_t mode, gpu_parts, wclass, rewrites; bool cs_bound, draw_bound; } RangeState;  // (wgen, seg_hash, looks, gpu_parts, wclass: watch_check; pristine: rs_copy_make; rewrites: watch_cpu_in_allocation)
+typedef struct { uint64_t addr, size, copy, pristine, hash, frame, wrun, seg_hash[3]; uint32_t gen, level, wgen, looks; uint8_t mode, gpu_parts, wclass, rewrites; bool cs_bound, draw_bound; } RangeState;  // (wgen, seg_hash, looks, gpu_parts, wclass: watch_check; pristine: rs_copy_make; rewrites: watch_cpu_in_allocation; wrun: snap_storage)
 static RangeState rs_tab[512];
 static uint64_t rs_store_frame[512];  // (watch: the frame of the previous CPU write seen on a range's own pages)
 static int nrs;
@@ -3062,7 +3062,8 @@ static void rs_level_tick(void) {  // (a new level: every range is probed again 
 }
 static void rs_log(RangeState *e, const char *what, bool cs_slot, uint64_t f) {  // (rare: a new range, a decision)
     static int n;
-    if (e->size >= 2040 ? n < 100000 : n++ < 200)  // (the small per-object ranges are many: capped)
+    bool out = (e->wclass & 1) && strncmp(what, "new", 3);  // (a GPU output's decision - BowWow's 1552-byte teeth / eyes: rare, always shown)
+    if (e->size >= 2040 || out ? n < 100000 : n++ < 200)  // (the small per-object ranges are many: capped)
         LOG("[snap] %llx+%llu %s (%s bind, frame %llu)\n", (unsigned long long)e->addr, (unsigned long long)e->size, what, cs_slot ? "compute" : "draw", (unsigned long long)f);
 }
 // A copy lives until its entry remakes it (the original changed) or releases it (unused for 10 s): a half switch no
@@ -3453,7 +3454,17 @@ static uint64_t snap_storage(uint64_t addr, uint64_t size, bool cs_slot) {
         // A write once (an initialisation: BowWow's skinning buffers at his spawn) stays in place; writes that keep
         // coming (within 8 frames of the previous one) are the CPU rewriting it: copied from now on (renderer.m 1ea4b16)
         int k = (int)(e - rs_tab);
-        if (!rs_store_frame[k] || f - rs_store_frame[k] > 8) { rs_store_frame[k] = f; return addr; }
+        if (!rs_store_frame[k] || f - rs_store_frame[k] > 8) { rs_store_frame[k] = f; e->wrun = f; return addr; }
+        // Unless it is not a known input (wclass 2): a GPU output - or a range whose use isn't known yet - is copied
+        // only once the writes kept coming for 30 frames (#555). Its copy is where the dispatch writes, but the draws
+        // read the original through shader global memory, and the CPU reads it back (his chain): BowWow's skinning
+        // outputs (22048 bytes; 1552, his teeth and eyes) drew the frozen pose of the moment the copy was made - teeth
+        // gone, parts and chain misplaced, stray triangles - until a reload made new entries. His setup writes come in
+        // bursts: a few frames apart at a level load, or squeezed into consecutive frames where that load stalls the
+        // renderer (8.7 s on lavapipe, 4 frames: everything of his copied); first entering his room in the Moblins'
+        // cave (Windows / AMD). The light / exposure lists the CPU rewrites every frame are copied 30 frames after
+        // their first write (on the logo screens).
+        if (e->wclass != 2 && f - e->wrun < 30) { rs_store_frame[k] = f; return addr; }
         e->mode = RS_COPY;
         {   // (written on a page wholly its own: the CPU rewrites the range itself - its allocation's other ranges count its pages now)
             uint64_t p1 = (addr + WATCH_PAGE - 1) & ~(WATCH_PAGE - 1), pe = (addr + size) & ~(WATCH_PAGE - 1);
