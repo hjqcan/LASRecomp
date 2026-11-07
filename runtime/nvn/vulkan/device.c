@@ -900,8 +900,13 @@ static void create_device(void) {
     pipeline_cache_tag(tag, sizeof tag);
     size_t sz = 0;
     void *data = NULL;
-    FILE *fp = shader_cache_tag_ok(PCACHE_TAG, tag) ? fopen(PCACHE_FILE, "rb") : NULL;
-    if (!fp && !access(PCACHE_FILE, F_OK)) LOG("[vk] pipeline cache from another build / GPU / driver: starting a new one\n");
+    // LARECOMP_VK_PIPELINE_CACHE=0 (test): start with an empty one, saved over the old as usual. The Android emulator's
+    // gfxstream hangs in vkCreatePipelineCache given a large one (~300 MB after a session).
+    const char *pce = getenv("LARECOMP_VK_PIPELINE_CACHE");
+    bool pc_load = !(pce && !atoi(pce));
+    FILE *fp = pc_load && shader_cache_tag_ok(PCACHE_TAG, tag) ? fopen(PCACHE_FILE, "rb") : NULL;
+    if (!pc_load) LOG("[vk] pipeline cache: starting empty (LARECOMP_VK_PIPELINE_CACHE=0)\n");
+    else if (!fp && !access(PCACHE_FILE, F_OK)) LOG("[vk] pipeline cache from another build / GPU / driver: starting a new one\n");
     if (fp) {
         fseek(fp, 0, SEEK_END);
         sz = (size_t)ftell(fp);
