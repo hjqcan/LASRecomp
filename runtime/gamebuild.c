@@ -137,6 +137,45 @@ static bool file_exists(const char *p) {
     return stat(p, &st) == 0;
 }
 
+#ifdef __ANDROID__
+// Android: the app's own. The launchers and native libraries are in nativeLibraryDir (LARECOMP_NATIVE_LIB_DIR: the only
+// place Android runs programs from, so they ship as lib*.so), the rest in LARECOMP_GEN_DIR (the activity unpacks it from
+// the APK: Python's standard library, the bindings, tools/, zig's lib/, the headers). android/deps/build_gen_deps.sh.
+// From LASRecompAndroid by mamcjr (MIT).
+static bool find_tools(Tools *t) {
+    memset(t, 0, sizeof *t);
+    const char *lib = getenv("LARECOMP_NATIVE_LIB_DIR"), *gen = getenv("LARECOMP_GEN_DIR");
+    if (!lib || !*lib || !gen || !*gen) return false;
+    snprintf(t->gen, sizeof t->gen, "%s/libpymain.so", lib);
+    snprintf(t->gen_script, sizeof t->gen_script, "%s/tools/gen.py", gen);
+    snprintf(t->cc, sizeof t->cc, "%s/libzig.so", lib);
+    t->zig = true;
+    snprintf(t->inc, sizeof t->inc, "%s/gamelib-src", gen);
+    snprintf(t->entry, sizeof t->entry, "%s/gamelib-src/gamelib_entry.c", gen);
+    snprintf(t->hle, sizeof t->hle, "%s/gamelib-src/hle_symbols.txt", gen);
+    return file_exists(t->gen) && file_exists(t->cc);  // (the rest: once unpacked - gamebuild_run waits for it)
+}
+
+// The helpers' environment: the generator's Python (its home, the bindings and tools), the native libraries the
+// bindings load, zig's lib/ (it looks next to itself, which is nativeLibraryDir), scratch space in the build folder
+static void android_env(const char *work) {
+    const char *lib = getenv("LARECOMP_NATIVE_LIB_DIR"), *gen = getenv("LARECOMP_GEN_DIR");
+    char v[2400];
+    snprintf(v, sizeof v, "%s/python", gen);
+    setenv("PYTHONHOME", v, 1);
+    snprintf(v, sizeof v, "%s/site:%s/tools", gen, gen);
+    setenv("PYTHONPATH", v, 1);
+    setenv("PYTHONDONTWRITEBYTECODE", "1", 1);
+    setenv("LD_LIBRARY_PATH", lib, 1);
+    setenv("LIBCAPSTONE_PATH", lib, 1);
+    setenv("LIBUNICORN_PATH", lib, 1);
+    setenv("LIBLZ4_PATH", lib, 1);
+    setenv("TMPDIR", work, 1);
+    setenv("HOME", work, 1);
+    snprintf(v, sizeof v, "%s/zig/lib", gen);
+    setenv("ZIG_LIB_DIR", v, 1);
+}
+#else
 static bool find_tools(Tools *t) {
     memset(t, 0, sizeof *t);
     const char *e = getenv("LARECOMP_GEN");
@@ -171,6 +210,7 @@ static bool find_tools(Tools *t) {
 #endif
     return true;
 }
+#endif
 
 bool gamebuild_available(void) {
     Tools t;
@@ -179,7 +219,10 @@ bool gamebuild_available(void) {
 
 // zig cc on Linux: an explicit target, so it uses its own glibc headers and stubs instead of looking for the system's
 // (SteamOS and other systems without development packages have none: "failed to find libc installation", #181)
-#if defined(__linux__) && defined(__x86_64__)
+#if defined(__ANDROID__)  // (musl's headers only: the library links -nostdlib against libmain.so, and Android's linker
+                          // resolves its libc calls through it)
+#define ZIG_TARGET "aarch64-linux-musl"
+#elif defined(__linux__) && defined(__x86_64__)
 #define ZIG_TARGET "x86_64-linux-gnu"
 #elif defined(__linux__) && defined(__aarch64__)
 #define ZIG_TARGET "aarch64-linux-gnu"
@@ -352,6 +395,20 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         snprintf(why, why_size, LN("the game code builder is missing from this copy of LAS Recomp"));
         return false;
     }
+#ifdef __ANDROID__
+    {   // the activity unpacks the builder's files once per install or update, on a thread of its own: wait for that
+        char ready[1200];
+        snprintf(ready, sizeof ready, "%s/.ready", getenv("LARECOMP_GEN_DIR"));
+        while (!file_exists(ready)) {
+            if (o->cancelled && o->cancelled()) {
+                snprintf(why, why_size, LN("Compilation cancelled. Completed files are kept for Resume."));
+                return false;
+            }
+            if (o->progress) o->progress(0, LN("Preparing the game code builder..."));
+            sleep_ms(200);
+        }
+    }
+#endif
     char work[1100], tmp[1100];
     snprintf(work, sizeof work, "%s" SEP ".gamebuild", game_dir);
     snprintf(tmp, sizeof tmp, "%s" SEP "%s.tmp", work, GAMELIB_NAME);
@@ -387,6 +444,10 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         build_cache_close(cache);
         return false;
     }
+#ifdef __ANDROID__
+    mkdir(work, 0755);
+    android_env(work);
+#endif
     if (t.zig) {  // keep its caches with this installation; the explicit Clear action removes them too
         char zc[1200];
         snprintf(zc, sizeof zc, "%s" SEP "zig-cache", work);
@@ -584,6 +645,11 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
             add(&a, at);
 #ifdef _WIN32
             add(&a, t.implib);
+#endif
+#ifdef __ANDROID__
+            char lm[1200];  // (the runtime functions it calls: libmain.so as its DT_NEEDED)
+            snprintf(lm, sizeof lm, "%s/libmain.so", getenv("LARECOMP_NATIVE_LIB_DIR"));
+            add(&a, lm);
 #endif
         }
         PlatProc p = f ? spawn(a.v, log) : 0;

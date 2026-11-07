@@ -11,9 +11,13 @@ if(NOT EXISTS ${DEPS}/lib/libSDL3.so)
     message(FATAL_ERROR "run android/deps/build_deps.sh first")
 endif()
 
-# ids the Makefile computes from the sources (runtime/gamelib.h, gamebuild.c, shader_prep.c); the game code flags are
-# the Makefile's GENFLAGS with the moving window
-set(GAMELIB_CFLAGS "-O1 -g0 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -mllvm -disable-licm-promotion -fPIC -DLARECOMP_DYN_BASE")
+# ids the Makefile computes from the sources (runtime/gamelib.h, gamebuild.c, shader_prep.c). The game code flags (built
+# on the device by runtime/gamebuild.c with zig for aarch64-linux-musl): the Makefile's GENFLAGS with the moving window,
+# and from LASRecompAndroid by mamcjr (MIT): -dag-maps-huge-region=500 (the scheduler's dependency graph of huge runs of
+# stores was quadratic: one file 4.3 s -> 0.7 s), no UBSan or stack protector (zig cc adds them on its own; memory a
+# phone's build doesn't have). Linked -nostdlib against libmain.so: Android's linker resolves its libc calls through it.
+set(GAMELIB_CFLAGS "-O1 -g0 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -mllvm -disable-licm-promotion -fPIC -DLARECOMP_DYN_BASE -mllvm -dag-maps-huge-region=500 -fno-sanitize=undefined -fno-stack-protector")
+set(GAMELIB_SHARED "-shared -nostdlib -Wl,-z,max-page-size=16384")
 function(las_id out len)
     set(t "")
     foreach(f ${ARGN})
@@ -35,7 +39,7 @@ las_id(GAMELIB_ID 16 tools/game_addresses.py runtime/game_addresses/versions.h $
        tools/gamelib_entry.c runtime/hle/hle_symbols.txt runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h
        "${GAMELIB_CFLAGS}\n")
 las_id(GAMELIB_BASE_ID 16 runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/fetch_zig.sh
-       "${GAMELIB_CFLAGS} -shared\n")
+       "${GAMELIB_CFLAGS} ${GAMELIB_SHARED}\n")
 las_id(TRANSLATOR_ID 12 runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h)
 
 # a text file as a C string, one "...\n" literal per line (as the Makefile makes them; CRs dropped)
@@ -73,7 +77,7 @@ add_library(main SHARED ${RT_SRC} ${R}/runtime/platform/linux.c ${R}/runtime/pla
 set_source_files_properties(${UI_SRC} PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-xc++")
 set_source_files_properties(${R}/runtime/gamelib.c PROPERTIES COMPILE_DEFINITIONS "GAMELIB_ID=\"${GAMELIB_ID}\"")
 set_source_files_properties(${R}/runtime/gamebuild.c PROPERTIES COMPILE_DEFINITIONS
-    "GAMELIB_ID=\"${GAMELIB_ID}\";GAMELIB_BASE_ID=\"${GAMELIB_BASE_ID}\";GAMELIB_CFLAGS=\"${GAMELIB_CFLAGS}\";GAMELIB_SHARED=\"-shared\"")
+    "GAMELIB_ID=\"${GAMELIB_ID}\";GAMELIB_BASE_ID=\"${GAMELIB_BASE_ID}\";GAMELIB_CFLAGS=\"${GAMELIB_CFLAGS}\";GAMELIB_SHARED=\"${GAMELIB_SHARED}\"")
 set_source_files_properties(${R}/runtime/nvn/shader_prep.c PROPERTIES COMPILE_DEFINITIONS
     "SHADER_TRANSLATOR_ID=\"${TRANSLATOR_ID}\"")
 
