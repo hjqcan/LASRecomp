@@ -2,7 +2,9 @@
 // (runtime/ui/option_rows.h), and its Configure inputs page for the bindings (runtime/input_bind.h): DEVICE and the
 // categories on the left, the chosen category's bindings on the right. A on a category moves the cursor to its
 // bindings; A on a binding waits for the new button / key (Esc or 5 s without a press cancels; a button already in
-// use swaps over); B goes back a step (bindings -> categories -> the tab). Drawn in whichever ImGui context is current.
+// use swaps over); B goes back a step (bindings -> categories -> the tab). Open menu holds the controller's shortcuts for
+// this menu (one button or two together; X / Delete clears one, never the last) and the keyboard's F1 / Esc, which
+// can't be changed. Drawn in whichever ImGui context is current.
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,14 +24,15 @@ void input_apply_background(void);
 }
 
 // ------------------------------------------------------------------ Configure inputs: what's on it
-enum { CAT_BUTTONS, CAT_TRIGGERS, CAT_STICKS, CAT_DPAD, N_CAT };
-static const char *const k_cat_name[N_CAT] = {LN("Buttons"), LN("Triggers"), LN("Sticks"), LN("D-pad")};
-static const char *const k_cat_hook[N_CAT] = {"buttons", "triggers", "sticks", "dpad"};  // (LARECOMP_CONTROLS_SUB)
+enum { CAT_BUTTONS, CAT_TRIGGERS, CAT_STICKS, CAT_DPAD, CAT_MENU, N_CAT };
+static const char *const k_cat_name[N_CAT] = {LN("Buttons"), LN("Triggers"), LN("Sticks"), LN("D-pad"), LN("Open menu")};
+static const char *const k_cat_hook[N_CAT] = {"buttons", "triggers", "sticks", "dpad", "menu"};  // (LARECOMP_CONTROLS_SUB)
 
-struct Bind { int slot; const char *label; const char *section; };  // section: a header before this row
+// section: a header before this row; fixed: a key that can't be changed (slot -1)
+struct Bind { int slot; const char *label; const char *section; const char *fixed; };
 static int cat_rows(int cat, bool pad, Bind *out) {
     int n = 0;
-    auto add = [&](int slot, const char *label, const char *section = NULL) { out[n++] = {slot, label, section}; };
+    auto add = [&](int slot, const char *label, const char *section = NULL) { out[n++] = {slot, label, section, NULL}; };
     switch (cat) {
     case CAT_BUTTONS:
         add(BIND_A, "A"), add(BIND_B, "B"), add(BIND_X, "X"), add(BIND_Y, "Y"), add(BIND_PLUS, LN("Plus")),
@@ -49,10 +52,15 @@ static int cat_rows(int cat, bool pad, Bind *out) {
     case CAT_DPAD:
         add(BIND_UP, LN("Up")), add(BIND_DOWN, LN("Down")), add(BIND_LEFT, LN("Left")), add(BIND_RIGHT, LN("Right"));
         break;
+    case CAT_MENU:  // (F1 and Esc stay: whatever the controller's shortcuts are, the menu can always be reached)
+        if (pad) add(BIND_MENU_1, LN("Shortcut 1")), add(BIND_MENU_2, LN("Shortcut 2"));
+        else out[n++] = {-1, LN("Shortcut 1"), NULL, "F1"}, out[n++] = {-1, LN("Shortcut 2"), NULL, "Esc"};
+        break;
     }
     return n;
 }
 static int slot_cat(int slot) {
+    if (slot >= BIND_MENU_1) return CAT_MENU;
     Bind b[16];
     for (int c = 0; c < N_CAT; c++)
         for (int i = 0, n = cat_rows(c, false, b); i < n; i++)
@@ -120,6 +128,15 @@ static bool keyboard_pressed(void) {
            ImGui::IsKeyPressed(ImGuiKey_Space, false) || ImGui::IsKeyPressed(ImGuiKey_RightArrow, false);
 }
 
+// a menu shortcut's value: "Home", "Minus + Plus", "(none)" (in the menus' language)
+static const char *menu_label(int i, int fam, char *buf, size_t cap) {
+    int a = g_bind_menu[i][0], b = g_bind_menu[i][1];
+    if (a < 0) snprintf(buf, cap, "%s", L(LN("(none)")));
+    else if (b < 0) snprintf(buf, cap, "%s", L(bind_pad_label(a, fam)));
+    else snprintf(buf, cap, "%s + %s", L(bind_pad_label(a, fam)), L(bind_pad_label(b, fam)));
+    return buf;
+}
+
 // A finished capture keeps larecomp.ini current; a swap is said under the list (another row changed too)
 static void watch_results(int fam, char *msg, size_t cap) {
     static int seen = -1;
@@ -128,10 +145,16 @@ static void watch_results(int fam, char *msg, size_t cap) {
     if (serial == seen) return;
     seen = serial;
     msg[0] = 0;
-    if (kind == 2)
+    char lab[64];
+    if (kind == 2 && rother >= BIND_MENU_1)
+        snprintf(msg, cap, L("Swapped. Shortcut %d is %s now."), rother - BIND_MENU_1 + 1,
+                 menu_label(rother - BIND_MENU_1, fam, lab, sizeof lab));
+    else if (kind == 2)
         snprintf(msg, cap, L("Swapped. %s is on %s now."), L(bind_input_name(rother)),
                  L(rdev == BIND_DEV_PAD ? bind_pad_label(bind_pad_host(rother), fam) : bind_key_label(g_bind_key[rother])));
-    if (kind == 1 || kind == 2 || kind == 5) settings_save();
+    if (kind == 6) snprintf(msg, cap, "%s", L("The game uses that button. Hold it with a second button."));
+    if (kind == 7) snprintf(msg, cap, "%s", L("Keep at least one shortcut, so a controller can open this menu."));
+    if (kind == 1 || kind == 2 || kind == 5 || kind == 8) settings_save();
 }
 
 static bool nav_on_item(void) { return ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible; }
@@ -199,30 +222,62 @@ static void configure_inputs(float scale) {
         for (int i = 0; i < n; i++) {
             const Bind &b = rows[i];
             if (b.section) opt_section(b.section);
-            bool waiting = cd == dev && cs == b.slot;
+            if (b.fixed) {
+                opt_disable_next();
+                ImGui::PushID(i);
+                opt_action(b.label, b.fixed, NULL);
+                ImGui::PopID();
+                continue;
+            }
+            bool waiting = cd == dev && cs == b.slot, menu = b.slot >= BIND_MENU_1;
             char val[64];
             if (waiting) snprintf(val, sizeof val, g_dev_pad ? L("Press a button...  %d") : L("Press a key...  %d"), (ms + 999) / 1000);
+            else if (menu) menu_label(b.slot - BIND_MENU_1, fam, val, sizeof val);
             else snprintf(val, sizeof val, "%s", g_dev_pad ? bind_pad_label(bind_pad_host(b.slot), fam) : bind_key_label(g_bind_key[b.slot]));
-            // the same button / key on two inputs (a hand-edited larecomp.ini): red
-            const int16_t *t = g_dev_pad ? g_bind_pad : g_bind_key;
+            // the same button / key on two inputs (a hand-edited larecomp.ini), or a game button that opens the menu: red
             bool dup = false;
-            for (int j = 0, m = g_dev_pad ? BIND_PAD_COUNT : BIND_KEY_COUNT; j < m; j++)
-                dup |= j != b.slot && t[j] == t[b.slot] && t[b.slot] > (g_dev_pad ? -1 : 0);
+            if (menu) {
+                int a = g_bind_menu[b.slot - BIND_MENU_1][0];
+                for (int j = 0; j < BIND_PAD_COUNT; j++) dup |= g_bind_menu[b.slot - BIND_MENU_1][1] < 0 && bind_pad_host(j) == a && a >= 0;
+            } else {
+                const int16_t *t = g_dev_pad ? g_bind_pad : g_bind_key;
+                for (int j = 0, m = g_dev_pad ? BIND_PAD_COUNT : BIND_KEY_COUNT; j < m; j++)
+                    dup |= j != b.slot && t[j] == t[b.slot] && t[b.slot] > (g_dev_pad ? -1 : 0);
+                dup |= g_dev_pad && bind_menu_single(bind_pad_host(b.slot));
+            }
             if (dup && !waiting) opt_warn_next();
             ImGui::PushID(b.slot);
-            bool hit = opt_action(b.label, val, NULL, true, waiting || !bind_is_default_slot(dev, b.slot));
+            bool hit;
+            if (menu) {  // (its value is put together here, so already in the menus' language)
+                opt_shown_next();
+                hit = opt_action(L(b.label), val, NULL, true, waiting || !bind_is_default_slot(dev, b.slot));
+            } else hit = opt_action(b.label, val, NULL, true, waiting || !bind_is_default_slot(dev, b.slot));
             ImGui::PopID();
             if (i == 0) take_focus(FOCUS_RIGHT);
             if (ImGui::IsItemFocused()) in_right = true;
             if (waiting && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);  // (a capture started by a test hook)
+            // X (the top button) / Delete / Backspace / right click: clear a menu shortcut (#591: Home free for overlays)
+            if (menu && !waiting && cd < 0 &&
+                ((ImGui::IsItemFocused() && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false) ||
+                                             ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
+                                             ImGui::IsKeyPressed(ImGuiKey_Backspace, false))) ||
+                 ImGui::IsItemClicked(ImGuiMouseButton_Right))) {
+                msg[0] = 0;
+                bind_menu_clear(b.slot - BIND_MENU_1);
+            }
+            if (hit && menu && ImGui::IsKeyDown(ImGuiKey_GamepadFaceUp)) hit = false;  // (ImGui activates on it too)
             if (hit) {
                 if (waiting) bind_capture_cancel();
                 else { msg[0] = 0; bind_capture_begin(dev, b.slot); }
             }
         }
         g_in_right = in_right;
-        if (cd == dev) ImGui::TextDisabled("%s", L("Esc cancels."));
+        if (cd == dev && cs >= BIND_MENU_1) ImGui::TextDisabled("%s", L("Press one button, or two together. Esc cancels."));
+        else if (cd == dev) ImGui::TextDisabled("%s", L("Esc cancels."));
         else if (msg[0]) ImGui::TextDisabled("%s", msg);
+        else if (g_cat == CAT_MENU && g_dev_pad)
+            ImGui::TextDisabled(L("%s or Delete clears a shortcut."), L(bind_pad_label(SDL_GAMEPAD_BUTTON_NORTH, fam)));
+        else if (g_cat == CAT_MENU) ImGui::TextDisabled("%s", L("F1 and Esc always open this menu."));
     }
     opt_split_end();
 }
@@ -259,8 +314,8 @@ extern "C" void controls_tab_draw(float scale) {
 
     opt_begin("##controls", scale);
     opt_section("Inputs");
-    if (opt_link("Configure inputs", "Set the buttons and keys for the game. F1, Esc, Home or Back + Start always "
-                                     "open this menu.")) {
+    if (opt_link("Configure inputs", "Set the buttons and keys for the game, and the buttons that open this menu. "
+                                     "F1 and Esc always open it.")) {
         pick_device(keyboard_pressed());
         g_sub = true, g_focus = FOCUS_DEVICE, g_in_right = false;
     }

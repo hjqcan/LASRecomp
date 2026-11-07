@@ -175,7 +175,7 @@ static int kbd_cut(char *s, int max_units) {
 extern "C" bool menu_input_captured(void) { return capturing(); }
 
 bool menu_handle_event(const SDL_Event *e) {
-    static bool back_down, start_down;
+    static uint32_t pad_held;  // (controller buttons down, by bit: the menu's two-button shortcuts)
     if (g_open.load() && bind_capture_event(e)) return true;  // Controls tab waiting for a new binding: it takes the press
     if (e->type == SDL_EVENT_KEY_DOWN) g_last_pad = false;
     if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) g_last_pad = true;
@@ -224,9 +224,10 @@ bool menu_handle_event(const SDL_Event *e) {
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: {
         bool down = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
-        if (e->gbutton.button == SDL_GAMEPAD_BUTTON_BACK) back_down = down;
-        if (e->gbutton.button == SDL_GAMEPAD_BUTTON_START) start_down = down;
-        if (down && !typing && ((back_down && start_down) || e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE)) {
+        if (e->gbutton.button < 32) pad_held = down ? pad_held | 1u << e->gbutton.button : pad_held & ~(1u << e->gbutton.button);
+        // the player's shortcuts (Controls > Configure inputs > Open menu; Home and Back + Start by default). A Home
+        // that isn't one goes on below, not taken (#591: it opens Steam's and other launchers' overlays).
+        if (down && !typing && bind_menu_pressed(e->gbutton.button, pad_held)) {
             set_open(!g_open.load());
             return true;
         }
