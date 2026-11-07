@@ -617,7 +617,8 @@ static void present_run(const void *p) {
     __atomic_fetch_add(&g_vk_frame_waits[3], 1, __ATOMIC_RELAXED);
 #ifdef __ANDROID__
     // (SUBOPTIMAL every frame there: the swapchain is left unrotated on purpose, device.c create_swapchain)
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) atomic_store_explicit(&present_recreate, 1, memory_order_release);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR)
+        atomic_store_explicit(&present_recreate, 1, memory_order_release);
 #else
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) atomic_store_explicit(&present_recreate, 1, memory_order_release);
 #endif

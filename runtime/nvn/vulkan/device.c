@@ -1028,9 +1028,34 @@ static void create_swapchain(void) {
     }
 }
 
+#ifdef __ANDROID__
+// Android destroys the window's surface whenever another activity covers the app (the folder picker, the home screen)
+// and SDL makes a new one on return: the old VkSurfaceKHR is lost for good (VK_ERROR_SURFACE_LOST_KHR on every acquire,
+// a black screen). So each swapchain rebuild there makes the surface again from SDL's current window first; the old
+// swapchain belongs to the old window and can't be passed on. False: no window right now (in the background).
+static bool recreate_surface(void) {
+    for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+    g_vk.sc_count = 0;
+    if (g_vk.swapchain) vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
+    g_vk.swapchain = VK_NULL_HANDLE;
+    if (g_vk.surface) vkDestroySurfaceKHR(g_vk.inst, g_vk.surface, NULL);
+    g_vk.surface = VK_NULL_HANDLE;
+    if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) {
+        LOG("[vk] no window surface yet: %s\n", SDL_GetError());
+        g_vk.surface = VK_NULL_HANDLE;
+        return false;
+    }
+    LOG("[vk] window surface made again (the app was in the background)\n");
+    return true;
+}
+#endif
+
 static void recreate_swapchain(void) {
     rec_drain();  // (every queued present and submission made: the queue is idle for the wait)
     vkDeviceWaitIdle(g_vk.dev);
+#ifdef __ANDROID__
+    if (!recreate_surface()) return;
+#endif
     create_swapchain();
 }
 
@@ -1101,9 +1126,18 @@ bool vk_frame_begin(const float clear[4]) {
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
     WAITING_AT(0, vk_wait_seq(slot_seq[slot]));
     VkResult r;
-    WAITING_AT(1, r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image));
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+#ifdef __ANDROID__
+    if (!g_vk.swapchain) {  // (no window last time: try again)
         recreate_swapchain();
+        if (!g_vk.swapchain) return false;
+    }
+#endif
+    WAITING_AT(1, r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image));
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR) {
+        recreate_swapchain();
+#ifdef __ANDROID__
+        if (!g_vk.swapchain) return false;
+#endif
         WAITING_AT(1, r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE,
                                           &cur_frame.image));
     }
