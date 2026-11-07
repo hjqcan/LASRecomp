@@ -222,7 +222,39 @@ static void log_startup_info(void) {
             si.cpu[0] ? si.cpu : "unknown CPU", cores, ram, si.package ? ", " : "", si.package ? si.package : "");
 }
 
+#ifdef __APPLE__
+// The Metal HUD setting (Video tab): Apple's HUD library loads only when MTL_HUD_ENABLED=1 is set as the process starts
+// (macOS 27: setting it later in the process, or the layer's developerHUDProperties alone, do nothing), so with the
+// setting on the app starts itself again with it, before the session log opens. From then on the setting shows and
+// hides the HUD at once (runtime/nvn/metal.m ui_metal_hud_apply); with it off at launch, turning it on needs a restart.
+static void metal_hud_relaunch(void) {
+    if (getenv("MTL_HUD_ENABLED")) return;  // (set: by us, or by hand)
+    char path[1100], dir[900];
+    const char *e = getenv("LARECOMP_SETTINGS");
+    if (e && *e) snprintf(path, sizeof path, "%s", e);
+    else if (rt_data_root_early(dir, sizeof dir)) snprintf(path, sizeof path, "%s/larecomp.ini", dir);
+    else snprintf(path, sizeof path, "larecomp.ini");  // (dev mode: the starting directory)
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[256];
+    bool on = false;
+    while (fgets(line, sizeof line, f)) {
+        int v;
+        if (sscanf(line, " metal_hud = %d", &v) == 1) on = v != 0;
+    }
+    fclose(f);
+    if (!on) return;
+    setenv("MTL_HUD_ENABLED", "1", 1);
+    setenv("LARECOMP_METAL_HUD", "1", 1);  // (ui_metal_hud_apply: the HUD was loaded for the setting)
+    plat_exec(NULL);
+    perror("metal hud re-exec");  // (failed: the game starts without the HUD)
+}
+#endif
+
 int main(int argc, char **argv) {
+#ifdef __APPLE__
+    metal_hud_relaunch();
+#endif
     plat_init();
 #ifdef LARECOMP_DYN_BASE
     LOG("[boot] guest window %llx-%llx (moving: rt.h)\n", (unsigned long long)GUEST_LO, (unsigned long long)GUEST_HI);

@@ -536,6 +536,11 @@ static void tab_display(void) {
     opt_toggle("Frame Generation", &g_settings.frame_interp, false,
                "Experimental. Draws extra images between the game's frames for smoother motion, up to your display's "
                "refresh rate. On a 120 Hz display the game shows 120 fps. Some visual glitches are possible.");
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+    opt_toggle("Metal HUD", &g_settings.metal_hud, false,
+               "Shows Apple's performance overlay with frame rate, GPU time and memory. Turning it on may need a "
+               "restart.");
+#endif
     {   // (a live preview, as an Off / On choice)
         static const char *oo[] = {LN("Off"), LN("On")};
         int rb = g_settings.blur_removal;
