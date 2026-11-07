@@ -48,6 +48,9 @@ extern "C" {
 #include "game_addresses.h"
 #include "gamelib.h"
 #include "romfs_build.h"
+#ifdef __ANDROID__
+#include "platform/android_storage.h"
+#endif
 #include "settings.h"
 #include "input_bind.h"
 #include "menu_sfx.h"
@@ -413,6 +416,9 @@ static bool build_cancelled(void) { return g_cancel_build.load(); }
 static bool g_copy_skipped;                  // (only the game code to build: the bar is all of that)
 static bool g_auto_update;                   // started by itself: game files there, game code from an older version
 static void setup_progress(uint64_t done, uint64_t) { g_done = g_phase_base + done; }
+#ifdef __ANDROID__
+static void import_progress(uint64_t done, uint64_t total) { g_total = total, g_done = done; }  // (the copy is the first phase)
+#endif
 static void build_progress(double f, const char *step) {
     g_build_frac = (float)f;
     static const char *last;
@@ -488,6 +494,25 @@ static void *extract_thread(void *) {
         if (!build_game_code()) goto done;
         goto check;
     }
+#ifdef __ANDROID__
+    if (!src.compare(0, 10, "content://")) {  // (Android's folder picker: copied through the storage framework)
+        set_job(LN("Copying the game files..."));
+        mkdir(g_root.c_str(), 0755);
+        rt_remove_game_files(g_root.c_str());
+        game_files_changed();
+        mkdir(g_root.c_str(), 0755);
+        int r = android_import_game(src.c_str(), g_root.c_str(), import_progress, build_cancelled);
+        if (r) { set_failure(r == 1 ? FAIL_NOT_FOUND : r == 2 ? FAIL_UNUSABLE : FAIL_COPY); goto done; }
+        if (!build_id_ok(g_root + "/exefs")) { set_failure(FAIL_VERSION); goto done; }
+        if (int have = count_files(g_root + "/romfs"); have < ROMFS_FILES) { set_failure(FAIL_MISSING, have); goto done; }
+        g_phase_base = g_total, g_done = (unsigned long long)g_total;
+        pthread_mutex_lock(&g_lock);
+        g_src.clear();
+        pthread_mutex_unlock(&g_lock);
+        if (!build_game_code()) goto done;
+        goto check;
+    }
+#endif
     set_job(LN("Looking for the game files..."));
     find_game(src, 0, exefs, romfs, unusable);
     if (exefs.empty() || romfs.empty()) { set_failure(unusable ? FAIL_UNUSABLE : FAIL_NOT_FOUND); goto done; }
@@ -548,7 +573,7 @@ static const char *const PICKER_FAILED = LN("Couldn't open a folder window");
 static std::string picker_hint(const char *what) {
     std::string err = SDL_GetError();
     fprintf(stderr, "[launcher] %s window: %s\n", what, err.c_str());
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
     char b[256];  // (what: "folder" / "file")
     snprintf(b, sizeof b, LN("LAS Recomp needs xdg-desktop-portal or zenity to open the %s window. Install one and try "
                              "again."), what);
@@ -565,6 +590,24 @@ static void SDLCALL picked(void *, const char *const *files, int) {
     g_src = files[0];
     if (g_job == PICKER_FAILED) g_job.clear(), g_job_hint.clear(), g_job_failed = false;
     pthread_mutex_unlock(&g_lock);
+}
+
+// The game files folder's Choose...: Android's own folder picker there (SDL has none for folders; the folder is a
+// content:// URI, copied by the setup through the storage framework: extract_thread)
+#ifdef __ANDROID__
+static void picked_android(const char *uri) {
+    fprintf(stderr, "[launcher] game files folder: %s\n", uri ? uri : "(none picked)");
+    const char *list[2] = {uri, NULL};
+    picked(NULL, list, -1);  // (NULL uri: cancelled - an empty list)
+}
+#endif
+static void choose_game_folder(SDL_Window *win) {
+#ifdef __ANDROID__
+    (void)win;
+    if (!android_pick_folder(picked_android)) picked(NULL, NULL, -1);
+#else
+    SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
+#endif
 }
 
 // ------------------------------------------------------------------ OneDrive (Windows)
@@ -2027,8 +2070,7 @@ extern "C" void launcher_run(const char *root) {
                 if (!ready) {
                     opt_section("Your copy of the game");
                     if (busy) opt_disable_next();
-                    if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
-                        SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
+                    if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true)) choose_game_folder(win);
                     check_left_of_value(src_v);
                     first_row();
                     opt_section("Set up");

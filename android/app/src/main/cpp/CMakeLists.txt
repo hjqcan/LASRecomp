@@ -68,7 +68,7 @@ set(IMGUI ${R}/third_party/imgui)
 set(IMGUI_SRC ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp ${IMGUI}/imgui_tables.cpp ${IMGUI}/imgui_widgets.cpp
     ${IMGUI}/backends/imgui_impl_sdl3.cpp ${IMGUI}/backends/imgui_impl_vulkan.cpp)
 
-add_library(main SHARED ${RT_SRC} ${R}/runtime/platform/linux.c ${VK_SRC} ${UI_SRC} ${IMGUI_SRC} ${DEPS}/volk/volk.c)
+add_library(main SHARED ${RT_SRC} ${R}/runtime/platform/linux.c ${R}/runtime/platform/android_storage.c ${VK_SRC} ${UI_SRC} ${IMGUI_SRC} ${DEPS}/volk/volk.c)
 # the UI sources are plain C++ apart from __APPLE__ blocks (as on Linux / Windows)
 set_source_files_properties(${UI_SRC} PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-xc++")
 set_source_files_properties(${R}/runtime/gamelib.c PROPERTIES COMPILE_DEFINITIONS "GAMELIB_ID=\"${GAMELIB_ID}\"")
