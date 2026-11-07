@@ -97,15 +97,15 @@ uint64_t guest_sym(const char *name) {
     return a;
 }
 
-static uint64_t hle_next = HLE_HEAP;
-RT_ON_RESET(hle_heap_reset) { hle_next = HLE_HEAP; }  // (guest memory, wiped by the reboot)
+static uint64_t hle_used;  // (from HLE_HEAP: an offset, as the window can move - rt.h)
+RT_ON_RESET(hle_heap_reset) { hle_used = 0; }  // (guest memory, wiped by the reboot)
 
 void *hle_alloc(uint64_t size) {
     static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&m);
-    uint64_t a = hle_next;
-    hle_next += (size + 63) & ~63ull;
-    if (hle_next > HLE_HEAP + HLE_HEAP_SIZE) FATAL("HLE heap exhausted\n");
+    uint64_t a = HLE_HEAP + hle_used;
+    hle_used += (size + 63) & ~63ull;
+    if (hle_used > HLE_HEAP_SIZE) FATAL("HLE heap exhausted\n");
     pthread_mutex_unlock(&m);
     plat_commit(a, size);
     memset((void *)a, 0, size);
@@ -115,8 +115,22 @@ void *hle_alloc(uint64_t size) {
 void dispatch_init(void) {  // (after gamelib_load)
     const GameLibTables *g = gamelib_tables();
     uint64_t nm = *g->main_count, ns = *g->sdk_count;
+#ifdef LARECOMP_DYN_BASE
+    // The library lists the game's own addresses (gen.py --dyn-base): moved to where the window is (rt.h).
+    static uint64_t *moved[2];
+    const uint64_t *src[2] = {g->main_addrs, g->sdk_addrs}, cnt[2] = {nm, ns};
+    for (int t = 0; t < 2; t++) {
+        free(moved[t]);
+        moved[t] = malloc(cnt[t] * sizeof *moved[t]);
+        if (!moved[t]) FATAL("out of memory\n");
+        for (uint64_t i = 0; i < cnt[t]; i++) moved[t][i] = src[t][i] - GUEST_CANON + GUEST_LO;
+    }
+    tables[0] = (FnTable){moved[0], g->main_fns, nm, moved[0][0], moved[0][nm - 1]};
+    tables[1] = (FnTable){moved[1], g->sdk_fns, ns, moved[1][0], moved[1][ns - 1]};
+#else
     tables[0] = (FnTable){g->main_addrs, g->main_fns, nm, g->main_addrs[0], g->main_addrs[nm - 1]};
     tables[1] = (FnTable){g->sdk_addrs, g->sdk_fns, ns, g->sdk_addrs[0], g->sdk_addrs[ns - 1]};
+#endif
 }
 
 GuestFn dispatch_lookup(uint64_t addr) {

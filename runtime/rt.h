@@ -28,19 +28,29 @@ static inline void __attribute__((format(printf, 1, 2))) rt_log(const char *fmt,
 // ---- address space layout (guest addresses == host addresses)
 // macOS reserves 0x2_0000_0000-0x70_0000_0000, and guest addresses must fit in 39 bits, so the
 // guest lives in a 12.5 GB window at 0x70_0000_0000 claimed at startup (see main.c).
-#define GUEST_LO     0x7000000000ull
-#define GUEST_HI     0x7320000000ull
-#define MAIN_BASE    0x7000000000ull
-#define SDK_BASE     0x7004000000ull
-#define HLE_BASE     0x7080000000ull   // fake addresses for host-implemented functions
+// LARECOMP_DYN_BASE (the Android build; `make DYN_BASE=1` on the desktop for testing): the window starts wherever the
+// process has room, picked at startup (main.c), with the same layout inside it. The game code is then generated with
+// gen.py --dyn-base, and the address tables (game_addresses.c, dispatch.c) are moved from GUEST_CANON to GUEST_LO.
+#define GUEST_CANON  0x7000000000ull   // where the window starts by default: the game code's own addresses
+#define GUEST_SIZE   0x0320000000ull
+#ifdef LARECOMP_DYN_BASE
+extern uint64_t g_guest_lo;
+#define GUEST_LO     g_guest_lo
+#else
+#define GUEST_LO     GUEST_CANON
+#endif
+#define GUEST_HI     (GUEST_LO + GUEST_SIZE)
+#define MAIN_BASE    (GUEST_LO + 0x0000000000ull)
+#define SDK_BASE     (GUEST_LO + 0x0004000000ull)
+#define HLE_BASE     (GUEST_LO + 0x0080000000ull)   // fake addresses for host-implemented functions
 #define HLE_SIZE     0x0000100000ull
-#define TLS_BASE     0x7090000000ull
+#define TLS_BASE     (GUEST_LO + 0x0090000000ull)
 #define TLS_SIZE     0x0000100000ull
-#define HLE_HEAP     0x7092000000ull   // guest-visible memory owned by host code
+#define HLE_HEAP     (GUEST_LO + 0x0092000000ull)   // guest-visible memory owned by host code
 #define HLE_HEAP_SIZE 0x000E000000ull
-#define ALIAS_BASE   0x7100000000ull   // alias region (svcMapMemory targets)
+#define ALIAS_BASE   (GUEST_LO + 0x0100000000ull)   // alias region (svcMapMemory targets)
 #define ALIAS_SIZE   0x0100000000ull
-#define HEAP_BASE    0x7240000000ull
+#define HEAP_BASE    (GUEST_LO + 0x0240000000ull)
 #define HEAP_MAX     0x00D0000000ull   // 3.25 GB
 
 // ---- loader.c

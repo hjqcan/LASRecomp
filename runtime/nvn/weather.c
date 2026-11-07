@@ -581,7 +581,7 @@ static bool link_free(Cpu *c, uint64_t link) {
         uint64_t so = id < 0x40 ? LD64(link + 0x1340 + 8 * (uint64_t)id) : 0, vt = so ? LD64(so) : 0, ti = vt ? LD64(vt - 8) : 0;
         const char *name = ti ? (const char *)(uintptr_t)LD64(ti + 8) : NULL;
         LOG("[weather] link state %u (%s) vt main+%llx iframes %g nohit %u filter %#x\n", id, name ? name : "?",
-            (unsigned long long)(vt ? vt - 0x7000000000ull : 0), *(const float *)(uintptr_t)(link + 0x1e80),
+            (unsigned long long)(vt ? vt - MAIN_BASE : 0), *(const float *)(uintptr_t)(link + 0x1e80),
             LD8(link + 0x1b8c) & 1, link_hit(c, link, false));
     }
     return id < 32 && ((1u << id) & (1u << 0 | 1u << 1 | 1u << 2 | 1u << 10 | 1u << 26));

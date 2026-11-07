@@ -41,7 +41,7 @@ static const int kNumSpots = (int)(sizeof kWarpSpots / sizeof kWarpSpots[0]);
 
 static const char *current_level(void) {
     uint64_t ps = *(uint64_t *)(uintptr_t)GA(PLAYER_STATUS_PTR);
-    if (ps < 0x7000000000ull || ps >= 0x7400000000ull) return "";
+    if (ps < GUEST_LO || ps >= GUEST_HI) return "";
     const char *s = (const char *)(uintptr_t)ps;
     for (int i = 0; i < 0x40; i++) {
         if (!s[i]) return s;
