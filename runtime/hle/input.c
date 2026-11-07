@@ -513,7 +513,8 @@ static _Atomic int32_t script_lx, script_ly, script_rx, script_ry;
 // "frame:resize:<W>x<H>" resizes the window to W x H points (menu_apply_window_requests: the main thread).
 // LARECOMP_BIND_TEST="frame:pad|key:<input>:<host>,..." starts a rebind capture of <input> (bind_* name: a, zl,
 //   ls_up...) at that frame (the Controls tab shows it waiting) and presses <host> 90 frames later ("esc" cancels,
-//   "wait" lets it time out); "frame:reset:pad|key" resets to the defaults.
+//   "wait" lets it time out); "frame:reset:pad|key" resets to the defaults. The menu's shortcuts (menu1, menu2) take
+//   "back+start" (both down, then up) and "clear" (clears it instead of a capture).
 static void push_key(SDL_Scancode sc, SDL_Keymod mod, bool down) {
     SDL_Event e;
     memset(&e, 0, sizeof e);
@@ -649,9 +650,13 @@ static void host_test_frame(uint64_t frame) {
         for (char *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
             unsigned long start = 0;
             char dev[8] = "", in[16] = "", host[40] = "";
-            if (sscanf(tok, "%lu:%7[a-z]:%15[a-z_]:%39[^:]", &start, dev, in, host) < 3) continue;
+            if (sscanf(tok, "%lu:%7[a-z]:%15[a-z_0-9]:%39[^:]", &start, dev, in, host) < 3) continue;
             if (!strcmp(dev, "reset")) { if (frame == start) bind_reset(!strcmp(in, "key") ? BIND_DEV_KEY : BIND_DEV_PAD); continue; }
-            int d = !strcmp(dev, "key") ? BIND_DEV_KEY : BIND_DEV_PAD;
+            int d = !strcmp(dev, "key") ? BIND_DEV_KEY : BIND_DEV_PAD, slot = bind_slot_from_name(in);
+            if (!strcmp(host, "clear")) {
+                if (frame == start && slot >= BIND_MENU_1) LOG("[input] test: clear %s -> %d\n", in, bind_menu_clear(slot - BIND_MENU_1));
+                continue;
+            }
             if (frame == start) {
                 LOG("[input] test: capture %s %s\n", dev, in);
                 bind_capture_begin(d, bind_slot_from_name(in));
@@ -673,7 +678,16 @@ static void host_test_frame(uint64_t frame) {
                         e.gbutton.button = (Uint8)h;
                     }
                 }
+                const char *plus = strchr(host, '+');
+                int h2 = plus ? bind_pad_from_name(plus + 1) : -1;
+                if (plus) *(char *)plus = 0, e.gbutton.button = (Uint8)bind_pad_from_name(host);
                 bind_capture_event(&e);
+                if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {  // (a menu shortcut takes a pair, or a button let go)
+                    int h1 = e.gbutton.button;
+                    if (h2 >= 0) e.gbutton.button = (Uint8)h2, bind_capture_event(&e);
+                    e.type = SDL_EVENT_GAMEPAD_BUTTON_UP, e.gbutton.button = (Uint8)h1, bind_capture_event(&e);
+                    if (h2 >= 0) e.gbutton.button = (Uint8)h2, bind_capture_event(&e);
+                }
             }
         }
     }
