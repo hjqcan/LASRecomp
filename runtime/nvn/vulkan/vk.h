@@ -9,7 +9,11 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#ifdef __ANDROID__
+#include <volk.h>  // (every Vulkan function through volk: Android's loader exports 1.1 only before API 33)
+#else
 #include <vulkan/vulkan.h>
+#endif
 #if __has_include(<vma/vk_mem_alloc.h>)
 #include <vma/vk_mem_alloc.h>
 #else

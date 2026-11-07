@@ -1,5 +1,8 @@
 // LAS Recomp entry: load modules, set up the kernel, run nn::init::Start on the main thread.
 #include <SDL3/SDL.h>
+#ifdef __ANDROID__
+#include <SDL3/SDL_main.h>  // (main() becomes SDL_main, which SDL's activity runs)
+#endif
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,11 +48,34 @@ uint64_t g_guest_lo = GUEST_CANON;
 // The window's start (rt.h). LARECOMP_GUEST_BASE=<hex> (test) asks for one; otherwise a start other than GUEST_CANON
 // first, so a desktop DYN_BASE build always runs the game away from its own addresses. The game was made for a 39-bit
 // address space, so the window ends below 2^39; 4 GB aligned keeps ADRP's page offsets the same as the game's.
+#ifdef __linux__
+// The lowest 4 GB-aligned start above 4 GB whose window fits below 2^39 in a gap of /proc/self/maps (0: none). On
+// Android the process is forked from the zygote with its libraries already mapped, and can't re-exec for another
+// layout. From LASRecompAndroid by mamcjr (MIT), android/common/guest_window.c.
+static uint64_t free_window(uint64_t size) {
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (!f) return 0;
+    uint64_t prev_end = 0x100000000ull, found = 0;
+    char line[512];
+    for (bool more = true; more && !found;) {
+        unsigned long long lo = 1ull << 39, hi = 0;
+        more = fgets(line, sizeof line, f) && sscanf(line, "%llx-%llx", &lo, &hi) == 2;
+        uint64_t start = (prev_end + 0xFFFFFFFFull) & ~0xFFFFFFFFull;
+        if (start + size <= (more ? lo : 1ull << 39) && start + size <= (1ull << 39)) found = start;
+        if (more && hi > prev_end) prev_end = hi;
+    }
+    fclose(f);
+    return found;
+}
+#endif
 static bool reserve_dyn_window(void) {
-    uint64_t want[3] = {0, GUEST_CANON + 0x100000000ull, GUEST_CANON};  // (macOS: room up to ~0x77_2000_0000)
+    uint64_t want[4] = {0, 0, GUEST_CANON + 0x100000000ull, GUEST_CANON};  // (macOS: room up to ~0x77_2000_0000)
     const char *e = getenv("LARECOMP_GUEST_BASE");
     if (e && *e) want[0] = strtoull(e, NULL, 16);
-    for (int i = 0; i < 3; i++) {
+#ifdef __linux__
+    want[1] = free_window(GUEST_SIZE);
+#endif
+    for (int i = 0; i < 4; i++) {
         uint64_t lo = want[i];
         if (!lo || (lo & 0xFFFFFFFFull) || lo + GUEST_SIZE > (1ull << 39)) continue;
         if (plat_reserve_guest(lo, lo + GUEST_SIZE)) { g_guest_lo = lo; return true; }
@@ -247,7 +273,7 @@ int main(int argc, char **argv) {
     bool no_launcher = nl && *nl && strcmp(nl, "0");
     bool skip_launcher = no_launcher || getenv("LARECOMP_INPUT");  // tests boot straight in
     if (getenv("LARECOMP_FORCE_LAUNCHER")) skip_launcher = false;  // (test: the start screen, then the scripted input)
-    static char arg_root[1024];
+    static char arg_root[4096];  // (>= PATH_MAX: Bionic's fortified realpath checks it)
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--play")) skip_launcher = true;
         else if (argv[i][0] != '-' && !realpath(argv[i], arg_root)) root = argv[i];  // (relative to where we started)
