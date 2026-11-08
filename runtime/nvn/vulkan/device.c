@@ -14,6 +14,7 @@
 #include "../../ui/menu.h"
 #include "../rqueue.h"
 #include "vk.h"
+#include "../../platform.h"
 #include "record.h"
 #include "../output_scale.h"
 #include "../renderer.h"
@@ -843,7 +844,9 @@ static void create_device(void) {
     b->fillModeNonSolid = h->fillModeNonSolid;
     b->samplerAnisotropy = h->samplerAnisotropy;
     b->textureCompressionBC = h->textureCompressionBC;
+#if PLAT_TOUCH
     b->textureCompressionASTC_LDR = h->textureCompressionASTC_LDR;  // (phones: the game's UI icons are ASTC, sampled natively)
+#endif
     b->shaderInt64 = h->shaderInt64;
     b->depthBiasClamp = h->depthBiasClamp;
     b->depthClamp = h->depthClamp;
