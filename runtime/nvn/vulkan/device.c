@@ -1023,7 +1023,11 @@ static void create_swapchain(void) {
         if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; break; }
     uint32_t count = caps.minImageCount + 1;
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
-    if (count > 8) count = 8;
+    if (count > VK_SC_MAX) count = VK_SC_MAX;
+#ifdef __ANDROID__
+    if (count < caps.minImageCount)
+        FATAL("Surface needs %u swapchain images; renderer supports at most %d.\n", caps.minImageCount, VK_SC_MAX);
+#endif
     VkSwapchainKHR old = g_vk.swapchain;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
@@ -1040,8 +1044,15 @@ static void create_swapchain(void) {
     if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
     g_vk.sc_format = sf.format;
     g_vk.sc_extent = ext;
+#ifdef __ANDROID__
+    VK_CHECK(vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, NULL));
+    if (g_vk.sc_count > VK_SC_MAX)
+        FATAL("Driver created %u swapchain images; renderer supports at most %d.\n", g_vk.sc_count, VK_SC_MAX);
+    VK_CHECK(vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images));
+#else
     g_vk.sc_count = 8;
     vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images);
+#endif
     for (uint32_t i = 0; i < g_vk.sc_count; i++) {
         VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = g_vk.sc_images[i],
                                     .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = sf.format,
@@ -1096,7 +1107,7 @@ uint64_t g_vk_frame_waits[4];
 // ================================================================== frames (start screen and game)
 // Acquire semaphores rotate per frame in flight; a slot is reused once the submission that waited on it is done.
 #define FRAMES 3
-static VkSemaphore acquire_sem[FRAMES], done_sem[8];
+static VkSemaphore acquire_sem[FRAMES], done_sem[VK_SC_MAX];
 static uint64_t slot_seq[FRAMES];
 static int slot;
 
@@ -1942,6 +1953,17 @@ void ui_window_init(void) {
         if (scripted) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     }
     window = SDL_CreateWindow("LAS Recomp", win_w, win_h, wflags);
+#ifdef __ANDROID__
+    // opened with the screen locked / off: no surface to make the window on yet; it comes once the activity shows.
+    // SDL_PumpEvents sleeps while the app is paused, so the 5 s count only time in the foreground, and a window that
+    // fails for another reason still shows the error below. (From mamcjr's LASRecompAndroid, MIT.)
+    for (int tries = 0; !window && tries < 20 * 5; tries++) {
+        if (tries == 0) LOG("[vk] waiting for the Android window (%s)\n", SDL_GetError());
+        SDL_PumpEvents();
+        SDL_Delay(50);
+        window = SDL_CreateWindow("LAS Recomp", win_w, win_h, wflags);
+    }
+#endif
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);
     rt_window_remember(window);
@@ -1996,6 +2018,14 @@ int ui_run(void) {
         SDL_Event e;
         while (SDL_WaitEventTimeout(&e, 16)) {
             input_rumble_poll();
+#ifdef __ANDROID__
+            // the app may not come back from the background (the system ends it there): keep the pipeline cache and
+            // the settings (options changed with the menu still open were lost). From LASRecomp-Android-Plus (MIT).
+            if (e.type == SDL_EVENT_WILL_ENTER_BACKGROUND && g_vk.dev) {
+                vk_pipeline_cache_save();
+                settings_save();
+            }
+#endif
             if (e.type == SDL_EVENT_QUIT) {
                 input_rumble_stop();
                 input_led_stop();

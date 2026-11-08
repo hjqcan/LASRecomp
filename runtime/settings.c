@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#ifdef __ANDROID__
+#include <stdatomic.h>
+#endif
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #elif defined(_WIN32)
@@ -316,8 +319,20 @@ void settings_load(void) {
 }
 
 void settings_save(void) {
+#ifdef __ANDROID__
+    // Written to larecomp.ini.tmp, then put in its place: a phone ends apps in the background at any moment (the app
+    // saves then too: vulkan/device.c), and a file cut short there lost every setting. One writer at a time. (From
+    // Nycolazs's LASRecomp-Android-Plus via mamcjr's LASRecompAndroid, MIT.)
+    static atomic_flag lock = ATOMIC_FLAG_INIT;
+    char tmp[1024];
+    snprintf(tmp, sizeof tmp, "%s.tmp", SETTINGS_FILE);
+    while (atomic_flag_test_and_set(&lock)) {}
+    FILE *f = fopen(tmp, "w");
+    if (!f) { LOG("[settings] cannot write %s\n", tmp); atomic_flag_clear(&lock); return; }
+#else
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f) { LOG("[settings] cannot write %s\n", SETTINGS_FILE); return; }
+#endif
     fprintf(f, "# LAS Recomp settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "aspect = %s\n", g_settings.aspect == ASPECT_ORIGINAL ? "original" : "unlocked");
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
@@ -394,5 +409,10 @@ void settings_save(void) {
     if (g_settings.rando_options[0]) fprintf(f, "rando_options = %s\n", g_settings.rando_options);
     for (int i = 0; i < RANDO_PRESETS_MAX; i++)
         if (g_settings.rando_presets[i][0]) fprintf(f, "rando_preset = %s\n", g_settings.rando_presets[i]);
+#ifdef __ANDROID__
+    if (fclose(f) != 0 || rename(tmp, SETTINGS_FILE) != 0) LOG("[settings] cannot write %s\n", SETTINGS_FILE);
+    atomic_flag_clear(&lock);
+#else
     fclose(f);
+#endif
 }

@@ -1099,6 +1099,14 @@ RT_ON_RESET(audio_reset) {
     LOG("[audio] reboot: %d outputs closed\n", n);
 }
 
+#ifdef __ANDROID__
+// A reboot, before the renderer lets the guest heap go (runtime/main.c teardown): with it placed as GPU memory
+// (VK_EXT_map_memory_placed, Turnip) it's unmapped there, and a renderer thread still mixing the game's voices read it
+// after, a crash on "back to the start screen" with sound playing. Safe to run again with the other resets. (From
+// mamcjr's LASRecompAndroid, MIT.)
+void audio_stop_all(void) { audio_reset(); }
+#endif
+
 // Buffers are copied into an SDL stream and released once the stream has drained below its target, so the
 // stream plays the role of the hardware queue. Without a device, buffers are released in real time.
 static void *audout_thread(void *arg) {
