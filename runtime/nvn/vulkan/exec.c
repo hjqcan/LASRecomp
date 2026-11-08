@@ -6886,6 +6886,16 @@ static void draw_(CmdRec *r, bool indexed) {
         if (fknown) prof_hook_known++;
     }
 #define FTEX(i) (hook_pass ? ftex[i] : shader_texture_object(1, &pr->fi->tex[i]))
+#if PLAT_TOUCH
+    if (fknown) {  // (the title and the file select, seen from their draws: what a tap does there, touch_controls.mm)
+        extern void texpatch_note_draw(int id);
+        for (int i = 0; i < pr->fi->ntex; i++) {
+            NvnTexture *t = FTEX(i);
+            const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
+            if (b && b->tp > 0) texpatch_note_draw(b->tp - 1);
+        }
+    }
+#endif
     {   // the Items page's cursor brackets while the cursor is on the companion card (runtime/hle/pets.c)
         extern bool pets_hide_item_cursor(void);
         extern bool texpatch_is_item_cursor(int id);

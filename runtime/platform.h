@@ -13,6 +13,9 @@
 // PLAT_TOUCH: a phone or tablet - a touch screen and no desktop around the window (runtime/ui/mobile/, the
 // on-screen controls, the menus as cards in the safe area, no Quit / Fullscreen). A phone port sets it to 1 and
 // implements the plat_touch_* functions below.
+#ifdef __ANDROID__
+#define PLAT_TOUCH 1
+#endif
 #ifndef PLAT_TOUCH
 #define PLAT_TOUCH 0
 #endif

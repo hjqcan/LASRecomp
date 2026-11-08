@@ -47,6 +47,8 @@ public class LASRecompActivity extends SDLActivity {
             Os.setenv("LARECOMP_GEN_DIR", new File(getFilesDir(), "gen").getAbsolutePath(), true);
             File driver = customDriver();  // (runtime/nvn/vulkan/android_driver.c: none = the system's)
             Os.setenv("LARECOMP_VK_DRIVER", driver != null ? driver.getAbsolutePath() : "", true);
+            // (a screen of 600 dp or more: runtime/platform/android_storage.c, read while libmain loads)
+            Os.setenv("LARECOMP_ANDROID_TABLET", getResources().getConfiguration().smallestScreenWidthDp >= 600 ? "1" : "0", true);
             // the desktop's debug and test switches (docs/debug-hooks.md) from the launch, in debuggable builds only (the
             // activity is exported: in a release build any app could start it with switches set):
             //   adb shell am start -n com.lasrecomp.android/com.lasrecomp.LASRecompActivity --es LARECOMP_LOG_SKIPS 1
@@ -203,6 +205,51 @@ public class LASRecompActivity extends SDLActivity {
         b.show();
     }
 
+    // The touch layer's text prompt (plat_touch_prompt): a dialog with a text field over the game, from any thread.
+    private android.app.AlertDialog prompt;
+
+    public void showPrompt(int serial, String title, String hint, byte[] initial, int maxLen, String ok, String cancel) {
+        runOnUiThread(() -> {
+            closePromptNow();
+            android.app.AlertDialog.Builder db = new android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert);
+            android.widget.EditText f = new android.widget.EditText(db.getContext());  // (the dialog's dark look)
+            f.setSingleLine(true);
+            f.setTextColor(0xFFFFFFFF);
+            f.setHintTextColor(0x99FFFFFF);
+            f.setHint(hint);
+            f.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+            f.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);  // (landscape: the keyboard's own full-screen field, no room for the dialog's)
+            if (maxLen > 0) f.setFilters(new android.text.InputFilter[] {new android.text.InputFilter.LengthFilter(maxLen)});
+            f.setText(new String(initial, java.nio.charset.StandardCharsets.UTF_8));
+            f.selectAll();
+            int pad = (int)(20 * getResources().getDisplayMetrics().density);
+            android.widget.FrameLayout box = new android.widget.FrameLayout(db.getContext());
+            box.setPadding(pad, pad / 2, pad, 0);
+            box.addView(f);
+            android.app.AlertDialog d = db
+                .setTitle(title).setView(box)
+                .setPositiveButton(ok, (x, w) -> { prompt = null; nativePromptDone(serial, f.getText().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)); })
+                .setNegativeButton(cancel, (x, w) -> { prompt = null; nativePromptDone(serial, null); })
+                .setOnCancelListener(x -> { prompt = null; nativePromptDone(serial, null); })
+                .create();
+            f.setOnEditorActionListener((v, action, e) -> {
+                if (action != android.view.inputmethod.EditorInfo.IME_ACTION_DONE) return false;
+                d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
+                return true;
+            });
+            d.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+            prompt = d;
+            d.show();
+        });
+    }
+
+    public void closePrompt() { runOnUiThread(this::closePromptNow); }
+
+    private void closePromptNow() {
+        if (prompt != null) prompt.dismiss();
+        prompt = null;
+    }
+
     // Starts the app again (a new process: the driver is chosen at start). Started while the app is in front (an alarm
     // would be a background start, which Android 14+ blocks), then this process ends and the system starts a new one
     // for it.
@@ -308,6 +355,7 @@ public class LASRecompActivity extends SDLActivity {
 
     static native void nativeFolderPicked(String uri);  // null: cancelled
     static native void nativeFilesPicked(String[] paths);  // empty: cancelled, null: no file picker
+    static native void nativePromptDone(int serial, byte[] text);  // null: cancelled
     static native void nativeImportProgress(long done, long total);
     static native boolean nativeImportCancelled();
 

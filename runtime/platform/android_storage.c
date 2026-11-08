@@ -5,6 +5,10 @@
 #include <jni.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
+
+#include "../platform.h"
 
 static void (*g_done)(const char *);
 static void (*g_progress)(uint64_t, uint64_t);
@@ -143,4 +147,78 @@ JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeImportProgress
 JNIEXPORT jboolean JNICALL Java_com_lasrecomp_LASRecompActivity_nativeImportCancelled(JNIEnv *env, jclass cls) {
     (void)env, (void)cls;
     return g_cancelled && g_cancelled() ? JNI_TRUE : JNI_FALSE;
+}
+
+// ---- the touch layer (platform.h)
+// (asked while the library loads, before JNI is up: the activity sets this first)
+bool plat_touch_tablet(void) {
+    const char *e = getenv("LARECOMP_ANDROID_TABLET");
+    return e && atoi(e) != 0;
+}
+// (the launcher icon's shortcuts: none on Android yet)
+bool plat_touch_play_request(char *seed, size_t n) { (void)seed, (void)n; return false; }
+void plat_touch_shortcuts_sync(void) {}
+
+// The system's text prompt: the activity's dialog, its answer polled. Text as UTF-8 bytes (JNI's own strings are
+// modified UTF-8: an emoji in a name would not survive).
+static pthread_mutex_t g_prompt_lock = PTHREAD_MUTEX_INITIALIZER;
+static char g_prompt_text[256];
+static int g_prompt_result;  // 1 OK, -1 cancelled (taken once)
+static int g_prompt_serial;  // (a prompt cancelled from our side: its late answer is dropped)
+
+static void prompt_answer(int serial, int result, const char *text, size_t len) {
+    pthread_mutex_lock(&g_prompt_lock);
+    if (serial == g_prompt_serial) {
+        g_prompt_result = result;
+        snprintf(g_prompt_text, sizeof g_prompt_text, "%.*s", (int)len, text ? text : "");
+    }
+    pthread_mutex_unlock(&g_prompt_lock);
+}
+
+void plat_touch_prompt(const char *title, const char *hint, const char *initial, int max_len, const char *ok, const char *cancel) {
+    pthread_mutex_lock(&g_prompt_lock);
+    int serial = ++g_prompt_serial;
+    g_prompt_result = 0;
+    pthread_mutex_unlock(&g_prompt_lock);
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    jmethodID m = env && act ? activity_method(env, act, "showPrompt",
+        "(ILjava/lang/String;Ljava/lang/String;[BILjava/lang/String;Ljava/lang/String;)V") : NULL;
+    if (m) {
+        jstring t = (*env)->NewStringUTF(env, title ? title : ""), h = (*env)->NewStringUTF(env, hint ? hint : "");
+        jstring o = (*env)->NewStringUTF(env, ok ? ok : "OK"), c = (*env)->NewStringUTF(env, cancel ? cancel : "Cancel");
+        jsize n = initial ? (jsize)strlen(initial) : 0;
+        jbyteArray v = (*env)->NewByteArray(env, n);
+        if (n) (*env)->SetByteArrayRegion(env, v, 0, n, (const jbyte *)initial);
+        (*env)->CallVoidMethod(env, act, m, serial, t, h, v, max_len, o, c);
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env), m = NULL;
+        (*env)->DeleteLocalRef(env, t), (*env)->DeleteLocalRef(env, h), (*env)->DeleteLocalRef(env, v);
+        (*env)->DeleteLocalRef(env, o), (*env)->DeleteLocalRef(env, c);
+    }
+    if (act) (*env)->DeleteLocalRef(env, act);
+    if (!m) prompt_answer(serial, -1, NULL, 0);  // (no dialog: the field as it was)
+}
+
+int plat_touch_prompt_poll(char *out, size_t n) {
+    pthread_mutex_lock(&g_prompt_lock);
+    int r = g_prompt_result;
+    if (r) { snprintf(out, n, "%s", g_prompt_text); g_prompt_result = 0; }
+    pthread_mutex_unlock(&g_prompt_lock);
+    return r;
+}
+
+void plat_touch_prompt_cancel(void) {
+    pthread_mutex_lock(&g_prompt_lock);
+    g_prompt_serial++, g_prompt_result = 0;
+    pthread_mutex_unlock(&g_prompt_lock);
+    android_call("closePrompt");
+}
+
+JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativePromptDone(JNIEnv *env, jclass cls, jint serial, jbyteArray text) {
+    (void)cls;
+    if (!text) { prompt_answer(serial, -1, NULL, 0); return; }
+    jsize n = (*env)->GetArrayLength(env, text);
+    jbyte *b = (*env)->GetByteArrayElements(env, text, NULL);
+    prompt_answer(serial, 1, (const char *)b, (size_t)n);
+    (*env)->ReleaseByteArrayElements(env, text, b, JNI_ABORT);
 }
