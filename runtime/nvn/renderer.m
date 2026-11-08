@@ -5474,7 +5474,7 @@ static id<MTLTexture> copy_raw_view(id<MTLTexture> t) {
 }
 
 static void draw_copy(id<MTLTexture> s, int sx0, int sy0, int sw, int sh, id<MTLTexture> d, int dx0, int dy0, int dw, int dh,
-                      bool linear) {
+                      bool linear, bool mirror_y) {
     static int raw = -1;  // LARECOMP_COPY_RAW_SRGB: copies move values unchanged (no sRGB decode/encode on either side)
     if (raw < 0) raw = getenv("LARECOMP_COPY_RAW_SRGB") != NULL;
     if (raw) { s = copy_raw_view(s); d = copy_raw_view(d); }
@@ -5503,7 +5503,7 @@ static void draw_copy(id<MTLTexture> s, int sx0, int sy0, int sw, int sh, id<MTL
     }
     id<MTLSamplerState> smp = linear ? lin : near;
     void (^copy)(void) = ^{
-        float r[4] = {(float)sx0 / s.width, (float)sy0 / s.height, (float)sw / s.width, (float)sh / s.height};
+        float r[4] = {(float)sx0 / s.width, (float)(mirror_y ? sy0 + sh : sy0) / s.height, (float)sw / s.width, (float)(mirror_y ? -sh : sh) / s.height};
         id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:rp];
         [e setRenderPipelineState:pipe];
         [e setViewport:(MTLViewport){dx0, dy0, dw, dh, 0, 1}];
@@ -5546,7 +5546,7 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
         td.storageMode = MTLStorageModePrivate;
         id<MTLTexture> small = [dev newTextureWithDescriptor:td];
         tape_mute++;  // (replays make no readbacks)
-        draw_copy(tex, 0, 0, (int)lroundf(t->width * tsx), (int)lroundf(t->height * tsy), small, 0, 0, t->width, t->height, true);
+        draw_copy(tex, 0, 0, (int)lroundf(t->width * tsx), (int)lroundf(t->height * tsy), small, 0, 0, t->width, t->height, true, false);
         tape_mute--;
         tex = small;
     }
@@ -5689,7 +5689,10 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
         }
         return;
     }
-    if (renderer_format_is_depth(dt->format) || (s.pixelFormat == d.pixelFormat && sw == dw && sh == dh && s.sampleCount == d.sampleCount)) {
+    // NVN's copy flag 8 mirrors the copy vertically. The game sets it when it grabs the world for a blurred background
+    // (Items screen, Game Over) and its shaders then read the grab upside down.
+    bool mirror_y = (flags & 8) && !renderer_format_is_depth(dt->format);
+    if (renderer_format_is_depth(dt->format) || (!mirror_y && s.pixelFormat == d.pixelFormat && sw == dw && sh == dh && s.sampleCount == d.sampleCount)) {
         void (^copy)(void) = ^{
             id<MTLBlitCommandEncoder> b = [cb() blitCommandEncoder];
             [b copyFromTexture:s sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(sx0, sy0, 0)
@@ -5701,7 +5704,7 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
         tape_block(copy);
         return;
     }
-    draw_copy(s, sx0, sy0, sw, sh, d, dx0, dy0, dw, dh, flags & 1);
+    draw_copy(s, sx0, sy0, sw, sh, d, dx0, dy0, dw, dh, flags & 1, mirror_y);
 }
 
 // ------------------------------------------------------------------ executor
