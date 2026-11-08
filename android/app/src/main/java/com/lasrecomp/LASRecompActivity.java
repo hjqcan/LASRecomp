@@ -307,8 +307,57 @@ public class LASRecompActivity extends SDLActivity {
     static native void nativeDriverPicked(String result);  // a package's name, "-" the system's again, "" not a driver
 
     static native void nativeFolderPicked(String uri);  // null: cancelled
+    static native void nativeFilesPicked(String[] paths);  // empty: cancelled, null: no file picker
     static native void nativeImportProgress(long done, long total);
     static native boolean nativeImportCancelled();
+
+    // ---- files for the start screen (Settings > Game font's Import fonts: runtime/ui/launcher.mm). The system's picker
+    // gives content:// links, not paths, so each picked .ttf / .bfttf is copied under the cache folder by its own name
+    // first; other files are passed by name only (the import skips them).
+    private static final int PICK_FILES = 0x4c44;
+
+    public void pickFiles() {
+        runOnUiThread(() -> {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("*/*");
+            i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            try {
+                startActivityForResult(i, PICK_FILES);
+            } catch (Exception e) {
+                Log.e(TAG, "file picker: " + e);
+                nativeFilesPicked(null);
+            }
+        });
+    }
+
+    private String[] copyPicked(List<Uri> picks) {
+        File dir = new File(getCacheDir(), "picked");
+        deleteTree(dir);
+        dir.mkdirs();
+        List<String> out = new ArrayList<>();
+        for (Uri f : picks) {
+            String name = null;
+            try (Cursor c = getContentResolver().query(f, new String[] {android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                if (c != null && c.moveToFirst() && !c.isNull(0)) name = c.getString(0);
+            } catch (Exception ignored) {
+            }
+            if (name == null || name.isEmpty() || name.contains("/")) continue;
+            File dst = new File(dir, name);
+            out.add(dst.getPath());
+            String low = name.toLowerCase();
+            if (!low.endsWith(".ttf") && !low.endsWith(".bfttf")) continue;
+            try (InputStream in = getContentResolver().openInputStream(f); OutputStream o = new FileOutputStream(dst)) {
+                if (in == null) continue;
+                byte[] buf = new byte[1 << 16];
+                for (int k; (k = in.read(buf)) > 0; ) o.write(buf, 0, k);
+            } catch (Exception e) {  // (the import reports it as not copied)
+                Log.e(TAG, "picked file: " + e);
+                dst.delete();
+            }
+        }
+        return out.toArray(new String[0]);
+    }
 
     // Called from the start screen's Choose... (any thread)
     public void pickGameFolder() {
@@ -348,6 +397,16 @@ public class LASRecompActivity extends SDLActivity {
         if (requestCode == PICK_DRIVER) {
             Uri f = resultCode == RESULT_OK && data != null ? data.getData() : null;
             if (f != null) new Thread(() -> nativeDriverPicked(copyDriver(f)), "copy-driver").start();
+            return;
+        }
+        if (requestCode == PICK_FILES) {
+            List<Uri> picks = new ArrayList<>();
+            if (resultCode == RESULT_OK && data != null) {
+                if (data.getClipData() != null)
+                    for (int k = 0; k < data.getClipData().getItemCount(); k++) picks.add(data.getClipData().getItemAt(k).getUri());
+                else if (data.getData() != null) picks.add(data.getData());
+            }
+            new Thread(() -> nativeFilesPicked(copyPicked(picks)), "copy-picked").start();
             return;
         }
         if (requestCode != PICK_GAME_FOLDER) {

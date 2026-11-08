@@ -4,6 +4,7 @@
 #include <SDL3/SDL.h>
 #include <jni.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static void (*g_done)(const char *);
 static void (*g_progress)(uint64_t, uint64_t);
@@ -82,6 +83,34 @@ bool android_driver_error_dialog(const char *text) {
     if (c) (*env)->DeleteLocalRef(env, c);
     (*env)->DeleteLocalRef(env, act);
     return shown;
+}
+
+static void (*g_files_done)(void *, const char *const *, int);
+void android_pick_files(void (*done)(void *, const char *const *, int)) {
+    g_files_done = done;
+    if (!android_call("pickFiles")) done(NULL, NULL, -1);
+}
+
+JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeFilesPicked(JNIEnv *env, jclass cls, jobjectArray paths) {
+    (void)cls;
+    void (*done)(void *, const char *const *, int) = g_files_done;
+    if (!done) return;
+    if (!paths) { done(NULL, NULL, -1); return; }
+    jsize n = (*env)->GetArrayLength(env, paths);
+    const char **files = calloc((size_t)n + 1, sizeof *files);
+    jstring *js = calloc((size_t)n + 1, sizeof *js);
+    if (!files || !js) { free(files), free(js); done(NULL, NULL, -1); return; }
+    int k = 0;
+    for (jsize i = 0; i < n; i++) {
+        js[k] = (jstring)(*env)->GetObjectArrayElement(env, paths, i);
+        files[k] = js[k] ? (*env)->GetStringUTFChars(env, js[k], NULL) : NULL;
+        if (files[k]) k++;
+        else if (js[k]) (*env)->DeleteLocalRef(env, js[k]);
+    }
+    files[k] = NULL;
+    done(NULL, files, -1);
+    for (int i = 0; i < k; i++) (*env)->ReleaseStringUTFChars(env, js[i], files[i]), (*env)->DeleteLocalRef(env, js[i]);
+    free(files), free(js);
 }
 
 static void (*g_driver_done)(const char *);
