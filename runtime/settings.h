@@ -31,6 +31,7 @@ extern const char *const g_language_endonyms[N_LANGUAGES];  // each in its own l
 
 enum { RANDO_PRESETS_MAX = 20 };  // (the Randomizer tab's own presets: settings.rando_presets)
 
+enum { AUDIO_OUT_STEREO, AUDIO_OUT_51, N_AUDIO_OUTS };
 enum { FPS_OFF, FPS_TOP_LEFT, FPS_TOP_RIGHT, FPS_BOTTOM_LEFT, FPS_BOTTOM_RIGHT, N_FPS_CORNERS };
 
 typedef struct {
@@ -42,6 +43,7 @@ typedef struct {
     bool upscaler_auto;  // never chosen: the default for this GPU (settings_resolve_defaults); saved as "auto"
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     float volume;        // master volume, 1 = 100%
+    int audio_out;       // AUDIO_OUT_*: speaker layout of the game's sound (runtime/services/audio.c)
     bool reverb;         // room reverb effect
     bool movie_audio;
     bool menu_sounds;    // LAS Recomp's own menu sounds (runtime/menu_sfx.c)
@@ -111,6 +113,7 @@ typedef struct {
 
 enum { N_ENEMY_COLOUR_MODES = 3, N_SCREEN_FILTERS = 4, N_WEATHERS = 6 };
 extern const char *const g_screen_filters[N_SCREEN_FILTERS];  // (the menu's names)
+extern const char *const g_audio_outs[N_AUDIO_OUTS];  // (the menu's names: Stereo, 5.1)
 extern const char *const g_weathers[N_WEATHERS];  // (the menu's names: Off, Rain, Snow, Storm, Blizzard, Random)
 extern const char *const g_enemy_colour_modes[N_ENEMY_COLOUR_MODES];  // (the menu's names)
 

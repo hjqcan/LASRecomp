@@ -27,6 +27,8 @@ static const char *const k_enemy_colour_keys[N_ENEMY_COLOUR_MODES] = {"off", "se
 const char *const g_screen_filters[N_SCREEN_FILTERS] = {LN("Off"), LN("Game Boy"), LN("Game Boy Color"),
                                                         LN("Grayscale")};
 static const char *const k_screen_filter_keys[N_SCREEN_FILTERS] = {"off", "gameboy", "gameboy_color", "grayscale"};  // (else: off)
+const char *const g_audio_outs[N_AUDIO_OUTS] = {LN("Stereo"), LN("5.1")};
+static const char *const k_audio_out_keys[N_AUDIO_OUTS] = {"stereo", "5.1"};  // (else: stereo)
 const char *const g_weathers[N_WEATHERS] = {LN("Off"), LN("Rain"), LN("Snow"), LN("Storm"), LN("Blizzard"), LN("Random")};
 static const char *const k_weather_keys[N_WEATHERS] = {"off", "rain", "snow", "storm", "blizzard", "random"};  // (else: off)
 
@@ -206,6 +208,10 @@ void settings_load(void) {
         if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
+        else if (!strcmp(key, "audio_output")) {
+            g_settings.audio_out = AUDIO_OUT_STEREO;
+            for (int i = 0; i < N_AUDIO_OUTS; i++) if (!strcmp(val, k_audio_out_keys[i])) g_settings.audio_out = i;
+        }
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
         else if (!strcmp(key, "menu_sounds")) g_settings.menu_sounds = atoi(val) != 0;
@@ -322,6 +328,7 @@ void settings_save(void) {
     fprintf(f, "aspect = %s\n", g_settings.aspect == ASPECT_ORIGINAL ? "original" : "unlocked");
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
     fprintf(f, "volume = %.2f\n", g_settings.volume);
+    fprintf(f, "audio_output = %s\n", k_audio_out_keys[g_settings.audio_out == AUDIO_OUT_51]);
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "menu_sounds = %d\n", g_settings.menu_sounds);
