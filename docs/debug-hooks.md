@@ -213,6 +213,7 @@ The per-GPU default switches are explained, with the GPUs they were tested on, i
 | Variable | Values | What it does |
 |---|---|---|
 | `LARECOMP_GPU` | index | Use this GPU (the index from the `[vk] gpu N:` log lines) instead of the first discrete one. |
+| `LARECOMP_VK_PIPELINE_CACHE` | 0 | Start with an empty Vulkan pipeline cache (the saved one is written over as usual). The Android emulator hangs loading a large one. |
 | `LARECOMP_VK_VALIDATION` | 1 | Turn the Khronos validation layer on (it must be installed) and log its warnings and errors (first 500). |
 | `LARECOMP_VK_VALIDATION_STOP` | 1 | As `LARECOMP_VK_VALIDATION`, and exit at the first validation error. |
 | `LARECOMP_VK_PRESENT` | `mailbox`, `fifo`, `immediate` | Present mode (default mailbox, fifo with frame generation). |

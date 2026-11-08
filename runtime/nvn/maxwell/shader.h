@@ -130,6 +130,10 @@ extern bool maxwell_gmem_fs_miss;
 extern bool maxwell_glsl_stack_vars;
 extern bool maxwell_glsl_structured;  // (the backend's default for this GPU: LARECOMP_VK_STATIC_STACKS / _STRUCTURE override)
 extern bool maxwell_glsl_push;  // (the backend's default: c1 inlined + push constants; LARECOMP_VK_INLINE_C1 / _PUSH_CB override)
+// (GLSL) fmin / fmax / saturate as the GPU's own min / max / clamp instead of the helpers that test for NaN: for GPUs
+// whose min / max return the operand that isn't NaN and whose clamp to [0, 1] saturates NaN to 0 (Adreno, as D3D
+// requires). The backend's default (exec.c: Android); LARECOMP_VK_FAST_MINMAX=1 / =0 overrides.
+extern bool maxwell_glsl_fast_minmax;
 // The stage's compiler constants (c1: the bytes after its code), set by the caller around maxwell_translate (under its
 // lock). GLSL with LARECOMP_VK_INLINE_C1=1: statically indexed c1 reads become literals (no buffer load).
 extern const uint8_t *maxwell_const_data;
