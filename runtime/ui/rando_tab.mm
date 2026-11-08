@@ -24,6 +24,7 @@
 extern "C" {
 #include "../hle.h"
 #include "../paths.h"
+#include "../platform.h"
 #include "../rando.h"
 #include "../settings.h"
 extern const char *g_romfs_dir;
@@ -99,6 +100,9 @@ static void scan(void) {
     closedir(d);
     std::sort(g_seeds.begin(), g_seeds.end(), [](const Seed &a, const Seed &b) { return a.mtime > b.mtime; });
     g_scanned = true;
+#if PLAT_TOUCH
+    plat_touch_shortcuts_sync();  // (the launcher shortcuts' seeds: made, renamed or deleted here)
+#endif
 }
 
 // ---- generation (background process)
@@ -1456,7 +1460,7 @@ extern "C" void rando_tab_draw(float scale) {
     // (the start screen: no game loaded, nothing playing - and the seed's patches mustn't be applied yet)
     const char *active = !g_start_screen && rando_seed_dir() ? rando_seed_dir() + 6 : NULL;
 
-    opt_begin("##rando", scale);
+    opt_begin("##rando", scale, true);
     opt_compact();
     std::string cur_preset = L(current_preset().c_str());  // (Seeds and Presets share a line: half rows, a long name cut short)
     {  // (12 characters at most, cut between UTF-8 characters)
@@ -1471,7 +1475,7 @@ extern "C" void rando_tab_draw(float scale) {
         char n[16];
         snprintf(n, sizeof n, "%d", (int)g_seeds.size());
         bool open = opt_link(k_cat_name[c], NULL, c == CAT_SEEDS ? n : c == CAT_PRESETS ? cur_preset.c_str() : NULL);
-        bool clicked = ImGui::IsItemClicked();
+        bool clicked = ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left);  // (the row fires on the release)
         if (c == g_cat) take_focus(FOCUS_CAT);
         bool pick = (opt_item_nav_focused() && g_cat != c) || open;  // (moving down the list shows each)
         if (pick && g_cat != c)

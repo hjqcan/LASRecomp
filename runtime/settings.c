@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <math.h>
 #ifdef __ANDROID__
 #include <stdatomic.h>
 #endif
@@ -35,6 +36,12 @@ static const char *const k_audio_out_keys[N_AUDIO_OUTS] = {"stereo", "5.1"};  //
 const char *const g_weathers[N_WEATHERS] = {LN("Off"), LN("Rain"), LN("Snow"), LN("Storm"), LN("Blizzard"), LN("Random")};
 static const char *const k_weather_keys[N_WEATHERS] = {"off", "rain", "snow", "storm", "blizzard", "random"};  // (else: off)
 
+// the on-screen controls' ini names (touch_ctl_<name>; runtime/ui/mobile/touch_controls.mm's order)
+const char *touch_control_name(int i) {
+    static const char *const names[TOUCH_NCTL] = {"stick", "a", "b", "x", "y", "l", "r", "zl", "zr", "plus", "minus", "menu", "start"};
+    return i >= 0 && i < TOUCH_NCTL ? names[i] : "";
+}
+
 Settings g_settings = {
     .aspect = ASPECT_UNLOCKED,
     .fullscreen = false,
@@ -47,6 +54,8 @@ Settings g_settings = {
     .controller_light = true,
     .menu_confirm = MENU_CONFIRM_CONTROLLER,
     .show_fps = FPS_OFF,
+    .touch_opacity = 0.6f,
+    .touch_size = 1.0f,
     .inv_keys = true,
     .tracker = true,
     .tracker_filters = -1,
@@ -244,6 +253,23 @@ void settings_load(void) {
         else if (!strcmp(key, "inv_keys")) g_settings.inv_keys = atoi(val) != 0;
         else if (!strcmp(key, "dpad_mode")) g_settings.dpad_mode = !strcmp(val, "items") ? DPAD_ITEMS : !strcmp(val, "move") ? DPAD_MOVE : DPAD_NOTHING;
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_mode = atoi(val) ? DPAD_MOVE : DPAD_NOTHING;  // (older settings: a toggle)
+        else if (!strcmp(key, "touch_controls")) g_settings.touch_mode = !strcmp(val, "always") ? 1 : !strcmp(val, "off") ? 2 : 0;
+        else if (!strcmp(key, "touch_opacity")) g_settings.touch_opacity = (float)atof(val);
+        else if (!strcmp(key, "touch_all")) g_settings.touch_all = atoi(val) != 0;
+        else if (!strcmp(key, "touch_stick_fixed")) g_settings.touch_stick_fixed = atoi(val) != 0;
+        else if (!strcmp(key, "touch_size")) g_settings.touch_size = (float)atof(val);
+        else if (!strncmp(key, "touch_ctl_", 10)) {  // (the layout editor: x, y, size, hidden)
+            for (int i = 0; i < TOUCH_NCTL; i++) {
+                if (strcmp(key + 10, touch_control_name(i))) continue;
+                float x = -1, y = -1, s = 1;
+                int hid = 0;
+                if (sscanf(val, "%f , %f , %f , %d", &x, &y, &s, &hid) >= 3) {
+                    g_settings.touch_moved[i] = x >= 0 && y >= 0;
+                    g_settings.touch_pos[i][0] = x, g_settings.touch_pos[i][1] = y;
+                    g_settings.touch_scale[i] = s, g_settings.touch_hidden[i] = hid != 0;
+                }
+            }
+        }
         else if (!strcmp(key, "rumble")) g_settings.rumble = atoi(val) != 0;
         else if (!strcmp(key, "rumble_strength")) g_settings.rumble_strength = atoi(val);
         else if (!strcmp(key, "controller_light")) g_settings.controller_light = atoi(val) != 0;
@@ -364,6 +390,17 @@ void settings_save(void) {
     fprintf(f, "resolution = %s\n", g_settings.res_auto ? "auto" : res_name(g_settings.res_mode));
     fprintf(f, "inv_keys = %d\n", g_settings.inv_keys);
     fprintf(f, "dpad_mode = %s\n", g_settings.dpad_mode == DPAD_ITEMS ? "items" : g_settings.dpad_mode == DPAD_MOVE ? "move" : "nothing");
+    fprintf(f, "touch_controls = %s\n", g_settings.touch_mode == 1 ? "always" : g_settings.touch_mode == 2 ? "off" : "auto");
+    fprintf(f, "touch_opacity = %.2f\n", g_settings.touch_opacity);
+    fprintf(f, "touch_all = %d\ntouch_stick_fixed = %d\n", g_settings.touch_all, g_settings.touch_stick_fixed);
+    fprintf(f, "touch_size = %.2f\n", g_settings.touch_size);
+    {
+        for (int i = 0; i < TOUCH_NCTL; i++)
+            if (g_settings.touch_moved[i] || g_settings.touch_hidden[i] || (g_settings.touch_scale[i] > 0.1f && fabsf(g_settings.touch_scale[i] - 1) > 0.01f))
+                fprintf(f, "touch_ctl_%s = %.4f, %.4f, %.2f, %d\n", touch_control_name(i), g_settings.touch_moved[i] ? g_settings.touch_pos[i][0] : -1,
+                        g_settings.touch_moved[i] ? g_settings.touch_pos[i][1] : -1, g_settings.touch_scale[i] > 0.1f ? g_settings.touch_scale[i] : 1,
+                        g_settings.touch_hidden[i]);
+    }
     fprintf(f, "rumble = %d\n", g_settings.rumble);
     fprintf(f, "rumble_strength = %d\n", g_settings.rumble_strength);
     fprintf(f, "controller_light = %d\n", g_settings.controller_light);
