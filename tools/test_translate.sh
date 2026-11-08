@@ -24,7 +24,8 @@ RENAME="-Dmaxwell_translate=old_maxwell_translate -Dmaxwell_free=old_maxwell_fre
  -Dmaxwell_gmem_fs_miss=old_maxwell_gmem_fs_miss -Dmaxwell_glsl_stack_vars=old_maxwell_glsl_stack_vars
  -Dmaxwell_gmem_mirror=old_maxwell_gmem_mirror -Dmaxwell_glsl_structured=old_maxwell_glsl_structured
  -Dmaxwell_glsl_push=old_maxwell_glsl_push -Dmaxwell_const_data=old_maxwell_const_data
- -Dmaxwell_const_size=old_maxwell_const_size -Dmaxwell_push_base=old_maxwell_push_base -Dmaxwell_push_cap=old_maxwell_push_cap"
+ -Dmaxwell_const_size=old_maxwell_const_size -Dmaxwell_push_base=old_maxwell_push_base -Dmaxwell_push_cap=old_maxwell_push_cap
+ -Dmaxwell_glsl_fast_minmax=old_maxwell_glsl_fast_minmax"
 PRE=""
 case "$(uname -s)" in MINGW*|MSYS*) PRE="-include malloc.h";; esac
 $CC -O2 -w $PRE $RENAME -c "$OUT/old/translate.c" -o "$OUT/old.o"
