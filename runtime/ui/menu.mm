@@ -334,6 +334,11 @@ void menu_apply_window_requests(void *win) {
     g_pixel_density = SDL_GetWindowPixelDensity(w);
     static bool text_input;
     bool want_text = capturing();
+#ifdef __ANDROID__
+    // There, text input brings up the on-screen keyboard, which also takes the hardware keyboard's keys: only while
+    // something takes text (a text field in the menu, the game's name entry), not whenever the menu is open
+    want_text = g_kbd.load() == 1 || (ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput);  // (none between the start screen and the game)
+#endif
     if (want_text != text_input) {
         if (want_text) SDL_StartTextInput(w);
         else SDL_StopTextInput(w);
@@ -540,6 +545,29 @@ extern "C" void renderer_get_scale(float *sx, float *sy);
 extern "C" int input_pad_family(void);  // runtime/hle/input.c
 extern "C" double output_scale_dynamic_factor(void);
 
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+// Metal HUD turned on while its library isn't loaded (the game started with the setting off): it shows only after a
+// restart (runtime/main.c metal_hud_relaunch). LARECOMP_MENU_HUD_RESTART=1 (test): the note opens with the Video tab.
+static void metal_hud_restart_popup(float scale) {
+    static bool test = getenv("LARECOMP_MENU_HUD_RESTART") != NULL;
+    if (test) test = false, ImGui::OpenPopup("##hudrestart");
+    if (!ImGui::BeginPopupModal("##hudrestart", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar))
+        return;
+    ImGui::PushFont(g_font_big);
+    ImGui::TextColored(plastic_col(plastic_theme().title), "%s", L("Restart required"));
+    ImGui::PopFont();
+    ImGui::Spacing();
+    ImGui::TextUnformatted(L("The Metal HUD shows after you restart the game."));
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::SetItemDefaultFocus();
+    if (ImGui::Button(L("OK"), ImVec2(220 * scale, 0)) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+        ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+#endif
+
 static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
@@ -560,6 +588,14 @@ static void tab_display(void) {
     opt_toggle("Frame Generation", &g_settings.frame_interp, false,
                "Experimental. Draws extra images between the game's frames for smoother motion, up to your display's "
                "refresh rate. On a 120 Hz display the game shows 120 fps. Some visual glitches are possible.");
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+    if (opt_toggle("Metal HUD", &g_settings.metal_hud, false,
+                   "Shows Apple's performance overlay with frame rate, GPU time and memory. Turning it on may need a "
+                   "restart.") &&
+        g_settings.metal_hud && !getenv("MTL_HUD_ENABLED"))
+        ImGui::OpenPopup("##hudrestart");
+    metal_hud_restart_popup(scale);
+#endif
     {   // (a live preview, as an Off / On choice)
         static const char *oo[] = {LN("Off"), LN("On")};
         int rb = g_settings.blur_removal;

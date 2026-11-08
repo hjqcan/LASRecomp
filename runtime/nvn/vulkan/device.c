@@ -900,8 +900,13 @@ static void create_device(void) {
     pipeline_cache_tag(tag, sizeof tag);
     size_t sz = 0;
     void *data = NULL;
-    FILE *fp = shader_cache_tag_ok(PCACHE_TAG, tag) ? fopen(PCACHE_FILE, "rb") : NULL;
-    if (!fp && !access(PCACHE_FILE, F_OK)) LOG("[vk] pipeline cache from another build / GPU / driver: starting a new one\n");
+    // LARECOMP_VK_PIPELINE_CACHE=0 (test): start with an empty one, saved over the old as usual. The Android emulator's
+    // gfxstream hangs in vkCreatePipelineCache given a large one (~300 MB after a session).
+    const char *pce = getenv("LARECOMP_VK_PIPELINE_CACHE");
+    bool pc_load = !(pce && !atoi(pce));
+    FILE *fp = pc_load && shader_cache_tag_ok(PCACHE_TAG, tag) ? fopen(PCACHE_FILE, "rb") : NULL;
+    if (!pc_load) LOG("[vk] pipeline cache: starting empty (LARECOMP_VK_PIPELINE_CACHE=0)\n");
+    else if (!fp && !access(PCACHE_FILE, F_OK)) LOG("[vk] pipeline cache from another build / GPU / driver: starting a new one\n");
     if (fp) {
         fseek(fp, 0, SEEK_END);
         sz = (size_t)ftell(fp);
@@ -972,9 +977,26 @@ static VkPresentModeKHR present_mode(void) {
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
+#ifdef __ANDROID__
+static bool recreate_surface(void);
+#endif
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
+#ifdef __ANDROID__
+    {   // (the window can go while the swapchain is made - the app sent to the background at start: made again, or
+        // no swapchain until the window is back)
+        VkResult r = g_vk.surface ? vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps)
+                                  : VK_ERROR_SURFACE_LOST_KHR;
+        if (r == VK_ERROR_SURFACE_LOST_KHR) {
+            if (!recreate_surface()) return;
+            r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps);
+        }
+        if (r == VK_ERROR_SURFACE_LOST_KHR) return;
+        VK_CHECK(r);
+    }
+#else
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
+#endif
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
 #ifdef __ANDROID__

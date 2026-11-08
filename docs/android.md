@@ -45,3 +45,10 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n com.lasrecomp.android/com.lasrecomp.LASRecompActivity
 adb logcat -s LASRecomp
 ```
+
+The desktop's debug switches ([debug-hooks.md](debug-hooks.md)) are passed with the launch (debug builds only):
+`adb shell am start -n com.lasrecomp.android/com.lasrecomp.LASRecompActivity --es LARECOMP_LOG_SKIPS 1`.
+
+The emulator draws the start screen and the movies, but not the game's world: its Vulkan goes to the Mac through
+gfxstream and MoltenVK, whose translation of the game's shaders to Metal fails to compile ("call to 'fmin' is
+ambiguous"), so those draws are skipped. A phone's GPU compiles them directly; the game itself runs there.
