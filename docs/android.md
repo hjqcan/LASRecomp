@@ -52,3 +52,7 @@ The desktop's debug switches ([debug-hooks.md](debug-hooks.md)) are passed with 
 The emulator draws the start screen and the movies, but not the game's world: its Vulkan goes to the Mac through
 gfxstream and MoltenVK, whose translation of the game's shaders to Metal fails to compile ("call to 'fmin' is
 ambiguous"), so those draws are skipped. A phone's GPU compiles them directly; the game itself runs there.
+
+The emulator's keyboard can't hold a key: each key event from the host arrives as a press with its release a few
+microseconds later (and again on every key repeat), so held keys such as WASD walk in tiny steps. A real keyboard on
+a phone holds keys normally.
