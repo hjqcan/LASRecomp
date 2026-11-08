@@ -106,7 +106,7 @@ val genZip by tasks.registering(Zip::class) {
     from(repo.resolve("runtime")) { include("cpu.h", "simd.h", "simd_fp.h", "gamelib.h", "hle/hle_symbols.txt"); into("gamelib-src")
         eachFile { if (name == "hle_symbols.txt") path = "gamelib-src/hle_symbols.txt" } }
     from(repo.resolve("tools/gamelib_entry.c")) { into("gamelib-src") }
-    from(repo.resolve("tools/hot_functions.txt")) { into("gamelib-src") }
+    from(repo.resolve("tools")) { include("hot_functions*.txt"); into("gamelib-src") }
     includeEmptyDirs = false
 }
 tasks.named("preBuild") { dependsOn(prepareLasRecomp, genZip) }

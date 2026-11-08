@@ -180,9 +180,9 @@ static void android_env(const char *work) {
 // Hot / cold: compiling the generated C at -O1 is most of the setup's minutes on a phone, and most of the game's
 // functions never run in a play session. gamelib-src/hot_functions.txt (the functions play sessions entered, from
 // LASRecomp-Android-Plus by Nycolazs, MIT) keeps those at -O1; every other function in a generated file gets optnone,
-// the -O0 code generator, about 2.3x faster to compile. The list was made on the game's 1.0.0: other versions (no
-// list for them yet) build all at -O1 as before, and so does LARECOMP_GAMEBUILD_HOT=0. It changes how fast the code
-// builds, not what it does. From LASRecompAndroid by mamcjr (MIT).
+// the -O0 code generator, about 2.3x faster to compile. The list was made on the game's 1.0.0; hot_functions_v1_0_1.txt
+// is the same functions in 1.0.1 / 1.1.0 (tools/hot_functions_map.py). LARECOMP_GAMEBUILD_HOT=0: all at -O1. It changes
+// how fast the code builds, not what it does. From LASRecompAndroid by mamcjr (MIT).
 static uint64_t *g_hot;
 static size_t g_nhot;
 static unsigned long long g_cold_fns, g_all_fns;
@@ -530,9 +530,10 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     {
         const GameVersion *gv = game_version_of(game_dir);
         const char *e = getenv("LARECOMP_GAMEBUILD_HOT"), *gen = getenv("LARECOMP_GEN_DIR");
-        char hot[1200];
-        snprintf(hot, sizeof hot, "%s/gamelib-src/hot_functions.txt", gen);
-        load_hot(e && !atoi(e) ? "" : gv && !strcmp(gv->key, "v1_0_0") ? hot : "");
+        char hot[1200];  // (the game version's list: the address tables' key, so 1.1.0 uses 1.0.1's)
+        snprintf(hot, sizeof hot, "%s/gamelib-src/hot_functions%s%s.txt", gen,
+                 gv && strcmp(gv->key, "v1_0_0") ? "_" : "", gv && strcmp(gv->key, "v1_0_0") ? gv->key : "");
+        load_hot(e && !atoi(e) ? "" : gv ? hot : "");
         LOG("[gamebuild] hot functions: %zu%s\n", g_nhot, g_nhot ? " (the rest compiled with optnone)" : " (all at -O1)");
     }
 #endif
