@@ -425,9 +425,30 @@ static void use_pad(SDL_JoystickID id, const char *why) {
     note_family();
     recompute_pad();
 }
+#ifdef __ANDROID__
+// Android lists other input devices as gamepads too (a wireless keyboard / mouse receiver's media keys: "Logitech USB
+// Receiver Mouse"), and the first one listed was taken: a DualSense connected beside it wasn't read until pressed. A
+// pad SDL knows (PlayStation, Xbox, Switch...) ranks over one with sticks and face buttons, which ranks over anything
+// else; the best one connected is read, and pressing another still switches to it. From Nycolazs's
+// LASRecomp-Android-Plus via mamcjr's LASRecompAndroid (both MIT).
+static int pad_rank(SDL_JoystickID id) {
+    SDL_GamepadType t = SDL_GetGamepadTypeForID(id);
+    if (t != SDL_GAMEPAD_TYPE_UNKNOWN && t != SDL_GAMEPAD_TYPE_STANDARD) return 3;
+    char *m = SDL_GetGamepadMappingForID(id);
+    int r = m && strstr(m, "leftx:") && strstr(m, ",a:") && strstr(m, ",b:") ? 2 : 1;
+    SDL_free(m);
+    return r;
+}
+#endif
 static void open_pad(SDL_JoystickID id) {
     if (!SDL_GetGamepadFromID(id)) SDL_OpenGamepad(id);
+#ifdef __ANDROID__
+    int r = pad_rank(id);
+    LOG("[input] connected: %s (rank %d)\n", SDL_GetGamepadNameForID(id), r);
+    if (!pad || r > pad_rank(SDL_GetGamepadID(pad))) use_pad(id, pad ? " (a better controller)" : "");
+#else
     if (!pad) use_pad(id, "");
+#endif
 }
 
 void input_handle_event(const SDL_Event *e) {
@@ -465,7 +486,11 @@ void input_handle_event(const SDL_Event *e) {
         if (!pad) {  // another one still connected takes over
             int n = 0;
             SDL_JoystickID *ids = SDL_GetGamepads(&n);
+#ifdef __ANDROID__
+            for (int i = 0; ids && i < n; i++)  // (the best one still connected)
+#else
             for (int i = 0; ids && i < n && !pad; i++)
+#endif
                 if (ids[i] != e->gdevice.which) open_pad(ids[i]);
             SDL_free(ids);
             note_family();
@@ -483,7 +508,12 @@ void input_handle_event(const SDL_Event *e) {
         recompute_pad();
         break;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION:
-        if (!host_test && abs(e->gaxis.value) > 24000 && pad_at_rest()) use_pad(e->gaxis.which, " (switched)");
+        if (!host_test && abs(e->gaxis.value) > 24000 && pad_at_rest()
+#ifdef __ANDROID__
+            && (!pad || pad_rank(e->gaxis.which) >= pad_rank(SDL_GetGamepadID(pad)))  // (not to a lesser device's axis)
+#endif
+            )
+            use_pad(e->gaxis.which, " (switched)");
         if (pad && e->gaxis.which != SDL_GetGamepadID(pad)) break;  // (another pad's stick: not the game's)
         if ((e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
             !host_test) {  // (the triggers as buttons: past half way)
