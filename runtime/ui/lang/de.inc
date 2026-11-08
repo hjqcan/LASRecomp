@@ -396,6 +396,8 @@
 {"Game files", "Spieldateien"},
 {"Documents", "Dokumente"},
 {"Choose this one", "Diesen wählen"},
+{"USE THIS FOLDER", "DIESEN ORDNER VERWENDEN"},
+{"Open the folder, then tap this", "Ordner öffnen, dann hier tippen"},
 {"Updating the game", "Spiel wird aktualisiert"},
 {"Recompiling the game", "Spiel wird neu kompiliert"},
 {"Setting up the game files", "Spieldateien werden eingerichtet"},

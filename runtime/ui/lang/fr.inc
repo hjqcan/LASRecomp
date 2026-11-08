@@ -396,6 +396,8 @@
 {"Game files", "Fichiers du jeu"},
 {"Documents", "Documents"},
 {"Choose this one", "Choisir celui-ci"},
+{"USE THIS FOLDER", "UTILISER CE DOSSIER"},
+{"Open the folder, then tap this", "Ouvre le dossier, puis touche ici"},
 {"Updating the game", "Mise à jour du jeu"},
 {"Recompiling the game", "Recompilation du jeu"},
 {"Setting up the game files", "Installation des fichiers du jeu"},

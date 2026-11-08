@@ -953,6 +953,81 @@ static bool menu_tip(float s) {
     return go;
 }
 
+#ifdef __ANDROID__
+// The game files page's example on Android: the system's folder picker, as it looks with the folder to choose opened
+// ("Game files", exefs and romfs in it) and its "Use this folder" button at the bottom, which a gold arrow points at.
+// The picker chooses the folder it's in, not one picked from a list. Drawn as the desktop's (shapes and the page's font,
+// sized from the font), up to w wide, at the cursor; it takes its space with a Dummy.
+static float folder_example_height(void) {
+    float fs = ImGui::GetFontSize();
+    return fs * (1.6f + 1.2f + 2 * 1.25f + 0.35f + 1.15f + 2.0f + 0.45f);
+}
+static void draw_folder_example(float w) {
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImFont *font = ImGui::GetFont();
+    float fs = ImGui::GetFontSize(), ts = fs * 0.82f;
+    float bar = fs * 1.6f, crumb = fs * 1.2f, rh = fs * 1.25f, r = fs * 0.45f;
+    w = fminf(w, fs * 15);
+    float h = folder_example_height();
+    ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w, a.y + h);
+    const ImU32 body = IM_COL32(24, 28, 27, 255), title = IM_COL32(40, 45, 43, 255), edge = IM_COL32(255, 255, 255, 38),
+                text = IM_COL32(220, 216, 205, 255), dim = IM_COL32(150, 152, 144, 255),
+                gold = IM_COL32(236, 194, 84, 255), gold_tab = IM_COL32(200, 160, 62, 255),
+                accent = IM_COL32(120, 170, 255, 255), button = IM_COL32(32, 84, 176, 255),
+                text_sel = IM_COL32(250, 250, 255, 255);
+    dl->AddRectFilled(ImVec2(a.x, a.y + fs * 0.12f), ImVec2(b.x, b.y + fs * 0.22f), IM_COL32(0, 0, 0, 70), r);  // shadow
+    dl->AddRectFilled(a, b, body, r);
+    dl->AddRectFilled(a, ImVec2(b.x, a.y + bar), title, r, ImDrawFlags_RoundCornersTop);
+    dl->AddRect(a, b, edge, r, 0, 1.0f);
+    // the top bar: a back arrow, then the opened folder's name
+    float cy = a.y + bar * 0.5f, ax = a.x + fs * 0.6f, u = fs * 0.28f, th = fs * 0.09f;
+    dl->AddLine(ImVec2(ax, cy), ImVec2(ax + u * 2.2f, cy), text, th);
+    dl->AddLine(ImVec2(ax + th * 0.3f, cy), ImVec2(ax + u, cy - u), text, th);
+    dl->AddLine(ImVec2(ax + th * 0.3f, cy), ImVec2(ax + u, cy + u), text, th);
+    const char *gf = L("Game files");
+    float tsz = fs * 0.95f;
+    dl->AddText(font, tsz, ImVec2(ax + fs * 1.4f, cy - font->CalcTextSizeA(tsz, FLT_MAX, 0, gf).y * 0.5f), text, gf);
+    // the path to it: Documents > Game files
+    float y = a.y + bar, my = y + crumb * 0.5f, x = a.x + fs * 0.6f;
+    const char *doc = L("Documents");
+    ImVec2 dsz = font->CalcTextSizeA(ts, FLT_MAX, 0, doc);
+    dl->AddText(font, ts, ImVec2(x, my - dsz.y * 0.5f), dim, doc);
+    x += dsz.x + fs * 0.35f;
+    float c = fs * 0.16f;
+    dl->AddLine(ImVec2(x, my - c), ImVec2(x + c, my), dim, th * 0.8f);
+    dl->AddLine(ImVec2(x + c, my), ImVec2(x, my + c), dim, th * 0.8f);
+    x += c + fs * 0.35f;
+    dl->AddText(font, ts, ImVec2(x, my - font->CalcTextSizeA(ts, FLT_MAX, 0, gf).y * 0.5f), accent, gf);
+    // what's in it
+    float g = fs * 0.78f;
+    static const char *const rows[] = {"exefs", "romfs"};
+    for (int i = 0; i < 2; i++) {
+        float ry = y + crumb + i * rh, rmy = ry + rh * 0.5f, gx = a.x + fs * 0.6f, gy = rmy - g * 0.5f;
+        if (i & 1) dl->AddRectFilled(ImVec2(a.x + 1, ry), ImVec2(b.x - 1, ry + rh), IM_COL32(255, 255, 255, 9));
+        dl->AddRectFilled(ImVec2(gx, gy + g * 0.12f), ImVec2(gx + g * 0.46f, gy + g * 0.42f), gold_tab, g * 0.1f);
+        dl->AddRectFilled(ImVec2(gx, gy + g * 0.26f), ImVec2(gx + g, gy + g * 0.9f), gold, g * 0.1f);
+        ImVec2 nsz = font->CalcTextSizeA(ts, FLT_MAX, 0, rows[i]);
+        dl->AddText(font, ts, ImVec2(gx + g + fs * 0.45f, rmy - nsz.y * 0.5f), text, rows[i]);
+    }
+    // the button, bottom right, and over it what to do with a gold arrow down to it
+    const char *use = L("USE THIS FOLDER");
+    ImVec2 usz = font->CalcTextSizeA(ts, FLT_MAX, 0, use);
+    float bh = fs * 1.5f, bw = usz.x + fs * 1.3f, bx1 = b.x - fs * 0.5f, bx0 = bx1 - bw, by1 = b.y - fs * 0.45f,
+          by0 = by1 - bh;
+    dl->AddRectFilled(ImVec2(bx0, by0), ImVec2(bx1, by1), button, bh * 0.5f);
+    dl->AddText(font, ts, ImVec2(bx0 + (bw - usz.x) * 0.5f, by0 + (bh - usz.y) * 0.5f), text_sel, use);
+    const char *hint = L("Open the folder, then tap this");
+    float hs = ts, room = w - fs * 1.0f, hw = font->CalcTextSizeA(hs, FLT_MAX, 0, hint).x;
+    if (hw > room) hs *= fmaxf(0.7f, room / hw), hw = font->CalcTextSizeA(hs, FLT_MAX, 0, hint).x;
+    float hy = by0 - fs * 0.5f - fs * 1.15f * 0.5f, acx = (bx0 + bx1) * 0.5f, hx = fminf(acx - hw * 0.5f, bx1 - hw);
+    hx = fmaxf(hx, a.x + fs * 0.5f);
+    dl->AddText(font, hs, ImVec2(hx, hy - font->CalcTextSizeA(hs, FLT_MAX, 0, hint).y * 0.5f), gold, hint);
+    float t0 = hy + fs * 0.42f, t1 = by0 - fs * 0.08f, hd = fs * 0.22f;  // (the arrow, from under the hint to the button)
+    dl->AddLine(ImVec2(acx, t0), ImVec2(acx, t1 - hd), gold, th);
+    dl->AddTriangleFilled(ImVec2(acx - hd, t1 - hd), ImVec2(acx + hd, t1 - hd), ImVec2(acx, t1), gold);
+    ImGui::Dummy(ImVec2(w, h));
+}
+#else
 // The game files page's example: a Finder-style window (the same on every platform) with the folder to choose -
 // "Game files", opened: exefs in it opened (its files), romfs closed. All drawn here (shapes and the page's font, sized from the font: sharp at
 // any scale), up to w wide, at the cursor; it takes its space with a Dummy.
@@ -1038,6 +1113,7 @@ static void draw_folder_example(float w) {
     }
     ImGui::Dummy(ImVec2(w, h));
 }
+#endif
 
 // Start-screen text: a soft drop shadow, then the text with a top-to-bottom colour gradient (top == bottom: flat)
 static void text_fx(ImDrawList *dl, ImFont *font, float size, ImVec2 p, ImU32 top, ImU32 bottom, const char *t,

@@ -396,6 +396,8 @@
 {"Game files", "ゲームファイル"},
 {"Documents", "書類"},
 {"Choose this one", "これにする"},
+{"USE THIS FOLDER", "このフォルダを使用"},
+{"Open the folder, then tap this", "フォルダを開いて、ここをタップ"},
 {"Updating the game", "ゲームを更新中"},
 {"Recompiling the game", "ゲームをリコンパイル中"},
 {"Setting up the game files", "ゲームファイルをセットアップ中"},

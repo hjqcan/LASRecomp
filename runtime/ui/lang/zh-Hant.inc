@@ -396,6 +396,8 @@
 {"Game files", "遊戲檔案"},
 {"Documents", "文件"},
 {"Choose this one", "選擇這個"},
+{"USE THIS FOLDER", "使用這個資料夾"},
+{"Open the folder, then tap this", "開啟資料夾，然後點這裡"},
 {"Updating the game", "正在更新遊戲"},
 {"Recompiling the game", "正在重新編譯遊戲"},
 {"Setting up the game files", "正在設定遊戲檔案"},
