@@ -136,6 +136,8 @@ extern "C" void dpad_overlay_key(char *out, size_t cap) {
     }
 }
 
+extern "C" float hud_corners_right(void);  // (phones: the HUD at the screen corners, runtime/hle/hud_corners.c)
+
 extern "C" void dpad_overlay_draw(ImVec2 display, ImFont *font, float scale) {
     uint64_t ps = LD64(GA(PLAYER_STATUS_PTR));
     if (!ps) return;
@@ -167,7 +169,7 @@ extern "C" void dpad_overlay_draw(ImVec2 display, ImFont *font, float scale) {
     k = k * k * (3 - 2 * k);
     at = from + ((page ? 1 : 0) - from) * k;
     g_flying = k < 1;
-    float cx = lx + (px - lx) * at, cy = ly + (py - ly) * at, sz = 1 + (ps_ - 1) * at;
+    float cx = lx + hud_corners_right() * (1 - at) + (px - lx) * at, cy = ly + (py - ly) * at, sz = 1 + (ps_ - 1) * at;
     ImVec2 c(bx + (cx + 640) * u, by + (360 - cy) * u);
     float pad = 74 * sz * u, arm = 50 * sz * u, h = 30 * sz * u;  // (the D-pad's size; centre to an item; an item's half size)
     static const ImVec2 dir[4] = {ImVec2(-1, 0), ImVec2(0, -1), ImVec2(1, 0), ImVec2(0, 1)};  // Left Up Right Down
