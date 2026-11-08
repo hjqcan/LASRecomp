@@ -4613,7 +4613,7 @@ static void draw_one(CmdRec *r, bool indexed) {
     apply_scissor();
     if (hud_open) memcpy(st.scissor[0], hud_sc, sizeof hud_sc);
     if (hud_u) {  // (the uniforms were bound before the decision: slot 0 again, from the copy)
-        uint64_t hud_size = pr->vi->cbuf_size[cbuf_base] && pr->vi->cbuf_size[cbuf_base] < 560 ? pr->vi->cbuf_size[cbuf_base] : 560;
+        uint64_t hud_size = pr->vi->cbuf_size[cbuf_base] && pr->vi->cbuf_size[cbuf_base] < st.ubuf[0][0].size ? pr->vi->cbuf_size[cbuf_base] : st.ubuf[0][0].size;
         E_cbuf(0, ring, ring_alloc(hud_u, hud_size), cbuf_base, -1, hud_size);
     }
     if (pr->fi->uses_rscale) {  // [0] = render target scale, [1 + i] = scale of texture i
@@ -5405,12 +5405,12 @@ static void weather_encode(void) {
 }
 
 // (phones: the HUD at the screen corners, runtime/hle/hud_corners.c) a boxed room's bars, black after the scene composite
-static void hud_bars_clear(void) {
+static bool hud_bars_clear(void) {  // (false: not at the window's image yet, e.g. the dungeon title's offscreen text)
     extern bool hud_corners_bars(uint64_t frame, int w, int h, int bar[4]);
     extern uint64_t renderer_exec_frame(void);
-    if (!st.rt.ncolor || !st.rt.color[0] || !renderer_texture_presented(st.rt.color[0])) return;
+    if (!st.rt.ncolor || !st.rt.color[0] || !renderer_texture_presented(st.rt.color[0])) return false;
     int w = (int)st.rt.color[0]->width, h = (int)st.rt.color[0]->height, bar[4];
-    if (!hud_corners_bars(renderer_exec_frame(), w, h, bar)) return;
+    if (!hud_corners_bars(renderer_exec_frame(), w, h, bar)) return true;
     int32_t sc[4];
     memcpy(sc, st.scissor[0], sizeof sc);
     static const float black[4] = {0, 0, 0, 1};
@@ -5431,15 +5431,16 @@ static void hud_bars_clear(void) {
         clear(0, 0, black, 0xF, false, 0, false, 0, 0);
     }
     memcpy(st.scissor[0], sc, sizeof sc);
+    return true;
 }
 
 static void draw(CmdRec *r, bool indexed) {
-    static bool hud_bars;  // (the last draw was the scene composite)
+    static bool hud_bars;  // (the scene composite was drawn, its bars not cleared yet)
     extern bool hud_corners_active(void);
-    if (hud_bars) { hud_bars = false; hud_bars_clear(); }
+    if (hud_bars && hud_bars_clear()) hud_bars = false;
     wx_composite = wx_mirror = false;
     draw_one(r, indexed);
-    hud_bars = wx_composite && hud_corners_active();
+    hud_bars = (hud_bars || wx_composite) && hud_corners_active();
     if (wx_composite) weather_encode();
 }
 

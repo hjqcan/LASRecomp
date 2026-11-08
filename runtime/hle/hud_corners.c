@@ -149,12 +149,12 @@ bool hud_corners_active(void) { return g_active; }
 
 // A copy of a layout draw's vertex uniforms for the window-wide viewport (stretch k), NULL when this isn't one.
 const void *hud_corners_ubo(const float *u, uint64_t size, float k, float ky) {
-    if (!g_active || !u || size != 560 || (k <= 1.001f && ky <= 1.001f)) return NULL;
+    if (!g_active || !u || (size != 560 && size != 128) || (k <= 1.001f && ky <= 1.001f)) return NULL;
     if (u[15] != 1 || u[12] != 0 || u[13] != 0 || !(u[0] > 0) || u[5] == 0) return NULL;  // (orthographic projection)
     static float ring[4096][140];
     static unsigned at;
     float *c = ring[at++ & 4095];
-    memcpy(c, u, 560);
+    memcpy(c, u, size);  // (560: panes; 128: their text)
     for (int i = 0; i < 4; i++) c[i] /= k, c[4 + i] /= ky;
     return c;
 }
