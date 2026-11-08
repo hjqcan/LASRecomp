@@ -673,6 +673,11 @@ static void tab_display(void) {
     preview_text(LN("Configure the smoothing of jagged edges. SMAA keeps textures sharp."), NULL);
     opt_preview("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
                "Smooths jagged edges. SMAA keeps textures sharp and helps most at a lower internal resolution.");
+    static const char *ao[] = {LN("Default"), LN("High"), LN("Off")};
+    preview_text(LN("Configure the soft shadows where objects meet the ground and walls."), NULL);
+    opt_preview("Ambient occlusion", &g_settings.ao_quality, ao, 3, AO_SWITCH,
+               "The soft shadows in corners and around objects. High draws them at up to twice the Switch's resolution, "
+               "so their edges are sharper. Off removes them.");
 
     opt_end();
 }

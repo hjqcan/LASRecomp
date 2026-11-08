@@ -170,6 +170,7 @@ typedef struct {
     uint64_t data_hash, sample_hash;
     uint64_t checked_frame, full_frame;
     bool scalable;       // screen-shaped render target: allocated at the output resolution
+    bool ao;             // (scalable) the game's ambient occlusion: at its own scale (tex_ao)
     float ax, ay;        // allocation scale (the Metal texture's size); sx, sy below: the scale its contents were drawn at
     bool presented;      // has been shown by backend_present (a swapchain image)
     uint64_t touched_frame;  // last frame it was written (cleared at the first write of a frame when reshaped)
@@ -236,18 +237,17 @@ void renderer_get_scale(float *sx, float *sy) { *sx = g_rs_x; *sy = g_rs_y; }
 void renderer_set_scale(float sx, float sy) { g_rs_x = sx; g_rs_y = sy; }
 void renderer_set_alloc_scale(float ax, float ay) { g_al_x = ax; g_al_y = ay; }
 
-// The game's ambient occlusion (issue #356) stays at the Switch's size: its R8 targets (480x270 and the 240x135 blur)
-// and the quarter-size depth-stencil its pass tests against (480x270, made from the depth pyramid). The AO shader
+// The game's ambient occlusion: its R8 targets (480x270 and the 240x135 blur) and the quarter-size depth-stencil its
+// pass tests against (480x270, made from the depth pyramid). They have a scale of their own, output_scale_ao(): the
+// Switch's size, or twice it (High), at any render scale. Scaled with the frame they broke (issue #356): the AO shader
 // takes its 4x4 sample-rotation pattern from the pixel position it works out from the guest size (uv / texel size), so
-// at a render scale other than 1 neighbouring pixels no longer get different rotations: at 25% every pixel got the
-// same one (bands of dark AO on flat ground that crawl as the camera moves: the "haze"), above 1 the pattern grows
-// past the game's 4x4 blur and is left as dither. At the guest size it is the Switch's AO at any resolution, and
-// cheap (a quarter of 1080p). The depth-stencil goes with it: Metal / Vulkan draw a pass only where all its
-// attachments are. LARECOMP_AO_SCALED=1 (A/B): scaled like the rest again.
-static bool tex_guest_sized_ao(const NvnTexture *t) {
-    static int off = -1;
-    if (off < 0) off = getenv("LARECOMP_AO_SCALED") != NULL;
-    if (off) return false;
+// at a render scale other than 1 neighbouring pixels no longer got different rotations: at 25% every pixel got the
+// same one (bands of dark AO on flat ground that crawl as the camera moves: the "haze"), above 1 the pattern grew past
+// the game's blur and was left as dither. At High the shaders are given the real pixel grid (maxwell/translate.c
+// ao_grid_fix). The depth-stencil goes with them: Metal / Vulkan draw a pass only where all its attachments are.
+// LARECOMP_AO_SCALED=1 (A/B): scaled with the frame, as before #356.
+static bool tex_ao(const NvnTexture *t) {
+    if (output_scale_ao(1) <= 0) return false;
     return t->format == 0x1 || (t->format == 0x35 && t->width <= 480);  // R8 unorm / D24S8, 16:9 (checked by the caller)
 }
 
@@ -257,9 +257,12 @@ static bool tex_scalable(const NvnTexture *t) {
     if (off) return false;
     if (t->target != 1 || t->samples > 1 || !(t->flags & 8) || t->width < 32 || t->height < 16) return false;
     float a = (float)t->width / (float)t->height;
-    if (!(a > 1.74f && a < 1.81f)) return false;  // 16:9 (1920x1080 and its fractions, 704x396, 60x33...)
-    return !tex_guest_sized_ao(t);
+    return a > 1.74f && a < 1.81f;  // 16:9 (1920x1080 and its fractions, 704x396, 60x33...)
 }
+// The scale a scalable texture is allocated and drawn at: the ambient occlusion's own, else the frame's
+// (the AO: uniform, by the height's)
+static float tex_alloc_x(const TexBackend *b) { return b->ao ? output_scale_ao(g_al_y) : g_al_x; }
+static float tex_alloc_y(const TexBackend *b) { return b->ao ? output_scale_ao(g_al_y) : g_al_y; }
 
 // First write this frame to a presented image while the output is reshaped: returns true once per frame.
 bool renderer_texture_first_write(NvnTexture *t) {
@@ -356,7 +359,7 @@ void renderer_texture_gone(void *nvn_tex, void *mtl_tex);  // renderer.m
 static TexBackend *tex_backend(NvnTexture *t) {
     if (t->backend) {
         TexBackend *b = (TexBackend *)t->backend;
-        if (b->scalable && (b->ax != g_al_x || b->ay != g_al_y)) {  // output resolution changed: reallocate
+        if (b->scalable && (b->ax != tex_alloc_x(b) || b->ay != tex_alloc_y(b))) {  // output resolution changed: reallocate
             release_backend_texture(t, b);
             create_backend_texture(t, b);
         }
@@ -365,6 +368,7 @@ static TexBackend *tex_backend(NvnTexture *t) {
     }
     TexBackend *b = calloc(1, sizeof *b);
     b->scalable = tex_scalable(t);
+    b->ao = b->scalable && tex_ao(t);
     if (t->width == 1920 && t->height == 1080 && getenv("LARECOMP_LOG_SCALABLE"))
         LOG("[scale] 1920x1080 tex %p f%#x flags %#x target %u samples %u levels %u -> scalable %d (%s)\n", (void *)t, t->format,
             t->flags, t->target, t->samples, t->levels, b->scalable, t->label);
@@ -433,10 +437,10 @@ static void create_backend_texture(NvnTexture *t, TexBackend *b) {
     MTLTextureDescriptor *d = [MTLTextureDescriptor new];
     d.textureType = mtl_tex_type(t->target, t->samples);
     d.pixelFormat = mf.pf;
-    b->ax = b->scalable ? g_al_x : 1;
-    b->ay = b->scalable ? g_al_y : 1;
-    b->sx = b->scalable ? g_rs_x : 1;
-    b->sy = b->scalable ? g_rs_y : 1;
+    b->ax = b->scalable ? tex_alloc_x(b) : 1;
+    b->ay = b->scalable ? tex_alloc_y(b) : 1;
+    b->sx = b->scalable ? (b->ao ? b->ax : g_rs_x) : 1;
+    b->sy = b->scalable ? (b->ao ? b->ay : g_rs_y) : 1;
     uint32_t tw = t->width ? t->width : 1, th = t->height ? t->height : 1;
     if (b->scalable) {
         tw = (uint32_t)lroundf(tw * b->ax); th = (uint32_t)lroundf(th * b->ay);
@@ -677,7 +681,13 @@ id<MTLTexture> renderer_texture(NvnTexture *t, id<MTLBlitCommandEncoder> blit, b
 void renderer_mark_gpu_owned(NvnTexture *t) {
     TexBackend *b = tex_backend(t);
     b->gpu_owned = true;
-    if (b->scalable) { b->sx = g_rs_x; b->sy = g_rs_y; }
+    if (b->scalable && !b->ao) { b->sx = g_rs_x; b->sy = g_rs_y; }
+}
+// The tap scale of the ambient occlusion's own blurs (translate.c ao_grid_fix): the AO's scale for a draw into one of
+// its 480x270 targets (the two blurs after the AO pass), 0 for any other target.
+float renderer_ao_blur_scale(NvnTexture *t) {
+    TexBackend *b = t ? (TexBackend *)t->backend : NULL;
+    return b && b->ao && t->format == 0x1 && t->width == 480 ? b->sx : 0;
 }
 // The part of a scalable texture its contents occupy (Dynamic: the render scale over the allocation scale; 1 otherwise).
 void renderer_texture_fraction(NvnTexture *t, float *fx, float *fy) {

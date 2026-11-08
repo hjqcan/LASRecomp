@@ -132,6 +132,8 @@ typedef struct {
     bool structured;       // LARECOMP_VK_STRUCTURE: branches as nested if / else / do-while (ast_*), no pc state machine
     int struct_vars;       // its goto flags g0.. (GotoElimination)
     uint32_t *pop_target;  // per instruction word: the pc a SYNC / BRK / CONT goes to
+    bool ao_taps;          // the AO blur's taps follow rscale[65].y (ao_grid_fix)
+    bool ao_pass;          // the AO pass: white while rscale[65].z > 0 (ao_grid_fix)
 } Ctx;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
@@ -927,6 +929,57 @@ static void light_tiles_fix(Ctx *c, const uint64_t *code, size_t end, uint32_t p
     cbuf_ref(c, 4, 0x1c4, NULL, h);  // target height
     cbuf_ref(c, 4, 0x1c0, NULL, w);  // target width
     sp(&c->body, "    r%d = as_type<uint>(as_type<float>(r%d) * (as_type<float>(%s) * as_type<float>(%s) / as_type<float>(%s)));\n", d, d, a, h, w);  // (GLSL: as_type is rewritten)
+}
+
+// The game's ambient occlusion at High (runtime/nvn/output_scale.c output_scale_ao: its targets at up to twice the
+// Switch's size). The AO pass picks a sample rotation from a 4x4 table by pixel: x = uv / texel size, with the game's
+// texel size (1/480, 1/270), so at twice the size two pixels in a row shared a rotation and the pattern was 8 pixels
+// wide (issue #356). Its pixel index (pc 0x50: x, 0x58: y) is scaled by the render target's scale, rscale[0]: the real
+// pixel again, and the same value at the Switch's size. The rest of the pass stays in the game's units: its sample
+// radius (guest pixels times the texel size) is a distance in the image, and the depth it reads is snapped to a
+// 960x540 grid, the size of its depth input.
+// Its blur (a 9-tap Gaussian in 5 bilinear taps, the shader the bloom uses too) has its tap offsets from the vertex
+// shader, in uv of the Switch's size: spread twice as far in pixels, they missed rotations of the pattern and left it
+// as a crosshatch. For the two blurs of the AO itself the renderer sets rscale[65].y to the AO's scale
+// (renderer_ao_blur_scale; 0 for every other draw of this shader), and the offsets from the centre tap (v2) are
+// divided by it: the Switch's blur in pixels. The 240x135 level after it keeps the game's offsets (smooth by then).
+// Ambient occlusion Off: the renderer sets rscale[65].z for the AO pass and its output is 1 (unoccluded), so the
+// blurs after it and the composite that multiplies the scene by it change nothing.
+// LARECOMP_AO_NO_GRID=1 (A/B): the game's own pixel grid at any AO scale.
+static void ao_grid_fix(Ctx *c, const uint64_t *code, size_t end, uint32_t pc) {
+    static int off = -1;
+    if (off < 0) off = getenv("LARECOMP_AO_NO_GRID") != NULL;
+    if (c->stage != STAGE_FRAGMENT) return;
+    static const uint64_t pass[][2] = {{0x8, 0x4c98079404c70005ull}, {0x18, 0x4c98079404d70009ull},
+                                       {0x30, 0x5080000000470505ull}, {0x38, 0x5080000000470909ull},
+                                       {0x50, 0x5c68100000470500ull}, {0x58, 0x5c68100000870901ull}};
+    if ((pc == 0x50 || pc == 0x58) && end > 0x58 / 8) {
+        for (size_t i = 0; i < sizeof pass / sizeof pass[0]; i++)
+            if (code[pass[i][0] / 8] != pass[i][1]) return;
+        int d = pc == 0x50 ? 0 : 1;  // (r0 = x, r1 = y)
+        c->uses_rscale = true;
+        c->ao_taps = c->ao_pass = true;  // (66 rows: [65].z is Off)
+        if (off) return;
+        sp(&c->body, "    r%d = as_type<uint>(as_type<float>(r%d) * rscale[0][%d]);\n", d, d, d);
+        return;
+    }
+    // (the ten IPAs: v1, v0, v2, v3, v4 x / y into r19 r21, r12 r13, r8 r9, r4 r5, r0 r1; then the first sample)
+    static const uint64_t blur[][2] = {{0x8, 0xe003ff890ff7ff13ull}, {0x10, 0xe003ff894ff7ff15ull}, {0x18, 0xe003ff880ff7ff0cull},
+                                       {0x28, 0xe003ff884ff7ff0dull}, {0x30, 0xe003ff8a0ff7ff08ull}, {0x38, 0xe003ff8a4ff7ff09ull},
+                                       {0x48, 0xe003ff8b0ff7ff04ull}, {0x50, 0xe003ff8b4ff7ff05ull}, {0x58, 0xe003ff8c0ff7ff00ull},
+                                       {0x68, 0xe003ff8c4ff7ff01ull}, {0x70, 0xd832008101571312ull}};
+    if (off || pc != 0x68 || end <= 0x70 / 8) return;
+    for (size_t i = 0; i < sizeof blur / sizeof blur[0]; i++)
+        if (code[blur[i][0] / 8] != blur[i][1]) return;
+    c->uses_rscale = true;
+    c->ao_taps = true;
+    static const int tap[4][2] = {{19, 21}, {12, 13}, {4, 5}, {0, 1}};
+    sp(&c->body, "    if (rscale[65][1] > 1.0f) {\n");
+    for (int i = 0; i < 4; i++)
+        for (int k = 0; k < 2; k++)
+            sp(&c->body, "      r%d = as_type<uint>(as_type<float>(r%d) + (as_type<float>(r%d) - as_type<float>(r%d)) / rscale[65][1]);\n",
+               tap[i][k], k ? 9 : 8, tap[i][k], k ? 9 : 8);
+    sp(&c->body, "    }\n");
 }
 
 // A push / pop on stack `n` (ssy, pbk, pcnt). GLSL (maxwell_glsl_stack_vars, shader.h): 16 named variables, the
@@ -2200,8 +2253,9 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     }
     if (c->uses_rscale && stage != STAGE_VERTEX) {
         sp(&s, "layout(std140, set = %d, binding = 18) uniform RScale { vec4 rscale[%d]; };\n", set,
-           key && key->flip_x ? 66 : 65);  // ([65]: mirror mode's render target width)
+           (key && key->flip_x) || c->ao_taps ? 66 : 65);  // ([65]: mirror mode's render target width; .y: ao_grid_fix)
         info->uses_rscale = true;
+        info->uses_ao_taps = c->ao_taps;
     }
     bool tint = stage == STAGE_FRAGMENT && !dbg && (c->omap_target & 0x7) == 0x7 && (!key || key->rt_kind[0] == 0);
     if (tint) {
@@ -2311,6 +2365,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
                 r++;
             }
         }
+        if (c->ao_pass) sp(&s, "  if (rscale[65][2] > 0.0f) c0 = vec4(1.0f);\n");  // (ambient occlusion Off: ao_grid_fix)
         if (tint)
             sp(&s, "  if (ltint[0].w > 0.0f) { vec3 g = c0.rgb; float l = dot(g, vec3(0.299f, 0.587f, 0.114f));\n"
                    "    c0.rgb = mix(g, ltint[0].rgb * pow(l, ltint[1].w) + ltint[1].rgb * l, ltint[0].w); }\n");
@@ -2951,6 +3006,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
                 if (annotate) sp(&c->body, "    // pc %x: %016llx\n", pc, (unsigned long long)w_);
                 emit_insn(c, w_, pc);
                 light_tiles_fix(c, (const uint64_t *)code, end, pc);
+                ao_grid_fix(c, (const uint64_t *)code, end, pc);
             }
             if (sblk[bi].last == i) { plan->text[bi] = c->body; c->body = saved_body; }
             info->num_insts++;
@@ -2960,6 +3016,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         if (annotate) sp(&c->body, "    // pc %x: %016llx\n", pc, (unsigned long long)((const uint64_t *)code)[i]);
         emit_insn(c, ((const uint64_t *)code)[i], pc);
         light_tiles_fix(c, (const uint64_t *)code, end, pc);
+        ao_grid_fix(c, (const uint64_t *)code, end, pc);
         if (dbg && pc == maxwell_dbg_pc) {
             int rr = maxwell_dbg_reg % 1000, half = maxwell_dbg_reg / 1000;  // +1000: low f16, +2000: high f16
             c->reg_used[rr] = 1;
@@ -3046,6 +3103,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     if (c->uses_rscale && stage != STAGE_VERTEX) {
         sp(&args, ", constant float4 *rscale [[buffer(18)]]");
         info->uses_rscale = true;
+        info->uses_ao_taps = c->ao_taps;
     }
     // Runtime highlight (e.g. golden unchecked pots): fragment shaders writing a float color target 0 get a
     // per-draw tint, float4 [0] = colour.rgb + strength, [1] = added glow.rgb (strength 0 = untouched; < 0: the
@@ -3127,6 +3185,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
                 r++;
             }
         }
+        if (c->ao_pass) sp(&s, "  if (rscale[65][2] > 0.0f) o.c0 = float4(1.0f);\n");  // (ambient occlusion Off: ao_grid_fix)
         if (tint)
             sp(&s, "  if (ltint[0].w > 0.0f) { float3 g = o.c0.rgb; float l = dot(g, float3(0.299f, 0.587f, 0.114f));\n"
                    "    o.c0.rgb = mix(g, ltint[0].rgb * pow(l, ltint[1].w) + ltint[1].rgb * l, ltint[0].w); }\n");

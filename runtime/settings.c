@@ -240,6 +240,7 @@ void settings_load(void) {
             else g_settings.upscaler = g_default_upscaler;
         }
         else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
+        else if (!strcmp(key, "ambient_occlusion")) g_settings.ao_quality = !strcmp(val, "high") ? AO_HIGH : !strcmp(val, "off") ? AO_OFF : AO_SWITCH;
         else if (!strcmp(key, "inv_keys")) g_settings.inv_keys = atoi(val) != 0;
         else if (!strcmp(key, "dpad_mode")) g_settings.dpad_mode = !strcmp(val, "items") ? DPAD_ITEMS : !strcmp(val, "move") ? DPAD_MOVE : DPAD_NOTHING;
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_mode = atoi(val) ? DPAD_MOVE : DPAD_NOTHING;  // (older settings: a toggle)
@@ -359,6 +360,7 @@ void settings_save(void) {
     fprintf(f, "upscaler = %s\n", g_settings.upscaler_auto ? "auto" : g_settings.upscaler == UPSCALE_METALFX ? "metalfx" :
                                    g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
+    fprintf(f, "ambient_occlusion = %s\n", g_settings.ao_quality == AO_HIGH ? "high" : g_settings.ao_quality == AO_OFF ? "off" : "switch");
     fprintf(f, "resolution = %s\n", g_settings.res_auto ? "auto" : res_name(g_settings.res_mode));
     fprintf(f, "inv_keys = %d\n", g_settings.inv_keys);
     fprintf(f, "dpad_mode = %s\n", g_settings.dpad_mode == DPAD_ITEMS ? "items" : g_settings.dpad_mode == DPAD_MOVE ? "move" : "nothing");
