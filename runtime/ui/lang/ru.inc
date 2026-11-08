@@ -396,6 +396,8 @@
 {"Game files", "Файлы игры"},
 {"Documents", "Документы"},
 {"Choose this one", "Выбрать эту"},
+{"USE THIS FOLDER", "ИСПОЛЬЗОВАТЬ ЭТУ ПАПКУ"},
+{"Open the folder, then tap this", "Откройте папку и нажмите сюда"},
 {"Updating the game", "Обновление игры"},
 {"Recompiling the game", "Перекомпиляция игры"},
 {"Setting up the game files", "Установка файлов игры"},

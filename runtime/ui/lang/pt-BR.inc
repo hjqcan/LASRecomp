@@ -397,6 +397,8 @@
 {"Game files", "Arquivos do jogo"},
 {"Documents", "Documentos"},
 {"Choose this one", "Escolher esta"},
+{"USE THIS FOLDER", "USAR ESTA PASTA"},
+{"Open the folder, then tap this", "Abra a pasta e toque aqui"},
 {"Updating the game", "Atualizando o jogo"},
 {"Recompiling the game", "Recompilando o jogo"},
 {"Setting up the game files", "Preparando os arquivos do jogo"},

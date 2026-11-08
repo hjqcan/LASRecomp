@@ -396,6 +396,8 @@
 {"Game files", "게임 파일"},
 {"Documents", "문서"},
 {"Choose this one", "이 폴더 선택"},
+{"USE THIS FOLDER", "이 폴더 사용"},
+{"Open the folder, then tap this", "폴더를 연 다음 여기를 탭하세요"},
 {"Updating the game", "게임 업데이트 중"},
 {"Recompiling the game", "게임 리컴파일 중"},
 {"Setting up the game files", "게임 파일 설정 중"},
