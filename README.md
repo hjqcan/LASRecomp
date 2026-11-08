@@ -255,6 +255,14 @@ none of their files are used):
   [Capstone](https://www.capstone-engine.org) (BSD 3-clause; disassembly), [Unicorn](https://www.unicorn-engine.org)
   (GPL 2.0; Python bindings BSD; runs small pieces of code to resolve jump tables) and
   [python-lz4](https://github.com/python-lz4/python-lz4) (BSD 3-clause, with the LZ4 library: BSD 2-clause)
+- [shaderc](https://github.com/google/shaderc) - compiles the translated shaders for Vulkan on Windows, Linux and
+  Android (Apache 2.0; with glslang and SPIRV-Tools)
+- The Android app, ported from [LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid) by mamcjr (MIT), also
+  ships [Python](https://www.python.org) 3.14 for Android (PSF License) to run the game code generator on the device,
+  [volk](https://github.com/zeux/volk) by Arseny Kapoulkine (MIT) to load Vulkan, and
+  [libadrenotools](https://github.com/bylaws/libadrenotools) and
+  [liblinkernsbypass](https://github.com/bylaws/liblinkernsbypass), Copyright (c) 2021, Billy Laws (BSD 2-Clause; their
+  licence text ships in the app), to load a custom Vulkan driver such as Turnip (not included)
 - [envytools](https://github.com/envytools/envytools) - NVIDIA GPU documentation used for the shader translator
 - An MIT-licensed open-source project's audio renderer and shader instruction decoders (license and copyright notice:
   `third_party/ryujinx/LICENSE.txt`) - the audio renderer's reverb is a port of its reverb code and the mixer is
