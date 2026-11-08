@@ -132,6 +132,7 @@ typedef struct {
     int struct_vars;       // its goto flags g0.. (GotoElimination)
     uint32_t *pop_target;  // per instruction word: the pc a SYNC / BRK / CONT goes to
     bool ao_taps;          // the AO blur's taps follow rscale[65].y (ao_grid_fix)
+    bool ao_pass;          // the AO pass: white while rscale[65].z > 0 (ao_grid_fix)
 } Ctx;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
@@ -941,11 +942,13 @@ static void light_tiles_fix(Ctx *c, const uint64_t *code, size_t end, uint32_t p
 // as a crosshatch. For the two blurs of the AO itself the renderer sets rscale[65].y to the AO's scale
 // (renderer_ao_blur_scale; 0 for every other draw of this shader), and the offsets from the centre tap (v2) are
 // divided by it: the Switch's blur in pixels. The 240x135 level after it keeps the game's offsets (smooth by then).
+// Ambient occlusion Off: the renderer sets rscale[65].z for the AO pass and its output is 1 (unoccluded), so the
+// blurs after it and the composite that multiplies the scene by it change nothing.
 // LARECOMP_AO_NO_GRID=1 (A/B): the game's own pixel grid at any AO scale.
 static void ao_grid_fix(Ctx *c, const uint64_t *code, size_t end, uint32_t pc) {
     static int off = -1;
     if (off < 0) off = getenv("LARECOMP_AO_NO_GRID") != NULL;
-    if (off || c->stage != STAGE_FRAGMENT) return;
+    if (c->stage != STAGE_FRAGMENT) return;
     static const uint64_t pass[][2] = {{0x8, 0x4c98079404c70005ull}, {0x18, 0x4c98079404d70009ull},
                                        {0x30, 0x5080000000470505ull}, {0x38, 0x5080000000470909ull},
                                        {0x50, 0x5c68100000470500ull}, {0x58, 0x5c68100000870901ull}};
@@ -954,6 +957,8 @@ static void ao_grid_fix(Ctx *c, const uint64_t *code, size_t end, uint32_t pc) {
             if (code[pass[i][0] / 8] != pass[i][1]) return;
         int d = pc == 0x50 ? 0 : 1;  // (r0 = x, r1 = y)
         c->uses_rscale = true;
+        c->ao_taps = c->ao_pass = true;  // (66 rows: [65].z is Off)
+        if (off) return;
         sp(&c->body, "    r%d = as_type<uint>(as_type<float>(r%d) * rscale[0][%d]);\n", d, d, d);
         return;
     }
@@ -962,7 +967,7 @@ static void ao_grid_fix(Ctx *c, const uint64_t *code, size_t end, uint32_t pc) {
                                        {0x28, 0xe003ff884ff7ff0dull}, {0x30, 0xe003ff8a0ff7ff08ull}, {0x38, 0xe003ff8a4ff7ff09ull},
                                        {0x48, 0xe003ff8b0ff7ff04ull}, {0x50, 0xe003ff8b4ff7ff05ull}, {0x58, 0xe003ff8c0ff7ff00ull},
                                        {0x68, 0xe003ff8c4ff7ff01ull}, {0x70, 0xd832008101571312ull}};
-    if (pc != 0x68 || end <= 0x70 / 8) return;
+    if (off || pc != 0x68 || end <= 0x70 / 8) return;
     for (size_t i = 0; i < sizeof blur / sizeof blur[0]; i++)
         if (code[blur[i][0] / 8] != blur[i][1]) return;
     c->uses_rscale = true;
@@ -2354,6 +2359,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
                 r++;
             }
         }
+        if (c->ao_pass) sp(&s, "  if (rscale[65][2] > 0.0f) o.c0 = float4(1.0f);\n");  // (ambient occlusion Off: ao_grid_fix)
         if (tint)
             sp(&s, "  if (ltint[0].w > 0.0f) { vec3 g = c0.rgb; float l = dot(g, vec3(0.299f, 0.587f, 0.114f));\n"
                    "    c0.rgb = mix(g, ltint[0].rgb * pow(l, ltint[1].w) + ltint[1].rgb * l, ltint[0].w); }\n");

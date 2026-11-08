@@ -20,6 +20,7 @@
 #include "recolour.h"
 #include "slowframe.h"
 #include "weather.h"
+#include "../settings.h"
 
 static id<MTLDevice> dev;
 static id<MTLCommandBuffer> cmdbuf;
@@ -4594,7 +4595,10 @@ static void draw_one(CmdRec *r, bool indexed) {
         }
         if (fkey.flip_x) rs[65][0] = (float)st.rt.color[0]->width;  // (mirror mode: the composite's width, guest pixels)
         extern float renderer_ao_blur_scale(NvnTexture *t);
-        if (pr->fi->uses_ao_taps) rs[65][1] = renderer_ao_blur_scale(st.rt.color[0]);  // (the AO's blurs: translate.c ao_grid_fix)
+        if (pr->fi->uses_ao_taps) {  // (the AO's blurs; the AO pass at Off: translate.c ao_grid_fix)
+            rs[65][1] = renderer_ao_blur_scale(st.rt.color[0]);
+            rs[65][2] = g_settings.ao_quality == AO_OFF;
+        }
         E_bytes(1, rs, (NSUInteger)(fkey.flip_x || pr->fi->uses_ao_taps ? 66 : 1 + pr->fi->ntex) * 16, RSCALE_BUFFER_INDEX);
     }
     // (uniform buffer 2 = the model matrix - only when the vertex shader reads it: a binding left from an earlier draw

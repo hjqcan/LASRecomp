@@ -5707,7 +5707,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     if (!lean) memset(rs, 0, sizeof rs);
     rs[0][0] = rs[0][1] = 1; rs[0][2] = rs[0][3] = 0;
     if (rscale_row0) memcpy(rs[0], rscale_row0, 16);
-    rs[65][0] = g_mirror_w; rs[65][1] = g_ao_taps; rs[65][2] = rs[65][3] = 0;
+    rs[65][0] = g_mirror_w; rs[65][1] = g_ao_taps; rs[65][2] = g_settings.ao_quality == AO_OFF; rs[65][3] = 0;  // ([65].z: AO Off)
     for (int i = 0; i < p->nbinds; i++) {
         VkBindingInfo *b = &p->binds[i];
         if (b->set != set) continue;
