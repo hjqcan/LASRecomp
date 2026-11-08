@@ -145,7 +145,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
 static bool validating;  // the validation layer is on (validation_exit)
 static void create_instance(void) {
 #ifdef __ANDROID__
-    if (volkInitialize() != VK_SUCCESS) FATAL("no Vulkan driver (libvulkan.so)\n");
+    vk_android_load();  // (the player's driver package, or the system's: android_driver.c)
 #endif
     Uint32 n_sdl = 0;
     const char *const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&n_sdl);

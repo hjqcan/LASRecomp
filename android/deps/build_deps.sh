@@ -4,6 +4,8 @@
 #   SDL3 (shared, plus its Java side of the same version), shaderc (one shared library, glslang and SPIRV-Tools
 #   inside), the headers of Vulkan (newer than the NDK's) and the Vulkan Memory Allocator, and volk (built into the
 #   app: Android's libvulkan.so exports Vulkan 1.1 only before API 33, so every function comes through volk).
+#   libadrenotools (BSD-2, with its linkernsbypass): loads a custom Vulkan driver such as Turnip, sources unpacked
+#   into out/adrenotools and built by the app's CMake (its hook libraries ship in the APK).
 #   FFmpeg (shared, LGPL only): the desktop builds' version and configuration (tools/linux/build_deps.sh), for the
 #   game's movies (runtime/hle/movie.c) and the start screen's background frame.
 # Needs bash, curl, Python 3 and the Android SDK with NDK 30.0.16248370 and CMake
@@ -47,6 +49,10 @@ fetch https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sd
       6d1bb65e49520344cc0a48af3dc02e993781efff14c7ebdcb8ae9fa23ddf7e83 Vulkan-Headers-1.4.350.1.tar.gz
 fetch https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.3.0.tar.gz \
       c4f6bbe6b5a45c2eb610ca9d231158e313086d5b1a40c9922cb42b597419b14e VulkanMemoryAllocator-3.3.0.tar.gz
+fetch https://github.com/bylaws/libadrenotools/archive/8fae8ce254dfc1344527e05301e43f37dea2df80.tar.gz \
+      ceffce971676d4cfdf348a082df06fc92a1dca6d95bea892a480d63f200961cb libadrenotools-8fae8ce.tar.gz
+fetch https://github.com/bylaws/liblinkernsbypass/archive/aa3975893d83ef1bc84c321ec60c65fbf1287887.tar.gz \
+      da1128c8aa771c4d24766b53a47822d0717baa5c536ca8491220402942b80638 liblinkernsbypass-aa39758.tar.gz
 fetch https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz \
       8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e ffmpeg-9.0.2.tar.xz
 fetch https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.350.1.tar.gz \
@@ -64,6 +70,14 @@ fi
 if [ ! -f "$P/volk/volk.c" ]; then
     unpack volk-1.4.350.1.tar.gz volk
     mkdir -p "$P/volk" && cp "$W/volk/volk.h" "$W/volk/volk.c" "$W/volk/LICENSE.md" "$P/volk/"
+fi
+
+# libadrenotools: sources only (the app's CMake builds them), with its linkernsbypass submodule in place
+if [ ! -f "$P/adrenotools/CMakeLists.txt" ]; then
+    rm -rf "$P/adrenotools" && mkdir -p "$P/adrenotools"
+    tar -xf "$S/libadrenotools-8fae8ce.tar.gz" -C "$P/adrenotools" --strip-components 1
+    mkdir -p "$P/adrenotools/lib/linkernsbypass"
+    tar -xf "$S/liblinkernsbypass-aa39758.tar.gz" -C "$P/adrenotools/lib/linkernsbypass" --strip-components 1
 fi
 
 # SDL3: the shared library and the Java side of the same version (org.libsdl.app, compiled into the app)

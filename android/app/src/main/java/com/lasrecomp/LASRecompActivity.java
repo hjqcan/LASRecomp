@@ -45,6 +45,8 @@ public class LASRecompActivity extends SDLActivity {
             copyAssets("res", new File(getFilesDir(), "res"));
             Os.setenv("LARECOMP_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir, true);
             Os.setenv("LARECOMP_GEN_DIR", new File(getFilesDir(), "gen").getAbsolutePath(), true);
+            File driver = customDriver();  // (runtime/nvn/vulkan/android_driver.c: none = the system's)
+            Os.setenv("LARECOMP_VK_DRIVER", driver != null ? driver.getAbsolutePath() : "", true);
             // the desktop's debug and test switches (docs/debug-hooks.md) from the launch, in debuggable builds only (the
             // activity is exported: in a release build any app could start it with switches set):
             //   adb shell am start -n com.lasrecomp.android/com.lasrecomp.LASRecompActivity --es LARECOMP_LOG_SKIPS 1
@@ -102,6 +104,70 @@ public class LASRecompActivity extends SDLActivity {
                 Log.e(TAG, "unpacking the game code builder: " + e);
             }
         }, "unpack-builder").start();
+    }
+
+    // The Vulkan driver: the first driver package in <external files>/drivers - an adrenotools .zip (Turnip builds as
+    // other emulators use them) or a bare .so - unpacked into internal storage (a driver can't be loaded from shared
+    // storage), again only when it changed. None there: the system's driver. From LASRecompAndroid by mamcjr (MIT).
+    private File customDriver() throws IOException {
+        File src = new File(getExternalFilesDir(null), "drivers");
+        src.mkdirs();
+        File[] files = src.listFiles((d, n) -> n.endsWith(".so") || n.endsWith(".zip"));
+        if (files == null || files.length == 0) return null;
+        java.util.Arrays.sort(files);
+        File f = files[0];
+        File dir = new File(getFilesDir(), "drivers/" + f.getName().replaceAll("\\.(so|zip)$", ""));
+        File stamp = new File(dir, ".source");
+        String id = f.length() + ":" + f.lastModified();
+        File lib = findLib(dir);
+        try (InputStream in = new java.io.FileInputStream(stamp)) {
+            if (lib != null && id.equals(new String(in.readAllBytes()))) return lib;
+        } catch (IOException e) {
+            // (not unpacked yet)
+        }
+        deleteTree(dir);
+        dir.mkdirs();
+        byte[] buf = new byte[1 << 16];
+        if (f.getName().endsWith(".so")) {
+            try (InputStream in = new java.io.FileInputStream(f); OutputStream o = new FileOutputStream(new File(dir, f.getName()))) {
+                for (int k; (k = in.read(buf)) > 0; ) o.write(buf, 0, k);
+            }
+        } else {
+            try (ZipInputStream z = new ZipInputStream(new java.io.FileInputStream(f))) {
+                for (ZipEntry e; (e = z.getNextEntry()) != null; ) {
+                    String n = new File(e.getName()).getName();
+                    if (e.isDirectory() || !(n.endsWith(".so") || n.equals("meta.json"))) continue;
+                    try (OutputStream o = new FileOutputStream(new File(dir, n))) {
+                        for (int k; (k = z.read(buf)) > 0; ) o.write(buf, 0, k);
+                    }
+                }
+            }
+        }
+        lib = findLib(dir);
+        if (lib != null) try (OutputStream o = new FileOutputStream(stamp)) { o.write(id.getBytes()); }
+        Log.i(TAG, "Vulkan driver: " + f.getName() + " -> " + lib);
+        return lib;
+    }
+
+    // The driver in a package: meta.json's libraryName (adrenotools packages), else the library named like a Vulkan
+    // driver (vulkan.*.so, libvulkan_*.so), else the first: a package can carry helper libraries beside it
+    private static File findLib(File dir) {
+        File meta = new File(dir, "meta.json");
+        if (meta.isFile()) {
+            try (InputStream in = new java.io.FileInputStream(meta)) {
+                String name = new org.json.JSONObject(new String(in.readAllBytes())).optString("libraryName", "");
+                File lib = new File(dir, new File(name).getName());
+                if (!name.isEmpty() && lib.isFile()) return lib;
+            } catch (Exception e) {
+                Log.w(TAG, "driver package meta.json: " + e);
+            }
+        }
+        File[] libs = dir.listFiles((d, n) -> n.endsWith(".so"));
+        if (libs == null || libs.length == 0) return null;
+        java.util.Arrays.sort(libs);
+        for (File l : libs)
+            if (l.getName().startsWith("vulkan.") || l.getName().startsWith("libvulkan")) return l;
+        return libs[0];
     }
 
     private static void deleteTree(File f) {
