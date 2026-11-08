@@ -62,6 +62,7 @@ public class LASRecompActivity extends SDLActivity {
             Log.e(TAG, "setting up the app's files: " + e);
         }
         unpackBuilder();
+        self = this;
         super.onCreate(state);
         setWindowStyle(true);  // (SDL's immersive full screen: no status or navigation bar)
     }
@@ -150,6 +151,56 @@ public class LASRecompActivity extends SDLActivity {
         deleteTree(new File(getExternalFilesDir(null), "drivers"));
         deleteTree(new File(getFilesDir(), "drivers"));
         nativeDriverPicked("-");
+    }
+
+    // ---- a Vulkan driver error that stops the app (runtime/platform/linux.c plat_fatal_notice). The driver is loaded
+    // before the start screen, so its Settings rows can't be reached when it fails: this dialog chooses another
+    // package, or goes back to the phone's own driver, and starts the app again; else it closes. Blocks the calling
+    // (native) thread until then. From LASRecompAndroid by mamcjr after LASRecomp-Android-Plus (both MIT).
+    private static final Object dlgLock = new Object();
+    private static boolean dlgDone;
+    private static String dlgText;
+    private static LASRecompActivity self;
+
+    public static boolean driverErrorDialog(String text) {
+        LASRecompActivity a = self;
+        if (a == null) return false;
+        synchronized (dlgLock) { dlgDone = false; dlgText = text; }
+        a.runOnUiThread(() -> a.showDriverError(null));
+        synchronized (dlgLock) {
+            while (!dlgDone) {
+                try { dlgLock.wait(); } catch (InterruptedException e) { break; }
+            }
+        }
+        return true;
+    }
+
+    private void showDriverError(String extra) {
+        String msg = dlgText + (extra != null ? "\n\n" + extra : "");
+        android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("LAS Recomp").setMessage(msg).setCancelable(false)
+            .setPositiveButton("Choose a driver package", (d, w) -> {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("*/*");
+                try {
+                    startActivityForResult(i, PICK_DRIVER_RECOVER);
+                } catch (Exception e) {
+                    Log.e(TAG, "file picker: " + e);
+                    showDriverError("The file picker couldn't open.");
+                }
+            })
+            .setNegativeButton("Close", (d, w) -> {
+                synchronized (dlgLock) { dlgDone = true; dlgLock.notifyAll(); }
+            });
+        File[] custom = new File(getExternalFilesDir(null), "drivers").listFiles((dir, n) -> n.endsWith(".so") || n.endsWith(".zip"));
+        if (custom != null && custom.length > 0)
+            b.setNeutralButton("Use the phone's own driver", (d, w) -> {
+                deleteTree(new File(getExternalFilesDir(null), "drivers"));
+                deleteTree(new File(getFilesDir(), "drivers"));
+                restartApp();
+            });
+        b.show();
     }
 
     // Starts the app again (a new process: the driver is chosen at start). Started while the app is in front (an alarm
@@ -252,6 +303,7 @@ public class LASRecompActivity extends SDLActivity {
     // ---- the game files folder (runtime/platform/android_storage.c)
     private static final int PICK_GAME_FOLDER = 0x4c41;  // (SDL's own dialogs use other request codes)
     private static final int PICK_DRIVER = 0x4c42;
+    private static final int PICK_DRIVER_RECOVER = 0x4c43;  // (from the driver error dialog: the package, then a restart)
     static native void nativeDriverPicked(String result);  // a package's name, "-" the system's again, "" not a driver
 
     static native void nativeFolderPicked(String uri);  // null: cancelled
@@ -274,6 +326,13 @@ public class LASRecompActivity extends SDLActivity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == PICK_DRIVER_RECOVER) {
+            Uri f = resultCode == RESULT_OK && data != null ? data.getData() : null;
+            String name = f != null ? copyDriver(f) : "";
+            if (!name.isEmpty()) restartApp();
+            else showDriverError(f != null ? "That file isn't a driver package (.zip or .so)." : null);
+            return;
+        }
         if (requestCode == PICK_DRIVER) {
             Uri f = resultCode == RESULT_OK && data != null ? data.getData() : null;
             if (f != null) new Thread(() -> nativeDriverPicked(copyDriver(f)), "copy-driver").start();

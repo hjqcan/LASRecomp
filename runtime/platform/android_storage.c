@@ -66,6 +66,24 @@ bool android_call(const char *method) {
     return ok;
 }
 
+bool android_driver_error_dialog(const char *text) {
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return false;
+    jclass c = (*env)->GetObjectClass(env, act);
+    jmethodID m = c ? (*env)->GetStaticMethodID(env, c, "driverErrorDialog", "(Ljava/lang/String;)Z") : NULL;
+    bool shown = false;
+    if (m) {
+        jstring t = (*env)->NewStringUTF(env, text);
+        shown = (*env)->CallStaticBooleanMethod(env, c, m, t);
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env), shown = false;
+        (*env)->DeleteLocalRef(env, t);
+    } else (*env)->ExceptionClear(env);
+    if (c) (*env)->DeleteLocalRef(env, c);
+    (*env)->DeleteLocalRef(env, act);
+    return shown;
+}
+
 static void (*g_driver_done)(const char *);
 void android_on_driver(void (*done)(const char *)) { g_driver_done = done; }
 
