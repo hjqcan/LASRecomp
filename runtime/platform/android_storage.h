@@ -15,6 +15,12 @@ bool android_pick_folder(void (*done)(const char *uri));
 int android_import_game(const char *uri, const char *dst, void (*progress)(uint64_t done, uint64_t total),
                         bool (*cancelled)(void));
 
+// Calls the activity's method of that name, without arguments (pickDriver, useSystemDriver, restartApp). False: none.
+bool android_call(const char *method);
+// done(result) on another thread when a driver package was picked (pickDriver) or the system's chosen again
+// (useSystemDriver): the package's name, "-" for the system's, "" when the file isn't a driver.
+void android_on_driver(void (*done)(const char *result));
+
 #ifdef __cplusplus
 }
 #endif

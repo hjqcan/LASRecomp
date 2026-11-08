@@ -52,6 +52,32 @@ int android_import_game(const char *uri, const char *dst, void (*progress)(uint6
     return r;
 }
 
+bool android_call(const char *method) {
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return false;
+    jmethodID m = activity_method(env, act, method, "()V");
+    bool ok = m != NULL;
+    if (ok) {
+        (*env)->CallVoidMethod(env, act, m);
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env), ok = false;
+    }
+    (*env)->DeleteLocalRef(env, act);
+    return ok;
+}
+
+static void (*g_driver_done)(const char *);
+void android_on_driver(void (*done)(const char *)) { g_driver_done = done; }
+
+JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeDriverPicked(JNIEnv *env, jclass cls, jstring result) {
+    (void)cls;
+    void (*done)(const char *) = g_driver_done;
+    if (!done) return;
+    const char *r = result ? (*env)->GetStringUTFChars(env, result, NULL) : NULL;
+    done(r ? r : "");
+    if (r) (*env)->ReleaseStringUTFChars(env, result, r);
+}
+
 JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeFolderPicked(JNIEnv *env, jclass cls, jstring uri) {
     (void)cls;
     void (*done)(const char *) = g_done;
