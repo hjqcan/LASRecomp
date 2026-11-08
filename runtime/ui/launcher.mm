@@ -1180,6 +1180,7 @@ static bool launcher_pad_event(const SDL_Event &e) {
 // Settings' first tab, on the start screen only: the extracted game files (size, delete) and the user's own Switch
 // fonts (import / back to the substitute)
 // Open a folder in Finder / Explorer (relative paths are in the data root, the working directory)
+#ifndef __ANDROID__
 static void reveal_folder(const std::string &dir) {
     std::string path = dir;
     bool abs = !path.empty() && (path[0] == '/' || path[0] == '\\' || (path.size() > 1 && path[1] == ':'));
@@ -1195,6 +1196,7 @@ static void reveal_folder(const std::string &dir) {
     }
     SDL_OpenURL(url.c_str());
 }
+#endif
 
 static SDL_Window *g_launcher_win;
 // The progress overlay in front of the start screen (input waits): the setup, an update's build, or the shader
@@ -1486,6 +1488,9 @@ static void prelaunch_tab(float sc) {
     snprintf(gbs, sizeof gbs, "%.1f GB", gb);
     opt_begin("##gamefiles", sc);
     opt_section("Game files");
+#ifdef __ANDROID__
+    // (none: other apps can't open the app's own folder there)
+#else
 #ifdef _WIN32
     const char *show = LN("Show in Explorer");
 #elif defined(__linux__)
@@ -1494,6 +1499,7 @@ static void prelaunch_tab(float sc) {
     const char *show = LN("Show in Finder");
 #endif
     if (opt_action(show, "", "Opens the folder with LAS Recomp's copy of the game files.")) reveal_folder(g_root);
+#endif
     static bool shot_del = getenv("LARECOMP_LAUNCHER_SHOT") && strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":askdelete");
     if (shot_del) confirm_delete = true, shot_del = false;  // (test: :askdelete)
     if (!confirm_delete) {
@@ -1547,7 +1553,11 @@ static void prelaunch_tab(float sc) {
     static SDL_DialogFileFilter font_f[] = {{"Switch fonts", "bfttf;ttf"}};
     font_f[0].name = L("Switch fonts");  // (the file window's; L's text stays)
     if (opt_action("Import fonts", "", imp_d.c_str(), true))
+#ifdef __ANDROID__
+        android_pick_files(picked_fonts);  // (SDL's file window gives content:// links there, not files)
+#else
         SDL_ShowOpenFileDialog(picked_fonts, NULL, g_launcher_win, font_f, 1, NULL, true);
+#endif
     if ((fs || fl || fe) && opt_action("Remove imported fonts", "", "Deletes the fonts you imported. The game goes back to "
                                        "the substitutes.", true))
         remove_fonts();
