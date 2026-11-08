@@ -1036,7 +1036,24 @@ static void create_swapchain(void) {
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = transform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = present_mode(), .clipped = VK_TRUE,
         .oldSwapchain = old};
+#ifdef __ANDROID__
+    {   // (the window went away after its surface was made - sent to the background right then: no swapchain now, the
+        // next frame makes the surface and swapchain again instead of stopping. From mamcjr's LASRecompAndroid, MIT,
+        // after BOTWRecompAndroid.)
+        VkResult r = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain);
+        if (r == VK_ERROR_SURFACE_LOST_KHR || r == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR) {
+            LOG("[vk] window surface lost while making the swapchain (%d): made again at the next frame\n", r);
+            for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+            g_vk.sc_count = 0;
+            if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
+            g_vk.swapchain = VK_NULL_HANDLE;
+            return;
+        }
+        VK_CHECK(r);
+    }
+#else
     VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
+#endif
     static const char *const modes[] = {"immediate", "mailbox", "fifo", "fifo-relaxed"};
     LOG("[vk] swapchain %ux%u, %u images, %s\n", ext.width, ext.height, count,
         ci.presentMode < 4 ? modes[ci.presentMode] : "other present mode");
