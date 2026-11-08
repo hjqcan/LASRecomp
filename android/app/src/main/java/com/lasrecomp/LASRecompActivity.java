@@ -47,9 +47,11 @@ public class LASRecompActivity extends SDLActivity {
             Os.setenv("LARECOMP_GEN_DIR", new File(getFilesDir(), "gen").getAbsolutePath(), true);
             File driver = customDriver();  // (runtime/nvn/vulkan/android_driver.c: none = the system's)
             Os.setenv("LARECOMP_VK_DRIVER", driver != null ? driver.getAbsolutePath() : "", true);
-            // the desktop's debug and test switches (docs/debug-hooks.md) from the launch:
+            // the desktop's debug and test switches (docs/debug-hooks.md) from the launch, in debuggable builds only (the
+            // activity is exported: in a release build any app could start it with switches set):
             //   adb shell am start -n com.lasrecomp.android/com.lasrecomp.LASRecompActivity --es LARECOMP_LOG_SKIPS 1
-            Bundle extras = getIntent() != null ? getIntent().getExtras() : null;
+            boolean debuggable = (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+            Bundle extras = debuggable && getIntent() != null ? getIntent().getExtras() : null;
             if (extras != null)
                 for (String k : extras.keySet())
                     if (k.startsWith("LARECOMP_") && extras.get(k) != null) {

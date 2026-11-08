@@ -216,6 +216,7 @@ void settings_load(void) {
                 if (!strcmp(val, corners[i])) g_settings.show_fps = i;
         }
         else if (!strcmp(key, "frame_interp")) g_settings.frame_interp = atoi(val) != 0;
+        else if (!strcmp(key, "metal_hud")) g_settings.metal_hud = atoi(val) != 0;
         else if (!strcmp(key, "resolution")) {  // (auto: never chosen, the GPU's default)
             int n = atoi(val);
             g_settings.res_auto = !strcmp(val, "auto");
@@ -330,6 +331,9 @@ void settings_save(void) {
         fprintf(f, "show_fps = %s\n", corners[c >= 0 && c < N_FPS_CORNERS ? c : 0]);
     }
     fprintf(f, "frame_interp = %d\n", g_settings.frame_interp);
+#ifdef __APPLE__
+    fprintf(f, "metal_hud = %d\n", g_settings.metal_hud);
+#endif
     fprintf(f, "upscaler = %s\n", g_settings.upscaler_auto ? "auto" : g_settings.upscaler == UPSCALE_METALFX ? "metalfx" :
                                    g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
