@@ -2359,7 +2359,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
                 r++;
             }
         }
-        if (c->ao_pass) sp(&s, "  if (rscale[65][2] > 0.0f) o.c0 = float4(1.0f);\n");  // (ambient occlusion Off: ao_grid_fix)
+        if (c->ao_pass) sp(&s, "  if (rscale[65][2] > 0.0f) c0 = vec4(1.0f);\n");  // (ambient occlusion Off: ao_grid_fix)
         if (tint)
             sp(&s, "  if (ltint[0].w > 0.0f) { vec3 g = c0.rgb; float l = dot(g, vec3(0.299f, 0.587f, 0.114f));\n"
                    "    c0.rgb = mix(g, ltint[0].rgb * pow(l, ltint[1].w) + ltint[1].rgb * l, ltint[0].w); }\n");
@@ -3179,6 +3179,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
                 r++;
             }
         }
+        if (c->ao_pass) sp(&s, "  if (rscale[65][2] > 0.0f) o.c0 = float4(1.0f);\n");  // (ambient occlusion Off: ao_grid_fix)
         if (tint)
             sp(&s, "  if (ltint[0].w > 0.0f) { float3 g = o.c0.rgb; float l = dot(g, float3(0.299f, 0.587f, 0.114f));\n"
                    "    o.c0.rgb = mix(g, ltint[0].rgb * pow(l, ltint[1].w) + ltint[1].rgb * l, ltint[0].w); }\n");
