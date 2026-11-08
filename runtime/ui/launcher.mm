@@ -46,6 +46,9 @@ extern "C" {
 #include "game_addresses.h"
 #include "gamelib.h"
 #include "romfs_build.h"
+#ifdef __ANDROID__
+#include "platform/android_storage.h"
+#endif
 #include "settings.h"
 #include "input_bind.h"
 #include "menu_sfx.h"
@@ -56,6 +59,7 @@ void ui_window_init(void);
 SDL_Window *ui_window(void);
 #ifdef __APPLE__
 void *ui_metal_layer(void);
+void ui_metal_hud_apply(void);
 void *ui_metal_device(void);
 #else
 // runtime/nvn/vulkan: window frames and ImGui plumbing
@@ -411,6 +415,9 @@ static bool build_cancelled(void) { return g_cancel_build.load(); }
 static bool g_copy_skipped;                  // (only the game code to build: the bar is all of that)
 static bool g_auto_update;                   // started by itself: game files there, game code from an older version
 static void setup_progress(uint64_t done, uint64_t) { g_done = g_phase_base + done; }
+#ifdef __ANDROID__
+static void import_progress(uint64_t done, uint64_t total) { g_total = total, g_done = done; }  // (the copy is the first phase)
+#endif
 static void build_progress(double f, const char *step) {
     g_build_frac = (float)f;
     static const char *last;
@@ -420,9 +427,14 @@ static void build_progress(double f, const char *step) {
 static std::atomic<float> g_prep_frac{-1};  // -1: not preparing
 static volatile int g_prep_skip;
 static bool g_prep_skip_ask;  // Skip pressed: "are you sure?" in front of the bar (LARECOMP_LAUNCHER_SHOT=<f>:skipask)
-static void prep_progress(int done, int total) { g_prep_frac = total ? (float)done / (float)total : 0.0f; }
+// The variants prepared and their total (done << 32 | total), one value so the bar and the count always agree
+static std::atomic<uint64_t> g_prep_count{0};
+static void prep_progress(int done, int total) {
+    g_prep_count = (uint64_t)(uint32_t)done << 32 | (uint32_t)total;
+    g_prep_frac = total ? (float)done / (float)total : 0.0f;
+}
 static void prepare_shaders(bool background = false) {
-    g_prep_skip = 0, g_prep_frac = 0;
+    g_prep_skip = 0, g_prep_count = 0, g_prep_frac = 0;
     if (!background) set_job(LN("Preparing shaders"));
     shader_prep_run((g_root + "/romfs").c_str(), prep_progress, &g_prep_skip);
     g_prep_frac = -1;
@@ -486,6 +498,25 @@ static void *extract_thread(void *) {
         if (!build_game_code()) goto done;
         goto check;
     }
+#ifdef __ANDROID__
+    if (!src.compare(0, 10, "content://")) {  // (Android's folder picker: copied through the storage framework)
+        set_job(LN("Copying the game files..."));
+        mkdir(g_root.c_str(), 0755);
+        rt_remove_game_files(g_root.c_str());
+        game_files_changed();
+        mkdir(g_root.c_str(), 0755);
+        int r = android_import_game(src.c_str(), g_root.c_str(), import_progress, build_cancelled);
+        if (r) { set_failure(r == 1 ? FAIL_NOT_FOUND : r == 2 ? FAIL_UNUSABLE : FAIL_COPY); goto done; }
+        if (!build_id_ok(g_root + "/exefs")) { set_failure(FAIL_VERSION); goto done; }
+        if (int have = count_files(g_root + "/romfs"); have < ROMFS_FILES) { set_failure(FAIL_MISSING, have); goto done; }
+        g_phase_base = g_total, g_done = (unsigned long long)g_total;
+        pthread_mutex_lock(&g_lock);
+        g_src.clear();
+        pthread_mutex_unlock(&g_lock);
+        if (!build_game_code()) goto done;
+        goto check;
+    }
+#endif
     set_job(LN("Looking for the game files..."));
     find_game(src, 0, exefs, romfs, unusable);
     if (exefs.empty() || romfs.empty()) { set_failure(unusable ? FAIL_UNUSABLE : FAIL_NOT_FOUND); goto done; }
@@ -546,7 +577,7 @@ static const char *const PICKER_FAILED = LN("Couldn't open a folder window");
 static std::string picker_hint(const char *what) {
     std::string err = SDL_GetError();
     fprintf(stderr, "[launcher] %s window: %s\n", what, err.c_str());
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
     char b[256];  // (what: "folder" / "file")
     snprintf(b, sizeof b, LN("LAS Recomp needs xdg-desktop-portal or zenity to open the %s window. Install one and try "
                              "again."), what);
@@ -563,6 +594,24 @@ static void SDLCALL picked(void *, const char *const *files, int) {
     g_src = files[0];
     if (g_job == PICKER_FAILED) g_job.clear(), g_job_hint.clear(), g_job_failed = false;
     pthread_mutex_unlock(&g_lock);
+}
+
+// The game files folder's Choose...: Android's own folder picker there (SDL has none for folders; the folder is a
+// content:// URI, copied by the setup through the storage framework: extract_thread)
+#ifdef __ANDROID__
+static void picked_android(const char *uri) {
+    fprintf(stderr, "[launcher] game files folder: %s\n", uri ? uri : "(none picked)");
+    const char *list[2] = {uri, NULL};
+    picked(NULL, list, -1);  // (NULL uri: cancelled - an empty list)
+}
+#endif
+static void choose_game_folder(SDL_Window *win) {
+#ifdef __ANDROID__
+    (void)win;
+    if (!android_pick_folder(picked_android)) picked(NULL, NULL, -1);
+#else
+    SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
+#endif
 }
 
 // ------------------------------------------------------------------ OneDrive (Windows)
@@ -904,6 +953,81 @@ static bool menu_tip(float s) {
     return go;
 }
 
+#ifdef __ANDROID__
+// The game files page's example on Android: the system's folder picker, as it looks with the folder to choose opened
+// ("Game files", exefs and romfs in it) and its "Use this folder" button at the bottom, which a gold arrow points at.
+// The picker chooses the folder it's in, not one picked from a list. Drawn as the desktop's (shapes and the page's font,
+// sized from the font), up to w wide, at the cursor; it takes its space with a Dummy.
+static float folder_example_height(void) {
+    float fs = ImGui::GetFontSize();
+    return fs * (1.6f + 1.2f + 2 * 1.25f + 0.35f + 1.15f + 2.0f + 0.45f);
+}
+static void draw_folder_example(float w) {
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImFont *font = ImGui::GetFont();
+    float fs = ImGui::GetFontSize(), ts = fs * 0.82f;
+    float bar = fs * 1.6f, crumb = fs * 1.2f, rh = fs * 1.25f, r = fs * 0.45f;
+    w = fminf(w, fs * 15);
+    float h = folder_example_height();
+    ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w, a.y + h);
+    const ImU32 body = IM_COL32(24, 28, 27, 255), title = IM_COL32(40, 45, 43, 255), edge = IM_COL32(255, 255, 255, 38),
+                text = IM_COL32(220, 216, 205, 255), dim = IM_COL32(150, 152, 144, 255),
+                gold = IM_COL32(236, 194, 84, 255), gold_tab = IM_COL32(200, 160, 62, 255),
+                accent = IM_COL32(120, 170, 255, 255), button = IM_COL32(32, 84, 176, 255),
+                text_sel = IM_COL32(250, 250, 255, 255);
+    dl->AddRectFilled(ImVec2(a.x, a.y + fs * 0.12f), ImVec2(b.x, b.y + fs * 0.22f), IM_COL32(0, 0, 0, 70), r);  // shadow
+    dl->AddRectFilled(a, b, body, r);
+    dl->AddRectFilled(a, ImVec2(b.x, a.y + bar), title, r, ImDrawFlags_RoundCornersTop);
+    dl->AddRect(a, b, edge, r, 0, 1.0f);
+    // the top bar: a back arrow, then the opened folder's name
+    float cy = a.y + bar * 0.5f, ax = a.x + fs * 0.6f, u = fs * 0.28f, th = fs * 0.09f;
+    dl->AddLine(ImVec2(ax, cy), ImVec2(ax + u * 2.2f, cy), text, th);
+    dl->AddLine(ImVec2(ax + th * 0.3f, cy), ImVec2(ax + u, cy - u), text, th);
+    dl->AddLine(ImVec2(ax + th * 0.3f, cy), ImVec2(ax + u, cy + u), text, th);
+    const char *gf = L("Game files");
+    float tsz = fs * 0.95f;
+    dl->AddText(font, tsz, ImVec2(ax + fs * 1.4f, cy - font->CalcTextSizeA(tsz, FLT_MAX, 0, gf).y * 0.5f), text, gf);
+    // the path to it: Documents > Game files
+    float y = a.y + bar, my = y + crumb * 0.5f, x = a.x + fs * 0.6f;
+    const char *doc = L("Documents");
+    ImVec2 dsz = font->CalcTextSizeA(ts, FLT_MAX, 0, doc);
+    dl->AddText(font, ts, ImVec2(x, my - dsz.y * 0.5f), dim, doc);
+    x += dsz.x + fs * 0.35f;
+    float c = fs * 0.16f;
+    dl->AddLine(ImVec2(x, my - c), ImVec2(x + c, my), dim, th * 0.8f);
+    dl->AddLine(ImVec2(x + c, my), ImVec2(x, my + c), dim, th * 0.8f);
+    x += c + fs * 0.35f;
+    dl->AddText(font, ts, ImVec2(x, my - font->CalcTextSizeA(ts, FLT_MAX, 0, gf).y * 0.5f), accent, gf);
+    // what's in it
+    float g = fs * 0.78f;
+    static const char *const rows[] = {"exefs", "romfs"};
+    for (int i = 0; i < 2; i++) {
+        float ry = y + crumb + i * rh, rmy = ry + rh * 0.5f, gx = a.x + fs * 0.6f, gy = rmy - g * 0.5f;
+        if (i & 1) dl->AddRectFilled(ImVec2(a.x + 1, ry), ImVec2(b.x - 1, ry + rh), IM_COL32(255, 255, 255, 9));
+        dl->AddRectFilled(ImVec2(gx, gy + g * 0.12f), ImVec2(gx + g * 0.46f, gy + g * 0.42f), gold_tab, g * 0.1f);
+        dl->AddRectFilled(ImVec2(gx, gy + g * 0.26f), ImVec2(gx + g, gy + g * 0.9f), gold, g * 0.1f);
+        ImVec2 nsz = font->CalcTextSizeA(ts, FLT_MAX, 0, rows[i]);
+        dl->AddText(font, ts, ImVec2(gx + g + fs * 0.45f, rmy - nsz.y * 0.5f), text, rows[i]);
+    }
+    // the button, bottom right, and over it what to do with a gold arrow down to it
+    const char *use = L("USE THIS FOLDER");
+    ImVec2 usz = font->CalcTextSizeA(ts, FLT_MAX, 0, use);
+    float bh = fs * 1.5f, bw = usz.x + fs * 1.3f, bx1 = b.x - fs * 0.5f, bx0 = bx1 - bw, by1 = b.y - fs * 0.45f,
+          by0 = by1 - bh;
+    dl->AddRectFilled(ImVec2(bx0, by0), ImVec2(bx1, by1), button, bh * 0.5f);
+    dl->AddText(font, ts, ImVec2(bx0 + (bw - usz.x) * 0.5f, by0 + (bh - usz.y) * 0.5f), text_sel, use);
+    const char *hint = L("Open the folder, then tap this");
+    float hs = ts, room = w - fs * 1.0f, hw = font->CalcTextSizeA(hs, FLT_MAX, 0, hint).x;
+    if (hw > room) hs *= fmaxf(0.7f, room / hw), hw = font->CalcTextSizeA(hs, FLT_MAX, 0, hint).x;
+    float hy = by0 - fs * 0.5f - fs * 1.15f * 0.5f, acx = (bx0 + bx1) * 0.5f, hx = fminf(acx - hw * 0.5f, bx1 - hw);
+    hx = fmaxf(hx, a.x + fs * 0.5f);
+    dl->AddText(font, hs, ImVec2(hx, hy - font->CalcTextSizeA(hs, FLT_MAX, 0, hint).y * 0.5f), gold, hint);
+    float t0 = hy + fs * 0.42f, t1 = by0 - fs * 0.08f, hd = fs * 0.22f;  // (the arrow, from under the hint to the button)
+    dl->AddLine(ImVec2(acx, t0), ImVec2(acx, t1 - hd), gold, th);
+    dl->AddTriangleFilled(ImVec2(acx - hd, t1 - hd), ImVec2(acx + hd, t1 - hd), ImVec2(acx, t1), gold);
+    ImGui::Dummy(ImVec2(w, h));
+}
+#else
 // The game files page's example: a Finder-style window (the same on every platform) with the folder to choose -
 // "Game files", opened: exefs in it opened (its files), romfs closed. All drawn here (shapes and the page's font, sized from the font: sharp at
 // any scale), up to w wide, at the cursor; it takes its space with a Dummy.
@@ -989,6 +1113,7 @@ static void draw_folder_example(float w) {
     }
     ImGui::Dummy(ImVec2(w, h));
 }
+#endif
 
 // Start-screen text: a soft drop shadow, then the text with a top-to-bottom colour gradient (top == bottom: flat)
 static void text_fx(ImDrawList *dl, ImFont *font, float size, ImVec2 p, ImU32 top, ImU32 bottom, const char *t,
@@ -1131,6 +1256,7 @@ static bool launcher_pad_event(const SDL_Event &e) {
 // Settings' first tab, on the start screen only: the extracted game files (size, delete) and the user's own Switch
 // fonts (import / back to the substitute)
 // Open a folder in Finder / Explorer (relative paths are in the data root, the working directory)
+#ifndef __ANDROID__
 static void reveal_folder(const std::string &dir) {
     std::string path = dir;
     bool abs = !path.empty() && (path[0] == '/' || path[0] == '\\' || (path.size() > 1 && path[1] == ':'));
@@ -1146,6 +1272,7 @@ static void reveal_folder(const std::string &dir) {
     }
     SDL_OpenURL(url.c_str());
 }
+#endif
 
 static SDL_Window *g_launcher_win;
 // The progress overlay in front of the start screen (input waits): the setup, an update's build, or the shader
@@ -1158,6 +1285,10 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
     float f = test_busy && g_prep_frac < 0 ? 0.42f : prep_wait && g_prep_frac < 0 ? 0.99f : extract_progress();
     // (while the game code is built: what's happening, on whose files - runtime/gamebuild.c)
     bool preparing = g_prep_frac >= 0 || prep_wait, recompiling = g_build_frac >= 0 && !preparing;
+    uint64_t pc = g_prep_count;
+    unsigned prep_done = (unsigned)(pc >> 32), prep_total = (unsigned)pc;
+    bool count = preparing && g_prep_frac >= 0 && prep_total;  // (the total is known once the game files are indexed)
+    if (count) f = (float)prep_done / (float)prep_total;      // (the bar from the same numbers as the count)
     const char *title = preparing ? L("Preparing shaders") : g_auto_update ? L("Updating the game")
                       : recompiling ? L("Recompiling the game") : L("Setting up the game files");
     const char *const notes[] = {L("This only needs to be done once and may take a while.")};
@@ -1183,7 +1314,24 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
     else snprintf(line, sizeof line, "%s   %d%%", test_busy ? L("Setting up the game files...") : shown(job).c_str(),
                   (int)(f * 100));
     ImVec2 ls = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, line);
-    fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ls.x) * 0.5f, bb.y + 26 * sc), IM_COL32(220, 216, 205, 255), line);
+    float ty = bb.y + 26 * sc;
+    if (count) {  // "42%  ·  666/1585", the count muted. Fixed places (no jitter as the digits change): the
+        // percentage right-aligned before the dot, the variants done right-aligned before the "/", room for the widest
+        auto w = [&](const char *t) { return g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, t).x; };
+        float dig = 0;
+        for (char d[2] = "0"; d[0] <= '9'; d[0]++) dig = fmaxf(dig, w(d));
+        char tot[16], dn[16];
+        snprintf(tot, sizeof tot, "/%u", prep_total), snprintf(dn, sizeof dn, "%u", prep_done);
+        const char *sep = "  \xc2\xb7  ";
+        float wp = 3 * dig + w("%"), wd = (float)strlen(tot + 1) * dig;
+        float x = (a.x + b.x - (wp + w(sep) + wd + w(tot))) * 0.5f;
+        ImU32 muted = IM_COL32(150, 148, 140, 255);
+        fg->AddText(g_font_small, sfs, ImVec2(x + wp - ls.x, ty), IM_COL32(220, 216, 205, 255), line);
+        fg->AddText(g_font_small, sfs, ImVec2(x + wp, ty), muted, sep);
+        float xs = x + wp + w(sep) + wd;  // (the "/")
+        fg->AddText(g_font_small, sfs, ImVec2(xs - w(dn), ty), muted, dn);
+        fg->AddText(g_font_small, sfs, ImVec2(xs, ty), muted, tot);
+    } else fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ls.x) * 0.5f, ty), IM_COL32(220, 216, 205, 255), line);
     for (int i = 0; i < nnotes; i++) {
         ImVec2 ns = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, notes[i]);
         fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ns.x) * 0.5f, bb.y + 26 * sc + (i + 1) * line_h + 14 * sc),
@@ -1365,6 +1513,47 @@ static void data_folder_popup(float s) {
     ImGui::EndPopup();
 }
 
+#ifdef __ANDROID__
+// The Vulkan driver package (Settings > Game files): the activity copies a picked one into the drivers folder, and the
+// driver is loaded at the next start (runtime/nvn/vulkan/android_driver.c). From LASRecompAndroid by mamcjr (MIT).
+static std::string g_driver_msg;
+static bool g_driver_restart;
+static void driver_picked(const char *r) {  // (another thread)
+    pthread_mutex_lock(&g_lock);
+    g_driver_msg = !strcmp(r, "-") ? L("The phone's own driver from the next start. Restart LAS Recomp to use it.")
+                   : *r ? L("Driver package added. Restart LAS Recomp to use it.")
+                        : L("That file isn't a driver package (.zip or .so).");
+    g_driver_restart = *r != 0;
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void driver_rows(void) {
+    android_on_driver(driver_picked);
+    auto base = [](const char *p) { const char *s = p ? strrchr(p, '/') : NULL; return std::string(s ? s + 1 : p ? p : ""); };
+    std::string want = base(getenv("LARECOMP_VK_DRIVER")), used = base(getenv("LARECOMP_VK_DRIVER_IN_USE"));
+    std::string d = L("The Vulkan driver the game runs on. On Adreno GPUs a Turnip driver package (.zip, as other "
+                      "emulators use) can run it better than the phone's own driver. A new one applies from the next start.");
+    if (!want.empty() && used.empty()) {
+        char b[400];
+        snprintf(b, sizeof b, L("%s couldn't run here, so the phone's own driver is in use."), want.c_str());
+        d += std::string("\n\n") + b;
+    }
+    pthread_mutex_lock(&g_lock);
+    std::string msg = g_driver_msg;
+    bool restart = g_driver_restart;
+    pthread_mutex_unlock(&g_lock);
+    if (!msg.empty()) d += "\n\n" + msg;
+    opt_section("Graphics driver");
+    if (opt_action("Vulkan driver", used.empty() ? LN("Phone's own") : used.c_str(), d.c_str(), true))
+        android_call("pickDriver");
+    if (!want.empty() && opt_action("Use the phone's own driver", "", "Goes back to the phone's own Vulkan driver from the "
+                                    "next start.", true))
+        android_call("useSystemDriver");
+    if (restart && opt_action("Restart now", "", "Starts LAS Recomp again with the driver you chose.", true))
+        android_call("restartApp");
+}
+#endif
+
 static bool g_files_deleted;  // set here: the start screen goes back to setting the game files up
 // Settings > Game files, as the other tabs: option rows on the left, the selected row's description on the right
 static void prelaunch_tab(float sc) {
@@ -1375,6 +1564,9 @@ static void prelaunch_tab(float sc) {
     snprintf(gbs, sizeof gbs, "%.1f GB", gb);
     opt_begin("##gamefiles", sc);
     opt_section("Game files");
+#ifdef __ANDROID__
+    // (none: other apps can't open the app's own folder there)
+#else
 #ifdef _WIN32
     const char *show = LN("Show in Explorer");
 #elif defined(__linux__)
@@ -1383,6 +1575,7 @@ static void prelaunch_tab(float sc) {
     const char *show = LN("Show in Finder");
 #endif
     if (opt_action(show, "", "Opens the folder with LAS Recomp's copy of the game files.")) reveal_folder(g_root);
+#endif
     static bool shot_del = getenv("LARECOMP_LAUNCHER_SHOT") && strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":askdelete");
     if (shot_del) confirm_delete = true, shot_del = false;  // (test: :askdelete)
     if (!confirm_delete) {
@@ -1417,6 +1610,9 @@ static void prelaunch_tab(float sc) {
         if (fixed) opt_disable_next();
         if (opt_action("Data folder", "Change...", d.c_str(), true)) choose_data_folder();
     }
+#ifdef __ANDROID__
+    driver_rows();
+#endif
     opt_section("Game font");
     import_fonts();
     bool fs = have_font(FONT_STD, 4), fl = have_font(FONT_LANG, 8), fe = have_font(FONT_EXT, 2);
@@ -1433,7 +1629,11 @@ static void prelaunch_tab(float sc) {
     static SDL_DialogFileFilter font_f[] = {{"Switch fonts", "bfttf;ttf"}};
     font_f[0].name = L("Switch fonts");  // (the file window's; L's text stays)
     if (opt_action("Import fonts", "", imp_d.c_str(), true))
+#ifdef __ANDROID__
+        android_pick_files(picked_fonts);  // (SDL's file window gives content:// links there, not files)
+#else
         SDL_ShowOpenFileDialog(picked_fonts, NULL, g_launcher_win, font_f, 1, NULL, true);
+#endif
     if ((fs || fl || fe) && opt_action("Remove imported fonts", "", "Deletes the fonts you imported. The game goes back to "
                                        "the substitutes.", true))
         remove_fonts();
@@ -1538,8 +1738,8 @@ extern "C" void launcher_run(const char *root) {
         const char *pg = strchr(getenv("LARECOMP_LAUNCHER_SHOT"), ':');
         if (pg && (!strncmp(pg + 1, "settings", 8) || !strcmp(pg + 1, "askdelete"))) page = SETTINGS, menu_tabs_focus(true);
         if (pg && !strcmp(pg + 1, "setup")) page = SETUP;
-        if (pg && !strcmp(pg + 1, "preparing")) page = SETUP, g_prep_frac = 0.42f, set_job(LN("Preparing shaders"));
-        if (pg && !strcmp(pg + 1, "skipask")) page = SETUP, g_prep_frac = 0.42f, set_job(LN("Preparing shaders")), g_prep_skip_ask = true;
+        if (pg && !strcmp(pg + 1, "preparing")) page = SETUP, prep_progress(666, 1585), set_job(LN("Preparing shaders"));
+        if (pg && !strcmp(pg + 1, "skipask")) page = SETUP, prep_progress(666, 1585), set_job(LN("Preparing shaders")), g_prep_skip_ask = true;
         if (pg && !strncmp(pg + 1, "fail", 4)) page = SETUP, set_failure(atoi(pg + 5));  // (the failure messages)
         if (pg && !strncmp(pg + 1, "settings", 8) && pg[9] == ':') g_tab_request_ext = atoi(pg + 10);  // settings:<tab>
         if (pg && !strcmp(pg + 1, "delete")) page = SETUP, g_confirm_delete = true;
@@ -1663,6 +1863,12 @@ extern "C" void launcher_run(const char *root) {
             page = MAIN;
             g_play_pending = true;
         }
+        // a rebind takes every release while it waits (menu.mm drain_events): nothing held when it starts or ends
+        static bool capture_was;
+        if (bind_capture_active(NULL, NULL, NULL) != capture_was) capture_was = !capture_was, ui_pad_release_all(io);
+#ifdef __APPLE__
+        ui_metal_hud_apply();
+#endif
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             input_cursor_event(&e);  // (pad / key: the cursor hides; ImGui's backend leaves it so, below)
@@ -1846,8 +2052,8 @@ extern "C" void launcher_run(const char *root) {
                     sparkle(dl, ImVec2(play_at.x + w - h * 0.32f, play_at.y + h * 0.08f), h * 0.11f, k2 * 0.8f, -t * 0.8f);
                 }
                 ImGui::SetWindowFontScale(1.0f);
-                if (pressed && arrow && ImGui::IsMouseReleased(0)) {  // (a mouse click on an arrow: cycle)
-                    choice = (choice + arrow + (int)choices.size()) % (int)choices.size();
+                if (pressed && arrow && ImGui::IsMouseReleased(0)) {  // (a mouse click on an arrow: a step, to the ends)
+                    choice = std::max(0, std::min(choice + arrow, (int)choices.size() - 1));
                     pressed = false;
                 }
                 // first PLAY ever: the aspect ratio question, then how to reach our menu, then the game
@@ -1865,9 +2071,9 @@ extern "C" void launcher_run(const char *root) {
                 if (menu_tip(s)) play = true;
                 if (hov && status.empty()) {
                     if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft))
-                        choice = (choice + (int)choices.size() - 1) % (int)choices.size();
+                        choice = std::max(choice - 1, 0);
                     if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight))
-                        choice = (choice + 1) % (int)choices.size();
+                        choice = std::min(choice + 1, (int)choices.size() - 1);
                     // left / right are ours while PLAY is selected: ImGui's navigation would otherwise take them too,
                     // find nothing beside PLAY and scroll the window (PLAY loses its highlight, the cycling stops)
                     ImGuiID own = ImGui::GetID("##play_lr");
@@ -2018,8 +2224,7 @@ extern "C" void launcher_run(const char *root) {
                 if (!ready) {
                     opt_section("Your copy of the game");
                     if (busy) opt_disable_next();
-                    if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
-                        SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
+                    if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true)) choose_game_folder(win);
                     check_left_of_value(src_v);
                     first_row();
                     opt_section("Set up");

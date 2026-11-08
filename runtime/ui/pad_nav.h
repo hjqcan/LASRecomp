@@ -18,3 +18,6 @@ int ui_pad_family(void);
 const char *ui_pad_confirm_label(void);
 const char *ui_pad_back_label(void);
 const char *ui_pad_start_label(void);
+// Every key and controller input let go, in ImGui's eyes: its releases can go missing (the menu closed, a rebind took
+// them) and a key it still thinks is held repeats - the cursor keeps scrolling until that button is pressed again
+void ui_pad_release_all(ImGuiIO &io);

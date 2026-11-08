@@ -81,6 +81,16 @@ bool game_version_select(const char *game_dir, char *why, size_t why_size) {
     }
     g_version = v;
     g_ga = v->addrs;
+#ifdef LARECOMP_DYN_BASE
+    // The tables hold the game's own addresses (GUEST_CANON..): moved to where the window is (rt.h). Everything in
+    // GameAddrs is a uint64_t address, so the table is walked as an array.
+    static GameAddrs moved;
+    moved = *v->addrs;
+    uint64_t *p = (uint64_t *)&moved;
+    for (size_t i = 0; i < sizeof moved / sizeof *p; i++)
+        if (p[i] >= GUEST_CANON && p[i] < GUEST_CANON + GUEST_SIZE) p[i] = p[i] - GUEST_CANON + GUEST_LO;
+    g_ga = &moved;
+#endif
     char label[32];
     LOG("[game] version %s (main build ID %.16s, address table %s)\n",
         game_release_label(exefs, label, sizeof label), v->build_id, v->key);

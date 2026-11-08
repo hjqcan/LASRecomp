@@ -15,9 +15,11 @@ Vendor IDs: 0x13B5 Arm (Mali), 0x5143 Qualcomm (Adreno), 0x8086 Intel, 0x1002 AM
 | Structured shaders (static branch stacks, no jump loop) | Mali, Adreno | PanVK (RK3588), Turnip | #562 | `LARECOMP_VK_STRUCTURE` |
 | c1 inlined, hot constant buffer words as push constants | Mali, Adreno | PanVK; Turnip (Adreno 643) | #563, #579 | `LARECOMP_VK_PUSH_CB`, `LARECOMP_VK_INLINE_C1` |
 | Split pass barriers | Mali | PanVK | | `LARECOMP_VK_SPLIT_BARRIER` |
+| Command buffers release their memory at each begin (a memory leak without it) | Arm's driver (not PanVK) | libmali g29p1 (Mali-G610, RK3588) | | `LARECOMP_VK_CB_RELEASE` |
 | Branch stacks as variables instead of arrays | Intel | | #462 | `LARECOMP_VK_STACK_ARRAYS=1` gives arrays |
 | Placeholder colour attachment for depth-only passes | Intel | UHD 630 on Windows (a driver crash without it, #8, #46) | | `LARECOMP_VK_PLACEHOLDER_COLOR` |
 | Guest heap as driver memory | RADV, PanVK | PanVK (Mali-G610), RADV | #564, #483 | `LARECOMP_VK_HEAP_DMABUF` |
+| fmin / fmax / saturate as the GPU's min / max / clamp | Android (every GPU) | Turnip and Qualcomm's driver (Adreno 830), in LASRecompAndroid | | `LARECOMP_VK_FAST_MINMAX` |
 | Shader memory through copies (no heap import) | drivers without `VK_EXT_external_memory_host` | PanVK | #556 | none (automatic) |
 
 Notes:

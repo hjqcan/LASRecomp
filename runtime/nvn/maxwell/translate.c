@@ -28,6 +28,7 @@ bool maxwell_gmem_lazy;
 bool maxwell_gmem_fs_miss;
 bool maxwell_glsl_stack_vars = true;
 bool maxwell_glsl_structured;  // static stacks + structured control flow by default (exec.c: Mali, Adreno)
+bool maxwell_glsl_fast_minmax;  // the GPU's min / max / clamp for fmin / fmax / saturate (exec.c: Android)
 bool maxwell_glsl_push;  // c1 inlined + push constants by default (exec.c: Mali, Adreno)
 const uint8_t *maxwell_const_data;
 uint32_t maxwell_const_size;
@@ -2133,6 +2134,11 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (exact < 0) exact = getenv("LARECOMP_VK_EXACT_H2F") && atoi(getenv("LARECOMP_VK_EXACT_H2F")) != 0;
     sp(&s, "%s%s", !exact && (stage == STAGE_FRAGMENT || stage == STAGE_COMPUTE) ? glsl_h2f_native : glsl_h2f_exact,
        glsl_prelude_half);
+    // (maxwell_glsl_fast_minmax) the GPU's own min / max / saturation for the code after here: Adreno, as D3D requires,
+    // returns the operand that isn't NaN from min / max and saturates NaN to 0 - the Maxwell semantics the helpers above
+    // spell out with NaN tests (two tests and selects each, ~40 in the lit pass's light loop: 1717 -> 1637
+    // instructions). From LASRecompAndroid by mamcjr (MIT).
+    if (maxwell_glsl_fast_minmax) sp(&s, "#define fmin min\n#define fmax max\n#define saturate(x) clamp((x), 0.0f, 1.0f)\n");
     for (int i = 0; i < 18; i++) {
         if (!(info->cbuf_mask & (1u << i))) continue;
         uint32_t n = info->cbuf_size[i] / 16;

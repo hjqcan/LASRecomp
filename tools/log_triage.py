@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Log triage for GitHub issues: a short summary of the lasrecomp.log files attached to an issue.
 
-.github/workflows/log_triage.yml runs it when an issue is opened / edited or a comment is added. It reads the issue
+.github/workflows/log_triage.yml runs it when an issue or a comment is added or edited. It reads the issue
 and its comments through the GitHub API, downloads the attached logs (github.com/user-attachments/files/... links
 whose file name starts with "lasrecomp", at most MAX_BYTES each), and keeps ONE bot comment per issue up to date
 with a summary of the newest logs, plus a "log: crash" / "log: device-lost" / "log: ok" label for the newest one.
@@ -62,6 +62,12 @@ INFO_RE = re.compile(r"^\[info\] LAS Recomp ([^\s,]+), (.+?(?:GB RAM|RAM unknown
 MS_RE = re.compile(r"([\d.]+)\s*ms")
 # runtime/nvn/shader_seen.c shader_seen_note: "[shader] record G vs=... fs=... f=1 ..." (hashes and pipeline state only)
 RECORD_RE = re.compile(r"^\[shader\] record ([GC] [A-Za-z0-9=,:./+ -]{1,400})$")
+# The game files check (runtime/ui/launcher.mm on the start screen, runtime/services/fs.c when the game starts; the
+# same check, so a run logs it twice): files that aren't the game's (the first 20 named), the game's files missing or
+# of another size, and a byte total other than the version's (issues #391, #553)
+ROMFS_RE = re.compile(r"^\[(launcher|fs)\] romfs: (?:not one of the game's files: (.+) \(\d+ bytes\)|(\d+) more files "
+                      r"that aren't the game's|(\d+) of the game's files missing or changed|(\d+) bytes in \d+ files, "
+                      r"this version's are (\d+): damaged or changed game files)$")
 
 # notable lines: (label, regex); each is reported once, with its count and first line
 NOTABLE = [
@@ -85,7 +91,8 @@ def parse(text):
     lines = text.splitlines()
     r = {"backend": None, "gpu": None, "gpus": [], "api": None, "driver": None, "os": None, "cpu": None,
          "system": None, "build": None, "settings": None, "swapchain": None, "integrated": False, "fps": [], "slow": [],
-         "notable": {}, "records": [], "seed": None, "end": None, "end_line": None, "lines": len(lines)}
+         "notable": {}, "records": [], "seed": None, "end": None, "end_line": None, "lines": len(lines), "romfs": None}
+    romfs = {}  # per check ("launcher" / "fs"): what it found (each file once: a check can run again)
     fatal = exc = crash_head = None
     devlost = hang = closed = False
     for i, ln in enumerate(lines):
@@ -146,10 +153,18 @@ def parse(text):
             r["records"].append(m.group(1).strip())
         elif ln.strip() == "window closed":
             closed = True
+        elif m := ROMFS_RE.match(ln.rstrip()):
+            c = romfs.setdefault(m.group(1), {"odd": [], "more": 0, "missing": 0, "bytes": None})
+            if m.group(2) is not None:
+                if m.group(2) not in c["odd"]: c["odd"].append(m.group(2))
+            elif m.group(3): c["more"] = int(m.group(3))
+            elif m.group(4): c["missing"] = int(m.group(4))
+            else: c["bytes"] = (int(m.group(5)), int(m.group(6)))
         for label, rx in NOTABLE:
             if rx.search(ln):
                 n, first = r["notable"].get(label, (0, ln))
                 r["notable"][label] = (n + 1, first)
+    r["romfs"] = romfs.get("fs") or romfs.get("launcher")  # (the game's own check when it got that far)
     if r["integrated"] or any("integrated GPU" in x and "not an integrated GPU" not in x for x in lines[:200]):
         r["integrated"] = True
     if devlost:
@@ -197,6 +212,16 @@ def summarise(r):
         out.append("- **GPU:** not in the log")
     out.append(f"- **Backend:** {r['backend'] or 'not in the log'}")
     if r["seed"]: out.append(f"- **Randomizer seed:** {code(r['seed'], 120)}")
+    if r["romfs"]:
+        c, gf = r["romfs"], []
+        if c["missing"]: gf.append(f"{c['missing']} of the game's files missing or changed")
+        odd = len(c["odd"]) + c["more"]
+        if odd:
+            gf.append(f"{odd} file{' that isn' if odd == 1 else 's that aren'}'t the game's"
+                      + (f" ({'first: ' if odd > 1 else ''}{code(c['odd'][0], 80)})" if c["odd"] else ""))
+        if c["bytes"]: gf.append(f"{c['bytes'][0]} bytes, this version's are {c['bytes'][1]}")
+        # (only extra files: not a damaged copy, the start screen doesn't warn about them since #553)
+        out.append("- **Game files:** " + ("damaged or changed: " if c["missing"] or c["bytes"] else "") + "; ".join(gf))
     st = []
     if r["settings"]: st.append(code(r["settings"], 120))
     if r["swapchain"]: st.append(f"window {r['swapchain']}")

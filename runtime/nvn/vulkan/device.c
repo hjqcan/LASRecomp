@@ -144,6 +144,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
 // LARECOMP_VK_VALIDATION_STOP=1: require that layer and its callback, and exit nonzero on the first error.
 static bool validating;  // the validation layer is on (validation_exit)
 static void create_instance(void) {
+#ifdef __ANDROID__
+    vk_android_load();  // (the player's driver package, or the system's: android_driver.c)
+#endif
     Uint32 n_sdl = 0;
     const char *const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&n_sdl);
     const char *ext[16];
@@ -173,6 +176,9 @@ static void create_instance(void) {
     }
     validating = validate;
     if (r != VK_SUCCESS) FATAL("vkCreateInstance: %d (is a Vulkan 1.3 driver installed?)\n", r);
+#ifdef __ANDROID__
+    volkLoadInstance(g_vk.inst);
+#endif
     if (validate) {
         PFN_vkCreateDebugUtilsMessengerEXT f =
             (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(g_vk.inst, "vkCreateDebugUtilsMessengerEXT");
@@ -693,6 +699,12 @@ static void create_device(void) {
         // issue #483: an 81-minute run without faults, the Field 15 -> 21 fps, ~85% fewer uploads). PanVK's device name
         // is the GPU's ("Mali-G610 MC4"), hence the driver ID.
         g_vk.heap_dmabuf_default = strstr(g_vk.props.deviceName, "RADV") != NULL || drv.driverID == VK_DRIVER_ID_MESA_PANVK;
+        // command buffers released before each begin (record.c begin_cb_run) by default on Arm's own driver: the implicit
+        // reset of vkBeginCommandBuffer keeps the memory vkCmdBeginRendering allocates (64 KB blocks of host memory), so
+        // the process grew by ~490 MB an hour, until it ran out of memory (libmali g29p1 on RK3588; PanVK and Turnip don't).
+        const char *cbr = getenv("LARECOMP_VK_CB_RELEASE");
+        g_vk.cb_release = cbr ? atoi(cbr) != 0 : drv.driverID == VK_DRIVER_ID_ARM_PROPRIETARY;
+        if (g_vk.cb_release) LOG("[vk] command buffers release their memory at each begin%s\n", cbr ? " (LARECOMP_VK_CB_RELEASE)" : ": Arm's driver");
 #ifdef VK_EXT_graphics_pipeline_library
         if (gpl_ext)
             snprintf(gpl, sizeof gpl, "%s (fast linking %s, independent interpolation decoration %s)",
@@ -853,6 +865,9 @@ static void create_device(void) {
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+#ifdef __ANDROID__
+    volkLoadDevice(g_vk.dev);
+#endif
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     if (g_vk.vids) {
         g_vk.set_vertex_input = (PFN_vkCmdSetVertexInputEXT)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetVertexInputEXT");
@@ -864,6 +879,10 @@ static void create_device(void) {
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
                                  .vulkanApiVersion = VK_API_VERSION_1_3,
                                  .flags = budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
+#ifdef __ANDROID__
+    VmaVulkanFunctions vf = {.vkGetInstanceProcAddr = vkGetInstanceProcAddr, .vkGetDeviceProcAddr = vkGetDeviceProcAddr};
+    ai.pVulkanFunctions = &vf;  // (VMA_DYNAMIC_VULKAN_FUNCTIONS: from what volk loaded)
+#endif
     VK_CHECK(vmaCreateAllocator(&ai, &g_vk.vma));
     vk_log_memory("start");
 
@@ -881,8 +900,13 @@ static void create_device(void) {
     pipeline_cache_tag(tag, sizeof tag);
     size_t sz = 0;
     void *data = NULL;
-    FILE *fp = shader_cache_tag_ok(PCACHE_TAG, tag) ? fopen(PCACHE_FILE, "rb") : NULL;
-    if (!fp && !access(PCACHE_FILE, F_OK)) LOG("[vk] pipeline cache from another build / GPU / driver: starting a new one\n");
+    // LARECOMP_VK_PIPELINE_CACHE=0 (test): start with an empty one, saved over the old as usual. The Android emulator's
+    // gfxstream hangs in vkCreatePipelineCache given a large one (~300 MB after a session).
+    const char *pce = getenv("LARECOMP_VK_PIPELINE_CACHE");
+    bool pc_load = !(pce && !atoi(pce));
+    FILE *fp = pc_load && shader_cache_tag_ok(PCACHE_TAG, tag) ? fopen(PCACHE_FILE, "rb") : NULL;
+    if (!pc_load) LOG("[vk] pipeline cache: starting empty (LARECOMP_VK_PIPELINE_CACHE=0)\n");
+    else if (!fp && !access(PCACHE_FILE, F_OK)) LOG("[vk] pipeline cache from another build / GPU / driver: starting a new one\n");
     if (fp) {
         fseek(fp, 0, SEEK_END);
         sz = (size_t)ftell(fp);
@@ -953,12 +977,40 @@ static VkPresentModeKHR present_mode(void) {
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
+#ifdef __ANDROID__
+static bool recreate_surface(void);
+#endif
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
+#ifdef __ANDROID__
+    {   // (the window can go while the swapchain is made - the app sent to the background at start: made again, or
+        // no swapchain until the window is back)
+        VkResult r = g_vk.surface ? vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps)
+                                  : VK_ERROR_SURFACE_LOST_KHR;
+        if (r == VK_ERROR_SURFACE_LOST_KHR) {
+            if (!recreate_surface()) return;
+            r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps);
+        }
+        if (r == VK_ERROR_SURFACE_LOST_KHR) return;
+        VK_CHECK(r);
+    }
+#else
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
+#endif
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
+#ifdef __ANDROID__
+    // The surface reports the panel's own (portrait) orientation; the activity is landscape: images of the window's
+    // size, turned by the compositor (rotating in the app instead, pre-rotation, would spare it that). From
+    // LASRecompAndroid by mamcjr (MIT).
+    VkExtent2D ext = {(uint32_t)w, (uint32_t)h};
+    VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    LOG("[vk] swapchain: surface %ux%u transform %#x, window %dx%d\n", caps.currentExtent.width, caps.currentExtent.height,
+        caps.currentTransform, w, h);
+#else
     VkExtent2D ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
+    VkSurfaceTransformFlagBitsKHR transform = caps.currentTransform;
+#endif
     if (!ext.width || !ext.height) return;  // minimised
     uint32_t nf = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(g_vk.phys, g_vk.surface, &nf, NULL);
@@ -971,16 +1023,37 @@ static void create_swapchain(void) {
         if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; break; }
     uint32_t count = caps.minImageCount + 1;
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
-    if (count > 8) count = 8;
+    if (count > VK_SC_MAX) count = VK_SC_MAX;
+#ifdef __ANDROID__
+    if (count < caps.minImageCount)
+        FATAL("Surface needs %u swapchain images; renderer supports at most %d.\n", caps.minImageCount, VK_SC_MAX);
+#endif
     VkSwapchainKHR old = g_vk.swapchain;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = caps.currentTransform,
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = transform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = present_mode(), .clipped = VK_TRUE,
         .oldSwapchain = old};
+#ifdef __ANDROID__
+    {   // (the window went away after its surface was made - sent to the background right then: no swapchain now, the
+        // next frame makes the surface and swapchain again instead of stopping. From mamcjr's LASRecompAndroid, MIT,
+        // after BOTWRecompAndroid.)
+        VkResult r = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain);
+        if (r == VK_ERROR_SURFACE_LOST_KHR || r == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR) {
+            LOG("[vk] window surface lost while making the swapchain (%d): made again at the next frame\n", r);
+            for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+            g_vk.sc_count = 0;
+            if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
+            g_vk.swapchain = VK_NULL_HANDLE;
+            return;
+        }
+        VK_CHECK(r);
+    }
+#else
     VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
+#endif
     static const char *const modes[] = {"immediate", "mailbox", "fifo", "fifo-relaxed"};
     LOG("[vk] swapchain %ux%u, %u images, %s\n", ext.width, ext.height, count,
         ci.presentMode < 4 ? modes[ci.presentMode] : "other present mode");
@@ -988,8 +1061,15 @@ static void create_swapchain(void) {
     if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
     g_vk.sc_format = sf.format;
     g_vk.sc_extent = ext;
+#ifdef __ANDROID__
+    VK_CHECK(vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, NULL));
+    if (g_vk.sc_count > VK_SC_MAX)
+        FATAL("Driver created %u swapchain images; renderer supports at most %d.\n", g_vk.sc_count, VK_SC_MAX);
+    VK_CHECK(vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images));
+#else
     g_vk.sc_count = 8;
     vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images);
+#endif
     for (uint32_t i = 0; i < g_vk.sc_count; i++) {
         VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = g_vk.sc_images[i],
                                     .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = sf.format,
@@ -998,9 +1078,34 @@ static void create_swapchain(void) {
     }
 }
 
+#ifdef __ANDROID__
+// Android destroys the window's surface whenever another activity covers the app (the folder picker, the home screen)
+// and SDL makes a new one on return: the old VkSurfaceKHR is lost for good (VK_ERROR_SURFACE_LOST_KHR on every acquire,
+// a black screen). So each swapchain rebuild there makes the surface again from SDL's current window first; the old
+// swapchain belongs to the old window and can't be passed on. False: no window right now (in the background).
+static bool recreate_surface(void) {
+    for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+    g_vk.sc_count = 0;
+    if (g_vk.swapchain) vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
+    g_vk.swapchain = VK_NULL_HANDLE;
+    if (g_vk.surface) vkDestroySurfaceKHR(g_vk.inst, g_vk.surface, NULL);
+    g_vk.surface = VK_NULL_HANDLE;
+    if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) {
+        LOG("[vk] no window surface yet: %s\n", SDL_GetError());
+        g_vk.surface = VK_NULL_HANDLE;
+        return false;
+    }
+    LOG("[vk] window surface made again (the app was in the background)\n");
+    return true;
+}
+#endif
+
 static void recreate_swapchain(void) {
     rec_drain();  // (every queued present and submission made: the queue is idle for the wait)
     vkDeviceWaitIdle(g_vk.dev);
+#ifdef __ANDROID__
+    if (!recreate_surface()) return;
+#endif
     create_swapchain();
 }
 
@@ -1019,7 +1124,7 @@ uint64_t g_vk_frame_waits[4];
 // ================================================================== frames (start screen and game)
 // Acquire semaphores rotate per frame in flight; a slot is reused once the submission that waited on it is done.
 #define FRAMES 3
-static VkSemaphore acquire_sem[FRAMES], done_sem[8];
+static VkSemaphore acquire_sem[FRAMES], done_sem[VK_SC_MAX];
 static uint64_t slot_seq[FRAMES];
 static int slot;
 
@@ -1071,9 +1176,18 @@ bool vk_frame_begin(const float clear[4]) {
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
     WAITING_AT(0, vk_wait_seq(slot_seq[slot]));
     VkResult r;
-    WAITING_AT(1, r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image));
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+#ifdef __ANDROID__
+    if (!g_vk.swapchain) {  // (no window last time: try again)
         recreate_swapchain();
+        if (!g_vk.swapchain) return false;
+    }
+#endif
+    WAITING_AT(1, r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image));
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR) {
+        recreate_swapchain();
+#ifdef __ANDROID__
+        if (!g_vk.swapchain) return false;
+#endif
         WAITING_AT(1, r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE,
                                           &cur_frame.image));
     }
@@ -1844,6 +1958,9 @@ void ui_window_init(void) {
     if (getenv("LARECOMP_WINDOW")) sscanf(getenv("LARECOMP_WINDOW"), "%dx%d", &win_w, &win_h);
     else rt_window_size(&win_w, &win_h);
     SDL_WindowFlags wflags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+#ifdef __ANDROID__
+    wflags |= SDL_WINDOW_FULLSCREEN;  // (the whole screen, system bars hidden)
+#endif
     if (getenv("LARECOMP_HIDDEN")) wflags |= SDL_WINDOW_HIDDEN;
     {   // scripted test runs (user input ignored: runtime/hle/input.c input_user_blocked) open without taking the
         // keyboard focus from whatever the player is doing
@@ -1853,11 +1970,26 @@ void ui_window_init(void) {
         if (scripted) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     }
     window = SDL_CreateWindow("LAS Recomp", win_w, win_h, wflags);
+#ifdef __ANDROID__
+    // opened with the screen locked / off: no surface to make the window on yet; it comes once the activity shows.
+    // SDL_PumpEvents sleeps while the app is paused, so the 5 s count only time in the foreground, and a window that
+    // fails for another reason still shows the error below. (From mamcjr's LASRecompAndroid, MIT.)
+    for (int tries = 0; !window && tries < 20 * 5; tries++) {
+        if (tries == 0) LOG("[vk] waiting for the Android window (%s)\n", SDL_GetError());
+        SDL_PumpEvents();
+        SDL_Delay(50);
+        window = SDL_CreateWindow("LAS Recomp", win_w, win_h, wflags);
+    }
+#endif
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);
     rt_window_remember(window);
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
+#ifdef __ANDROID__
+    SDL_SetWindowFullscreen(window, true);  // (always: there is no window to go back to)
+#else
     if (g_settings.fullscreen && !getenv("LARECOMP_WINDOW") && !getenv("LARECOMP_HIDDEN")) SDL_SetWindowFullscreen(window, true);
+#endif
     create_instance();
     if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
     pick_device();
@@ -1903,6 +2035,14 @@ int ui_run(void) {
         SDL_Event e;
         while (SDL_WaitEventTimeout(&e, 16)) {
             input_rumble_poll();
+#ifdef __ANDROID__
+            // the app may not come back from the background (the system ends it there): keep the pipeline cache and
+            // the settings (options changed with the menu still open were lost). From LASRecomp-Android-Plus (MIT).
+            if (e.type == SDL_EVENT_WILL_ENTER_BACKGROUND && g_vk.dev) {
+                vk_pipeline_cache_save();
+                settings_save();
+            }
+#endif
             if (e.type == SDL_EVENT_QUIT) {
                 input_rumble_stop();
                 input_led_stop();
@@ -1919,5 +2059,6 @@ int ui_run(void) {
         menu_apply_window_requests(window);
         input_rumble_poll();
         input_led_poll();
+        input_pad_poll();
     }
 }

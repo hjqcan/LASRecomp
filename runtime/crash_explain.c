@@ -35,6 +35,7 @@ void rt_crash_fault(const char *what, uint64_t fa, uint64_t pc) {
 
 static bool has(const char *s) { return strstr(g_line, s) != NULL; }
 
+
 const char *rt_host_fn_name(uint64_t pc, uint64_t *offset);  // runtime/dispatch.c: inside the game code?
 
 static bool contains_nocase(const char *hay, const char *needle) {  // (no strcasestr on Windows)
@@ -59,6 +60,9 @@ static bool in_gpu_driver(uint64_t pc) {
         if (contains_nocase(m, drivers[i])) return true;
     return false;
 }
+
+// The error is the graphics driver's: it crashed, or Vulkan failed (Android's driver error dialog: platform/linux.c)
+bool rt_fatal_is_driver(void) { return in_gpu_driver(g_pc) || has("VK_") || has("Vulkan"); }
 
 void rt_crash_explain(char *out, size_t n, const char *log_path) {
     static const char *const report = "Please report it as a GitHub issue and attach the log file below. "
@@ -99,12 +103,22 @@ void rt_crash_explain(char *out, size_t n, const char *log_path) {
         snprintf(what, sizeof what, "This is a bug in LAS Recomp, not a problem with your game files or PC. %s", report);
     } else if (in_gpu_driver(g_pc)) {
         snprintf(head, sizeof head, "Your graphics driver crashed");
+#ifdef __ANDROID__
+        snprintf(what, sizeof what, "Try another driver package, or the phone's own driver. If it keeps happening, please "
+                 "report it with the log file below.");
+#else
         snprintf(what, sizeof what, "Update your graphics driver (NVIDIA, AMD or Intel) and try again. If it keeps "
                  "happening, please report it with the log file below.");
+#endif
     } else if (has("VK_") || has("Vulkan")) {
         snprintf(head, sizeof head, "Graphics driver error");
+#ifdef __ANDROID__
+        snprintf(what, sizeof what, "LAS Recomp needs a graphics driver with Vulkan 1.3. On Adreno GPUs a Turnip driver "
+                 "package can give it. If it keeps happening, please report it with the log file below.");
+#else
         snprintf(what, sizeof what, "LAS Recomp needs a graphics driver with Vulkan 1.3: install the latest driver for "
                  "your GPU (NVIDIA, AMD or Intel). If it keeps happening, please report it with the log file below.");
+#endif
     } else if (has("out of memory") || has("cannot allocate") || has("alloc failed")) {
         snprintf(head, sizeof head, "Out of memory");
         snprintf(what, sizeof what, "Close other programs and try again.");

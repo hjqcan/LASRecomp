@@ -74,7 +74,7 @@ Known issues and their status are on the [GitHub issues page](https://github.com
 - Higher resolutions, a "match your display" option and dynamic resolution, with MetalFX (Mac) or FSR 1 (Windows and Linux) upscaling and SMAA anti-aliasing.
 - Shaders are prepared ahead of time, so new areas don't stutter.
 - A start screen where you pick vanilla or a randomizer seed, set up your game files and choose your settings.
-- In-game menu: F1, or Minus + Plus on a controller.
+- In-game menu: F1, or Home or Minus + Plus on a controller. The controller buttons can be changed in Controls.
 - Switch between vanilla and any randomizer seed without restarting.
 - Keyboard and controller support, with every button remappable. Button prompts match your controller (Xbox, PlayStation or Nintendo).
 - Controller rumble, and the light bar on PlayStation controllers shows Link's health.
@@ -198,7 +198,8 @@ without touching the installed game, your game files or your saves.
   the rumble test running in CI (#299), Linux builds finding their own SDL3 (#437), font re-imports that no longer
   empty the font (#490), a message box on Linux for a CPU without AVX2 (#491), the build and system in the log bot's
   summary (#582), an FFmpeg licence check that really checks (#583), the GPU driver in the log bot's summary (#588),
-  and each attached log counted once (#589)
+  each attached log counted once (#589), the game files check in the log bot's summary (#600), and summaries for
+  logs attached by editing a comment (#601)
 - **[@ky1vstar](https://github.com/ky1vstar)** - a much faster Linux ARM release build (#319)
 - **[@theb0rg](https://github.com/theb0rg)** - the fix for AMD integrated graphics on Windows (#335)
 - **[@gtf-dot](https://github.com/gtf-dot)** - the game-text font on Linux (#330)
@@ -207,7 +208,8 @@ without touching the installed game, your game files or your saves.
   cheats and save editor (#453)
 - **[@wimw85](https://github.com/wimw85)** - much faster game code setup on the Steam Deck and other PCs (#434)
 - **[@missionfloyd](https://github.com/missionfloyd)** - a much smaller game code build, without debug info (#487)
-- **[@wolfchimneyrock](https://github.com/wolfchimneyrock)** - full speed on ARM Mali graphics (#527), the CPU and GPU working in parallel on Mali (#529), and faster render passes on Mali (#528, #534), a cheaper FSR upscale (#532), the game on the big cores of ARM and Intel hybrid CPUs on Linux (#533), no more flickering grass and shadows on Mali (#546), the game starting on Snapdragon (Adreno) devices (#561), much faster shaders on Mali and Adreno (#562, #563, #579), faster graphics memory on Mali with Mesa (#564), and GPU tuning tools for Vulkan (#565)
+- **[@wolfchimneyrock](https://github.com/wolfchimneyrock)** - full speed on ARM Mali graphics (#527), the CPU and GPU working in parallel on Mali (#529), and faster render passes on Mali (#528, #534), a cheaper FSR upscale (#532), the game on the big cores of ARM and Intel hybrid CPUs on Linux (#533), no more flickering grass and shadows on Mali (#546), the game starting on Snapdragon (Adreno) devices (#561), much faster shaders on Mali and Adreno (#562, #563, #579), faster graphics memory on Mali with Mesa (#564), GPU tuning tools for Vulkan (#565), and no more memory leak on Arm's Mali driver (#607)
+- **[@mamcjr](https://github.com/mamcjr)** - the Android port ([LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)), which we are bringing in piece by piece, starting with a guest window that can move
 
 Thanks also to everyone who reports issues and tests builds. Your logs and screenshots find most of the bugs.
 
@@ -253,6 +255,14 @@ none of their files are used):
   [Capstone](https://www.capstone-engine.org) (BSD 3-clause; disassembly), [Unicorn](https://www.unicorn-engine.org)
   (GPL 2.0; Python bindings BSD; runs small pieces of code to resolve jump tables) and
   [python-lz4](https://github.com/python-lz4/python-lz4) (BSD 3-clause, with the LZ4 library: BSD 2-clause)
+- [shaderc](https://github.com/google/shaderc) - compiles the translated shaders for Vulkan on Windows, Linux and
+  Android (Apache 2.0; with glslang and SPIRV-Tools)
+- The Android app, ported from [LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid) by mamcjr (MIT), also
+  ships [Python](https://www.python.org) 3.14 for Android (PSF License) to run the game code generator on the device,
+  [volk](https://github.com/zeux/volk) by Arseny Kapoulkine (MIT) to load Vulkan, and
+  [libadrenotools](https://github.com/bylaws/libadrenotools) and
+  [liblinkernsbypass](https://github.com/bylaws/liblinkernsbypass), Copyright (c) 2021, Billy Laws (BSD 2-Clause; their
+  licence text ships in the app), to load a custom Vulkan driver such as Turnip (not included)
 - [envytools](https://github.com/envytools/envytools) - NVIDIA GPU documentation used for the shader translator
 - An MIT-licensed open-source project's audio renderer and shader instruction decoders (license and copyright notice:
   `third_party/ryujinx/LICENSE.txt`) - the audio renderer's reverb is a port of its reverb code and the mixer is

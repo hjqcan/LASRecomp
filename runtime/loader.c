@@ -174,7 +174,7 @@ static void relocate(Module *m) {
 
 void loader_load(const char *exefs) {
     char path[1024];
-    static const struct { const char *name; uint64_t base; } mods[] = {{"main", MAIN_BASE}, {"sdk", SDK_BASE}};
+    const struct { const char *name; uint64_t base; } mods[] = {{"main", MAIN_BASE}, {"sdk", SDK_BASE}};  // (rt.h: may move)
     for (unsigned i = 0; i < 2; i++) {
         Module *m = &g_modules[g_nmodules++];
         m->name = mods[i].name;

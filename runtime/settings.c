@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#ifdef __ANDROID__
+#include <stdatomic.h>
+#endif
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #elif defined(_WIN32)
@@ -27,6 +30,8 @@ static const char *const k_enemy_colour_keys[N_ENEMY_COLOUR_MODES] = {"off", "se
 const char *const g_screen_filters[N_SCREEN_FILTERS] = {LN("Off"), LN("Game Boy"), LN("Game Boy Color"),
                                                         LN("Grayscale")};
 static const char *const k_screen_filter_keys[N_SCREEN_FILTERS] = {"off", "gameboy", "gameboy_color", "grayscale"};  // (else: off)
+const char *const g_audio_outs[N_AUDIO_OUTS] = {LN("Stereo"), LN("5.1")};
+static const char *const k_audio_out_keys[N_AUDIO_OUTS] = {"stereo", "5.1"};  // (else: stereo)
 const char *const g_weathers[N_WEATHERS] = {LN("Off"), LN("Rain"), LN("Snow"), LN("Storm"), LN("Blizzard"), LN("Random")};
 static const char *const k_weather_keys[N_WEATHERS] = {"off", "rain", "snow", "storm", "blizzard", "random"};  // (else: off)
 
@@ -206,6 +211,10 @@ void settings_load(void) {
         if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
+        else if (!strcmp(key, "audio_output")) {
+            g_settings.audio_out = AUDIO_OUT_STEREO;
+            for (int i = 0; i < N_AUDIO_OUTS; i++) if (!strcmp(val, k_audio_out_keys[i])) g_settings.audio_out = i;
+        }
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
         else if (!strcmp(key, "menu_sounds")) g_settings.menu_sounds = atoi(val) != 0;
@@ -216,6 +225,7 @@ void settings_load(void) {
                 if (!strcmp(val, corners[i])) g_settings.show_fps = i;
         }
         else if (!strcmp(key, "frame_interp")) g_settings.frame_interp = atoi(val) != 0;
+        else if (!strcmp(key, "metal_hud")) g_settings.metal_hud = atoi(val) != 0;
         else if (!strcmp(key, "resolution")) {  // (auto: never chosen, the GPU's default)
             int n = atoi(val);
             g_settings.res_auto = !strcmp(val, "auto");
@@ -316,12 +326,25 @@ void settings_load(void) {
 }
 
 void settings_save(void) {
+#ifdef __ANDROID__
+    // Written to larecomp.ini.tmp, then put in its place: a phone ends apps in the background at any moment (the app
+    // saves then too: vulkan/device.c), and a file cut short there lost every setting. One writer at a time. (From
+    // Nycolazs's LASRecomp-Android-Plus via mamcjr's LASRecompAndroid, MIT.)
+    static atomic_flag lock = ATOMIC_FLAG_INIT;
+    char tmp[1024];
+    snprintf(tmp, sizeof tmp, "%s.tmp", SETTINGS_FILE);
+    while (atomic_flag_test_and_set(&lock)) {}
+    FILE *f = fopen(tmp, "w");
+    if (!f) { LOG("[settings] cannot write %s\n", tmp); atomic_flag_clear(&lock); return; }
+#else
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f) { LOG("[settings] cannot write %s\n", SETTINGS_FILE); return; }
+#endif
     fprintf(f, "# LAS Recomp settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "aspect = %s\n", g_settings.aspect == ASPECT_ORIGINAL ? "original" : "unlocked");
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
     fprintf(f, "volume = %.2f\n", g_settings.volume);
+    fprintf(f, "audio_output = %s\n", k_audio_out_keys[g_settings.audio_out == AUDIO_OUT_51]);
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "menu_sounds = %d\n", g_settings.menu_sounds);
@@ -331,6 +354,9 @@ void settings_save(void) {
         fprintf(f, "show_fps = %s\n", corners[c >= 0 && c < N_FPS_CORNERS ? c : 0]);
     }
     fprintf(f, "frame_interp = %d\n", g_settings.frame_interp);
+#ifdef __APPLE__
+    fprintf(f, "metal_hud = %d\n", g_settings.metal_hud);
+#endif
     fprintf(f, "upscaler = %s\n", g_settings.upscaler_auto ? "auto" : g_settings.upscaler == UPSCALE_METALFX ? "metalfx" :
                                    g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
@@ -392,5 +418,10 @@ void settings_save(void) {
     if (g_settings.rando_options[0]) fprintf(f, "rando_options = %s\n", g_settings.rando_options);
     for (int i = 0; i < RANDO_PRESETS_MAX; i++)
         if (g_settings.rando_presets[i][0]) fprintf(f, "rando_preset = %s\n", g_settings.rando_presets[i]);
+#ifdef __ANDROID__
+    if (fclose(f) != 0 || rename(tmp, SETTINGS_FILE) != 0) LOG("[settings] cannot write %s\n", SETTINGS_FILE);
+    atomic_flag_clear(&lock);
+#else
     fclose(f);
+#endif
 }
