@@ -65,6 +65,14 @@ with tempfile.TemporaryDirectory() as directory:
         subprocess.run([str(exe), mode], env=env, check=True, capture_output=True)
         assert f'resolution = {saved}\n' in ini.read_text(), (lines, ini.read_text())
         count += 1
+    # Power-up music stays vanilla in old files; either explicit choice survives a roundtrip.
+    for lines, value in [([], 1), (['powerup_music = 0'], 0), (['powerup_music = 1'], 1)]:
+        ini = directory / 'test.ini'
+        ini.write_text('\n'.join(lines) + '\n')
+        subprocess.run([str(exe), 'res-auto'], env=dict(os.environ, LARECOMP_SETTINGS=str(ini)),
+                       check=True, capture_output=True)
+        assert f'powerup_music = {value}\n' in ini.read_text()
+        count += 1
     # Cosmetics colour rows (shared palette): older names map onto it, Custom is a hex value, unknown -> Default
     ini = directory / 'test.ini'
     ini.write_text('tunic = Yellow\nhearts = Pink\nhair = #12ab34\nshield = Sparkly\nskin = Random\n')

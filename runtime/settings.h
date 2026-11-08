@@ -48,6 +48,7 @@ typedef struct {
     int audio_out;       // AUDIO_OUT_*: speaker layout of the game's sound (runtime/services/audio.c)
     bool reverb;         // room reverb effect
     bool movie_audio;
+    bool powerup_music;  // Guardian Acorn / Piece of Power music (hle/powerup_music.c)
     bool menu_sounds;    // LAS Recomp's own menu sounds (runtime/menu_sfx.c)
     bool frame_interp;   // Frame Generation: extra images between the game's frames (runtime/nvn/interp.c)
     bool metal_hud;      // macOS: Apple's Metal Performance HUD over the game (runtime/nvn/metal.m metal_hud_apply)

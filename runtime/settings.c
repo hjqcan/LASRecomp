@@ -48,6 +48,7 @@ Settings g_settings = {
     .volume = 1.0f,
     .reverb = true,
     .movie_audio = true,
+    .powerup_music = true,
     .menu_sounds = true,
     .rumble = true,
     .rumble_strength = 100,
@@ -226,6 +227,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
+        else if (!strcmp(key, "powerup_music")) g_settings.powerup_music = atoi(val) != 0;
         else if (!strcmp(key, "menu_sounds")) g_settings.menu_sounds = atoi(val) != 0;
         else if (!strcmp(key, "show_fps")) {  // (older files: 0 / 1, and 1 was the top right)
             static const char *const corners[] = {"off", "top_left", "top_right", "bottom_left", "bottom_right"};
@@ -373,6 +375,7 @@ void settings_save(void) {
     fprintf(f, "audio_output = %s\n", k_audio_out_keys[g_settings.audio_out == AUDIO_OUT_51]);
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
+    fprintf(f, "powerup_music = %d\n", g_settings.powerup_music);
     fprintf(f, "menu_sounds = %d\n", g_settings.menu_sounds);
     {
         static const char *const corners[] = {"off", "top_left", "top_right", "bottom_left", "bottom_right"};
