@@ -760,6 +760,8 @@ static void tab_audio(void) {
     if (opt_slider("Volume", &pct, 0, 200, 5, 100, "%g%%",
                    "The game's volume. 100% is normal, higher is louder."))
         g_settings.volume = pct / 100.0f;
+    opt_choice("Output", &g_settings.audio_out, g_audio_outs, N_AUDIO_OUTS, AUDIO_OUT_STEREO,
+               "Stereo for speakers and headphones. 5.1 sends the game's surround mix to a 5.1 system.");
     opt_toggle("Movie audio", &g_settings.movie_audio, true,
                "Sound in the opening and ending movies. Changes the next time a movie plays.");
     opt_section("Effects");
