@@ -20,6 +20,9 @@ bool android_call(const char *method);
 // done(result) on another thread when a driver package was picked (pickDriver) or the system's chosen again
 // (useSystemDriver): the package's name, "-" for the system's, "" when the file isn't a driver.
 void android_on_driver(void (*done)(const char *result));
+// A Vulkan driver error that stops the app: the activity's dialog (another driver package, or the phone's own, then a
+// restart). Blocks until it closes; false when it couldn't be shown.
+bool android_driver_error_dialog(const char *text);
 
 #ifdef __cplusplus
 }

@@ -697,11 +697,21 @@ const char *plat_symbol(uint64_t pc, uint64_t *offset) {
 
 // Fatal error without a terminal: say so in a message box rather than vanishing (the details are in the log).
 // (what happened in plain words: runtime/crash_explain.c)
+#ifdef __ANDROID__
+#include "android_storage.h"
+bool rt_fatal_is_driver(void);  // runtime/crash_explain.c
+#endif
 void plat_fatal_notice(void) {
     char text[1600];
     rt_crash_explain(text, sizeof text, g_log_path);
     if (!g_log_path[0]) return;
     fflush(stderr);
+#ifdef __ANDROID__
+    {   // the graphics driver's error (it crashed, or Vulkan failed): the activity's dialog, which can choose another driver package or the phone's own (the
+        // driver loads before the start screen, so its Settings rows can't be reached)
+        if (rt_fatal_is_driver() && android_driver_error_dialog(text)) return;
+    }
+#endif
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "LAS Recomp", text, NULL);
 }
 
