@@ -80,6 +80,13 @@ static std::vector<QEvent> q_events;
 static float g_pixel_density = 1;
 static int g_win_px_w = 1, g_win_px_h = 1;  // (touch positions come normalized)
 static std::atomic<int> g_safe_l{0}, g_safe_t{0}, g_safe_r{0}, g_safe_b{0};  // insets, pixels (phones: notch, home bar)
+#if PLAT_TOUCH
+// (runtime/hle/hud_corners.c) the side insets as a share of the window's width
+extern "C" void menu_safe_insets(float *l, float *r) {
+    float w = ImGui::GetCurrentContext() ? ImGui::GetIO().DisplaySize.x : 0;
+    *l = w > 0 ? g_safe_l.load() / w : 0, *r = w > 0 ? g_safe_r.load() / w : 0;
+}
+#endif
 static std::atomic<bool> g_ime_send{false};  // the text field being typed in: its frame, points, to give SDL (phones)
 static SDL_Rect g_ime_rect;
 // Phones: the menu a third larger than on a 1080-line monitor (a 6.5" screen held at arm's length: rows to touch);

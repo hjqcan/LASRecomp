@@ -46,6 +46,7 @@ typedef struct {
     uint32_t ts_bits;          // the queue's timestampValidBits (0: no timestamps)
     VmaAllocator vma;
     VkPhysicalDeviceProperties props;
+    bool cpu_astc;  // ASTC decoded on the CPU although the driver lists it (device.c)
     VkPipelineCache pcache;
     VkSemaphore timeline;      // value = last completed submission number
     VkCommandPool pool;        // render thread only

@@ -6597,10 +6597,44 @@ static void snow_cover_check(CmdRec *r, bool indexed, Prog *pr) {
 }
 
 static void draw_(CmdRec *r, bool indexed);
+// (phones: the HUD at the screen corners, runtime/hle/hud_corners.c) a boxed room's bars, black after the scene composite
+static bool hud_bars_clear(void) {  // (false: not at the window's image yet, e.g. the dungeon title's offscreen text)
+    extern bool hud_corners_bars(uint64_t frame, int w, int h, int bar[4]);
+    extern uint64_t renderer_exec_frame(void);
+    if (!st.rt.ncolor || !st.rt.color[0] || !renderer_texture_presented(st.rt.color[0])) return false;
+    int w = (int)st.rt.color[0]->width, h = (int)st.rt.color[0]->height, bar[4];
+    if (!hud_corners_bars(renderer_exec_frame(), w, h, bar)) return true;
+    int32_t sc[4];
+    memcpy(sc, st.scissor[0], sizeof sc);
+    static const float black[4] = {0, 0, 0, 1};
+    if (bar[0] > 0) {
+        st.scissor[0][0] = 0, st.scissor[0][1] = 0, st.scissor[0][2] = bar[0], st.scissor[0][3] = h;
+        clear(0, 0, black, 0xF, false, 0, false, 0, 0);
+    }
+    if (bar[1] < w) {
+        st.scissor[0][0] = bar[1], st.scissor[0][1] = 0, st.scissor[0][2] = w - bar[1], st.scissor[0][3] = h;
+        clear(0, 0, black, 0xF, false, 0, false, 0, 0);
+    }
+    if (bar[2] > 0) {
+        st.scissor[0][0] = 0, st.scissor[0][1] = 0, st.scissor[0][2] = w, st.scissor[0][3] = bar[2];
+        clear(0, 0, black, 0xF, false, 0, false, 0, 0);
+    }
+    if (bar[3] < h) {
+        st.scissor[0][0] = 0, st.scissor[0][1] = bar[3], st.scissor[0][2] = w, st.scissor[0][3] = h - bar[3];
+        clear(0, 0, black, 0xF, false, 0, false, 0, 0);
+    }
+    memcpy(st.scissor[0], sc, sizeof sc);
+    return true;
+}
+
 static void draw(CmdRec *r, bool indexed) {
     PROF_T0();
+    static bool hud_bars;  // (the scene composite was drawn, its bars not cleared yet)
+    extern bool hud_corners_active(void);
+    if (hud_bars && hud_bars_clear()) hud_bars = false;
     wx_composite = wx_mirror = false;
     draw_(r, indexed);
+    hud_bars = (hud_bars || wx_composite) && hud_corners_active();
     if (wx_composite) weather_encode();
     PROF_ADD(prof_draw);
 }
@@ -6972,6 +7006,8 @@ static void draw_(CmdRec *r, bool indexed) {
     }
 #undef FTEX
     if (prof) prof_tex += SDL_GetTicksNS() - prof_tx_;
+    const void *hud_u = NULL;  // (runtime/hle/hud_corners.c: the window-wide uniforms of a UI draw)
+    float hud_k = 1, hud_ky = 1;
     if (fabsf(pass_sx - pass_sy) > 0.01f * pass_sy && st.rt.ncolor && renderer_texture_presented(st.rt.color[0])) {
         // Draws into the swapchain image (see renderer.m): composites fill the window, UI goes in a centred 16:9 box.
         bool reads_scene = false;
@@ -7004,13 +7040,31 @@ static void draw_(CmdRec *r, bool indexed) {
             vp_ox = (pw - st.rt.color[0]->width * u) * 0.5f;
             vp_oy = (ph - st.rt.color[0]->height * u) * 0.5f;
         }
+
+        // (phones: the HUD at the screen corners, runtime/hle/hud_corners.c) UI in the box gets the window-wide viewport
+        // and rescaled uniforms; a scissor covering the target stays open for the bars
+        if (!composite && st.ubuf[0][0].addr) {
+            int pw_, ph_;
+            pass_size(&pw_, &ph_);
+            hud_k = (float)pw_ / (st.rt.color[0]->width * vp_sx), hud_ky = (float)ph_ / (st.rt.color[0]->height * vp_sy);
+            extern const void *hud_corners_ubo(const float *u, uint64_t size, float k, float ky);
+            hud_u = hud_corners_ubo((const float *)(uintptr_t)st.ubuf[0][0].addr, st.ubuf[0][0].size, hud_k, hud_ky);
+        }
+    }
+    Range hud_ubuf = st.ubuf[0][0];
+    if (hud_u) {  // (the vertex set was built before the decision: again, from the copy)
+        st.ubuf[0][0].addr = (uint64_t)(uintptr_t)hud_u;
+        ndyn = 0;
+        vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, NULL, NULL, 0, 0, 0, NULL, dyn, &ndyn);
     }
     {   // camera-attached effects sized for 16:9 are widened with the view (runtime/hle/widescreen.c)
         extern float widescreen_effect_stretch(uint64_t fs_hash);
-        float k = widescreen_effect_stretch(g_cur_fs_hash);
+        float k = hud_u ? hud_k : widescreen_effect_stretch(g_cur_fs_hash);
         float vx = vp[0] * vp_sx + vp_ox, vw = vp[2] * vp_sx;
         if (k > 1.0f) { vx -= vw * (k - 1) / 2; vw *= k; }
-        set_viewport(vx, vp[1] * vp_sy + vp_oy, vw, vp[3] * vp_sy, zn, zf);
+        float vy = vp[1] * vp_sy + vp_oy, vh = vp[3] * vp_sy;
+        if (hud_u && hud_ky > 1) { vy -= vh * (hud_ky - 1) / 2; vh *= hud_ky; }
+        set_viewport(vx, vy, vw, vh, zn, zf);
         if (g_debug_frame) {
             VkRect2D sr = scissor_rect();
             LOG("[draw]   vp %.2f %.2f %.2f %.2f (stretch %.3f, fs hash %016llx) scissor %d %d %u %u | guest sc %d %d %d %d | pass %ux%u s %.4f %.4f\n",
@@ -7019,7 +7073,15 @@ static void draw_(CmdRec *r, bool indexed) {
                 vp_sx, vp_sy);
         }
     }
+    int32_t hud_sc[4];
+    bool hud_open = hud_u && st.scissor[0][0] <= 0 && st.scissor[0][0] + st.scissor[0][2] >= (int32_t)st.rt.color[0]->width &&
+                    st.scissor[0][1] <= 0 && st.scissor[0][1] + st.scissor[0][3] >= (int32_t)st.rt.color[0]->height;
+    if (hud_open) {
+        memcpy(hud_sc, st.scissor[0], sizeof hud_sc);
+        st.scissor[0][0] = st.scissor[0][1] = -16384, st.scissor[0][2] = st.scissor[0][3] = 65536;
+    }
     apply_scissor();
+    if (hud_open) memcpy(st.scissor[0], hud_sc, sizeof hud_sc);
     float rs0[4] = {vp_sx, vp_sy, vp_ox, vp_oy};
     uint64_t prof_t1_ = prof ? SDL_GetTicksNS() : 0;
     VkDescriptorSet fset = stage_set(pr, pr->set_layout[1], 1, 1, pr->fi, rs0, tint, 0, 0, 0, fii, dyn, &ndyn);
@@ -7038,6 +7100,7 @@ static void draw_(CmdRec *r, bool indexed) {
         rec_CmdPushConstants(cb, pr->layout, sg ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT, si->push_base,
                              si->npush * 4u, pw);
     }
+    st.ubuf[0][0] = hud_ubuf;
     if (gc_shift && (pr->vi->uses_gmem || pr->fi->uses_gmem))
         gmem_chunk_bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, GMEM_CHUNK_SET(STAGE_FRAGMENT),
                         (pr->vi->uses_gmem ? 1u << STAGE_VERTEX : 0) | (pr->fi->uses_gmem ? 1u << STAGE_FRAGMENT : 0));
