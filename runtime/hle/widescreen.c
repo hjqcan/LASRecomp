@@ -230,6 +230,7 @@ uint64_t game_camera_zone(void) {
 // for the wide view, so a 16:9 box around a stale zone's centre cut Link out - user 2026-10-09), ROOM_KEEP when
 // there's no recent scene camera (keep the last choice; after half a second without one, e.g. menus: box).
 enum { ROOM_KEEP, ROOM_BOX, ROOM_CROP, ROOM_FULL };
+const char *game_level_name(void);
 static int room_crop(uint64_t frame, double shape, float *u0, float *u1) {
     float lo[3], hi[3];
     uint32_t id;
@@ -263,8 +264,10 @@ static int room_crop(uint64_t frame, double shape, float *u0, float *u1) {
         // holds whole shows black on both sides.
         float ndc[2];
         r = ROOM_CROP;
+        // The fishing pond is built 3 units past its zone's west edge (x -12), which its fixed camera never shows at 16:9
+        float west = side && !strcmp(game_level_name(), "FishingPond") ? 3.0f : 0.0f;
         for (int e = 0; e < 2; e++) {
-            float x = e ? cmax + mid16 : cmin - mid16;
+            float x = e ? cmax + mid16 : cmin - mid16 - west;
             float w = r3[0] * x + r3[1] * c[1] + r3[2] * c[2] + r3[3];
             if (!(w > 0.01f)) return ROOM_KEEP;
             ndc[e] = (r0[0] * x + r0[1] * c[1] + r0[2] * c[2] + r0[3]) / w;
