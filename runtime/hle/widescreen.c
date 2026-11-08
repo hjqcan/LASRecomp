@@ -303,11 +303,16 @@ void widescreen_present_crop(uint64_t frame, double shape, float crop[4], double
         if (game_in_play()) room_crop(frame, shape, &a, &b);
     }
     if (shape == 1.0 || !widescreen_frame_boxed(frame)) return;
+    extern void hud_corners_note_crop(uint64_t frame, float u0, float u1, float v0, float v1);
+    extern bool hud_corners_shown_whole(uint64_t frame);
     if (shape < 1.0) {
+        hud_corners_note_crop(frame, 0, 1, (float)((1.0 - shape) / 2), (float)((1.0 + shape) / 2));
+        if (hud_corners_shown_whole(frame)) return;  // (phones and tablets: the HUD in the bars, runtime/hle/hud_corners.c)
         crop[1] = (float)((1.0 - shape) / 2); crop[3] = (float)shape;
         double nh = *vh * shape; *vy += (*vh - nh) / 2; *vh = nh;
         return;
     }
+    double full_vx = *vx, full_vw = *vw;
     static int mode = ROOM_BOX;
     float u0 = 0, u1 = 1;
     static float k0, k1;  // (ROOM_KEEP: the last target)
@@ -326,8 +331,11 @@ void widescreen_present_crop(uint64_t frame, double shape, float crop[4], double
         cu0 = u0, cu1 = u1;
     }
     last = frame;
+    // (phones: the HUD at the screen corners, in the bars: the bars were cleared after the scene, runtime/hle/hud_corners.c)
+    hud_corners_note_crop(frame, cu0, cu1, 0, 1);
     crop[0] = cu0, crop[2] = cu1 - cu0;
     *vx += *vw * cu0, *vw *= cu1 - cu0;
+    if (hud_corners_shown_whole(frame)) crop[0] = 0, crop[2] = 1, *vx = full_vx, *vw = full_vw;
 }
 
 // Current level name for logs ("-" when not in play).

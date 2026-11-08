@@ -259,6 +259,7 @@ void settings_load(void) {
         else if (!strcmp(key, "touch_opacity")) g_settings.touch_opacity = (float)atof(val);
         else if (!strcmp(key, "touch_all")) g_settings.touch_all = atoi(val) != 0;
         else if (!strcmp(key, "touch_stick_fixed")) g_settings.touch_stick_fixed = atoi(val) != 0;
+        else if (!strcmp(key, "touch_hide_xy_hud")) g_settings.touch_hide_xy_hud = atoi(val) != 0;
         else if (!strcmp(key, "touch_size")) g_settings.touch_size = (float)atof(val);
         else if (!strncmp(key, "touch_ctl_", 10)) {  // (the layout editor: x, y, size, hidden)
             for (int i = 0; i < TOUCH_NCTL; i++) {
@@ -395,7 +396,8 @@ void settings_save(void) {
     fprintf(f, "dpad_mode = %s\n", g_settings.dpad_mode == DPAD_ITEMS ? "items" : g_settings.dpad_mode == DPAD_MOVE ? "move" : "nothing");
     fprintf(f, "touch_controls = %s\n", g_settings.touch_mode == 1 ? "always" : g_settings.touch_mode == 2 ? "off" : "auto");
     fprintf(f, "touch_opacity = %.2f\n", g_settings.touch_opacity);
-    fprintf(f, "touch_all = %d\ntouch_stick_fixed = %d\n", g_settings.touch_all, g_settings.touch_stick_fixed);
+    fprintf(f, "touch_all = %d\ntouch_stick_fixed = %d\ntouch_hide_xy_hud = %d\n", g_settings.touch_all, g_settings.touch_stick_fixed,
+            g_settings.touch_hide_xy_hud);
     fprintf(f, "touch_size = %.2f\n", g_settings.touch_size);
     {
         for (int i = 0; i < TOUCH_NCTL; i++)
