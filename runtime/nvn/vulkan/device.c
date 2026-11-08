@@ -722,6 +722,11 @@ static void create_device(void) {
         LOG("[vk] driver %s %s; graphics pipeline library: %s; vertex input dynamic state: %s; extended dynamic state 3: %s\n",
             drv.driverName, drv.driverInfo, gpl, vids_ext ? (have_vids.vertexInputDynamicState ? "yes" : "no") : "no extension",
             eds3);
+        // The Android emulator (gfxstream to MoltenVK) lists ASTC but textures sampled that way come out empty: the HUD's
+        // hearts and the file select's icons were missing (API 35 image on an M3 Max). LARECOMP_VK_CPU_ASTC=1 / =0 overrides.
+        const char *ca = getenv("LARECOMP_VK_CPU_ASTC");
+        g_vk.cpu_astc = ca ? atoi(ca) != 0 : strstr(drv.driverName, "MoltenVK") != NULL;
+        LOG("[vk] ASTC %s (%s)\n", g_vk.cpu_astc ? "decoded on the CPU" : "as the driver lists it", ca ? "LARECOMP_VK_CPU_ASTC" : "default for this GPU");
 #ifdef VK_KHR_pipeline_binary
         // our own pipeline binaries (pb_make, #509): by default on AMD's drivers only, whose own cache kept nothing
         // between launches; LARECOMP_VK_PIPELINE_BINARY=0 / =1 turns them off / on
@@ -838,6 +843,7 @@ static void create_device(void) {
     b->fillModeNonSolid = h->fillModeNonSolid;
     b->samplerAnisotropy = h->samplerAnisotropy;
     b->textureCompressionBC = h->textureCompressionBC;
+    b->textureCompressionASTC_LDR = h->textureCompressionASTC_LDR;  // (phones: the game's UI icons are ASTC, sampled natively)
     b->shaderInt64 = h->shaderInt64;
     b->depthBiasClamp = h->depthBiasClamp;
     b->depthClamp = h->depthClamp;
