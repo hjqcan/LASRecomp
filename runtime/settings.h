@@ -106,6 +106,19 @@ typedef struct {
     int timer_pos;         // TIMER_POS_*: which bottom corner it sits in
     bool livesplit;        // drive LiveSplit (its Server component) over TCP: start, splits, game time
     char livesplit_host[64];  // host:port of the LiveSplit Server ("localhost:16834")
+    // touch screens (runtime/ui/mobile/touch_controls.mm)
+    int touch_mode;      // 0 Auto (while no controller is connected), 1 Always, 2 Off
+    bool touch_stick_fixed;  // the touch stick stays in its place (else its base comes to the thumb)
+    bool touch_all;      // every play button on screen, not only those the game uses now
+    float touch_opacity; // 0.15 .. 1
+    float touch_size;    // 0.6 .. 1.6 (1 = the default layout)
+    // the layout editor (touch_controls.mm): per control, moved (its place: share of the screen), size (x), hidden;
+    // saved as touch_ctl_<name> = x, y, size, hidden
+#define TOUCH_NCTL 13
+    bool touch_moved[TOUCH_NCTL];
+    float touch_pos[TOUCH_NCTL][2];
+    float touch_scale[TOUCH_NCTL];
+    bool touch_hidden[TOUCH_NCTL];
     char rando_seed[128];  // active randomizer seed (rando/<name>/), empty = vanilla
     char rando_options[48];  // the Randomizer tab's New seed options: a seed ID without its random part (empty = defaults)
     // the player's own randomizer presets (rando_preset lines): "<name>|<options key>|<tracker><map letters>", "" = free
@@ -120,6 +133,8 @@ extern const char *const g_weathers[N_WEATHERS];  // (the menu's names: Off, Rai
 extern const char *const g_enemy_colour_modes[N_ENEMY_COLOUR_MODES];  // (the menu's names)
 
 extern Settings g_settings;
+
+const char *touch_control_name(int i);  // the on-screen controls' ini names (touch_ctl_<name>), "" past TOUCH_NCTL
 
 void settings_load(void);
 void settings_save(void);

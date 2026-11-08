@@ -85,7 +85,9 @@ bool spoiler_view_draw(const std::string &seed, float scale) {
     }
     static char q[64];
     ImGui::SetNextItemWidth(420 * scale);
+    ui_text_inline(true);  // (filters as typed: typed into directly, not through a prompt)
     ui_input_text("##q", q, sizeof q, 0, L("Search items and places"), L("Search the spoiler log"));
+    ui_text_inline(false);
     ImGui::BeginChild("##spoiler", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NavFlattened);
     for (size_t i = 0; i < g_doc.size(); i++) {
         Node &n = g_doc[i];

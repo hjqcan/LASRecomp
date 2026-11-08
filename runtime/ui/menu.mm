@@ -20,6 +20,7 @@
 #include "osk.h"
 #include "pad_nav.h"
 #include "plastic.h"
+#include "mobile/touch_ui.h"
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
 #else
@@ -55,16 +56,19 @@ bool warp_tab_took_back(void);  // warp_tab.mm (the same)
 #include "../input_bind.h"
 #include "../livesplit.h"
 #include "../paths.h"
+#include "../platform.h"
 #include "../rando.h"
 }
 
 // ------------------------------------------------------------------ state shared with the main thread
 static std::atomic<bool> g_open{false};
 static std::atomic<bool> g_text_busy{false};  // a text field / the on-screen keyboard has the keys (render thread: ui_text_busy)
+static std::atomic<bool> g_text_typed{false};  // an ImGui text field has the focus: the system keyboard follows (phones)
 static std::atomic<bool> g_want_fullscreen_apply{false};
 
 struct QEvent {
-    enum { KEY, ANALOG, MOUSE_POS, MOUSE_BUTTON, WHEEL, TEXT, RELEASE_ALL } kind;
+    enum { KEY, ANALOG, MOUSE_POS, MOUSE_BUTTON, WHEEL, FINGER, TEXT, RELEASE_ALL } kind;
+    SDL_Event finger;  // (FINGER: the event itself - touch_ui.h runs on the render thread)
     ImGuiKey key;
     bool down;
     float value, x, y;
@@ -74,6 +78,13 @@ struct QEvent {
 static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::vector<QEvent> q_events;
 static float g_pixel_density = 1;
+static int g_win_px_w = 1, g_win_px_h = 1;  // (touch positions come normalized)
+static std::atomic<int> g_safe_l{0}, g_safe_t{0}, g_safe_r{0}, g_safe_b{0};  // insets, pixels (phones: notch, home bar)
+static std::atomic<bool> g_ime_send{false};  // the text field being typed in: its frame, points, to give SDL (phones)
+static SDL_Rect g_ime_rect;
+// Phones: the menu a third larger than on a 1080-line monitor (a 6.5" screen held at arm's length: rows to touch);
+// a tablet's screen is a monitor's size at arm's length: the monitor's scale
+static const float kUi = PLAT_TOUCH && !plat_touch_tablet() ? 1.35f : 1.0f;
 
 static void push(const QEvent &e) {
     pthread_mutex_lock(&q_lock);
@@ -90,6 +101,7 @@ enum { BAR_SETTINGS, BAR_WARP, BAR_EDITOR, BAR_RESET, BAR_QUIT, BAR_CLOSE, BAR_N
 static std::atomic<int> g_page{-1};  // the entry whose page is open (-1: the bar alone)
 static int g_bar_cur;  // the bar's cursor (render thread)
 static void page_open(int page);
+extern "C" void menu_toggle(void) { set_open(!g_open.load()); }  // (the touch controls' menu button)
 static int g_tab = -1000, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab; -1000: the first tab)
 static int g_ask = -1;  // the bar's Reset or Quit asked (render thread): ask_popup
 extern "C" void menu_test_open(void) {
@@ -108,12 +120,22 @@ extern "C" void menu_test_open(void) {
 }
 
 void menu_tabs_focus(bool first_tab);
+#if PLAT_TOUCH
+extern "C" void touch_reset(void);  // mobile/touch_controls.mm (on-screen controls)
+extern "C" bool touch_visible(void);
+extern "C" void touch_draw(ImDrawList *dl, float w, float h, ImFont *font);
+#else
+static void touch_reset(void) {}
+static bool touch_visible(void) { return false; }
+static void touch_draw(ImDrawList *, float, float, ImFont *) {}
+#endif
 static void set_open(bool open) {
     if (open == g_open.load()) return;
     g_page = -1;  // (the bar alone first)
     g_open.store(open);
     menu_sfx_play(open ? MENU_SFX_OPEN : MENU_SFX_CLOSE);
     input_reset();  // nothing held while the menu had focus leaks into the game
+    touch_reset();  // (nor touches: the menu takes them, their lifts included)
     bind_capture_cancel();
     // nor the other way round: the releases of what was held when it closed never reach the menu (it isn't capturing
     // then), so it starts with nothing held - else the cursor kept scrolling, or a press went missing, on the next open
@@ -202,6 +224,11 @@ bool menu_handle_event(const SDL_Event *e) {
     if (g_open.load() && bind_capture_event(e)) return true;  // Controls tab waiting for a new binding: it takes the press
     if (e->type == SDL_EVENT_KEY_DOWN) g_last_pad = false;
     if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) g_last_pad = true;
+    if (PLAT_TOUCH) {  // (osk.mm: a finger or a controller types - the device used last)
+        if (e->type == SDL_EVENT_FINGER_DOWN) g_last_pad = false, ui_typing_pad(false);
+        if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) ui_typing_pad(true);
+        if (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && abs(e->gaxis.value) > 12000) g_last_pad = true, ui_typing_pad(true);
+    }
     if (g_kbd.load() == 1 && e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat) {  // Enter confirms, Esc cancels
         if (e->key.scancode == SDL_SCANCODE_RETURN || e->key.scancode == SDL_SCANCODE_KP_ENTER) { g_kbd = 2; return true; }
         if (e->key.scancode == SDL_SCANCODE_ESCAPE) { g_kbd = 3; return true; }
@@ -285,10 +312,12 @@ bool menu_handle_event(const SDL_Event *e) {
     }
     case SDL_EVENT_MOUSE_MOTION:
         if (!capturing()) return false;
+        if (PLAT_TOUCH && e->motion.which == SDL_TOUCH_MOUSEID) return true;  // (the finger itself: FINGER below)
         { QEvent q = {}; q.kind = QEvent::MOUSE_POS; q.x = e->motion.x * g_pixel_density; q.y = e->motion.y * g_pixel_density; push(q); }
         return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
         if (!capturing()) return false;
+        if (PLAT_TOUCH && e->button.which == SDL_TOUCH_MOUSEID) return true;
         {
             QEvent q = {};
             q.kind = QEvent::MOUSE_BUTTON;
@@ -299,8 +328,19 @@ bool menu_handle_event(const SDL_Event *e) {
         return true;
     case SDL_EVENT_MOUSE_WHEEL:
         if (!capturing()) return false;
+        if (PLAT_TOUCH && e->wheel.which == SDL_TOUCH_MOUSEID) return true;
         { QEvent q = {}; q.kind = QEvent::WHEEL; q.x = e->wheel.x; q.y = e->wheel.y; push(q); }
         return true;
+#if PLAT_TOUCH
+    case SDL_EVENT_FINGER_DOWN: case SDL_EVENT_FINGER_UP: case SDL_EVENT_FINGER_MOTION: case SDL_EVENT_FINGER_CANCELED:
+        if (!capturing()) return false;
+        {   // touch screens (touch_ui.h, on the render thread: drain_events)
+            QEvent q = {};
+            q.kind = QEvent::FINGER, q.finger = *e;
+            push(q);
+        }
+        return true;
+#endif
     default:
         return false;
     }
@@ -332,13 +372,33 @@ extern "C" uint32_t g_window_resize_request;  // (test scripts: runtime/hle/inpu
 void menu_apply_window_requests(void *win) {
     SDL_Window *w = (SDL_Window *)win;
     g_pixel_density = SDL_GetWindowPixelDensity(w);
-    static bool text_input;
+    SDL_GetWindowSizeInPixels(w, &g_win_px_w, &g_win_px_h);
+#if PLAT_TOUCH
+    // phones: text input shows the system keyboard - only while an ImGui text field has the focus (not the on-screen
+    // keys or the system prompt), not the whole time the menu is open
+    bool want_text = capturing() && g_text_typed.load();
+    if (g_ime_send.exchange(false)) SDL_SetTextInputArea(w, &g_ime_rect, 0);  // (SDL slides the view up off the keyboard)
+    {   // the safe area (points -> pixels): the menu keeps out of the notch and the home indicator. Held while the
+        // system keyboard is up: SDL slides the view up to keep the text field (ImGui's IME rect) above the keyboard,
+        // which takes the view's bottom off the home indicator - a new safe area, which would move the field, and SDL
+        // would slide again: the screen shook back and forth between the two.
+        SDL_Rect sa;
+        int ww, wh;
+        bool kbd = want_text || SDL_TextInputActive(w) || SDL_ScreenKeyboardShown(w);
+        if (!kbd && SDL_GetWindowSafeArea(w, &sa) && SDL_GetWindowSize(w, &ww, &wh) && ww > 0 && wh > 0) {
+            g_safe_l = (int)(sa.x * g_pixel_density), g_safe_t = (int)(sa.y * g_pixel_density);
+            g_safe_r = (int)((ww - sa.x - sa.w) * g_pixel_density), g_safe_b = (int)((wh - sa.y - sa.h) * g_pixel_density);
+        }
+    }
+#else
     bool want_text = capturing();
 #ifdef __ANDROID__
     // There, text input brings up the on-screen keyboard, which also takes the hardware keyboard's keys: only while
     // something takes text (a text field in the menu, the game's name entry), not whenever the menu is open
     want_text = g_kbd.load() == 1 || (ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput);  // (none between the start screen and the game)
 #endif
+#endif
+    static bool text_input;
     if (want_text != text_input) {
         if (want_text) SDL_StartTextInput(w);
         else SDL_StopTextInput(w);
@@ -520,6 +580,7 @@ static void init(void) {
     g_inited = true;
 }
 
+static TouchUi g_touch;  // (render thread)
 static void drain_events(ImGuiIO &io) {
     pthread_mutex_lock(&q_lock);
     std::vector<QEvent> ev;
@@ -535,6 +596,11 @@ static void drain_events(ImGuiIO &io) {
         case QEvent::MOUSE_POS: io.AddMousePosEvent(q.x, q.y); break;
         case QEvent::MOUSE_BUTTON: io.AddMouseButtonEvent(q.button, q.down); break;
         case QEvent::WHEEL: io.AddMouseWheelEvent(q.x, q.y); break;
+        case QEvent::FINGER:
+            io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
+            g_touch.event(&q.finger, (float)g_win_px_w, (float)g_win_px_h, [&](float x, float y) { io.AddMousePosEvent(x, y); },
+                          [&](bool down) { io.AddMouseButtonEvent(0, down); });
+            break;
         case QEvent::TEXT: io.AddInputCharactersUTF8(q.text); break;
         case QEvent::RELEASE_ALL: ui_pad_release_all(io); break;
         }
@@ -578,7 +644,7 @@ static void tab_display(void) {
                "Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps "
                "the game's 16:9 view with bars.");
     bool fs = g_settings.fullscreen;
-    if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.")) {
+    if (!PLAT_TOUCH && opt_toggle("Fullscreen", &fs, false, "Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
         g_want_fullscreen_apply.store(true);
     }
@@ -602,10 +668,12 @@ static void tab_display(void) {
         if (opt_preview("Remove blur", &rb, oo, 2, 0, "Turns off the tilt-shift blur at the top and bottom of the screen."))
             g_settings.blur_removal = rb;
     }
-    opt_toggle("Pause on focus lost", &g_settings.pause_unfocused, false,
-               "The game pauses while its window isn't in front.");
-    opt_toggle("Remember window size", &g_settings.remember_window, false,
-               "The window opens at the size it was when you quit.");
+    if (!PLAT_TOUCH) {  // (a phone's window is the screen, and the app in the background is paused anyway)
+        opt_toggle("Pause on focus lost", &g_settings.pause_unfocused, false,
+                   "The game pauses while its window isn't in front.");
+        opt_toggle("Remember window size", &g_settings.remember_window, false,
+                   "The window opens at the size it was when you quit.");
+    }
 
     opt_section("Rendering");
     // display order -> RES_* (the ini / enum order predates the menu order)
@@ -804,7 +872,9 @@ static void ask_popup(float scale) {
     ImGui::TextUnformatted(L("Progress since your last save is lost."));
     ImGui::Spacing();
     ImGui::Spacing();
-    ImVec2 bs(260 * scale, 0);
+    ImVec2 bs(260 * scale, 0);  // (all one width: the longest label's, "Return to Launcher" ran past its button)
+    for (const char *s : {L("Cancel"), L("Reset"), L("Return to Launcher"), L("Quit")})
+        bs.x = fmaxf(bs.x, ImGui::CalcTextSize(s).x + 2 * ImGui::GetStyle().FramePadding.x + 16 * scale);
     bool done = false;
     if (ImGui::Button(L("Cancel"), bs) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
         ImGui::IsKeyPressed(ImGuiKey_Escape, false) || test_cancel) {
@@ -830,6 +900,7 @@ static void ask_popup(float scale) {
             done = true;
             set_open(false);
         }
+#if !PLAT_TOUCH  // (phone apps don't quit themselves)
         ImGui::SameLine();
         if (ImGui::Button(L("Quit"), bs)) {
             LOG("[menu] quit: to the desktop\n");
@@ -839,6 +910,7 @@ static void ask_popup(float scale) {
             SDL_PushEvent(&q);
             done = true;
         }
+#endif
     }
     if (done) g_ask = -1, frames = 0, ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
@@ -890,13 +962,16 @@ static void vanilla_popup(float scale) {
     }
     ImGui::Spacing();
     ImGui::Spacing();
-    if (ImGui::Button(L("Reset"), ImVec2(220 * scale, 0)) || test_reset) {
+    ImVec2 bs(220 * scale, 0);
+    for (const char *s : {L("Reset"), L("Cancel")})
+        bs.x = fmaxf(bs.x, ImGui::CalcTextSize(s).x + 2 * ImGui::GetStyle().FramePadding.x + 16 * scale);
+    if (ImGui::Button(L("Reset"), bs) || test_reset) {
         ImGui::CloseCurrentPopup();
         reset_to_vanilla();
     }
     ImGui::SameLine();
     ImGui::SetItemDefaultFocus();
-    if (ImGui::Button(L("Cancel"), ImVec2(220 * scale, 0)) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+    if (ImGui::Button(L("Cancel"), bs) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
         ImGui::IsKeyPressed(ImGuiKey_Escape, false) || test_cancel) {
         LOG("[menu] reset to vanilla cancelled\n");
         ImGui::CloseCurrentPopup();
@@ -952,12 +1027,29 @@ RT_ON_RESET(menu_reset) {
     set_open(false);
     g_kbd = 0;
     osk_cancel();
+#if PLAT_TOUCH
+    plat_touch_prompt_cancel();
+#endif
     pthread_mutex_lock(&q_lock);
     q_events.clear();
     pthread_mutex_unlock(&q_lock);
 }
 
 static void keyboard_draw(ImGuiIO &io, float scale) {
+    static bool was_open, was_pad;
+    bool pad = g_last_pad.load(), appearing = !was_open || pad != was_pad;  // (switching device: focus the new one)
+    was_open = true, was_pad = pad;
+#if PLAT_TOUCH
+    if (!pad) {
+        // a phone without a controller: the system's text prompt (its keyboard, paste), as the menu's own fields;
+        // nothing of ours under it
+        if (appearing) plat_touch_prompt(L("Enter your name"), "", g_kbd_text, 0, L("OK"), L("Cancel"));
+        int r = plat_touch_prompt_poll(g_kbd_text, sizeof g_kbd_text);
+        if (r) g_kbd = r > 0 ? 2 : 3;
+        if (g_kbd.load() != 1) was_open = false;
+        return;
+    }
+#endif
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
                                                   IM_COL32(0, 0, 0, (int)(plastic_theme().dim * 255)));
     float w = fminf(io.DisplaySize.x * 0.9f, 1100 * scale);
@@ -968,9 +1060,6 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
     ImGui::PushFont(g_font_big);
     ImGui::TextColored(plastic_col(plastic_theme().title), "%s", L("Enter your name"));
     ImGui::PopFont();
-    static bool was_open, was_pad;
-    bool pad = g_last_pad.load(), appearing = !was_open || pad != was_pad;  // (switching device: focus the new one)
-    was_open = true, was_pad = pad;
     if (!pad) {  // keyboard: type straight into the field
         if (appearing) ImGui::SetKeyboardFocusHere();
         ImGui::SetNextItemWidth(-1);
@@ -981,8 +1070,11 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
         ImGui::PopFont();
         int units = kbd_cut(g_kbd_text, g_kbd_max);
         ImGui::TextDisabled(L("Enter  confirm      Esc  cancel      (%d / %d)"), units, g_kbd_max);
-    } else {  // controller: on-screen keyboard (osk.mm, shared with our menus' text fields)
-        int r = osk_keys(g_kbd_text, sizeof g_kbd_text, g_kbd_max, appearing, scale, g_font_big);
+    } else {  // controller: on-screen keyboard (osk.mm, shared with our menus' text fields; a phone's keys for fingers too)
+#if PLAT_TOUCH
+        if (appearing) plat_touch_prompt_cancel();  // (a controller picked up mid-entry: the prompt goes)
+#endif
+        int r = osk_keys(g_kbd_text, sizeof g_kbd_text, g_kbd_max, appearing, scale, g_font_big, true, PLAT_TOUCH && !plat_touch_tablet());
         if (r) g_kbd = r > 0 ? 2 : 3;  // (Start / + confirms in menu_handle_event too)
     }
     ImGui::End();
@@ -1135,7 +1227,9 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float), int o
     ImGuiContext &g = *ImGui::GetCurrentContext();
     ImGuiWindow *root = ImGui::GetCurrentWindow()->RootWindow;
     static bool nav_in_page;  // (the frame before: the cursor on a control of the page - its child windows)
-    if (nav_in_page && g.NavJustMovedToId && g.NavWindow == root && !any_popup) g_focus_tab = -100, g_focus_frames = 0;
+    static ImGuiID tabs_win;  // (the tab bar's own scrolling child, when the tabs don't fit: part of the bar, not the page)
+    bool nav_on_bar = g.NavWindow && (g.NavWindow == root || g.NavWindow->ID == tabs_win);
+    if (nav_in_page && g.NavJustMovedToId && nav_on_bar && !any_popup) g_focus_tab = -100, g_focus_frames = 0;
     // The tabs: a row of our own pieces (the selected one orange), each a button the controller's cursor can stand on;
     // the selected tab's page under them
     if (g_tab_request != -2)
@@ -1149,19 +1243,34 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float), int o
     }
     if (only == -1000) {
         const PlasticTheme &pt = plastic_theme();
-        ImDrawList *dl = ImGui::GetWindowDrawList();
         float gap = 8 * scale, pad = 20 * scale, th = ImGui::GetFontSize() + 20 * scale;
         float tw[16], text_w[16], total = 0, avail = ImGui::GetContentRegionAvail().x - 4 * scale;
-        for (int k = 0; k < ntabs; k++) text_w[k] = ImGui::CalcTextSize(L(tabs[k].name)).x, total += text_w[k] + (k ? gap : 0);
-        if (total + 2 * pad * ntabs > avail) pad = fmaxf((avail - total) / (2 * ntabs), 3 * scale);  // (a narrow window: tighter)
-        // still too wide (long names: Russian, German): the names a little smaller
-        float tfs = ImGui::GetFontSize(), names = total - gap * (ntabs - 1), room = avail - gap * (ntabs - 1) - (2 * pad + 2 * scale) * ntabs;
-        if (names > room && names > 0) {
-            float k = fmaxf(room / names, 0.6f);
-            tfs *= k;
-            for (int i = 0; i < ntabs; i++) text_w[i] *= k;
+        for (int k = 0; k < ntabs; k++)  // (each tab also sits 2 px right of the cursor: counted, or the bar overflowed)
+            text_w[k] = ImGui::CalcTextSize(L(tabs[k].name)).x, total += text_w[k] + (k ? gap : 0) + 2 * scale;
+        // a narrow window: tighter tabs; still too wide: on a phone the bar scrolls sideways instead of squeezing them,
+        // on the desktop the names (long ones: Russian, German) a little smaller
+        const float min_pad = 12 * scale;
+        bool scroll = PLAT_TOUCH && total + 2 * min_pad * ntabs > avail;
+        if (scroll) pad = min_pad;
+        else if (total + 2 * pad * ntabs > avail) pad = fmaxf((avail - total) / (2 * ntabs), 3 * scale);
+        float tfs = ImGui::GetFontSize();
+        if (!scroll) {
+            float names = total - gap * (ntabs - 1) - 2 * scale * ntabs;
+            float room = avail - gap * (ntabs - 1) - (2 * pad + 2 * scale) * ntabs;
+            if (names > room && names > 0) {
+                float k = fmaxf(room / names, 0.6f);
+                tfs *= k;
+                for (int i = 0; i < ntabs; i++) text_w[i] *= k;
+            }
         }
         for (int k = 0; k < ntabs; k++) tw[k] = text_w[k] + 2 * pad;
+        if (scroll) {
+            ImGui::BeginChild("##tabs", ImVec2(avail + 4 * scale, th + 6 * scale), ImGuiChildFlags_NavFlattened,
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoBackground);
+            tabs_win = ImGui::GetCurrentWindow()->ID;
+        }
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        static int shown_sel = -99;  // (the selected tab brought into view once, when it changes)
         if (g_focus_tab == -1 && !prelaunch) g_focus_tab = 8;  // (no Prelaunch in game: Controls, the first tab)
         for (int k = 0; k < ntabs; k++) {
             const Tab &t = tabs[k];
@@ -1184,9 +1293,11 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float), int o
                 // a few frames: the page's child window appearing makes ImGui pick its first widget once it's laid out
                 if (++g_focus_frames >= 4) g_focus_tab = -99, g_focus_frames = 0;
                 else g_focus_tab = t.id;
+                if (scroll) ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeX);
             }
             if (clicked && t.on) g_tab = t.id;
             bool sel = t.id == g_tab;
+            if (scroll && sel && shown_sel != t.id) shown_sel = t.id, ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeX);
             bool lit = (ImGui::IsItemFocused() && g.NavCursorVisible) || ImGui::IsItemHovered();
             ImVec4 col = sel ? pt.tab_sel : lit ? pt.row_mark : pt.tab;
             if (sel && lit) col = ImVec4(col.x * 0.88f, col.y * 0.88f, col.z * 0.88f, col.w);  // (the cursor on it: deeper)
@@ -1201,6 +1312,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float), int o
             else if (focused_tab == t.id) focused_tab = -99;
             ImGui::EndDisabled();
         }
+        if (scroll) ImGui::EndChild();
     }
     for (int k = 0; k < ntabs; k++) {
         const Tab &t = tabs[k];
@@ -1237,7 +1349,8 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float), int o
         ImGui::EndChild();
     }
     opt_focus_first_left();  // (no page drawn: nothing took it)
-    nav_in_page = g.NavWindow && g.NavWindow != g.NavWindow->RootWindow && g.NavWindow->RootWindow == root;
+    nav_in_page = g.NavWindow && g.NavWindow != g.NavWindow->RootWindow && g.NavWindow->RootWindow == root &&
+                  g.NavWindow->ID != tabs_win;
     // (checks: fresh presses only - a held key's repeats come faster than a check's few frames)
     bool down1 = down && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, false) ||
                           ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown, false) || ImGui::IsKeyPressed(ImGuiKey_DownArrow, false));
@@ -1284,9 +1397,11 @@ static void bar_draw(ImGuiIO &io, float scale) {
     e = 1 - (1 - e) * (1 - e) * (1 - e);
     ImGui::PushFont(g_menu_font);
     float fs = ImGui::GetFontSize(), in = 30 * scale, ph = fs + 20 * scale, m = 12 * scale;
-    float bh = ph + 2 * in, top = m - (1 - e) * (bh + m);
-    ImGui::SetNextWindowPos(ImVec2(m, top), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x - 2 * m, bh), ImGuiCond_Always);
+    // (phones: inside the safe area, as the page window - the wider side inset on both sides)
+    float sx = PLAT_TOUCH ? (float)fmaxf(g_safe_l, g_safe_r) : 0, sy = PLAT_TOUCH ? (float)g_safe_t : 0;
+    float bh = ph + 2 * in, top = m + sy - (1 - e) * (bh + m + sy);
+    ImGui::SetNextWindowPos(ImVec2(m + sx, top), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x - 2 * (m + sx), bh), ImGuiCond_Always);
     ImGui::Begin("##bar", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus);
     ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -1347,9 +1462,10 @@ static void bar_draw(ImGuiIO &io, float scale) {
 }
 
 // Whether menu_render draws anything: the menu, the keyboard, an overlay (FPS, inventory, tracker, chaos, race, a
-// pickup card).
-static bool render_needed(bool open, bool kbd, bool inv, bool trk, bool trkd, bool chaos, bool race, bool flyin, bool dpad) {
-    return open || kbd || g_settings.show_fps || inv || trk || trkd || chaos || race || flyin || dpad;
+// pickup card, the d-pad cross, the touch controls).
+static bool render_needed(bool open, bool kbd, bool inv, bool trk, bool trkd, bool chaos, bool race, bool flyin, bool dpad,
+                          bool touch) {
+    return open || kbd || g_settings.show_fps || inv || trk || trkd || chaos || race || flyin || dpad || touch;
 }
 
 #ifdef __APPLE__
@@ -1373,7 +1489,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 #else
     plastic_perf_note_vk(open);
 #endif
-    if (!render_needed(open, kbd, inv, trk, trkd, chaos, race, flyin, dpad)) {
+    bool touch = !open && !kbd && touch_visible();  // (on-screen controls: mobile/touch_controls.mm)
+    if (!render_needed(open, kbd, inv, trk, trkd, chaos, race, flyin, dpad, touch)) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         g_ov_same = 0;  // (shown again: built afresh first)
         return;
@@ -1401,7 +1518,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         char rk[64], dk[160] = "";
         // (only the FPS counter, the run timer and the d-pad cross; input only reaches ImGui while the menu or the name
         // entry is up)
-        if (!open && !kbd && !inv && !trk && !trkd && !chaos && !flyin && race_overlay_key(rk, sizeof rk)) {
+        if (!open && !kbd && !inv && !trk && !trkd && !chaos && !flyin && !touch && race_overlay_key(rk, sizeof rk)) {
             pthread_mutex_lock(&q_lock);
             bool events = !q_events.empty();
             pthread_mutex_unlock(&q_lock);
@@ -1432,10 +1549,13 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         else { memcpy(g_ov_key, key, sizeof key); g_ov_same = key[0] ? 1 : 0; }
     }
     drain_events(io);
-    // fonts are built at 34/56 px for a ~1080 px tall output; scale to the window
-    float scale = (float)(th / 1080.0);
+    // fonts are built at 34/56 px for a ~1080 px tall output; scale to the window (phones: kUi larger)
+    float scale = (float)(th / 1080.0) * kUi;
     if (scale < 0.45f) scale = 0.45f;
     io.FontGlobalScale = scale;
+    // a drag / flick: this frame's scroll, applied after NewFrame (touch_scroll_apply)
+    float touch_px = g_touch.frame(io.DeltaTime, [&](float x, float y) { io.AddMousePosEvent(x, y); },
+                                   [&](bool down) { io.AddMouseButtonEvent(0, down); });
 
 #ifdef __APPLE__
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -1472,6 +1592,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui_ImplVulkan_NewFrame();
 #endif
     ImGui::NewFrame();
+    g_touch.scroll_apply(touch_px);
 
     if (g_settings.show_fps) {
         int c = g_settings.show_fps;
@@ -1495,6 +1616,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     if (inv) {
         inventory_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     }
+    if (touch) touch_draw(ImGui::GetBackgroundDrawList(), io.DisplaySize.x, io.DisplaySize.y, g_font_big ? g_font_big : ImGui::GetFont());
 
     if (open || kbd) {  // (the menu's colours; its windows, popups and buttons as plastic pieces)
         ImGui::GetStyle() = menu_style;
@@ -1502,6 +1624,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
     if (!open || preview_active()) g_bar_t0 = -1;
     if (open && preview_active()) {  // (the live preview: the game, a panel at the bottom)
+        if (PLAT_TOUCH) preview_safe_area(g_safe_l, g_safe_t, g_safe_r, g_safe_b);  // (the menu window's)
         menu_preview_frame(scale, g_menu_font, g_menu_font_big);
         menu_sfx_frame(true);
     } else if (open) {
@@ -1517,7 +1640,16 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
                                                           IM_COL32(0, 0, 0, (int)(plastic_theme().dim * 255)));
             if (page != shown) ImGui::SetNextWindowFocus(), shown = page;
             float w = fminf(io.DisplaySize.x * 0.9f, 1500 * scale), h = io.DisplaySize.y - 2 * 18 * scale;  // (all the height: a slim margin)
-            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImVec2 centre(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+#if PLAT_TOUCH
+            {   // phones: the whole safe area (the notch and the home indicator left out), centred on the screen: the
+                // wider side inset on both sides (the notch is on one side only in landscape)
+                float sx = fmaxf(g_safe_l, g_safe_r), sy = fmaxf(g_safe_t, g_safe_b);
+                w = io.DisplaySize.x - 2 * sx - 2 * 12 * scale;
+                h = io.DisplaySize.y - 2 * sy - 2 * 12 * scale;
+            }
+#endif
+            ImGui::SetNextWindowPos(centre, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
             ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
             ImGui::Begin("##menu", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
             ImFont *keep_big = g_font_big;  // (the window in the menu's font; header() uses g_font_big)
@@ -1564,6 +1696,15 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui::GetStyle() = ov_style;
     ImGui::Render();
     g_text_busy = open && ui_text_busy();
+    g_text_typed = open && ui_text_typed_into();
+    {   // (phones: the field's frame for SDL's keyboard, pixels -> points; this context has no ImGui platform backend)
+        ImVec2 mn, mx;
+        if (PLAT_TOUCH && ui_text_field_rect(&mn, &mx)) {
+            float d = g_pixel_density;
+            g_ime_rect = {(int)(mn.x / d), (int)(mn.y / d), (int)((mx.x - mn.x) / d), (int)((mx.y - mn.y) / d)};
+            g_ime_send = true;
+        }
+    }
     // the pieces (and, the menu open over the game, the small copy of the game image they read): only with the menu or
     // the name entry up
     bool pieces = open || kbd;

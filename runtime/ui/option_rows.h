@@ -11,7 +11,8 @@
 #include <string>
 #include <vector>
 
-void opt_begin(const char *id, float scale);
+// split: the page ends with opt_split (a right pane of its own): phones then keep the two panes instead of cards
+void opt_begin(const char *id, float scale, bool split = false);
 void opt_section(const char *title);
 bool opt_toggle(const char *label, bool *v, bool def, const char *desc);
 // left / right stop at the ends; A / a click on the row steps on, past the last value back to the first (wrap: false,
@@ -60,6 +61,8 @@ void opt_own_next(void);  // the next row is the player's own setting, not part 
 // the next row's label and value are already in the menus' language (i18n.h: put together with L_line, or the
 // player's own text): shown as they are
 void opt_shown_next(void);
+// the last row's value: its left edge and the middle of its line (screen coordinates; x 0: it had none)
+void opt_last_value_pos(float *x, float *cy);
 // rows after this sit one step in (+1) or back out (-1): options that belong to the row above
 void opt_indent(int step);
 void opt_end(void);

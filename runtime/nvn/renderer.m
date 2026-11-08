@@ -2297,6 +2297,8 @@ static void bind_textures(int stage, ShaderInfo *si) {
                 extern int texpatch_heart_kind(int id);
                 extern bool texpatch_is_item_cursor(int id);
                 int id = renderer_texpatch_of(e->tex);
+                extern void texpatch_note_draw(int id);
+                texpatch_note_draw(id);
                 if (!draw_bottle) draw_bottle = texpatch_bottle_kind(id);
                 if (texpatch_bottle_kind(id) == 1) {  // the Hint Sheet: the dungeon map's icon in place (hint_sheet.c)
                     extern bool hint_sheet_icon_draw(const float *ui, uint32_t ui_size);

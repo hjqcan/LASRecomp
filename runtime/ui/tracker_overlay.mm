@@ -994,6 +994,7 @@ static bool map_page_shown(void) {
     uint64_t f = g_map_frame;
     return f && !g_map_closing && renderer_present_count() - f <= 2;
 }
+extern "C" bool tracker_map_page_shown(void) { return map_page_shown(); }  // (the touch controls: mobile/touch_controls.mm)
 
 extern "C" bool tracker_overlay_wanted(void) {
     if (!rando_seed_dir() || !g_settings.tracker || !map_page_shown()) return false;

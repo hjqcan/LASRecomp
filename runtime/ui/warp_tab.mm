@@ -530,9 +530,11 @@ extern "C" bool warp_tab_draw(float scale) {
         ImGui::TextDisabled("%s", L("Load a save to warp."));
         ImGui::Spacing();
     }
-    opt_begin("##warp", scale);
+    opt_begin("##warp", scale, true);
     opt_compact();
+    ui_text_inline(true);  // (filters as typed: typed into directly, not through a prompt)
     opt_text("Search", g_filter, sizeof g_filter, "Search places...", NULL);
+    ui_text_inline(false);
     bool searching = g_filter[0] != 0;
     for (int s = SEC_OW; s <= SEC_DG; s++) {
         std::string sk = "S" + std::to_string(s);

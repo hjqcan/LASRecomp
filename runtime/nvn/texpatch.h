@@ -32,6 +32,10 @@ int texpatch_ui_rgba_list(const char *const *names, int n, uint8_t **out, int *w
 NvnTexture *texpatch_hint_icon(void);
 // Known texture `id` is one of the Items page's cursor brackets (hidden while the companion card has the cursor)
 bool texpatch_is_item_cursor(int id);
+// A draw sampled known texture `id` (the renderer, each draw's textures)
+void texpatch_note_draw(int id);
+// What the game shows: 1 the title screen, 2 the file select (drawn in the last few frames), else 0
+int texpatch_title_screen(void);
 // Changes whenever the wanted look of the known textures changes (prompt style, controller, Hero icon setting):
 // backends re-upload identified textures when it differs from the value they uploaded with.
 uint32_t texpatch_generation(void);
