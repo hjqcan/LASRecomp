@@ -38,7 +38,7 @@ void menu_safe_insets(float *l, float *r);  // share of the window's width
 enum { LEFT = -1, KEEP = 0, RIGHT = 1 };
 static const struct { const char *name; int side; bool xy; } kPanes[] = {
     {"N_Life_00", LEFT, false},  {"N_Key_00", LEFT, false},         {"N_Item_00", RIGHT, true},
-    {"N_Item_01", RIGHT, true},  {"N_SetItem_00", RIGHT, false},    {"N_Rupee_00", RIGHT, false},
+    {"N_Item_01", RIGHT, true},  {"N_SetItem_00", RIGHT, true},    {"N_Rupee_00", RIGHT, false},
     {"N_ShellRadar_00", RIGHT, false},
 };
 #define NPANES (sizeof kPanes / sizeof kPanes[0])
@@ -48,16 +48,20 @@ static float g_authored[NPANES];
 static bool g_moved, g_hid[NPANES];
 
 static bool name_is(uint64_t p, const char *n) { return !strcmp((const char *)(uintptr_t)(p + 0xB0), n); }
+static uint64_t g_ra[256], g_rs[256];
+static int g_nr;
+static bool mapped(uint64_t p) {  // (a pointer found by scanning, or a stale pane's parent: any value at all)
+    for (int k = 0; k < g_nr; k++)
+        if (p >= g_ra[k] && p + 0x800 > p && p + 0x800 <= g_ra[k] + g_rs[k]) return true;
+    return false;
+}
 static bool child_of_hud(uint64_t p) {
     uint64_t up = LD64(p + 0x18);
-    return up >= HEAP_BASE && up + 0x100 <= HEAP_BASE + HEAP_MAX && name_is(up, "N_HUD_00");
+    return mapped(up) && name_is(up, "N_HUD_00");
 }
 
 // breadth first from the HUD over pointers into guest data, as runtime/ui/tracker_overlay.mm finds its panes
 static void find_panes(uint64_t hud) {
-    extern int kernel_data_regions(uint64_t *a, uint64_t *s, int max);
-    static uint64_t ra[256], rs[256];
-    int nr = kernel_data_regions(ra, rs, 256);
     enum { MAX_SEEN = 1 << 15, TAB = 1 << 17 };
     static uint64_t q[MAX_SEEN], tab[TAB];
     memset(tab, 0, sizeof tab);
@@ -67,9 +71,7 @@ static void find_panes(uint64_t hud) {
     for (unsigned i = 0; i < n && found < NPANES; i++)
         for (uint32_t off = 0; off < 0x800 && found < NPANES; off += 8) {
             uint64_t p = LD64(q[i] + off);
-            bool ok = false;
-            for (int k = 0; k < nr && !ok; k++) ok = p >= ra[k] && p + 0x800 > p && p + 0x800 <= ra[k] + rs[k];
-            if (!ok) continue;
+            if (!mapped(p)) continue;
             unsigned h = (unsigned)(p * 0x9E3779B1u >> 15) & (TAB - 1);
             while (tab[h] && tab[h] != p) h = (h + 1) & (TAB - 1);
             if (tab[h] || n >= MAX_SEEN) continue;
@@ -95,13 +97,15 @@ void rt_hud_corners_tick(uint64_t hud) {
     float f = widescreen_factor();
     bool in = game_in_play() && world_on_screen();
     bool want = in && g_settings.aspect == ASPECT_UNLOCKED && f > 1.01f && !ENV("LARECOMP_NO_HUD_CORNERS");
-    bool hide = in && g_settings.touch_hide_xy_hud && touch_visible();
+    bool hide = in && (g_settings.touch_hide_xy_hud || ENV("LARECOMP_HIDE_XY_HUD")) && touch_visible();
     if (!want && !hide && !g_moved) {
         bool any = false;
         for (unsigned i = 0; i < NPANES; i++) any |= g_hid[i];
         if (!any) { g_active = false, g_left = g_right = 0; return; }
     }
     extern uint64_t renderer_present_count(void);
+    extern int kernel_data_regions(uint64_t *a, uint64_t *s, int max);
+    g_nr = kernel_data_regions(g_ra, g_rs, 256);
     bool stale = false, missing = false;  // (a pane gone: its memory may be something else now, don't write to it)
     for (unsigned i = 0; i < NPANES; i++) {
         missing |= !g_pane[i];
