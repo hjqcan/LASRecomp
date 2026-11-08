@@ -164,6 +164,9 @@ static void reboot_idle(void) {  // (main thread, while guest threads stop) keep
 static void teardown(void) {
     uint64_t t0 = plat_now_ns();
     kernel_stop_threads(reboot_idle);
+#ifdef __ANDROID__
+    { extern void audio_stop_all(void); audio_stop_all(); }  // (before backend_reset unmaps a placed heap: audio.c)
+#endif
     backend_clear_window();
     backend_reset();
     const ResetFn *start = __start_resets, *stop = __stop_resets;

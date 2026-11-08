@@ -325,6 +325,18 @@ public class LASRecompActivity extends SDLActivity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        PlayService.start(this);  // (keeps the game alive at the home screen: PlayService.java)
+    }
+
+    @Override
+    protected void onDestroy() {
+        PlayService.stop(this);
+        super.onDestroy();
+    }
+
+    @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == PICK_DRIVER_RECOVER) {
             Uri f = resultCode == RESULT_OK && data != null ? data.getData() : null;
