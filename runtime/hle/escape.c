@@ -190,9 +190,10 @@ void escape_bottle_tint(int kind, const float *ui, uint32_t ui_size, float tint[
     float x = ui[19], y = ui[23];
     bool on = fabsf(x - 436) < 24 && fabsf(y + 67) < 24;
     extern float hud_corners_right(void);  // (phones: the HUD at the screen corners, runtime/hle/hud_corners.c)
-    float hx = x - hud_corners_right();
-    if (LD8(ps + 0xa2) == 0xf) on |= fabsf(hx - 476) < 24 && fabsf(y - 296) < 24;
-    if (LD8(ps + 0xa3) == 0xf) on |= fabsf(hx - 571) < 24 && fabsf(y - 310) < 24;
+    extern float hud_corners_up(void);
+    float hx = x - hud_corners_right(), hy = y - hud_corners_up();
+    if (LD8(ps + 0xa2) == 0xf) on |= fabsf(hx - 476) < 24 && fabsf(hy - 296) < 24;
+    if (LD8(ps + 0xa3) == 0xf) on |= fabsf(hx - 571) < 24 && fabsf(hy - 310) < 24;
     if (!on) return;
     static const float gold[8] = {1.30f, 0.86f, 0.16f, 1.0f, 0.12f, 0.05f, 0.0f, 1.25f};  // (UI: unlit, 0-1; deep gold)
     memcpy(tint, gold, sizeof gold);

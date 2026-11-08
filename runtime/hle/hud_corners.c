@@ -1,5 +1,5 @@
-// Phones and tablets: with Aspect ratio = Unlocked and a window wider than 16:9, the game's HUD goes to the real screen
-// corners instead of the centred 16:9 box, in every room so it never jumps at a door; and optionally its X / Y item
+// Phones and tablets: with Aspect ratio = Unlocked and a window wider or taller than 16:9, the game's HUD goes to the real
+// screen corners instead of the centred 16:9 box, in every room so it never jumps at a door; and optionally its X / Y item
 // buttons are hidden while the on-screen controls (which show those items) are up.
 //
 // Game thread (rt_hud_corners_tick, from the HUD's state update, HUD_HEARTS_SITE, x0 = the HUD): each group pane under
@@ -23,10 +23,11 @@ float widescreen_factor(void);
 bool world_on_screen(void);
 extern int game_in_play(void);
 
-static volatile float g_left, g_right;  // layout units (1280 x 720 box) the HUD's left / right groups moved by
+static volatile float g_left, g_right, g_up;  // layout units (1280 x 720 box) the HUD's groups moved by
 
 float hud_corners_left(void) { return g_left; }
 float hud_corners_right(void) { return g_right; }
+float hud_corners_up(void) { return g_up; }
 
 #if PLAT_TOUCH
 
@@ -44,7 +45,7 @@ static const struct { const char *name; int side; bool xy; } kPanes[] = {
 #define NPANES (sizeof kPanes / sizeof kPanes[0])
 static uint64_t g_hud, g_pane[NPANES], g_retry;
 static int g_tries;
-static float g_authored[NPANES];
+static float g_authored[NPANES], g_authored_y[NPANES];
 static bool g_moved, g_hid[NPANES];
 
 static bool name_is(uint64_t p, const char *n) { return !strcmp((const char *)(uintptr_t)(p + 0xB0), n); }
@@ -80,23 +81,25 @@ static void find_panes(uint64_t hud) {
             for (unsigned k = 0; k < NPANES; k++)
                 if (!g_pane[k] && name_is(p, kPanes[k].name)) {
                     g_pane[k] = p, g_authored[k] = *(const float *)(uintptr_t)(p + 0x30), g_hid[k] = false;
+                    g_authored_y[k] = *(const float *)(uintptr_t)(p + 0x34);
                     found++;
                 }
         }
     LOG("[hud] corners: %u of %u panes found from %llx (%u objects)\n", found, (unsigned)NPANES, (unsigned long long)hud, n);
 }
 
-static void set_x(unsigned i, float x) {
+static void set_xy(unsigned i, float x, float y) {
     uint64_t p = g_pane[i];
-    if (*(const float *)(uintptr_t)(p + 0x30) == x) return;
+    if (*(const float *)(uintptr_t)(p + 0x30) == x && *(const float *)(uintptr_t)(p + 0x34) == y) return;
     *(float *)(uintptr_t)(p + 0x30) = x;
+    *(float *)(uintptr_t)(p + 0x34) = y;
     *(uint8_t *)(uintptr_t)(p + 0x58) |= 0x10;
 }
 
 void rt_hud_corners_tick(uint64_t hud) {
     float f = widescreen_factor();
     bool in = game_in_play() && world_on_screen();
-    bool want = in && g_settings.aspect == ASPECT_UNLOCKED && f > 1.01f && !ENV("LARECOMP_NO_HUD_CORNERS");
+    bool want = in && g_settings.aspect == ASPECT_UNLOCKED && (f > 1.01f || f < 0.99f) && !ENV("LARECOMP_NO_HUD_CORNERS");
     bool hide = in && (g_settings.touch_hide_xy_hud || ENV("LARECOMP_HIDE_XY_HUD")) && touch_visible();
     if (!want && !hide && !g_moved) {
         bool any = false;
@@ -117,8 +120,9 @@ void rt_hud_corners_tick(uint64_t hud) {
         g_hud = hud, g_retry = renderer_present_count() + 60, g_moved = false, g_tries++;
         find_panes(hud);
     }
-    float l = 0, r = 0;
-    if (want) {
+    float l = 0, r = 0, up = 0;
+    if (want && f < 1) up = 360 * (1 / f - 1);  // (a tablet: the band's spare height above it)
+    else if (want) {
         float il, ir;
         menu_safe_insets(&il, &ir);  // (the camera cutout: on one side only in landscape)
         float span = 1280 * f;       // layout units across the window
@@ -128,51 +132,54 @@ void rt_hud_corners_tick(uint64_t hud) {
     }
     for (unsigned i = 0; i < NPANES; i++) {
         if (!g_pane[i]) continue;
-        set_x(i, g_authored[i] + (kPanes[i].side == LEFT ? -l : kPanes[i].side == RIGHT ? r : 0));
+        set_xy(i, g_authored[i] + (kPanes[i].side == LEFT ? -l : kPanes[i].side == RIGHT ? r : 0), g_authored_y[i] + up);
         if (!kPanes[i].xy) continue;
         uint8_t *fl = (uint8_t *)(uintptr_t)(g_pane[i] + 0x58);
         if (hide && (*fl & 1)) *fl &= ~1, g_hid[i] = true;  // (bit 0: visible; the game may set it again)
         else if (!hide && g_hid[i]) *fl |= 1, g_hid[i] = false;
     }
-    g_moved = want, g_active = want, g_left = l, g_right = r;
+    g_moved = want, g_active = want, g_left = l, g_right = r, g_up = up;
 }
 
 // ---- render thread
 static uint64_t g_bars_frame = ~0ull, g_crop_frame = ~0ull;
-static float g_crop_u0, g_crop_u1;
+static float g_crop_u0, g_crop_u1, g_crop_v0, g_crop_v1;
 
 bool hud_corners_active(void) { return g_active; }
 
 // A copy of a layout draw's vertex uniforms for the window-wide viewport (stretch k), NULL when this isn't one.
-const void *hud_corners_ubo(const float *u, uint64_t size, float k) {
-    if (!g_active || !u || size != 560 || k <= 1.0f) return NULL;
+const void *hud_corners_ubo(const float *u, uint64_t size, float k, float ky) {
+    if (!g_active || !u || size != 560 || (k <= 1.001f && ky <= 1.001f)) return NULL;
     if (u[15] != 1 || u[12] != 0 || u[13] != 0 || !(u[0] > 0) || u[5] == 0) return NULL;  // (orthographic projection)
     static float ring[4096][140];
     static unsigned at;
     float *c = ring[at++ & 4095];
     memcpy(c, u, 560);
-    for (int i = 0; i < 4; i++) c[i] /= k;
+    for (int i = 0; i < 4; i++) c[i] /= k, c[4 + i] /= ky;
     return c;
 }
 
-void hud_corners_note_crop(uint64_t frame, float u0, float u1) { g_crop_frame = frame, g_crop_u0 = u0, g_crop_u1 = u1; }
+void hud_corners_note_crop(uint64_t frame, float u0, float u1, float v0, float v1) {
+    g_crop_frame = frame, g_crop_u0 = u0, g_crop_u1 = u1, g_crop_v0 = v0, g_crop_v1 = v1;
+}
 bool hud_corners_shown_whole(uint64_t frame) { return g_active && g_bars_frame == frame; }
 
 // (the scene composite is drawn) the bars to clear before the HUD, in the target's pixels: false when the last frame had none
-bool hud_corners_bars(uint64_t frame, int w, int bar[2]) {
+bool hud_corners_bars(uint64_t frame, int w, int h, int bar[4]) {
     if (!g_active || g_crop_frame + 2 < frame || g_crop_frame > frame) return false;
     g_bars_frame = frame;
     bar[0] = (int)(w * g_crop_u0), bar[1] = (int)(w * g_crop_u1 + 0.999f);
-    return bar[0] > 0 || bar[1] < w;
+    bar[2] = (int)(h * g_crop_v0), bar[3] = (int)(h * g_crop_v1 + 0.999f);
+    return bar[0] > 0 || bar[1] < w || bar[2] > 0 || bar[3] < h;
 }
 
 #else
 
 void rt_hud_corners_tick(uint64_t hud) { (void)hud; }
 bool hud_corners_active(void) { return false; }
-const void *hud_corners_ubo(const float *u, uint64_t size, float k) { (void)u, (void)size, (void)k; return NULL; }
-void hud_corners_note_crop(uint64_t frame, float u0, float u1) { (void)frame, (void)u0, (void)u1; }
+const void *hud_corners_ubo(const float *u, uint64_t size, float k, float ky) { (void)u, (void)size, (void)k, (void)ky; return NULL; }
+void hud_corners_note_crop(uint64_t frame, float u0, float u1, float v0, float v1) { (void)frame, (void)u0, (void)u1, (void)v0, (void)v1; }
 bool hud_corners_shown_whole(uint64_t frame) { (void)frame; return false; }
-bool hud_corners_bars(uint64_t frame, int w, int bar[2]) { (void)frame, (void)w, (void)bar; return false; }
+bool hud_corners_bars(uint64_t frame, int w, int h, int bar[4]) { (void)frame, (void)w, (void)h, (void)bar; return false; }
 
 #endif
