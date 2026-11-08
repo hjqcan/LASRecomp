@@ -955,7 +955,8 @@ void vk_pipeline_cache_save(void) {
 }
 
 // ================================================================== swapchain
-static bool sc_interp;  // (the swapchain was made for Frame Generation: FIFO; the menu's toggle makes a new one)
+static bool sc_interp;  // (the swapchain was made for Frame Generation: FIFO; the menu's toggle makes a new one if the mode differs)
+static VkPresentModeKHR sc_mode;  // (the swapchain's present mode)
 static VkPresentModeKHR present_mode(void) {
     // MAILBOX by default: the game paces itself (vi.c's emulated 60 Hz vsync), and with FIFO every submission
     // queued behind the one waiting for a window image, so the game's fence waits followed the presentation engine:
@@ -975,6 +976,13 @@ static VkPresentModeKHR present_mode(void) {
     vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &n, m);
     for (uint32_t i = 0; i < n; i++) if (m[i] == want) return want;
     return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+// Frame Generation's toggle needs a new swapchain only when the mode really changes. Where the driver offers no mailbox
+// (AMD on Windows) both settings are FIFO, and remaking the same swapchain left 60 fps stuttering on a 144 Hz display
+// until a restart (#602; 60 Hz was fine). present_mode updates sc_interp: asked once per toggle.
+static bool sc_mode_changed(void) {
+    return sc_interp != (interp_wanted() == INTERP_ON) && present_mode() != sc_mode;
 }
 
 #ifdef __ANDROID__
@@ -1036,6 +1044,7 @@ static void create_swapchain(void) {
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = transform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = present_mode(), .clipped = VK_TRUE,
         .oldSwapchain = old};
+    sc_mode = ci.presentMode;
 #ifdef __ANDROID__
     {   // (the window went away after its surface was made - sent to the background right then: no swapchain now, the
         // next frame makes the surface and swapchain again instead of stopping. From mamcjr's LASRecompAndroid, MIT,
@@ -1167,7 +1176,7 @@ bool vk_frame_begin(const float clear[4]) {
     WAITING(rec_wait_presents(rec_presents_queued()));
     if (rec_present_recreate()) recreate_swapchain();
     if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height ||
-        sc_interp != (interp_wanted() == INTERP_ON)) recreate_swapchain();
+        sc_mode_changed()) recreate_swapchain();
     if (!g_vk.swapchain) return false;
     static int trace = -1;
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
