@@ -56,6 +56,8 @@ void vk_android_load(void) {
             lib = NULL;  // (left loaded: a driver doesn't always unload cleanly)
         }
     }
+    // (what is in use, for the start screen's Graphics driver row: the package's library, or "" for the system's)
+    setenv("LARECOMP_VK_DRIVER_IN_USE", lib && drv ? (strrchr(drv, '/') ? strrchr(drv, '/') + 1 : drv) : "", 1);
     if (!lib) lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
     if (!lib) FATAL("no Vulkan driver: %s\n", dlerror());
     PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");

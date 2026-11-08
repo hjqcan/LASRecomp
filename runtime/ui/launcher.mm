@@ -1435,6 +1435,47 @@ static void data_folder_popup(float s) {
     ImGui::EndPopup();
 }
 
+#ifdef __ANDROID__
+// The Vulkan driver package (Settings > Game files): the activity copies a picked one into the drivers folder, and the
+// driver is loaded at the next start (runtime/nvn/vulkan/android_driver.c). From LASRecompAndroid by mamcjr (MIT).
+static std::string g_driver_msg;
+static bool g_driver_restart;
+static void driver_picked(const char *r) {  // (another thread)
+    pthread_mutex_lock(&g_lock);
+    g_driver_msg = !strcmp(r, "-") ? L("The phone's own driver from the next start. Restart LAS Recomp to use it.")
+                   : *r ? L("Driver package added. Restart LAS Recomp to use it.")
+                        : L("That file isn't a driver package (.zip or .so).");
+    g_driver_restart = *r != 0;
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void driver_rows(void) {
+    android_on_driver(driver_picked);
+    auto base = [](const char *p) { const char *s = p ? strrchr(p, '/') : NULL; return std::string(s ? s + 1 : p ? p : ""); };
+    std::string want = base(getenv("LARECOMP_VK_DRIVER")), used = base(getenv("LARECOMP_VK_DRIVER_IN_USE"));
+    std::string d = L("The Vulkan driver the game runs on. On Adreno GPUs a Turnip driver package (.zip, as other "
+                      "emulators use) can run it better than the phone's own driver. A new one applies from the next start.");
+    if (!want.empty() && used.empty()) {
+        char b[400];
+        snprintf(b, sizeof b, L("%s couldn't run here, so the phone's own driver is in use."), want.c_str());
+        d += std::string("\n\n") + b;
+    }
+    pthread_mutex_lock(&g_lock);
+    std::string msg = g_driver_msg;
+    bool restart = g_driver_restart;
+    pthread_mutex_unlock(&g_lock);
+    if (!msg.empty()) d += "\n\n" + msg;
+    opt_section("Graphics driver");
+    if (opt_action("Vulkan driver", used.empty() ? LN("Phone's own") : used.c_str(), d.c_str(), true))
+        android_call("pickDriver");
+    if (!want.empty() && opt_action("Use the phone's own driver", "", "Goes back to the phone's own Vulkan driver from the "
+                                    "next start.", true))
+        android_call("useSystemDriver");
+    if (restart && opt_action("Restart now", "", "Starts LAS Recomp again with the driver you chose.", true))
+        android_call("restartApp");
+}
+#endif
+
 static bool g_files_deleted;  // set here: the start screen goes back to setting the game files up
 // Settings > Game files, as the other tabs: option rows on the left, the selected row's description on the right
 static void prelaunch_tab(float sc) {
@@ -1487,6 +1528,9 @@ static void prelaunch_tab(float sc) {
         if (fixed) opt_disable_next();
         if (opt_action("Data folder", "Change...", d.c_str(), true)) choose_data_folder();
     }
+#ifdef __ANDROID__
+    driver_rows();
+#endif
     opt_section("Game font");
     import_fonts();
     bool fs = have_font(FONT_STD, 4), fl = have_font(FONT_LANG, 8), fe = have_font(FONT_EXT, 2);

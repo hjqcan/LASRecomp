@@ -106,6 +106,66 @@ public class LASRecompActivity extends SDLActivity {
         }, "unpack-builder").start();
     }
 
+    // ---- the Vulkan driver package (Settings > Game files: runtime/ui/launcher.mm). It takes effect at the next start:
+    // the driver is loaded before the start screen. From LASRecompAndroid by mamcjr (MIT).
+    public void pickDriver() {
+        runOnUiThread(() -> {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("*/*");
+            try {
+                startActivityForResult(i, PICK_DRIVER);
+            } catch (Exception e) {
+                Log.e(TAG, "file picker: " + e);
+                nativeDriverPicked("");
+            }
+        });
+    }
+
+    // The package into <external files>/drivers, in place of any there; its name, or "" (not a .zip / .so, or the copy
+    // failed)
+    private String copyDriver(Uri f) {
+        String name = "driver.zip";
+        try (Cursor c = getContentResolver().query(f, new String[] {android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) name = c.getString(0);
+        } catch (Exception ignored) {
+        }
+        String low = name.toLowerCase();
+        if ((!low.endsWith(".zip") && !low.endsWith(".so")) || name.contains("/")) return "";
+        File dir = new File(getExternalFilesDir(null), "drivers");
+        deleteTree(dir);
+        dir.mkdirs();
+        try (InputStream in = getContentResolver().openInputStream(f); OutputStream o = new FileOutputStream(new File(dir, name))) {
+            if (in == null) return "";
+            byte[] buf = new byte[1 << 16];
+            for (int k; (k = in.read(buf)) > 0; ) o.write(buf, 0, k);
+            return name;
+        } catch (Exception e) {
+            Log.e(TAG, "driver package: " + e);
+            return "";
+        }
+    }
+
+    public void useSystemDriver() {
+        deleteTree(new File(getExternalFilesDir(null), "drivers"));
+        deleteTree(new File(getFilesDir(), "drivers"));
+        nativeDriverPicked("-");
+    }
+
+    // Starts the app again (a new process: the driver is chosen at start). Started while the app is in front (an alarm
+    // would be a background start, which Android 14+ blocks), then this process ends and the system starts a new one
+    // for it.
+    public void restartApp() {
+        runOnUiThread(() -> {
+            Intent i = getPackageManager().getLaunchIntentForPackage(getPackageName());
+            if (i != null) {
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                startActivity(i);
+            }
+            System.exit(0);
+        });
+    }
+
     // The Vulkan driver: the first driver package in <external files>/drivers - an adrenotools .zip (Turnip builds as
     // other emulators use them) or a bare .so - unpacked into internal storage (a driver can't be loaded from shared
     // storage), again only when it changed. None there: the system's driver. From LASRecompAndroid by mamcjr (MIT).
@@ -191,6 +251,8 @@ public class LASRecompActivity extends SDLActivity {
 
     // ---- the game files folder (runtime/platform/android_storage.c)
     private static final int PICK_GAME_FOLDER = 0x4c41;  // (SDL's own dialogs use other request codes)
+    private static final int PICK_DRIVER = 0x4c42;
+    static native void nativeDriverPicked(String result);  // a package's name, "-" the system's again, "" not a driver
 
     static native void nativeFolderPicked(String uri);  // null: cancelled
     static native void nativeImportProgress(long done, long total);
@@ -212,6 +274,11 @@ public class LASRecompActivity extends SDLActivity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == PICK_DRIVER) {
+            Uri f = resultCode == RESULT_OK && data != null ? data.getData() : null;
+            if (f != null) new Thread(() -> nativeDriverPicked(copyDriver(f)), "copy-driver").start();
+            return;
+        }
         if (requestCode != PICK_GAME_FOLDER) {
             super.onActivityResult(requestCode, resultCode, data);
             return;
