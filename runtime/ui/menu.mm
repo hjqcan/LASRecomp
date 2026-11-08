@@ -608,8 +608,8 @@ static void tab_display(void) {
     static const char *ao[] = {LN("Default"), LN("High"), LN("Off")};
     preview_text(LN("Configure the soft shadows where objects meet the ground and walls."), NULL);
     opt_preview("Ambient occlusion", &g_settings.ao_quality, ao, 3, AO_SWITCH,
-               "The soft shadows in corners and around objects. High draws them at up to twice the Switch's resolution: "
-               "sharper, with less flicker at edges. Off removes them.");
+               "The soft shadows in corners and around objects. High draws them at up to twice the Switch's resolution, "
+               "so their edges are sharper. Off removes them.");
 
     opt_end();
 }
