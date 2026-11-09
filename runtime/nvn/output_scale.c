@@ -439,6 +439,24 @@ float output_scale_ao(float al) {
     return g_settings.ao_quality == AO_HIGH ? fminf(2, fmaxf(1, 2 * al)) : 1;
 }
 
+// The game's shadow map: one 2048x2048 D24S8 render target for the whole scene (2D, not multisampled). Lit shaders take
+// four compare taps one texel apart, in the game's texel size (maxwell/translate.c shadow_taps).
+bool output_scale_is_shadow_map(uint32_t target, uint32_t samples, uint32_t w, uint32_t h, uint32_t format, bool render_target) {
+    return target == 1 && samples <= 1 && w == 2048 && h == 2048 && format == 0x35 && render_target;
+}
+
+// Its scale: the Switch's size, or twice it (High), at any render scale. At four times the size the edges gained
+// little more for 300 MB. LARECOMP_SHADOW_SCALE=<n> (test): n times the Switch's size.
+float output_scale_shadow(void) {
+    static float test = -1;
+    if (test < 0) {
+        const char *e = getenv("LARECOMP_SHADOW_SCALE");
+        test = e ? (float)atof(e) : 0;
+    }
+    if (test >= 1 && test <= 4) return test;
+    return g_settings.shadow_quality == SHADOW_HIGH ? 2 : 1;
+}
+
 void output_scale_log(unsigned long long frame, double dw, double dh, const OutScale *o) {
     static double psx, psy, pdw, pdh;
     static int nlog;

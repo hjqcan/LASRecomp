@@ -65,6 +65,13 @@ with tempfile.TemporaryDirectory() as directory:
         subprocess.run([str(exe), mode], env=env, check=True, capture_output=True)
         assert f'resolution = {saved}\n' in ini.read_text(), (lines, ini.read_text())
         count += 1
+    # Shadows (issue #602): Default unless the file says High, and written back the same way
+    for lines, saved in [([], 'default'), (['shadows = default'], 'default'), (['shadows = high'], 'high'), (['shadows = ultra'], 'default')]:
+        ini = directory / 'test.ini'
+        ini.write_text('\n'.join(['resolution = 1x'] + lines) + '\n')
+        subprocess.run([str(exe), 'res-chosen'], env=dict(os.environ, LARECOMP_SETTINGS=str(ini)), check=True, capture_output=True)
+        assert f'shadows = {saved}\n' in ini.read_text(), (lines, ini.read_text())
+        count += 1
     # Cosmetics colour rows (shared palette): older names map onto it, Custom is a hex value, unknown -> Default
     ini = directory / 'test.ini'
     ini.write_text('tunic = Yellow\nhearts = Pink\nhair = #12ab34\nshield = Sparkly\nskin = Random\n')
