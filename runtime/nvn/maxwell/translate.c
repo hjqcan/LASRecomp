@@ -135,7 +135,14 @@ typedef struct {
     bool ao_taps;          // the AO blur's taps follow rscale[65].y (ao_grid_fix)
     bool ao_pass;          // the AO pass: white while rscale[65].z > 0 (ao_grid_fix)
     int lmem_words;        // the local memory array's size in words (lmem_size; MSL: always LMEM_WORDS)
+    // GLSL: each BRX whose jump table was read (brx_table_labels): its targets, so that static_stacks_resolve can walk
+    // through it and the structured program can branch on its value (struct_blocks)
+    struct BrxTab { size_t at; int n; uint32_t t[256]; bool ahead; } *brx;  // (ahead: struct_blocks' dispatch form)
+    int nbrx;
+    bool uses_brx_t;       // the structured program's brx_t<k> (a BRX's computed target), k < brx_vars
+    int brx_vars;
 } Ctx;
+typedef struct BrxTab BrxTab;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
 static int64_t sbits(uint64_t w, int lo, int n) {
@@ -1825,6 +1832,19 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
     p2r_done:;
     } else if (OPM(0xe250000000000000ull, 0xfff0000000000020ull)) {  // BRX reg + imm (relative)
         // computed targets can name a scheduling word; execution continues at the next slot (as for BRA)
+        int k = 0;
+        while (c->structured && k < c->nbrx && c->brx[k].at != pc / 8) k++;
+        if (c->structured && k < c->nbrx) {  // (the block's end: struct_blocks branches on brx_t<k>)
+            const BrxTab *t = &c->brx[k];
+            c->uses_brx_t = true;
+            sp(&c->body, "    { uint t = %uu + %s + 0x%08xu; if (((t >> 3) & 3u) == 0u) t += 8u;", pc + 8, R(a), (uint32_t)sbits(w, 20, 24));
+            if (t->ahead) {  // 1: no target of the table (the state machine's default: EXIT)
+                sp(&c->body, " brx_t%d = (", k);
+                for (int j = 0; j < t->n; j++) sp(&c->body, "%st == 0x%xu", j ? " || " : "", t->t[j]);
+                sp(&c->body, ") ? t : 1u; }\n");
+            } else
+                sp(&c->body, " brx_t%d = t; }\n", k);
+        } else
         sp(&c->body, "    { uint t = %uu + %s + 0x%08xu; if (((t >> 3) & 3u) == 0u) t += 8u; pc = t; continue; }\n", pc + 8, R(a),
            (uint32_t)sbits(w, 20, 24));
     } else if (OPM(0x50a0000000000000ull, 0xfff8000000000000ull)) {  // CSETP (zero/sign flags only)
@@ -2319,6 +2339,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (dbg) sp(&s, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
     if (c->structured) {
         for (int g = 0; g < c->struct_vars; g++) sp(&s, "  bool g%d = false;\n", g);
+        if (c->uses_brx_t) for (int k = 0; k < c->brx_vars; k++) sp(&s, "  uint brx_t%d = 0u;\n", k);
         sp(&s, "%s", body.buf ? body.buf : "");
     } else if (any_branch) {
         if (c->static_stacks) {
@@ -2395,7 +2416,9 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
 // are read until one isn't an instruction of this shader (the end of the table; a word past it that still looks like
 // one only adds a harmless case). False: not that shape (the register set some other way, no constants, nothing
 // valid) - the caller labels every instruction as before. LARECOMP_BRX_ALL_LABELS=1: always every instruction.
-static bool brx_table_labels(const uint8_t *code, size_t i, size_t end, const uint8_t *blob, size_t const_offset, uint8_t *label) {
+// The targets are kept (c->brx) for static_stacks_resolve and struct_blocks; LARECOMP_VK_STRUCTURE_BRX=0: not (such a
+// program keeps its stacks and the state machine, as it did before).
+static bool brx_table_labels(Ctx *c, const uint8_t *code, size_t i, size_t end, const uint8_t *blob, size_t const_offset, uint8_t *label) {
     static int all = -1;
     if (all < 0) { const char *e = getenv("LARECOMP_BRX_ALL_LABELS"); all = e && atoi(e) != 0; }
     if (all || const_offset >= 0x10000 || const_offset < 0x80) return false;  // (0x10000: no constants known)
@@ -2421,6 +2444,7 @@ static bool brx_table_labels(const uint8_t *code, size_t i, size_t end, const ui
     if (table < 0) return false;
     const uint8_t *tab = blob + const_offset + table;
     uint8_t *mark = calloc(end + 4, 1);
+    BrxTab tab_ = {i, 0, {0}};
     int n = 0;
     for (int k = 0; k < 256; k++) {
         int32_t v;
@@ -2429,10 +2453,20 @@ static bool brx_table_labels(const uint8_t *code, size_t i, size_t end, const ui
         if (t < 8 || (t & 7) || (size_t)(t / 8) >= end) break;
         t = norm_target(t);  // (as the BRX itself does at run time)
         if ((size_t)(t / 8) >= end) break;
+        if (!mark[t / 8]) tab_.t[tab_.n++] = (uint32_t)t;  // (each target once, in table order)
         mark[t / 8] = 1;
         n++;
     }
     if (n) for (size_t k = 0; k < end; k++) label[k] |= mark[k];
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("LARECOMP_VK_STRUCTURE_BRX"); on = !e || atoi(e) != 0; }
+    if (n && on) {
+        for (int a = 1; a < tab_.n; a++)  // (ascending: the dispatch tests' order)
+            for (int b = a; b > 0 && tab_.t[b - 1] > tab_.t[b]; b--) { uint32_t x = tab_.t[b]; tab_.t[b] = tab_.t[b - 1]; tab_.t[b - 1] = x; }
+        tab_.ahead = tab_.t[0] / 8 > i;
+        c->brx = realloc(c->brx, (c->nbrx + 1) * sizeof *c->brx);
+        c->brx[c->nbrx++] = tab_;
+    }
     free(mark);
     return n > 0;
 }
@@ -2441,11 +2475,17 @@ static bool brx_table_labels(const uint8_t *code, size_t i, size_t end, const ui
 // their contents at each instruction are the same on every path that reaches it. Walk every path from the entry
 // with the stacks' contents; where two paths meet (a label) they must agree. Then each SYNC / BRK / CONT has one
 // target, and the shader needs no stacks: 48 slots fewer, which spare the registers (or the stack memory) that
-// the driver's compiler otherwise spends on them. Returns false (keep the stacks) on anything else: an indirect
-// jump (BRX), a call / return, a stack over- or underflow, or paths that disagree.
+// the driver's compiler otherwise spends on them. A BRX whose jump table was read goes on to each of its targets.
+// Returns false (keep the stacks) on anything else: any other indirect jump, a call / return, a stack over- or
+// underflow, or paths that disagree.
 typedef struct { uint8_t n[3]; uint32_t v[3][16]; } StackState;
 static unsigned ss_why[8];  // (why a shader kept its stacks: the progress line)
-static bool static_stacks_resolve(const uint64_t *code, size_t end, const uint8_t *label, uint32_t *pop_target) {
+static const BrxTab *brx_tab(const BrxTab *brx, int nbrx, size_t i) {
+    for (int k = 0; k < nbrx; k++) if (brx[k].at == i) return &brx[k];
+    return NULL;
+}
+static bool static_stacks_resolve(const uint64_t *code, size_t end, const uint8_t *label, uint32_t *pop_target,
+                                  const BrxTab *brx, int nbrx) {
     int why = 0;  // 1 jump to no label, 2 paths disagree, 3 overflow, 4 call / indirect, 5 pop of empty, 6 pop target differs
     StackState *at = calloc(end + 1, sizeof *at);
     uint8_t *seen = calloc(end + 1, 1);
@@ -2477,6 +2517,12 @@ static bool static_stacks_resolve(const uint64_t *code, size_t end, const uint8_
             }
             if (pr == PT && prn) continue;                         // @!PT: never runs
             bool guarded = !(pr == PT && !prn);
+            const BrxTab *bt = top12 == 0xe250000000000000ull && !(w & 0x20) ? brx_tab(brx, nbrx, i) : NULL;
+            if (bt) {                                              // BRX with a known table: each target
+                for (int k = 0; k < bt->n && ok; k++) ENQ(bt->t[k] / 8, &s);
+                if (!guarded) break;
+                continue;
+            }
             if (top12 == 0xe200000000000000ull || top12 == 0xe210000000000000ull || top12 == 0xe250000000000000ull ||
                 top12 == 0xe260000000000000ull || top12 == 0xe270000000000000ull || top12 == 0xe280000000000000ull ||
                 top12 == 0xe310000000000000ull || top12 == 0xe320000000000000ull) { ok = false; why = 4; break; }  // JMP JMX BRX CAL PRET PLONGJMP LONGJMP RET
@@ -2516,23 +2562,60 @@ static bool static_stacks_resolve(const uint64_t *code, size_t end, const uint8_
 // opens an `if (!cond)` up to its target. Where Ryujinx would need a goto (its GotoElimination pass, not ported) the
 // shader keeps the state machine. EXIT is `break` out of the outer do { } while (false), through the loops via
 // exit_now. The instructions are emitted in the same order as by the state machine (same side effects).
+//
+// A BRX with a known table (c->brx) becomes blocks without instructions that branch on brx_t<k>, the target it
+// computed (0 while no dispatch is under way). All targets after the BRX (`ahead`, the usual compiled switch): the
+// BRX's block EXITs when the value is none of the targets (brx_t<k> = 1; the state machine's `default:`), then goes
+// to a test placed just before the first target; the test before each target but the last skips on to the next one
+// while brx_t<k> is past it, and each target's block clears brx_t<k>. So every case is an if in program order, and a
+// case that falls into the next one still does (the test sees 0). A table that names an earlier block: a chain of
+// compares after the BRX (`brx_t<k> == target` branches there; none: EXIT). The chain makes crossing gotos, which
+// GotoElimination nests in a loop that keeps every register live around it; the tests don't.
 enum { TERM_NONE, TERM_BRANCH, TERM_EXIT };
+enum { BRX_NONE, BRX_EQ, BRX_PAST, BRX_NOT_FOUND, BRX_ANY };  // SBlock.brx_test: brx_t<k> == / > cmp, == 1, != 0
 typedef struct {
-    size_t first, last;   // instruction words [first, last]
+    size_t first, last;   // instruction words [first, last] (a BRX's tests: none, SIZE_MAX)
     int term;             // TERM_*
     int pr; bool prn;     // its predicate (PT, false: unconditional)
     int target;           // TERM_BRANCH: block index
+    uint8_t brx_test;     // BRX_*: the condition is that test of brx_t<brx_k> (BRX_EQ: and the predicate)
+    bool vtarget;         // target is a block index already (a test's next test)
+    int brx_k;
+    uint32_t brx_cmp;
 } SBlock;
+static bool sb_always(const SBlock *b) { return b->pr == PT && !b->prn && !b->brx_test; }  // (an unconditional end)
+static SBlock sb_test(int test, int k, uint32_t cmp, int term) {
+    SBlock v = {SIZE_MAX, SIZE_MAX, term, PT, false, -1, (uint8_t)test, false, k, cmp};
+    return v;
+}
 // The blocks of a shader whose stacks were resolved (pop_target): false if one can't be described here.
 static bool struct_blocks(const uint64_t *code, size_t end, const uint8_t *label, const uint32_t *pop_target,
-                          SBlock **out, int *nout, int **blk_of_out) {
+                          const BrxTab *brx, int nbrx, SBlock **out, int *nout, int **blk_of_out) {
     int *blk_of = malloc((end + 1) * sizeof *blk_of);
-    SBlock *b = calloc(end + 2, sizeof *b);
+    size_t extra = 0;
+    for (int k = 0; k < nbrx; k++) extra += (size_t)brx[k].n + 2;
+    SBlock *b = calloc(end + 2 + extra, sizeof *b);
+    int *pend = malloc((nbrx + 1) * sizeof *pend);  // per `ahead` BRX: the block whose branch goes to its next test
+    for (int k = 0; k < nbrx; k++) pend[k] = -1;
     int nb = 0;
     bool cut = true;  // the next instruction starts a block
     for (size_t i = 0; i < end; i++) {
         if (i % 4 == 0) { blk_of[i] = -1; continue; }
-        if (cut || label[i]) { if (nb) b[nb - 1].last = (i - 1) % 4 ? i - 1 : i - 2;  /* (its last instruction, not a scheduling word) */ b[nb] = (SBlock){i, i, TERM_NONE, PT, false, -1}; nb++; cut = false; }
+        if (cut || label[i]) {
+            if (nb && b[nb - 1].first != SIZE_MAX) b[nb - 1].last = (i - 1) % 4 ? i - 1 : i - 2;  // (its last instruction, not a scheduling word)
+            for (int k = 0; k < nbrx; k++) {  // the tests before a target of an `ahead` BRX
+                if (!brx[k].ahead || pend[k] < 0) continue;
+                int j = 0;
+                while (j < brx[k].n && brx[k].t[j] != i * 8) j++;
+                if (j == brx[k].n) continue;
+                b[pend[k]].target = nb;
+                pend[k] = -1;
+                if (j + 1 < brx[k].n) { pend[k] = nb; b[nb] = sb_test(BRX_PAST, k, brx[k].t[j], TERM_BRANCH); b[nb].vtarget = true; nb++; }
+            }
+            b[nb] = (SBlock){i, i, TERM_NONE, PT, false, -1, BRX_NONE, false, -1, 0};
+            nb++;
+            cut = false;
+        }
         blk_of[i] = nb - 1;
         uint64_t w = code[i], top12 = w & 0xfff0000000000000ull;
         int pr = (int)bits(w, 16, 3);
@@ -2541,21 +2624,46 @@ static bool struct_blocks(const uint64_t *code, size_t end, const uint8_t *label
         bool is_pop = (w & 0xfff8000000000000ull) == 0xf0f8000000000000ull || top12 == 0xe340000000000000ull ||
                       top12 == 0xe350000000000000ull;
         bool is_exit = top12 == 0xe300000000000000ull;
-        if (!is_bra && !is_pop && !is_exit) continue;
+        bool is_brx = top12 == 0xe250000000000000ull;
+        if (!is_bra && !is_pop && !is_exit && !is_brx) continue;
         if (pr == PT && prn) continue;  // never runs
         SBlock *k = &b[nb - 1];
+        if (is_brx) {  // the block ends at the BRX; then its tests
+            const BrxTab *t = (w & 0x20) ? NULL : brx_tab(brx, nbrx, i);
+            if (!t) { free(b); free(blk_of); free(pend); return false; }  // (no table: even unreachable, it can't be placed)
+            int kk = (int)(t - brx);
+            k->last = i;
+            if (t->ahead) {
+                k->term = TERM_EXIT; k->brx_test = BRX_NOT_FOUND; k->brx_k = kk;
+                pend[kk] = nb;
+                b[nb] = sb_test(BRX_ANY, kk, 0, TERM_BRANCH); b[nb].vtarget = true; nb++;
+            } else {
+                for (int j = 0; j < t->n; j++) {
+                    if (j) { b[nb] = sb_test(BRX_NONE, kk, 0, TERM_NONE); k = &b[nb++]; }
+                    k->pr = pr; k->prn = prn; k->term = TERM_BRANCH; k->target = (int)(t->t[j] / 8);
+                    k->brx_test = BRX_EQ; k->brx_k = kk; k->brx_cmp = t->t[j];
+                }
+                b[nb] = sb_test(BRX_NONE, kk, 0, TERM_EXIT); b[nb].pr = pr; b[nb].prn = prn; nb++;
+            }
+            cut = true;
+            continue;
+        }
         k->pr = pr; k->prn = prn;
         k->term = is_exit ? TERM_EXIT : TERM_BRANCH;
         k->target = is_bra ? (int)(norm_target((int64_t)(i * 8) + 8 + sbits(w, 20, 24)) / 8) : is_pop ? (int)(pop_target[i] / 8) : -1;
         cut = true;
     }
-    if (nb) b[nb - 1].last = (end - 1) % 4 ? end - 1 : end - 2;
-    for (int k = 0; k < nb; k++) {  // targets: word -> block (a target starts a block: it is a label)
-        if (b[k].term != TERM_BRANCH) continue;
+    if (nb && b[nb - 1].first != SIZE_MAX) b[nb - 1].last = (end - 1) % 4 ? end - 1 : end - 2;
+    bool ok = true;
+    for (int k = 0; k < nbrx; k++) if (pend[k] >= 0) ok = false;  // (a target never reached: not placed)
+    free(pend);
+    for (int k = 0; k < nb && ok; k++) {  // targets: word -> block (a target starts a block: it is a label)
+        if (b[k].term != TERM_BRANCH || b[k].vtarget) continue;
         int w = b[k].target;
-        if (w < 0 || (size_t)w >= end || blk_of[w] < 0 || b[blk_of[w]].first != (size_t)w) { free(b); free(blk_of); return false; }
-        b[k].target = blk_of[w];
+        if (w < 0 || (size_t)w >= end || blk_of[w] < 0 || b[blk_of[w]].first != (size_t)w) ok = false;
+        else b[k].target = blk_of[w];
     }
+    if (!ok) { free(b); free(blk_of); return false; }
     *out = b; *nout = nb; *blk_of_out = blk_of;
     return true;
 }
@@ -2654,7 +2762,16 @@ static bool c_contains(const char *cond, const char *op, const char *x) {  // Co
 }
 static void c_combine(char **cond, const char *op, const char *x) { char *n = a_fmt("(%s) %s (%s)", *cond, op, x); free(*cond); *cond = n; }
 
-static const char *a_pred(Ast *a, const SBlock *b, bool negate, char *buf) {  // the branch's condition
+static const char *a_pred(Ast *a, const SBlock *b, bool negate, char *buf) {  // the branch's condition (buf: 64)
+    switch (b->brx_test) {
+    case BRX_EQ:
+        if (b->pr == PT && !b->prn) snprintf(buf, 64, "brx_t%d %s 0x%xu", b->brx_k, negate ? "!=" : "==", b->brx_cmp);
+        else snprintf(buf, 64, "%s(%s && brx_t%d == 0x%xu)", negate ? "!" : "", pred(a->c, b->pr, b->prn, alloca(16)), b->brx_k, b->brx_cmp);
+        return buf;
+    case BRX_PAST: snprintf(buf, 64, negate ? "brx_t%d <= 0x%xu" : "brx_t%d > 0x%xu", b->brx_k, b->brx_cmp); return buf;
+    case BRX_NOT_FOUND: snprintf(buf, 64, "brx_t%d %s 1u", b->brx_k, negate ? "!=" : "=="); return buf;
+    case BRX_ANY: snprintf(buf, 64, "brx_t%d %s 0u", b->brx_k, negate ? "==" : "!="); return buf;
+    }
     if (b->pr == PT && !b->prn) return negate ? "false" : "true";
     snprintf(buf, 32, "%s", pred(a->c, b->pr, negate ? !b->prn : b->prn, alloca(16)));
     return buf;
@@ -2697,7 +2814,7 @@ static void a_enter(Ast *a, int bi) {
         }
         if (p < 0) break;
         if (p < a->cur_end && !done) {
-            char cb[32];
+            char cb[64];
             ANode *dw = a_new(a, A_DOWHILE); dw->cond = a_strdup(a_pred(a, &a->b[p], false, cb));
             a_push(a, dw, p + 1);
             a->loop_tail[p] = 1;
@@ -2711,8 +2828,8 @@ static void a_enter(Ast *a, int bi) {
 }
 static void a_leave(Ast *a, int bi) {
     SBlock *b = &a->b[bi];
-    char cb[32];
-    if (b->term == TERM_EXIT) { a_goto(a, a->nb, a_pred(a, b, false, cb), false, b->pr == PT && !b->prn); return; }
+    char cb[64];
+    if (b->term == TERM_EXIT) { a_goto(a, a->nb, a_pred(a, b, false, cb), false, sb_always(b)); return; }
     if (b->term != TERM_BRANCH) return;
     int tgt = b->target;
     bool in_range = tgt < a->cur_end || (tgt == a->cur_end && tgt < a->loop_end);
@@ -2720,7 +2837,7 @@ static void a_leave(Ast *a, int bi) {
     if (in_range && !is_loop) {
         ANode *ifb = a_new(a, A_IF); ifb->cond = a_strdup(a_pred(a, b, true, cb));
         a_push(a, ifb, tgt);
-    } else if (!a->loop_tail[bi]) a_goto(a, tgt, a_pred(a, b, false, cb), is_loop, b->pr == PT && !b->prn);
+    } else if (!a->loop_tail[bi]) a_goto(a, tgt, a_pred(a, b, false, cb), is_loop, sb_always(b));
 }
 
 // ---- GotoElimination
@@ -2890,7 +3007,7 @@ static Ast *ast_build(Ctx *c, SBlock *b, int nb) {
     a->text = calloc(nb + 1, sizeof *a->text);
     for (int k = 0; k < nb; k++) {
         int succ[2], ns = 0;
-        bool falls = !(b[k].term != TERM_NONE && b[k].pr == PT && !b[k].prn);
+        bool falls = !(b[k].term != TERM_NONE && sb_always(&b[k]));
         if (falls && k + 1 < nb) succ[ns++] = k + 1;
         if (b[k].term == TERM_BRANCH) succ[ns++] = b[k].target;
         for (int j = 0; j < ns; j++) {
@@ -2988,7 +3105,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         }
         if ((w & 0xfff0000000000000ull) == 0xe250000000000000ull) {  // BRX: its jump table's targets, else any instruction
             any_branch = true;
-            if (!c->glsl || !brx_table_labels(code, i, end, blob, max_size, label)) memset(label, 1, end);
+            if (!c->glsl || !brx_table_labels(c, code, i, end, blob, max_size, label)) memset(label, 1, end);
         }
         if ((w & 0xfff8000000000000ull) == 0xf0f8000000000000ull || (w & 0xfff0000000000000ull) == 0xe340000000000000ull ||
             (w & 0xfff0000000000000ull) == 0xe350000000000000ull)
@@ -3000,7 +3117,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         if (ss < 0) { const char *e = getenv("LARECOMP_VK_STATIC_STACKS"); ss = e ? atoi(e) != 0 : maxwell_glsl_structured; }
         if (ss) {
             c->pop_target = calloc(end + 1, sizeof *c->pop_target);
-            c->static_stacks = static_stacks_resolve((const uint64_t *)code, end, label, c->pop_target);
+            c->static_stacks = static_stacks_resolve((const uint64_t *)code, end, label, c->pop_target, c->brx, c->nbrx);
             static unsigned ss_yes, ss_no;  // (a progress line now and then: how many shaders lost their stacks)
             if (c->static_stacks) ss_yes++; else ss_no++;
             if ((ss_yes + ss_no) % 500 == 0)
@@ -3011,7 +3128,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     if (c->static_stacks) {
         static int st = -1;
         if (st < 0) { const char *e = getenv("LARECOMP_VK_STRUCTURE"); st = e ? atoi(e) != 0 : maxwell_glsl_structured; }
-        if (st && struct_blocks((const uint64_t *)code, end, label, c->pop_target, &sblk, &nsblk, &blk_of)) {
+        if (st && struct_blocks((const uint64_t *)code, end, label, c->pop_target, c->brx, c->nbrx, &sblk, &nsblk, &blk_of)) {
             plan = ast_build(c, sblk, nsblk);
             c->structured = plan != NULL;
             if (plan) c->struct_vars = plan->nvars;
@@ -3031,7 +3148,12 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         uint32_t pc = (uint32_t)(i * 8);
         if (c->structured) {
             int bi = blk_of[i];
-            if (sblk[bi].first == i) { saved_body = c->body; c->body = (Str){0}; }  // (the block's GLSL on its own)
+            if (sblk[bi].first == i) {  // (the block's GLSL on its own; a target of an `ahead` BRX: its dispatch is over)
+                saved_body = c->body; c->body = (Str){0};
+                for (int k = 0; k < c->nbrx; k++)
+                    for (int j = 0; j < c->brx[k].n && c->brx[k].ahead; j++)
+                        if (c->brx[k].t[j] == pc) { sp(&c->body, "    brx_t%d = 0u;\n", k); c->uses_brx_t = true; }
+            }
             uint64_t w_ = ((const uint64_t *)code)[i], t12_ = w_ & 0xfff0000000000000ull;
             bool flow_ = (w_ & 0xfff0000000000020ull) == 0xe240000000000000ull || t12_ == 0xe300000000000000ull ||
                          (w_ & 0xfff8000000000000ull) == 0xf0f8000000000000ull || t12_ == 0xe340000000000000ull ||
@@ -3067,6 +3189,10 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     ast_free(plan); free(sblk); free(blk_of);
     free(c->pop_target);
     c->pop_target = NULL;
+    c->brx_vars = c->nbrx;
+    free(c->brx);
+    c->brx = NULL;
+    c->nbrx = 0;
     // (MSL: more textures than sampler slots take a slot table, at a buffer index the vertex stage's streams use)
     if (!c->glsl && stage == STAGE_VERTEX && info->ntex > MSL_MAX_SAMPLERS)
         fail(c, "%d textures in a vertex shader (Metal: %d samplers)", info->ntex, MSL_MAX_SAMPLERS);
