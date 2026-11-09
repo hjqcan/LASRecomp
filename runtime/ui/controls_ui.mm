@@ -347,6 +347,9 @@ extern "C" void controls_tab_draw(float scale) {
     }
     opt_toggle("360-degree movement", &g_settings.move_360, false,
                "Link walks in the exact direction of the stick instead of snapping to 8 directions.");
+    if (!g_settings.move_360) opt_disable_next();
+    opt_toggle("Hookshot aims in 8 directions", &g_settings.hookshot_8way, false,
+               "The hookshot fires straight along the nearest of 8 directions, even with 360-degree movement.");
 
     opt_section("Controller");
     opt_toggle("Rumble", &g_settings.rumble, true, "Controller vibration.");

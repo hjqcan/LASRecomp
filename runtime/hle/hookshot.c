@@ -14,6 +14,7 @@
 #include "../hle.h"
 #include "../rando.h"
 #include "../settings.h"
+#include "hookshot_snap.h"
 
 #define HOOK_TARGET 0x4000u
 
@@ -71,6 +72,29 @@ uint32_t rt_hookshot_attr(Cpu *c, uint32_t attr) {
     }
     if (rt_hookshot_anything()) attr |= HOOK_TARGET;
     return attr;
+}
+
+// x19: Link's hookshot action, about to store its firing direction (q0 = x, y, z, flat). With 360-degree movement Link
+// can face a few degrees off a straight line, which sends the hook past the target he is lined up with (#647).
+void rt_hookshot_dir(Cpu *c) {
+    const char *e = ENV("LARECOMP_HOOKSHOT_8WAY");  // test: 1 / 0 forces it
+    if (!(e ? atoi(e) != 0 : g_settings.hookshot_8way)) return;
+    float d[3];
+    memcpy(d, &c->v[0], sizeof d);
+    float x = d[0], z = d[2];
+    hookshot_snap_8way(&d[0], &d[2]);
+    memcpy(&c->v[0], d, sizeof d);
+    // Link turns to match: his rotation is a pure yaw (x y z w) held twice in his transform component, read and written
+    // like his position (+0x80 / +0xb0 in doorjump.c). Only then: anything else is not the on-foot pose this assumes.
+    uint64_t player = LD64(c->x[19] + 0x210), pc = player ? LD64(player + 0x80) : 0;
+    if (pc) {
+        float *r0 = (float *)(uintptr_t)(pc + 0x90), *r1 = (float *)(uintptr_t)(pc + 0xc0);
+        if (fabsf(r1[0]) < 1e-3f && fabsf(r1[2]) < 1e-3f) {
+            hookshot_yaw_quat(d[0], d[2], &r1[1], &r1[3]);
+            r0[1] = r1[1], r0[3] = r1[3];
+        }
+    }
+    if (ENV("LARECOMP_HOOKSHOT_LOG")) LOG("[hookshot] dir (%.3f, %.3f) -> (%.3f, %.3f)\n", x, z, d[0], d[2]);
 }
 
 // ---- test hook: LARECOMP_HOOKSHOT_TOUR=<step>;<step>...  step = <Level>:<Locator>:<x>:<z>:<script>
