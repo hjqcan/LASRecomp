@@ -135,6 +135,11 @@ extern bool maxwell_glsl_push;  // (the backend's default: c1 inlined + push con
 // whose min / max return the operand that isn't NaN and whose clamp to [0, 1] saturates NaN to 0 (Adreno, as D3D
 // requires). The backend's default (exec.c: Android); LARECOMP_VK_FAST_MINMAX=1 / =0 overrides.
 extern bool maxwell_glsl_fast_minmax;
+// (GLSL) fragment quad xor shuffles (SHFL.BFLY with lane mask 1 / 2 / 3) as the neighbour's value from fine
+// derivatives, and the lane as the pixel's place in its quad: for drivers without subgroup operations in fragment
+// shaders (Turnip on Adreno 6xx lists compute only; subgroupShuffleXor there hung the GPU). The backend's default
+// (exec.c); LARECOMP_VK_QUAD_DERIV overrides.
+extern bool maxwell_glsl_quad_deriv;
 // The stage's compiler constants (c1: the bytes after its code), set by the caller around maxwell_translate (under its
 // lock). GLSL with LARECOMP_VK_INLINE_C1=1: statically indexed c1 reads become literals (no buffer load).
 extern const uint8_t *maxwell_const_data;

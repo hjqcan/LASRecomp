@@ -1332,6 +1332,21 @@ void vk_exec_init(void) {
     const char *pe = getenv("LARECOMP_VK_PUSH_CB");
     LOG("[vk] constant-buffer push constants %s (%s)\n", (pe ? atoi(pe) != 0 : maxwell_glsl_push) ? "on" : "off",
         pe ? "LARECOMP_VK_PUSH_CB" : "default for this GPU");
+    {   // fragment quad xor shuffles through derivatives (shader.h maxwell_glsl_quad_deriv) where the driver has no subgroup
+        // operations in fragment shaders: Turnip on Adreno 6xx lists compute only, and the shaders' subgroupShuffleXor
+        // hung the GPU in Marin and Tarin's house (the lit pass behind the depth prepass; Retroid Pocket 5, Adreno 650).
+        // LARECOMP_VK_QUAD_DERIV=1 / =0 overrides.
+        VkPhysicalDeviceSubgroupProperties sgp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &sgp};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+        bool frag = (sgp.supportedStages & VK_SHADER_STAGE_FRAGMENT_BIT) && (sgp.supportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT);
+        const char *qe = getenv("LARECOMP_VK_QUAD_DERIV");
+        maxwell_glsl_quad_deriv = qe ? atoi(qe) != 0 : !frag;
+        LOG("[vk] fragment quad shuffles %s (%s; subgroup stages %#x, operations %#x)\n",
+            maxwell_glsl_quad_deriv ? "through derivatives" : "as subgroup shuffles", qe ? "LARECOMP_VK_QUAD_DERIV" :
+            frag ? "the driver has them in fragment shaders" : "the driver has no subgroups in fragment shaders",
+            sgp.supportedStages, sgp.supportedOperations);
+    }
     // fmin / fmax / saturate as the GPU's min / max / clamp (shader.h maxwell_glsl_fast_minmax) by default on Android,
     // where the fork it comes from measured it on Adreno (Turnip and Qualcomm's driver: the lit pass 1717 -> 1637
     // instructions). LARECOMP_VK_FAST_MINMAX=1 turns it on elsewhere, =0 off anywhere.

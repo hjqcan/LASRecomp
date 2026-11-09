@@ -30,6 +30,7 @@ bool maxwell_glsl_stack_vars = true;
 bool maxwell_glsl_structured;  // static stacks + structured control flow by default (exec.c: Mali, Adreno)
 bool maxwell_glsl_fast_minmax;  // the GPU's min / max / clamp for fmin / fmax / saturate (exec.c: Android)
 bool maxwell_glsl_push;  // c1 inlined + push constants by default (exec.c: Mali, Adreno)
+bool maxwell_glsl_quad_deriv;  // fragment quad xor shuffles through derivatives (exec.c: no subgroups in fragment shaders)
 const uint8_t *maxwell_const_data;
 uint32_t maxwell_const_size;
 bool maxwell_gmem_mirror;  // (shader.h)
@@ -124,6 +125,7 @@ typedef struct {
     int ipa_mul;   // its multiplier register (mode 1: the result is the "pass" value attr/w times this register)
     // GLSL (fields kept last: the MSL path's layout, including its out-of-range reg_used writes, is unchanged)
     bool glsl;               // emit Vulkan GLSL: dialect-specific constructs here, the rest via glsl_rewrite()
+    bool quad_used;          // (GLSL) a quad swap through derivatives was emitted: the qswap helpers go in the prelude
     bool uses_gmem_store;    // STG present: the gmem buffer is not readonly
     uint32_t cbuf_need[18];  // highest constant vec4 index + 1 per cbuf (array size of the GLSL block)
     // GLSL, LARECOMP_VK_STATIC_STACKS: every SYNC / BRK / CONT's target resolved at translation time
@@ -1780,6 +1782,13 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         int pd = (int)bits(w, 48, 3);
         if (c->stage == STAGE_VERTEX) {
             set_reg(c, d, R(a));  // no SIMD-group functions in vertex functions: lane-local value
+        } else if (c->glsl && maxwell_glsl_quad_deriv && c->stage == STAGE_FRAGMENT && mode == 3 && bits(w, 28, 1) &&
+                   bits(w, 20, 5) >= 1 && bits(w, 20, 5) <= 3) {  // (maxwell_glsl_quad_deriv) lane xor 1 / 2 / 3: the
+            sprintf(t, "as_u(qswap%u(as_f(%s)))", (unsigned)bits(w, 20, 5), R(a));  // neighbour from fine derivatives
+            c->quad_used = true;
+            set_reg(c, d, t);
+        } else if (c->glsl && maxwell_glsl_quad_deriv && c->stage == STAGE_FRAGMENT) {
+            set_reg(c, d, R(a));  // (no subgroups in fragment shaders here) any other shuffle: the lane's own value
         } else if (c->glsl) {  // a quad xor (lane mask < 4) is the subgroup xor within the quad
             static const char *const fn[] = {"subgroupShuffle", "subgroupShuffleUp", "subgroupShuffleDown", "subgroupShuffleXor"};
             sprintf(t, "%s(%s, uint(%s))", fn[mode], R(a), bv);
@@ -1914,6 +1923,10 @@ static void glsl_rewrite(Ctx *c, Str *o, const char *src) {
         memcpy(id, p, n);
         id[n] = 0;
         p = e;
+        if (!strcmp(id, "lane") && c->stage == STAGE_FRAGMENT && maxwell_glsl_quad_deriv) {  // (the quad lane, from the pixel)
+            sp(o, "uint((int(gl_FragCoord.x) & 1) | ((int(gl_FragCoord.y) & 1) << 1))");
+            continue;
+        }
         if (!strcmp(id, "as_type") && *p == '<') {
             const char *gt = strchr(p, '>');
             if (!gt) { fail(c, "glsl: bad as_type"); return; }
@@ -2134,6 +2147,10 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (exact < 0) exact = getenv("LARECOMP_VK_EXACT_H2F") && atoi(getenv("LARECOMP_VK_EXACT_H2F")) != 0;
     sp(&s, "%s%s", !exact && (stage == STAGE_FRAGMENT || stage == STAGE_COMPUTE) ? glsl_h2f_native : glsl_h2f_exact,
        glsl_prelude_half);
+    if (c->quad_used)  // (maxwell_glsl_quad_deriv) the quad neighbour's value: v + its fine derivative, by the pixel's side
+        sp(&s, "float qswap1(float v) { float d = dFdxFine(v); return (int(gl_FragCoord.x) & 1) == 0 ? v + d : v - d; }\n"
+               "float qswap2(float v) { float d = dFdyFine(v); return (int(gl_FragCoord.y) & 1) == 0 ? v + d : v - d; }\n"
+               "float qswap3(float v) { return qswap2(qswap1(v)); }\n");
     // (maxwell_glsl_fast_minmax) the GPU's own min / max / saturation for the code after here: Adreno, as D3D requires,
     // returns the operand that isn't NaN from min / max and saturates NaN to 0 - the Maxwell semantics the helpers above
     // spell out with NaN tests (two tests and selects each, ~40 in the lit pass's light loop: 1717 -> 1637
