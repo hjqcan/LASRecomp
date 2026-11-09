@@ -2418,6 +2418,19 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
 // valid) - the caller labels every instruction as before. LARECOMP_BRX_ALL_LABELS=1: always every instruction.
 // The targets are kept (c->brx) for static_stacks_resolve and struct_blocks; LARECOMP_VK_STRUCTURE_BRX=0: not (such a
 // program keeps its stacks and the state machine, as it did before).
+// (brx_table_labels) how many registers an instruction may write from its destination field up: the loads with a
+// size (LDG LDL LDS LDC: 64 / 128-bit; ALD: its count), 4 for any other load or texture fetch (LD, TEX..), else 1
+static int brx_dst_regs(uint64_t w) {
+    uint64_t t13 = w & 0xfff8000000000000ull;
+    if (t13 == 0xeed0000000000000ull || t13 == 0xef40000000000000ull || t13 == 0xef48000000000000ull || t13 == 0xef90000000000000ull) {
+        int size = (int)bits(w, 48, 3);
+        return size == 5 ? 2 : size >= 6 ? 4 : 1;
+    }
+    if (t13 == 0xefd8000000000000ull) return (int)bits(w, 47, 2) + 1;
+    int top = (int)(w >> 56);
+    if ((top & 0xe0) == 0x80 || (top >= 0xc0 && top <= 0xdf)) return 4;
+    return 1;
+}
 static bool brx_table_labels(Ctx *c, const uint8_t *code, size_t i, size_t end, const uint8_t *blob, size_t const_offset, uint8_t *label) {
     static int all = -1;
     if (all < 0) { const char *e = getenv("LARECOMP_BRX_ALL_LABELS"); all = e && atoi(e) != 0; }
@@ -2426,9 +2439,12 @@ static bool brx_table_labels(Ctx *c, const uint8_t *code, size_t i, size_t end, 
     int ra = (int)bits(brx, 8, 8);
     int64_t imm = sbits(brx, 20, 24);
     if (ra == RZ) return false;
-    // the instruction that set ra: an LDC from cb1 within the few before, nothing else writing ra (or a branch) between
+    // the instruction that set ra: an LDC from cb1 before it, nothing else writing ra (or a branch) between. Within 32
+    // instructions as before; further back (LA's lmem vertex shaders load the table ~80 before the BRX) a write to
+    // ra by a wider load below it (brx_dst_regs) also counts, and no branch may land in between.
     int64_t table = -1;
-    for (size_t k = i, seen = 0; k-- > 0 && seen < 32;) {
+    size_t from = 0;
+    for (size_t k = i, seen = 0; k-- > 0 && seen < 256;) {
         if (k % 4 == 0) continue;  // (scheduling words)
         seen++;
         uint64_t w = ((const uint64_t *)code)[k];
@@ -2437,9 +2453,21 @@ static bool brx_table_labels(Ctx *c, const uint8_t *code, size_t i, size_t end, 
         if ((w & 0xfff8000000000000ull) == 0xef90000000000000ull && (int)bits(w, 0, 8) == ra) {  // LDC ra, c[idx][Rx + off]
             if (bits(w, 36, 5) != 1 || bits(w, 48, 3) != 4) return false;  // (cb1, 32-bit)
             table = (int64_t)bits(w, 20, 16);
+            from = seen > 32 ? k : 0;
             break;
         }
-        if ((int)bits(w, 0, 8) == ra) return false;  // (something else may write ra: unknown)
+        int d = (int)bits(w, 0, 8);
+        if (d == ra) return false;  // (something else may write ra: unknown)
+        if (seen > 32 && d < ra && d + brx_dst_regs(w) - 1 >= ra) return false;
+    }
+    if (table < 0) return false;
+    for (size_t k = 0; from && k < end; k++) {  // (far: a branch into (LDC, BRX] would bring another ra)
+        uint64_t w = ((const uint64_t *)code)[k];
+        if (k % 4 == 0 || ((w & 0xfff0000000000020ull) != 0xe240000000000000ull && (w & 0xfff0000000000020ull) != 0xe290000000000000ull &&
+                           (w & 0xfff0000000000020ull) != 0xe2a0000000000000ull && (w & 0xfff0000000000020ull) != 0xe2b0000000000000ull))
+            continue;
+        int64_t t = norm_target((int64_t)k * 8 + 8 + sbits(w, 20, 24));
+        if (t > (int64_t)from * 8 && t <= (int64_t)i * 8) return false;
     }
     if (table < 0) return false;
     const uint8_t *tab = blob + const_offset + table;
