@@ -2524,7 +2524,10 @@ static bool brx_table_labels(Ctx *c, const uint8_t *code, size_t i, size_t end, 
 // the driver's compiler otherwise spends on them. A BRX whose jump table was read goes on to each of its targets.
 // Returns false (keep the stacks) on anything else: any other indirect jump, a call / return, a stack over- or
 // underflow, or paths that disagree.
-typedef struct { uint8_t n[3]; uint32_t v[3][16]; } StackState;
+// The three are one stack in the hardware (the CRS stack): a pop unwinds to the latest entry of its kind, and drops
+// the entries pushed after it (a BRK out of an SSY region leaves no SSY behind; CONT keeps its PCNT). The state
+// machine's separate stacks keep such an entry, which nothing pops again in compiled code.
+typedef struct { uint32_t n; uint32_t v[48]; uint8_t k[48]; } StackState;  // (no padding: compared with memcmp)
 static unsigned ss_why[8];  // (why a shader kept its stacks: the progress line)
 static const BrxTab *brx_tab(const BrxTab *brx, int nbrx, size_t i) {
     for (int k = 0; k < nbrx; k++) if (brx[k].at == i) return &brx[k];
@@ -2542,7 +2545,7 @@ static bool static_stacks_resolve(const uint64_t *code, size_t end, const uint8_
         if (e_ >= end || !label[e_]) { ok = false; why = 1; break; } \
         if (seen[e_]) { if (memcmp(&at[e_], (st), sizeof(StackState))) { ok = false; why = 2; } break; } \
         seen[e_] = 1; at[e_] = *(st); work[nwork++] = e_; } while (0)
-    StackState s0 = {{0}};
+    StackState s0 = {0};
     ENQ(1, &s0);
     while (ok && nwork) {
         size_t i = work[--nwork];
@@ -2557,8 +2560,11 @@ static bool static_stacks_resolve(const uint64_t *code, size_t end, const uint8_
             bool prn = bits(w, 19, 1);
             int k = top12 == 0xe290000000000000ull ? 0 : top12 == 0xe2a0000000000000ull ? 1 : top12 == 0xe2b0000000000000ull ? 2 : -1;
             if (k >= 0 && !(w & 0x20)) {                           // SSY / PBK / PCNT: push (never predicated)
-                if (s.n[k] >= 16) { ok = false; why = 3; break; }
-                s.v[k][s.n[k]++] = norm_target((int64_t)(i * 8) + 8 + sbits(w, 20, 24));
+                int nk = 0;
+                for (uint32_t j = 0; j < s.n; j++) nk += s.k[j] == k;
+                if (nk >= 16) { ok = false; why = 3; break; }
+                s.k[s.n] = (uint8_t)k;
+                s.v[s.n++] = norm_target((int64_t)(i * 8) + 8 + sbits(w, 20, 24));
                 continue;
             }
             if (pr == PT && prn) continue;                         // @!PT: never runs
@@ -2581,13 +2587,15 @@ static bool static_stacks_resolve(const uint64_t *code, size_t end, const uint8_
             int pk = (w & 0xfff8000000000000ull) == 0xf0f8000000000000ull ? 0 : top12 == 0xe340000000000000ull ? 1 :
                      top12 == 0xe350000000000000ull ? 2 : -1;      // SYNC / BRK / CONT
             if (pk >= 0) {
-                if (!s.n[pk]) { ok = false; why = 5; break; }
-                uint32_t tgt = s.v[pk][s.n[pk] - 1];
+                int top = (int)s.n - 1;
+                while (top >= 0 && s.k[top] != pk) top--;
+                if (top < 0) { ok = false; why = 5; break; }
+                uint32_t tgt = s.v[top];
                 if (pop_target[i] && pop_target[i] != tgt) { ok = false; why = 6; break; }
                 pop_target[i] = tgt;
                 StackState t = s;
-                if (pk != 2) t.v[pk][--t.n[pk]] = 0;               // (CONT keeps the loop's entry; a popped slot is
-                                                                   //  cleared: states are compared whole)
+                t.n = (uint32_t)(pk == 2 ? top + 1 : top);          // (CONT keeps the loop's entry; the unwound slots
+                for (uint32_t j = t.n; j < s.n; j++) { t.k[j] = 0; t.v[j] = 0; }  //  are cleared: states are compared whole)
                 ENQ(tgt / 8, &t);
                 if (!guarded) break;
                 continue;
