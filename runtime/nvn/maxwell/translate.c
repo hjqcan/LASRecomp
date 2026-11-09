@@ -2431,14 +2431,12 @@ static int brx_dst_regs(uint64_t w) {
     if ((top & 0xe0) == 0x80 || (top >= 0xc0 && top <= 0xdf)) return 4;
     return 1;
 }
-static bool brx_table_labels(Ctx *c, const uint8_t *code, size_t i, size_t end, const uint8_t *blob, size_t const_offset, uint8_t *label) {
-    static int all = -1;
-    if (all < 0) { const char *e = getenv("LARECOMP_BRX_ALL_LABELS"); all = e && atoi(e) != 0; }
-    if (all || const_offset >= 0x10000 || const_offset < 0x80) return false;  // (0x10000: no constants known)
+// (brx_table_labels) the cb1 offset of the jump table the BRX at word i reads, -1 if not that shape; *from: the LDC's
+// word when it is more than 32 instructions back (else 0)
+static int64_t brx_table_ldc(const uint8_t *code, size_t i, size_t end, size_t *from_out) {
     uint64_t brx = ((const uint64_t *)code)[i];
     int ra = (int)bits(brx, 8, 8);
-    int64_t imm = sbits(brx, 20, 24);
-    if (ra == RZ) return false;
+    if (ra == RZ) return -1;
     // the instruction that set ra: an LDC from cb1 before it, nothing else writing ra (or a branch) between. Within 32
     // instructions as before; further back (LA's lmem vertex shaders load the table ~80 before the BRX) a write to
     // ra by a wider load below it (brx_dst_regs) also counts, and no branch may land in between.
@@ -2449,32 +2447,52 @@ static bool brx_table_labels(Ctx *c, const uint8_t *code, size_t i, size_t end, 
         seen++;
         uint64_t w = ((const uint64_t *)code)[k];
         if ((w & 0xfff0000000000000ull) >= 0xe200000000000000ull && (w & 0xfff0000000000000ull) <= 0xe350000000000000ull)
-            return false;  // flow control between: not straight-line
+            return -1;  // flow control between: not straight-line
         if ((w & 0xfff8000000000000ull) == 0xef90000000000000ull && (int)bits(w, 0, 8) == ra) {  // LDC ra, c[idx][Rx + off]
-            if (bits(w, 36, 5) != 1 || bits(w, 48, 3) != 4) return false;  // (cb1, 32-bit)
+            if (bits(w, 36, 5) != 1 || bits(w, 48, 3) != 4) return -1;  // (cb1, 32-bit)
             table = (int64_t)bits(w, 20, 16);
             from = seen > 32 ? k : 0;
             break;
         }
         int d = (int)bits(w, 0, 8);
-        if (d == ra) return false;  // (something else may write ra: unknown)
-        if (seen > 32 && d < ra && d + brx_dst_regs(w) - 1 >= ra) return false;
+        if (d == ra) return -1;  // (something else may write ra: unknown)
+        if (seen > 32 && d < ra && d + brx_dst_regs(w) - 1 >= ra) return -1;
     }
-    if (table < 0) return false;
+    if (table < 0) return -1;
     for (size_t k = 0; from && k < end; k++) {  // (far: a branch into (LDC, BRX] would bring another ra)
         uint64_t w = ((const uint64_t *)code)[k];
         if (k % 4 == 0 || ((w & 0xfff0000000000020ull) != 0xe240000000000000ull && (w & 0xfff0000000000020ull) != 0xe290000000000000ull &&
                            (w & 0xfff0000000000020ull) != 0xe2a0000000000000ull && (w & 0xfff0000000000020ull) != 0xe2b0000000000000ull))
             continue;
         int64_t t = norm_target((int64_t)k * 8 + 8 + sbits(w, 20, 24));
-        if (t > (int64_t)from * 8 && t <= (int64_t)i * 8) return false;
+        if (t > (int64_t)from * 8 && t <= (int64_t)i * 8) return -1;
+    }
+    *from_out = from;
+    return table;
+}
+static bool brx_table_labels(Ctx *c, const uint8_t *code, size_t i, size_t end, const uint8_t *blob, size_t const_offset, uint8_t *label) {
+    static int all = -1;
+    if (all < 0) { const char *e = getenv("LARECOMP_BRX_ALL_LABELS"); all = e && atoi(e) != 0; }
+    if (all || const_offset >= 0x10000 || const_offset < 0x80) return false;  // (0x10000: no constants known)
+    uint64_t brx = ((const uint64_t *)code)[i];
+    int64_t imm = sbits(brx, 20, 24);
+    size_t from = 0;
+    int64_t table = brx_table_ldc(code, i, end, &from);
+    // the table ends where another BRX's table starts (compiled switches' tables sit back to back in cb1: read on,
+    // the first one's walk takes the next one's entries as its own targets, which land in another switch)
+    int64_t limit = table + 4 * 256;
+    for (size_t k = 0; table >= 0 && k < end; k++) {
+        if (k % 4 == 0 || k == i || (((const uint64_t *)code)[k] & 0xfff0000000000000ull) != 0xe250000000000000ull) continue;
+        size_t f2;
+        int64_t t2 = brx_table_ldc(code, k, end, &f2);
+        if (t2 > table && t2 < limit) limit = t2;
     }
     if (table < 0) return false;
     const uint8_t *tab = blob + const_offset + table;
     uint8_t *mark = calloc(end + 4, 1);
     BrxTab tab_ = {i, 0, {0}};
     int n = 0;
-    for (int k = 0; k < 256; k++) {
+    for (int k = 0; k < (limit - table) / 4; k++) {
         int32_t v;
         memcpy(&v, tab + 4 * k, 4);
         int64_t t = (int64_t)i * 8 + 8 + v + imm;
