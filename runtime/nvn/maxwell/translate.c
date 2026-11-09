@@ -134,6 +134,7 @@ typedef struct {
     uint32_t *pop_target;  // per instruction word: the pc a SYNC / BRK / CONT goes to
     bool ao_taps;          // the AO blur's taps follow rscale[65].y (ao_grid_fix)
     bool ao_pass;          // the AO pass: white while rscale[65].z > 0 (ao_grid_fix)
+    int lmem_words;        // the local memory array's size in words (lmem_size; MSL: always LMEM_WORDS)
 } Ctx;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
@@ -1757,19 +1758,19 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             if (size < 4) {
                 static const char *const ext[] = {"(v >> sh) & 0xFFu", "uint(int(char((v >> sh) & 0xFFu)))", "(v >> sh) & 0xFFFFu",
                                                   "uint(int(short((v >> sh) & 0xFFFFu)))"};
-                if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      uint v = lmem[(la >> 2) & %du]; uint sh = (la & 3u) * 8u; r%d = %s;\n", LMEM_WORDS - 1, d, ext[size]); }
+                if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      uint v = lmem[(la >> 2) & %du]; uint sh = (la & 3u) * 8u; r%d = %s;\n", c->lmem_words - 1, d, ext[size]); }
             } else {
                 for (int k = 0; k < nw; k++)
-                    if (d != RZ && d + k < RZ) { c->reg_used[d + k] = 1; sp(&c->body, "      r%d = lmem[((la >> 2) + %du) & %du];\n", d + k, k, LMEM_WORDS - 1); }
+                    if (d != RZ && d + k < RZ) { c->reg_used[d + k] = 1; sp(&c->body, "      r%d = lmem[((la >> 2) + %du) & %du];\n", d + k, k, c->lmem_words - 1); }
             }
         } else {
             if (size < 4) {
                 uint32_t m = size < 2 ? 0xFFu : 0xFFFFu;
                 sp(&c->body, "      uint sh = (la & 3u) * 8u; uint i = (la >> 2) & %du; lmem[i] = (lmem[i] & ~(0x%xu << sh)) | ((%s & 0x%xu) << sh);\n",
-                   LMEM_WORDS - 1, m, R(d), m);
+                   c->lmem_words - 1, m, R(d), m);
             } else {
                 for (int k = 0; k < nw; k++)
-                    sp(&c->body, "      lmem[((la >> 2) + %du) & %du] = %s;\n", k, LMEM_WORDS - 1, R(d == RZ ? RZ : d + k));
+                    sp(&c->body, "      lmem[((la >> 2) + %du) & %du] = %s;\n", k, c->lmem_words - 1, R(d == RZ ? RZ : d + k));
             }
         }
         sp(&c->body, "    }\n");
@@ -2314,7 +2315,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     for (int i = 0; i < 7; i++)
         if (c->pred_used[i]) sp(&s, "  bool p%d = false;\n", i);
     if (c->uses_cc) sp(&s, "  uint cc = 0u; bool ccz = false, ccs = false;\n");
-    if (c->uses_local) sp(&s, "  uint lmem[%d]; for (int li_ = 0; li_ < %d; li_++) lmem[li_] = 0u;\n", LMEM_WORDS, LMEM_WORDS);
+    if (c->uses_local) sp(&s, "  uint lmem[%d]; for (int li_ = 0; li_ < %d; li_++) lmem[li_] = 0u;\n", c->lmem_words, c->lmem_words);
     if (dbg) sp(&s, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
     if (c->structured) {
         for (int g = 0; g < c->struct_vars; g++) sp(&s, "  bool g%d = false;\n", g);
@@ -2907,6 +2908,38 @@ static Ast *ast_build(Ctx *c, SBlock *b, int nb) {
     return a;
 }
 
+// GLSL: the size of the local memory array (words: a power of two, at most LMEM_WORDS; the accesses wrap at it as
+// they did at LMEM_WORDS). The array is the shader's stack on drivers that keep it in memory, and stack is costly
+// there: PanVK gives each command buffer that uses a shader with a stack over 512 B its own buffer of stack x threads
+// x cores (38 MB on an RK3588 for the fixed 1 KB). The size covers every immediate address (RZ + offset). A
+// register-indexed access is bounded by the SPH's local memory size (low + high: the guest compiler's own per-thread
+// need) in graphics stages; compute (no SPH here) and a size of 0 keep LMEM_WORDS, as does a negative immediate.
+static int lmem_size(const uint64_t *code, size_t end, const uint8_t *sph) {
+    uint64_t need = 0;
+    bool indexed = false;
+    for (size_t i = 0; i < end; i++) {
+        if (i % 4 == 0) continue;
+        uint64_t w = code[i];
+        if ((w & 0xfff8000000000000ull) != 0xef40000000000000ull && (w & 0xfff8000000000000ull) != 0xef50000000000000ull) continue;
+        int size = (int)bits(w, 48, 3);
+        int64_t off = sbits(w, 20, 24);
+        if ((int)bits(w, 8, 8) != RZ) { indexed = true; continue; }
+        if (off < 0) return LMEM_WORDS;  // (wraps to a high address)
+        uint64_t e = (uint64_t)off + (size == 5 ? 8 : size >= 6 ? 16 : 4);
+        if (e > need) need = e;
+    }
+    if (indexed) {
+        uint32_t lo = 0, hi = 0;
+        if (sph) { memcpy(&lo, sph + 4, 4); memcpy(&hi, sph + 8, 4); }
+        uint64_t declared = (uint64_t)(lo & 0xFFFFFFu) + (hi & 0xFFFFFFu);  // (low + high local memory size, bytes)
+        if (!declared) return LMEM_WORDS;
+        if (declared > need) need = declared;
+    }
+    int words = 1;
+    while (words < LMEM_WORDS && (uint64_t)words * 4 < need) words *= 2;
+    return words;
+}
+
 ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, const ShaderKey *key) {
     ShaderInfo *info = calloc(1, sizeof *info);
     info->stage = stage;
@@ -2935,6 +2968,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         if (w == 0 && i > 4) break;
         end = i + 1;
     }
+    c->lmem_words = c->glsl ? lmem_size((const uint64_t *)code, end, stage == STAGE_COMPUTE ? NULL : sph) : LMEM_WORDS;
     // collect branch targets (labels)
     uint8_t *label = calloc(end + 4, 1);
     label[1] = 1;
