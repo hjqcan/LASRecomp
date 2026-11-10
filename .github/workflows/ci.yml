@@ -80,6 +80,10 @@ jobs:
         run: |
           clang -std=gnu11 -O1 tools/test_led.c -lm -o build/test-led
           build/test-led
+      - name: Hookshot 8-way aim
+        run: |
+          clang -std=gnu11 -O1 tools/test_hookshot_snap.c -lm -o build/test-hookshot-snap
+          build/test-hookshot-snap
       - name: Crash dialog (which crashes are the graphics driver's)
         run: |
           clang -std=gnu11 -O1 tools/test_crash_explain.c -o build/test-crash-explain
@@ -202,6 +206,10 @@ jobs:
         run: |
           clang -std=gnu11 -O1 tools/test_led.c -lm -o build/test-led
           build/test-led
+      - name: Hookshot 8-way aim
+        run: |
+          clang -std=gnu11 -O1 tools/test_hookshot_snap.c -lm -o build/test-hookshot-snap
+          build/test-hookshot-snap
       - name: Crash dialog (which crashes are the graphics driver's)
         run: |
           clang -std=gnu11 -O1 tools/test_crash_explain.c -o build/test-crash-explain
@@ -275,6 +283,10 @@ jobs:
         run: |
           clang -std=gnu11 -O1 tools/test_led.c -lm -o build/test-led
           build/test-led
+      - name: Hookshot 8-way aim
+        run: |
+          clang -std=gnu11 -O1 tools/test_hookshot_snap.c -lm -o build/test-hookshot-snap
+          build/test-hookshot-snap
       - name: Crash dialog (which crashes are the graphics driver's)
         run: |
           clang -std=gnu11 -O1 tools/test_crash_explain.c -o build/test-crash-explain

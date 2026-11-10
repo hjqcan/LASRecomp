@@ -276,6 +276,7 @@ void settings_load(void) {
         else if (!strcmp(key, "controller_light")) g_settings.controller_light = atoi(val) != 0;
         else if (!strcmp(key, "background_input")) g_settings.bg_input = atoi(val) != 0;
         else if (!strcmp(key, "move_360")) g_settings.move_360 = atoi(val) != 0;
+        else if (!strcmp(key, "hookshot_8way")) g_settings.hookshot_8way = atoi(val) != 0;
         else if (!strcmp(key, "blur_removal")) g_settings.blur_removal = atoi(val) != 0;
         else if (!strcmp(key, "hide_hero_icon")) g_settings.hide_hero_icon = atoi(val) != 0;
         else if (!strcmp(key, "pause_unfocused")) g_settings.pause_unfocused = atoi(val) != 0;
@@ -407,6 +408,7 @@ void settings_save(void) {
     fprintf(f, "rumble_strength = %d\n", g_settings.rumble_strength);
     fprintf(f, "controller_light = %d\n", g_settings.controller_light);
     fprintf(f, "background_input = %d\n", g_settings.bg_input);
+    fprintf(f, "hookshot_8way = %d\n", g_settings.hookshot_8way);
     fprintf(f, "move_360 = %d\nblur_removal = %d\nhide_hero_icon = %d\n", g_settings.move_360, g_settings.blur_removal,
             g_settings.hide_hero_icon);
     fprintf(f, "pause_unfocused = %d\nremember_window = %d\n", g_settings.pause_unfocused, g_settings.remember_window);
