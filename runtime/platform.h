@@ -10,6 +10,15 @@
 #elif defined(__linux__) && !defined(__ANDROID__)  // (Bionic has strlcpy and arc4random)
 #include "platform/linux_compat.h"
 #endif
+// PLAT_TOUCH: a phone or tablet - a touch screen and no desktop around the window (runtime/ui/mobile/, the
+// on-screen controls, the menus as cards in the safe area, no Quit / Fullscreen). A phone port sets it to 1 and
+// implements the plat_touch_* functions below.
+#ifdef __ANDROID__
+#define PLAT_TOUCH 1
+#endif
+#ifndef PLAT_TOUCH
+#define PLAT_TOUCH 0
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -149,6 +158,23 @@ void plat_crash_handler_install(void);  // per thread where the OS needs it (alt
 // Called by the crash handler (runtime/dispatch.c): true = fault handled (watchpoint), resume.
 bool rt_fault_watch(uint64_t fault_addr, uint64_t host_pc);
 void rt_fault_report(const char *what, uint64_t fault_addr, uint64_t host_pc, uint64_t host_lr) __attribute__((noreturn));
+
+// ---- phones and tablets (PLAT_TOUCH): what the touch layer asks of the port's platform code
+#if PLAT_TOUCH
+// A tablet: a monitor-sized screen at arm's length - the phone's enlargement of the menus isn't wanted
+bool plat_touch_tablet(void);
+// The launcher icon's shortcuts (iOS: Home Screen quick actions): a pending "Play Vanilla" / play-seed request (seed:
+// "" vanilla), taken once; the items rebuilt from the seeds in rando/ (any thread: applied on the main one)
+bool plat_touch_play_request(char *seed, size_t n);
+void plat_touch_shortcuts_sync(void);
+// A system text prompt (an alert with a text field) over the window, from any thread; its answer polled: 1 OK (out =
+// the text), -1 cancelled, 0 still up. cancel: taken down from our side (the menu closed).
+void plat_touch_prompt(const char *title, const char *hint, const char *initial, int max_len, const char *ok, const char *cancel);
+int plat_touch_prompt_poll(char *out, size_t n);
+void plat_touch_prompt_cancel(void);
+#else
+static inline bool plat_touch_tablet(void) { return false; }
+#endif
 
 #ifdef __cplusplus
 }

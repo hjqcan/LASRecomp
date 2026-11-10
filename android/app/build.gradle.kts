@@ -69,7 +69,11 @@ val prepareLasRecomp by tasks.registering {
         "DejaVuSans.ttf" to "third_party/fonts/DejaVu/DejaVuSans.ttf",
         "DejaVuSans-Bold.ttf" to "third_party/fonts/DejaVu/DejaVuSans-Bold.ttf",
         "DejaVu-LICENSE.txt" to "third_party/fonts/DejaVu/LICENSE",
-        "icon.png" to "docs/icon/icon_1024.png").mapValues { repo.resolve(it.value) }
+        "icon.png" to "docs/icon/icon_1024.png",
+        // (BSD 2-Clause: the licence text ships with the binaries)
+        "libadrenotools-LICENSE.txt" to "android/deps/out/adrenotools/LICENSE",
+        "liblinkernsbypass-LICENSE.txt" to "android/deps/out/adrenotools/lib/linkernsbypass/LICENSE",
+        "volk-LICENSE.md" to "android/deps/out/volk/LICENSE.md").mapValues { repo.resolve(it.value) }
     val libs = listOf("libSDL3.so", "libshaderc_shared.so", "libavcodec.so", "libavformat.so", "libavutil.so",
                       "libswscale.so").map { deps.resolve("lib/$it") } +
         // the game code builder's programs and libraries (android/deps/build_gen_deps.sh): Python and its launcher,

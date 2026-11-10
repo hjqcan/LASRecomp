@@ -6,6 +6,7 @@
 // this menu (one button or two together; X / Delete clears one, never the last) and the keyboard's F1 / Esc, which
 // can't be changed. Drawn in whichever ImGui context is current.
 #include <SDL3/SDL.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,11 +17,18 @@
 #include "option_rows.h"
 
 extern "C" {
+#include "../platform.h"
 #include "../input_bind.h"
 #include "../settings.h"
 int input_pad_family(void);              // runtime/hle/input.c
 SDL_JoystickID input_active_pad(void);   // runtime/hle/input.c: the controller the game reads (0: none yet)
 void input_apply_background(void);
+#if PLAT_TOUCH
+bool touch_edit_available(void);  // mobile/touch_controls.mm (the on-screen controls)
+void touch_edit_begin(void);
+void touch_layout_reset(void);
+void menu_toggle(void);  // menu.mm
+#endif
 }
 
 // ------------------------------------------------------------------ Configure inputs: what's on it
@@ -185,7 +193,7 @@ static void configure_inputs(float scale) {
                                  ImGui::IsKeyPressed(ImGuiKey_GamepadLStickLeft)))
         g_focus = FOCUS_CAT;
 
-    opt_begin("##configure", scale);
+    opt_begin("##configure", scale, true);
     opt_section("Configure inputs");
     const char *names[9];
     for (int i = 0; i < nd; i++) names[i] = devs[i].name;
@@ -200,7 +208,12 @@ static void configure_inputs(float scale) {
         bool open = opt_link(k_cat_name[c], NULL);
         if (c == g_cat) take_focus(FOCUS_CAT);
         if (nav_on_item() && g_cat != c) g_cat = c, msg[0] = 0;  // (moving down the list shows each)
-        if (open) { if (g_cat != c) msg[0] = 0; g_cat = c, g_focus = FOCUS_RIGHT; bind_capture_cancel(); }
+        if (open) {
+            if (g_cat != c) msg[0] = 0;
+            g_cat = c;
+            if (!(ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left))) g_focus = FOCUS_RIGHT;  // (a tap / click on it: no cursor)
+            bind_capture_cancel();
+        }
     }
     if (bind_is_default(dev)) opt_disable_next();
     if (opt_action("Restore default controls", "", g_dev_pad ? "Puts every controller button back to its default."
@@ -209,7 +222,7 @@ static void configure_inputs(float scale) {
         bind_reset(dev);
     }
     // (the cursor or the mouse on a row with a description: it shows on the right instead of the bindings)
-    bool desc_right = (ImGui::IsItemHovered() || nav_on_item()) && g_focus != FOCUS_RIGHT;
+    bool desc_right = !PLAT_TOUCH && (ImGui::IsItemHovered() || nav_on_item()) && g_focus != FOCUS_RIGHT;  // (phones: in its card)
     opt_split();
     if (desc_right) {
         opt_desc_text();
@@ -314,13 +327,15 @@ extern "C" void controls_tab_draw(float scale) {
 
     opt_begin("##controls", scale);
     opt_section("Inputs");
-    if (opt_link("Configure inputs", "Set the buttons and keys for the game, and the buttons that open this menu. "
-                                     "F1 and Esc always open it.")) {
+    if (opt_link("Configure inputs", PLAT_TOUCH ? "Set the buttons for the game, and the buttons that open this menu. The "
+                                                  "on-screen menu button always opens it."
+                                                : "Set the buttons and keys for the game, and the buttons that open this menu. "
+                                                  "F1 and Esc always open it.")) {
         pick_device(keyboard_pressed());
         g_sub = true, g_focus = FOCUS_DEVICE, g_in_right = false;
     }
     take_focus(FOCUS_CONFIGURE);
-    if (opt_toggle("Allow background inputs", &g_settings.bg_input, false,
+    if (!PLAT_TOUCH && opt_toggle("Allow background inputs", &g_settings.bg_input, false,
                    "Controllers keep working while another window is in front. macOS may ask for Input Monitoring "
                    "permission."))
         input_apply_background();
@@ -332,6 +347,9 @@ extern "C" void controls_tab_draw(float scale) {
     }
     opt_toggle("360-degree movement", &g_settings.move_360, false,
                "Link walks in the exact direction of the stick instead of snapping to 8 directions.");
+    if (!g_settings.move_360) opt_disable_next();
+    opt_toggle("Hookshot aims in 8 directions", &g_settings.hookshot_8way, false,
+               "The hookshot fires straight along the nearest of 8 directions, even with 360-degree movement.");
 
     opt_section("Controller");
     opt_toggle("Rumble", &g_settings.rumble, true, "Controller vibration.");
@@ -361,6 +379,43 @@ extern "C" void controls_tab_draw(float scale) {
     opt_toggle("Buttons match labels", &g_settings.face_by_label, false,
                "On Xbox and PlayStation controllers, A, B, X and Y work as printed on the controller, so the bottom "
                "button is A. Off keeps the Switch layout. Nintendo controllers aren't affected.");
+
+#if PLAT_TOUCH
+    opt_section("Touch controls");
+    {
+        static const char *const modes[] = {"Auto (no controller)", "Always", "Off"};
+        opt_choice("Show", &g_settings.touch_mode, modes, 3, 0,
+                   "On-screen buttons for the touch screen. The middle button at the top opens this menu.");
+        {
+            static const char *const which[] = {"What the game uses", "All"};
+            int v = g_settings.touch_all ? 1 : 0;
+            if (opt_choice("Buttons", &v, which, 2, 0,
+                           "What the game uses: only the buttons that do something right now - B once Link has the sword, "
+                           "R with the shield, X / Y with the items you equip. All: every button, all the time."))
+                g_settings.touch_all = v != 0;
+        }
+        {
+            static const char *const stick[] = {"Follows the thumb", "Fixed"};
+            int v = g_settings.touch_stick_fixed ? 1 : 0;
+            if (opt_choice("Stick", &v, stick, 2, 0,
+                           "Follows the thumb: the stick comes to where your thumb lands, anywhere on the lower left. "
+                           "Fixed: it stays where it is (move it in Edit touch layout) and answers to touches on it."))
+                g_settings.touch_stick_fixed = v != 0;
+        }
+        float sz = roundf(g_settings.touch_size * 100), op = roundf(g_settings.touch_opacity * 100);
+        if (opt_slider("Size", &sz, 60, 160, 5, 100, "%.0f%%", "The on-screen buttons' size.")) g_settings.touch_size = sz / 100;
+        if (opt_slider("Opacity", &op, 15, 100, 5, 60, "%.0f%%", "How see-through the on-screen buttons are.")) g_settings.touch_opacity = op / 100;
+        // the layout editor (mobile/touch_controls.mm): over the game, so only while it plays
+        if (!touch_edit_available()) opt_disable_next();
+        if (opt_action("Edit touch layout", "", "Move the on-screen buttons, change each one's size or hide it, over the game. "
+                       "Available while playing.")) {
+            touch_edit_begin();
+            menu_toggle();  // (closes this menu: the editing happens on the game's screen)
+        }
+        if (opt_action("Reset touch layout", "", "Puts every on-screen button back in its place, at its size, shown."))
+            touch_layout_reset();
+    }
+#endif
 
     opt_end();
 }

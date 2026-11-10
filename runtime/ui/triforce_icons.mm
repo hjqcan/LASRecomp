@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "imgui.h"
@@ -37,6 +38,24 @@ static ImTextureID upload(const std::vector<uint8_t> &rgba, int w, int h) {
 #else
     return (ImTextureID)vk_imgui_texture_rgba(rgba.data(), w, h);
 #endif
+}
+
+// One of the game's own UI textures by name (Game.arc: item icons...), uploaded once and kept; 0 when it isn't there.
+// The touch controls draw the items on their buttons with these (runtime/ui/mobile/touch_controls.mm).
+ImTextureID ui_game_icon(const char *name) {
+    static std::map<std::string, ImTextureID> cache;
+    auto it = cache.find(name);
+    if (it != cache.end()) return it->second;
+    int w = 0, h = 0;
+    uint8_t *src = texpatch_ui_rgba(name, &w, &h);
+    ImTextureID id = (ImTextureID)0;
+    if (src && w > 0 && h > 0) {
+        std::vector<uint8_t> v(src, src + (size_t)w * h * 4);
+        id = upload(v, w, h);
+    }
+    free(src);
+    cache.emplace(name, id);
+    return id;
 }
 
 // RGBA float image (straight alpha)

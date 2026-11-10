@@ -410,13 +410,13 @@ extern "C" void save_editor_draw(float scale) {
         (opt_pressed_back() || (opt_pressed_left() && !opt_focused_lr())))
         g_back_frame = frame, g_focus = FOCUS_SEC;
 
-    opt_begin("##save", scale);
+    opt_begin("##save", scale, true);
     opt_compact();
     for (int c = 0; c < N_SEC; c++) {
         if (!sec_shown(c)) continue;
         if (g_in_right && c == g_sec) opt_mark_next();
         bool open = opt_link(k_sec_name[c], NULL, NULL);
-        bool clicked = ImGui::IsItemClicked();
+        bool clicked = ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left);  // (the row fires on the release)
         if (c == g_sec && g_focus == FOCUS_SEC) g_focus = FOCUS_NONE, opt_focus_item();
         if ((opt_item_nav_focused() && g_sec != c) || open) g_sec = c;  // (moving down the list shows each)
         if (open && !clicked) g_focus = FOCUS_RIGHT;  // (A / Right: the cursor goes to its rows)

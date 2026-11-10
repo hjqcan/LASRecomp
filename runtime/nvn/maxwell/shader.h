@@ -77,6 +77,7 @@ typedef struct {
                             // (c0 0x110 + 16 * i vertex, 0x510 + 16 * i fragment): the slots it actually uses
     bool uses_rscale;       // reads the resolution-scale table (fragment/compute buffer 18): float4 [0] = render
                             // target scale, [1 + i] = allocation scale of texture i
+    bool uses_ao_taps;      // (fragment) reads rscale[65].y, the AO blur's tap scale, or .z, AO Off (translate.c ao_grid_fix): 66 rows
     uint32_t local_mem;     // bytes of local memory
     uint32_t num_insts;
     // (GLSL fragment, LARECOMP_VK_PUSH_CB=1) constant buffer words moved into push constants (pcw[k]: the word at byte

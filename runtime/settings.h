@@ -13,6 +13,7 @@ enum { UPSCALE_BILINEAR = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /
 #define UPSCALE_SHARP UPSCALE_FSR1
 #endif
 enum { AA_OFF = 0, AA_SMAA = 1 };
+enum { AO_SWITCH = 0, AO_HIGH = 1, AO_OFF = 2 };  // the game's ambient occlusion: the Switch's size, up to twice it (output_scale_ao), or none
 enum { PROMPTS_AUTO = 0, PROMPTS_NINTENDO = 1, PROMPTS_XBOX = 2, PROMPTS_PLAYSTATION = 3 };
 // Which face button confirms in our own menus (runtime/ui/pad_nav.mm); the game's input is never affected
 enum { MENU_CONFIRM_GAME = 0, MENU_CONFIRM_CONTROLLER = 1 };
@@ -31,6 +32,7 @@ extern const char *const g_language_endonyms[N_LANGUAGES];  // each in its own l
 
 enum { RANDO_PRESETS_MAX = 20 };  // (the Randomizer tab's own presets: settings.rando_presets)
 
+enum { AUDIO_OUT_STEREO, AUDIO_OUT_51, N_AUDIO_OUTS };
 enum { FPS_OFF, FPS_TOP_LEFT, FPS_TOP_RIGHT, FPS_BOTTOM_LEFT, FPS_BOTTOM_RIGHT, N_FPS_CORNERS };
 
 typedef struct {
@@ -41,7 +43,9 @@ typedef struct {
     int upscaler;        // UPSCALE_*: how a lower internal resolution reaches the window (MetalFX: macOS, FSR 1: Windows)
     bool upscaler_auto;  // never chosen: the default for this GPU (settings_resolve_defaults); saved as "auto"
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
+    int ao_quality;      // AO_*: the resolution of the game's ambient occlusion
     float volume;        // master volume, 1 = 100%
+    int audio_out;       // AUDIO_OUT_*: speaker layout of the game's sound (runtime/services/audio.c)
     bool reverb;         // room reverb effect
     bool movie_audio;
     bool menu_sounds;    // LAS Recomp's own menu sounds (runtime/menu_sfx.c)
@@ -54,6 +58,7 @@ typedef struct {
     bool controller_light; // the controller's light bar shows Link's health (runtime/led.h, hle/input.c)
     bool bg_input;       // controllers keep working while the window isn't in front (SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS)
     bool move_360;       // analog movement in any direction (the game snaps the stick to 8): runtime/hle/qol.c
+    bool hookshot_8way;  // the hookshot fires along the nearest of 8 directions (for 360-degree movement): runtime/hle/hookshot.c
     bool blur_removal;   // no tilt-shift blur at the top / bottom of the screen
     bool hide_hero_icon; // no Hero Mode icon on the HUD
     bool pause_unfocused; // the game stops while its window isn't in front (runtime/hle/vi.c)
@@ -102,6 +107,20 @@ typedef struct {
     int timer_pos;         // TIMER_POS_*: which bottom corner it sits in
     bool livesplit;        // drive LiveSplit (its Server component) over TCP: start, splits, game time
     char livesplit_host[64];  // host:port of the LiveSplit Server ("localhost:16834")
+    // touch screens (runtime/ui/mobile/touch_controls.mm)
+    int touch_mode;      // 0 Auto (while no controller is connected), 1 Always, 2 Off
+    bool touch_stick_fixed;  // the touch stick stays in its place (else its base comes to the thumb)
+    bool touch_all;      // every play button on screen, not only those the game uses now
+    bool touch_hide_xy_hud;  // the game's own X / Y item HUD hidden while the on-screen controls are shown
+    float touch_opacity; // 0.15 .. 1
+    float touch_size;    // 0.6 .. 1.6 (1 = the default layout)
+    // the layout editor (touch_controls.mm): per control, moved (its place: share of the screen), size (x), hidden;
+    // saved as touch_ctl_<name> = x, y, size, hidden
+#define TOUCH_NCTL 13
+    bool touch_moved[TOUCH_NCTL];
+    float touch_pos[TOUCH_NCTL][2];
+    float touch_scale[TOUCH_NCTL];
+    bool touch_hidden[TOUCH_NCTL];
     char rando_seed[128];  // active randomizer seed (rando/<name>/), empty = vanilla
     char rando_options[48];  // the Randomizer tab's New seed options: a seed ID without its random part (empty = defaults)
     // the player's own randomizer presets (rando_preset lines): "<name>|<options key>|<tracker><map letters>", "" = free
@@ -111,10 +130,13 @@ typedef struct {
 
 enum { N_ENEMY_COLOUR_MODES = 3, N_SCREEN_FILTERS = 4, N_WEATHERS = 6 };
 extern const char *const g_screen_filters[N_SCREEN_FILTERS];  // (the menu's names)
+extern const char *const g_audio_outs[N_AUDIO_OUTS];  // (the menu's names: Stereo, 5.1)
 extern const char *const g_weathers[N_WEATHERS];  // (the menu's names: Off, Rain, Snow, Storm, Blizzard, Random)
 extern const char *const g_enemy_colour_modes[N_ENEMY_COLOUR_MODES];  // (the menu's names)
 
 extern Settings g_settings;
+
+const char *touch_control_name(int i);  // the on-screen controls' ini names (touch_ctl_<name>), "" past TOUCH_NCTL
 
 void settings_load(void);
 void settings_save(void);

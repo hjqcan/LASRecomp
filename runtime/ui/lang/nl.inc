@@ -396,6 +396,8 @@
 {"Game files", "Spelbestanden"},
 {"Documents", "Documenten"},
 {"Choose this one", "Deze kiezen"},
+{"USE THIS FOLDER", "DEZE MAP GEBRUIKEN"},
+{"Open the folder, then tap this", "Open de map en tik hierop"},
 {"Updating the game", "Spel bijwerken"},
 {"Recompiling the game", "Spel hercompileren"},
 {"Setting up the game files", "Spelbestanden instellen"},

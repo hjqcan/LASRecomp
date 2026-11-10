@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <math.h>
+#ifdef __ANDROID__
+#include <stdatomic.h>
+#endif
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #elif defined(_WIN32)
@@ -27,8 +31,16 @@ static const char *const k_enemy_colour_keys[N_ENEMY_COLOUR_MODES] = {"off", "se
 const char *const g_screen_filters[N_SCREEN_FILTERS] = {LN("Off"), LN("Game Boy"), LN("Game Boy Color"),
                                                         LN("Grayscale")};
 static const char *const k_screen_filter_keys[N_SCREEN_FILTERS] = {"off", "gameboy", "gameboy_color", "grayscale"};  // (else: off)
+const char *const g_audio_outs[N_AUDIO_OUTS] = {LN("Stereo"), LN("5.1")};
+static const char *const k_audio_out_keys[N_AUDIO_OUTS] = {"stereo", "5.1"};  // (else: stereo)
 const char *const g_weathers[N_WEATHERS] = {LN("Off"), LN("Rain"), LN("Snow"), LN("Storm"), LN("Blizzard"), LN("Random")};
 static const char *const k_weather_keys[N_WEATHERS] = {"off", "rain", "snow", "storm", "blizzard", "random"};  // (else: off)
+
+// the on-screen controls' ini names (touch_ctl_<name>; runtime/ui/mobile/touch_controls.mm's order)
+const char *touch_control_name(int i) {
+    static const char *const names[TOUCH_NCTL] = {"stick", "a", "b", "x", "y", "l", "r", "zl", "zr", "plus", "minus", "menu", "start"};
+    return i >= 0 && i < TOUCH_NCTL ? names[i] : "";
+}
 
 Settings g_settings = {
     .aspect = ASPECT_UNLOCKED,
@@ -42,6 +54,8 @@ Settings g_settings = {
     .controller_light = true,
     .menu_confirm = MENU_CONFIRM_CONTROLLER,
     .show_fps = FPS_OFF,
+    .touch_opacity = 0.6f,
+    .touch_size = 1.0f,
     .inv_keys = true,
     .tracker = true,
     .tracker_filters = -1,
@@ -206,6 +220,10 @@ void settings_load(void) {
         if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
+        else if (!strcmp(key, "audio_output")) {
+            g_settings.audio_out = AUDIO_OUT_STEREO;
+            for (int i = 0; i < N_AUDIO_OUTS; i++) if (!strcmp(val, k_audio_out_keys[i])) g_settings.audio_out = i;
+        }
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
         else if (!strcmp(key, "menu_sounds")) g_settings.menu_sounds = atoi(val) != 0;
@@ -231,14 +249,34 @@ void settings_load(void) {
             else g_settings.upscaler = g_default_upscaler;
         }
         else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
+        else if (!strcmp(key, "ambient_occlusion")) g_settings.ao_quality = !strcmp(val, "high") ? AO_HIGH : !strcmp(val, "off") ? AO_OFF : AO_SWITCH;
         else if (!strcmp(key, "inv_keys")) g_settings.inv_keys = atoi(val) != 0;
         else if (!strcmp(key, "dpad_mode")) g_settings.dpad_mode = !strcmp(val, "items") ? DPAD_ITEMS : !strcmp(val, "move") ? DPAD_MOVE : DPAD_NOTHING;
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_mode = atoi(val) ? DPAD_MOVE : DPAD_NOTHING;  // (older settings: a toggle)
+        else if (!strcmp(key, "touch_controls")) g_settings.touch_mode = !strcmp(val, "always") ? 1 : !strcmp(val, "off") ? 2 : 0;
+        else if (!strcmp(key, "touch_opacity")) g_settings.touch_opacity = (float)atof(val);
+        else if (!strcmp(key, "touch_all")) g_settings.touch_all = atoi(val) != 0;
+        else if (!strcmp(key, "touch_stick_fixed")) g_settings.touch_stick_fixed = atoi(val) != 0;
+        else if (!strcmp(key, "touch_hide_xy_hud")) g_settings.touch_hide_xy_hud = atoi(val) != 0;
+        else if (!strcmp(key, "touch_size")) g_settings.touch_size = (float)atof(val);
+        else if (!strncmp(key, "touch_ctl_", 10)) {  // (the layout editor: x, y, size, hidden)
+            for (int i = 0; i < TOUCH_NCTL; i++) {
+                if (strcmp(key + 10, touch_control_name(i))) continue;
+                float x = -1, y = -1, s = 1;
+                int hid = 0;
+                if (sscanf(val, "%f , %f , %f , %d", &x, &y, &s, &hid) >= 3) {
+                    g_settings.touch_moved[i] = x >= 0 && y >= 0;
+                    g_settings.touch_pos[i][0] = x, g_settings.touch_pos[i][1] = y;
+                    g_settings.touch_scale[i] = s, g_settings.touch_hidden[i] = hid != 0;
+                }
+            }
+        }
         else if (!strcmp(key, "rumble")) g_settings.rumble = atoi(val) != 0;
         else if (!strcmp(key, "rumble_strength")) g_settings.rumble_strength = atoi(val);
         else if (!strcmp(key, "controller_light")) g_settings.controller_light = atoi(val) != 0;
         else if (!strcmp(key, "background_input")) g_settings.bg_input = atoi(val) != 0;
         else if (!strcmp(key, "move_360")) g_settings.move_360 = atoi(val) != 0;
+        else if (!strcmp(key, "hookshot_8way")) g_settings.hookshot_8way = atoi(val) != 0;
         else if (!strcmp(key, "blur_removal")) g_settings.blur_removal = atoi(val) != 0;
         else if (!strcmp(key, "hide_hero_icon")) g_settings.hide_hero_icon = atoi(val) != 0;
         else if (!strcmp(key, "pause_unfocused")) g_settings.pause_unfocused = atoi(val) != 0;
@@ -316,12 +354,25 @@ void settings_load(void) {
 }
 
 void settings_save(void) {
+#ifdef __ANDROID__
+    // Written to larecomp.ini.tmp, then put in its place: a phone ends apps in the background at any moment (the app
+    // saves then too: vulkan/device.c), and a file cut short there lost every setting. One writer at a time. (From
+    // Nycolazs's LASRecomp-Android-Plus via mamcjr's LASRecompAndroid, MIT.)
+    static atomic_flag lock = ATOMIC_FLAG_INIT;
+    char tmp[1024];
+    snprintf(tmp, sizeof tmp, "%s.tmp", SETTINGS_FILE);
+    while (atomic_flag_test_and_set(&lock)) {}
+    FILE *f = fopen(tmp, "w");
+    if (!f) { LOG("[settings] cannot write %s\n", tmp); atomic_flag_clear(&lock); return; }
+#else
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f) { LOG("[settings] cannot write %s\n", SETTINGS_FILE); return; }
+#endif
     fprintf(f, "# LAS Recomp settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "aspect = %s\n", g_settings.aspect == ASPECT_ORIGINAL ? "original" : "unlocked");
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
     fprintf(f, "volume = %.2f\n", g_settings.volume);
+    fprintf(f, "audio_output = %s\n", k_audio_out_keys[g_settings.audio_out == AUDIO_OUT_51]);
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "menu_sounds = %d\n", g_settings.menu_sounds);
@@ -337,13 +388,27 @@ void settings_save(void) {
     fprintf(f, "upscaler = %s\n", g_settings.upscaler_auto ? "auto" : g_settings.upscaler == UPSCALE_METALFX ? "metalfx" :
                                    g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
+    fprintf(f, "ambient_occlusion = %s\n", g_settings.ao_quality == AO_HIGH ? "high" : g_settings.ao_quality == AO_OFF ? "off" : "switch");
     fprintf(f, "resolution = %s\n", g_settings.res_auto ? "auto" : res_name(g_settings.res_mode));
     fprintf(f, "inv_keys = %d\n", g_settings.inv_keys);
     fprintf(f, "dpad_mode = %s\n", g_settings.dpad_mode == DPAD_ITEMS ? "items" : g_settings.dpad_mode == DPAD_MOVE ? "move" : "nothing");
+    fprintf(f, "touch_controls = %s\n", g_settings.touch_mode == 1 ? "always" : g_settings.touch_mode == 2 ? "off" : "auto");
+    fprintf(f, "touch_opacity = %.2f\n", g_settings.touch_opacity);
+    fprintf(f, "touch_all = %d\ntouch_stick_fixed = %d\ntouch_hide_xy_hud = %d\n", g_settings.touch_all, g_settings.touch_stick_fixed,
+            g_settings.touch_hide_xy_hud);
+    fprintf(f, "touch_size = %.2f\n", g_settings.touch_size);
+    {
+        for (int i = 0; i < TOUCH_NCTL; i++)
+            if (g_settings.touch_moved[i] || g_settings.touch_hidden[i] || (g_settings.touch_scale[i] > 0.1f && fabsf(g_settings.touch_scale[i] - 1) > 0.01f))
+                fprintf(f, "touch_ctl_%s = %.4f, %.4f, %.2f, %d\n", touch_control_name(i), g_settings.touch_moved[i] ? g_settings.touch_pos[i][0] : -1,
+                        g_settings.touch_moved[i] ? g_settings.touch_pos[i][1] : -1, g_settings.touch_scale[i] > 0.1f ? g_settings.touch_scale[i] : 1,
+                        g_settings.touch_hidden[i]);
+    }
     fprintf(f, "rumble = %d\n", g_settings.rumble);
     fprintf(f, "rumble_strength = %d\n", g_settings.rumble_strength);
     fprintf(f, "controller_light = %d\n", g_settings.controller_light);
     fprintf(f, "background_input = %d\n", g_settings.bg_input);
+    fprintf(f, "hookshot_8way = %d\n", g_settings.hookshot_8way);
     fprintf(f, "move_360 = %d\nblur_removal = %d\nhide_hero_icon = %d\n", g_settings.move_360, g_settings.blur_removal,
             g_settings.hide_hero_icon);
     fprintf(f, "pause_unfocused = %d\nremember_window = %d\n", g_settings.pause_unfocused, g_settings.remember_window);
@@ -394,5 +459,10 @@ void settings_save(void) {
     if (g_settings.rando_options[0]) fprintf(f, "rando_options = %s\n", g_settings.rando_options);
     for (int i = 0; i < RANDO_PRESETS_MAX; i++)
         if (g_settings.rando_presets[i][0]) fprintf(f, "rando_preset = %s\n", g_settings.rando_presets[i]);
+#ifdef __ANDROID__
+    if (fclose(f) != 0 || rename(tmp, SETTINGS_FILE) != 0) LOG("[settings] cannot write %s\n", SETTINGS_FILE);
+    atomic_flag_clear(&lock);
+#else
     fclose(f);
+#endif
 }

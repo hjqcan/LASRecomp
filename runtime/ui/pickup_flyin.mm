@@ -173,6 +173,8 @@ static void image(ImDrawList *dl, int which, ImVec2 p, float s, ImU32 tint) {
     dl->AddImage(ic.id, q, ImVec2(q.x + iw, q.y + ih), ic.uv0, ic.uv1, tint);
 }
 
+extern "C" float hud_corners_left(void);  // (phones: the HUD at the screen corners, runtime/hle/hud_corners.c)
+
 extern "C" void pickup_flyin_draw(ImVec2 display, ImFont *font, float scale) {
     if (!g_card.on || inventory_items_page_shown()) return;
     load_icons();
@@ -211,7 +213,7 @@ extern "C" void pickup_flyin_draw(ImVec2 display, ImFont *font, float scale) {
     float h = fmaxf(icon, texth) + 2 * pad, w = pad + icon + gap + textw + pad * 1.4f;
     // the HUD's 16:9 box: the card's resting place is its left edge, below the hearts (3 rows at 20 hearts)
     float bw = fminf(display.x, display.y * 16 / 9), bx = (display.x - bw) * 0.5f;
-    float rest = bx + 28 * scale, x = -w - 8 * scale + (rest + w + 8 * scale) * e;
+    float rest = bx - hud_corners_left() * bw / 1280 + 28 * scale, x = -w - 8 * scale + (rest + w + 8 * scale) * e;
     float y = display.y * 0.215f;
     ImDrawList *dl = ImGui::GetBackgroundDrawList();
     ImVec2 a(roundf(x), roundf(y)), z(roundf(x + w), roundf(y + h));

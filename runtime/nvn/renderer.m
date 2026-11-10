@@ -20,6 +20,7 @@
 #include "recolour.h"
 #include "slowframe.h"
 #include "weather.h"
+#include "../settings.h"
 
 static id<MTLDevice> dev;
 static id<MTLCommandBuffer> cmdbuf;
@@ -2296,6 +2297,8 @@ static void bind_textures(int stage, ShaderInfo *si) {
                 extern int texpatch_heart_kind(int id);
                 extern bool texpatch_is_item_cursor(int id);
                 int id = renderer_texpatch_of(e->tex);
+                extern void texpatch_note_draw(int id);
+                texpatch_note_draw(id);
                 if (!draw_bottle) draw_bottle = texpatch_bottle_kind(id);
                 if (texpatch_bottle_kind(id) == 1) {  // the Hint Sheet: the dungeon map's icon in place (hint_sheet.c)
                     extern bool hint_sheet_icon_draw(const float *ui, uint32_t ui_size);
@@ -4515,6 +4518,8 @@ static void draw_one(CmdRec *r, bool indexed) {
     extern bool pets_hide_item_cursor(void);  // (the cursor is on the companion card: runtime/hle/pets.c)
     if (draw_item_cursor && pets_hide_item_cursor()) { stat_skipped++; return; }
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
+    const void *hud_u = NULL;  // (runtime/hle/hud_corners.c: the window-wide uniforms of a UI draw)
+    float hud_k = 1, hud_ky = 1;
     if (fabsf(pass_sx - pass_sy) > 0.01f * pass_sy && st.rt.ncolor && renderer_texture_presented(st.rt.color[0])) {
         // Draws into the swapchain image: draws that sample the full-size reshaped scene (the final
         // composite, blurred menu backgrounds) and untextured full-screen fades fill the window; everything
@@ -4578,22 +4583,51 @@ static void draw_one(CmdRec *r, bool indexed) {
             vp_ox = (pw - st.rt.color[0]->width * u) * 0.5f;
             vp_oy = (ph - st.rt.color[0]->height * u) * 0.5f;
         }
+
+        // (phones: the HUD at the screen corners, runtime/hle/hud_corners.c) UI in the box gets the window-wide viewport
+        // and rescaled uniforms; a scissor covering the target stays open for the bars
+        if (!composite && st.ubuf[0][0].addr) {
+            int pw_, ph_;
+            pass_size(&pw_, &ph_);
+            hud_k = (float)pw_ / (st.rt.color[0]->width * vp_sx), hud_ky = (float)ph_ / (st.rt.color[0]->height * vp_sy);
+            extern const void *hud_corners_ubo(const float *u, uint64_t size, float k, float ky);
+            hud_u = hud_corners_ubo((const float *)(uintptr_t)st.ubuf[0][0].addr, st.ubuf[0][0].size, hud_k, hud_ky);
+        }
     }
     {   // camera-attached effects sized for 16:9 are widened with the view (runtime/hle/widescreen.c)
         extern float widescreen_effect_stretch(uint64_t fs_hash);
-        float k = widescreen_effect_stretch(g_cur_fs_hash);
+        float k = hud_u ? hud_k : widescreen_effect_stretch(g_cur_fs_hash);
         double vx = vp[0] * vp_sx + vp_ox, vw = vp[2] * vp_sx;
         if (k > 1.0f) { vx -= vw * (k - 1) / 2; vw *= k; }
-        E_viewport((MTLViewport){vx, vp[1] * vp_sy + vp_oy, vw, vp[3] * vp_sy, zn, zf});
+        double vy = vp[1] * vp_sy + vp_oy, vh = vp[3] * vp_sy;
+        if (hud_u && hud_ky > 1) { vy -= vh * (hud_ky - 1) / 2; vh *= hud_ky; }
+        E_viewport((MTLViewport){vx, vy, vw, vh, zn, zf});
+    }
+    int32_t hud_sc[4];
+    bool hud_open = hud_u && st.scissor[0][0] <= 0 && st.scissor[0][0] + st.scissor[0][2] >= (int32_t)st.rt.color[0]->width &&
+                    st.scissor[0][1] <= 0 && st.scissor[0][1] + st.scissor[0][3] >= (int32_t)st.rt.color[0]->height;
+    if (hud_open) {
+        memcpy(hud_sc, st.scissor[0], sizeof hud_sc);
+        st.scissor[0][0] = st.scissor[0][1] = -16384, st.scissor[0][2] = st.scissor[0][3] = 65536;
     }
     apply_scissor();
+    if (hud_open) memcpy(st.scissor[0], hud_sc, sizeof hud_sc);
+    if (hud_u) {  // (the uniforms were bound before the decision: slot 0 again, from the copy)
+        uint64_t hud_size = pr->vi->cbuf_size[cbuf_base] && pr->vi->cbuf_size[cbuf_base] < st.ubuf[0][0].size ? pr->vi->cbuf_size[cbuf_base] : st.ubuf[0][0].size;
+        E_cbuf(0, ring, ring_alloc(hud_u, hud_size), cbuf_base, -1, hud_size);
+    }
     if (pr->fi->uses_rscale) {  // [0] = render target scale, [1 + i] = scale of texture i
         float rs[66][4] = {{vp_sx, vp_sy, vp_ox, vp_oy}};  // [1 + i] = scale x, y, content part x, y of texture i
         for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
             rs[1 + i][0] = tex_sc[1][i][0]; rs[1 + i][1] = tex_sc[1][i][1]; rs[1 + i][2] = tex_fr[1][i][0]; rs[1 + i][3] = tex_fr[1][i][1];
         }
         if (fkey.flip_x) rs[65][0] = (float)st.rt.color[0]->width;  // (mirror mode: the composite's width, guest pixels)
-        E_bytes(1, rs, (NSUInteger)(fkey.flip_x ? 66 : 1 + pr->fi->ntex) * 16, RSCALE_BUFFER_INDEX);
+        extern float renderer_ao_blur_scale(NvnTexture *t);
+        if (pr->fi->uses_ao_taps) {  // (the AO's blurs; the AO pass at Off: translate.c ao_grid_fix)
+            rs[65][1] = renderer_ao_blur_scale(st.rt.color[0]);
+            rs[65][2] = g_settings.ao_quality == AO_OFF;
+        }
+        E_bytes(1, rs, (NSUInteger)(fkey.flip_x || pr->fi->uses_ao_taps ? 66 : 1 + pr->fi->ntex) * 16, RSCALE_BUFFER_INDEX);
     }
     // (uniform buffer 2 = the model matrix - only when the vertex shader reads it: a binding left from an earlier draw
     // is another object's matrix)
@@ -5370,9 +5404,43 @@ static void weather_encode(void) {
     }
 }
 
+// (phones: the HUD at the screen corners, runtime/hle/hud_corners.c) a boxed room's bars, black after the scene composite
+static bool hud_bars_clear(void) {  // (false: not at the window's image yet, e.g. the dungeon title's offscreen text)
+    extern bool hud_corners_bars(uint64_t frame, int w, int h, int bar[4]);
+    extern uint64_t renderer_exec_frame(void);
+    if (!st.rt.ncolor || !st.rt.color[0] || !renderer_texture_presented(st.rt.color[0])) return false;
+    int w = (int)st.rt.color[0]->width, h = (int)st.rt.color[0]->height, bar[4];
+    if (!hud_corners_bars(renderer_exec_frame(), w, h, bar)) return true;
+    int32_t sc[4];
+    memcpy(sc, st.scissor[0], sizeof sc);
+    static const float black[4] = {0, 0, 0, 1};
+    if (bar[0] > 0) {
+        st.scissor[0][0] = 0, st.scissor[0][1] = 0, st.scissor[0][2] = bar[0], st.scissor[0][3] = h;
+        clear(0, 0, black, 0xF, false, 0, false, 0, 0);
+    }
+    if (bar[1] < w) {
+        st.scissor[0][0] = bar[1], st.scissor[0][1] = 0, st.scissor[0][2] = w - bar[1], st.scissor[0][3] = h;
+        clear(0, 0, black, 0xF, false, 0, false, 0, 0);
+    }
+    if (bar[2] > 0) {
+        st.scissor[0][0] = 0, st.scissor[0][1] = 0, st.scissor[0][2] = w, st.scissor[0][3] = bar[2];
+        clear(0, 0, black, 0xF, false, 0, false, 0, 0);
+    }
+    if (bar[3] < h) {
+        st.scissor[0][0] = 0, st.scissor[0][1] = bar[3], st.scissor[0][2] = w, st.scissor[0][3] = h - bar[3];
+        clear(0, 0, black, 0xF, false, 0, false, 0, 0);
+    }
+    memcpy(st.scissor[0], sc, sizeof sc);
+    return true;
+}
+
 static void draw(CmdRec *r, bool indexed) {
+    static bool hud_bars;  // (the scene composite was drawn, its bars not cleared yet)
+    extern bool hud_corners_active(void);
+    if (hud_bars && hud_bars_clear()) hud_bars = false;
     wx_composite = wx_mirror = false;
     draw_one(r, indexed);
+    hud_bars = (hud_bars || wx_composite) && hud_corners_active();
     if (wx_composite) weather_encode();
 }
 
@@ -5466,7 +5534,7 @@ static id<MTLTexture> copy_raw_view(id<MTLTexture> t) {
 }
 
 static void draw_copy(id<MTLTexture> s, int sx0, int sy0, int sw, int sh, id<MTLTexture> d, int dx0, int dy0, int dw, int dh,
-                      bool linear) {
+                      bool linear, bool mirror_y) {
     static int raw = -1;  // LARECOMP_COPY_RAW_SRGB: copies move values unchanged (no sRGB decode/encode on either side)
     if (raw < 0) raw = getenv("LARECOMP_COPY_RAW_SRGB") != NULL;
     if (raw) { s = copy_raw_view(s); d = copy_raw_view(d); }
@@ -5495,7 +5563,7 @@ static void draw_copy(id<MTLTexture> s, int sx0, int sy0, int sw, int sh, id<MTL
     }
     id<MTLSamplerState> smp = linear ? lin : near;
     void (^copy)(void) = ^{
-        float r[4] = {(float)sx0 / s.width, (float)sy0 / s.height, (float)sw / s.width, (float)sh / s.height};
+        float r[4] = {(float)sx0 / s.width, (float)(mirror_y ? sy0 + sh : sy0) / s.height, (float)sw / s.width, (float)(mirror_y ? -sh : sh) / s.height};
         id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:rp];
         [e setRenderPipelineState:pipe];
         [e setViewport:(MTLViewport){dx0, dy0, dw, dh, 0, 1}];
@@ -5538,7 +5606,7 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
         td.storageMode = MTLStorageModePrivate;
         id<MTLTexture> small = [dev newTextureWithDescriptor:td];
         tape_mute++;  // (replays make no readbacks)
-        draw_copy(tex, 0, 0, (int)lroundf(t->width * tsx), (int)lroundf(t->height * tsy), small, 0, 0, t->width, t->height, true);
+        draw_copy(tex, 0, 0, (int)lroundf(t->width * tsx), (int)lroundf(t->height * tsy), small, 0, 0, t->width, t->height, true, false);
         tape_mute--;
         tex = small;
     }
@@ -5626,7 +5694,7 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
             always = [dev newDepthStencilStateWithDescriptor:dd];
         }
         // An upsampling copy (a source of lower resolution, as the guest-sized AO depth gets from the scaled pyramid
-        // below 0.5x: runtime/nvn/metal.m tex_guest_sized_ao) interpolates: nearest made stairs of the ground's
+        // below 0.5x: runtime/nvn/metal.m tex_ao) interpolates: nearest made stairs of the ground's
         // slope that the ambient occlusion shaded as dark horizontal lines (issue #356, 25% in a window).
         // Downsampling stays nearest (the game's own choice of samples). LARECOMP_DEPTH_UP_NEAREST=1 (A/B): nearest.
         static id<MTLSamplerState> dnear, dlin;
@@ -5681,7 +5749,10 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
         }
         return;
     }
-    if (renderer_format_is_depth(dt->format) || (s.pixelFormat == d.pixelFormat && sw == dw && sh == dh && s.sampleCount == d.sampleCount)) {
+    // NVN's copy flag 8 mirrors the copy vertically. The game sets it when it grabs the world for a blurred background
+    // (Items screen, Game Over) and its shaders then read the grab upside down.
+    bool mirror_y = (flags & 8) && !renderer_format_is_depth(dt->format);
+    if (renderer_format_is_depth(dt->format) || (!mirror_y && s.pixelFormat == d.pixelFormat && sw == dw && sh == dh && s.sampleCount == d.sampleCount)) {
         void (^copy)(void) = ^{
             id<MTLBlitCommandEncoder> b = [cb() blitCommandEncoder];
             [b copyFromTexture:s sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(sx0, sy0, 0)
@@ -5693,7 +5764,7 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
         tape_block(copy);
         return;
     }
-    draw_copy(s, sx0, sy0, sw, sh, d, dx0, dy0, dw, dh, flags & 1);
+    draw_copy(s, sx0, sy0, sw, sh, d, dx0, dy0, dw, dh, flags & 1, mirror_y);
 }
 
 // ------------------------------------------------------------------ executor

@@ -425,10 +425,46 @@ static void use_pad(SDL_JoystickID id, const char *why) {
     note_family();
     recompute_pad();
 }
+#ifdef __ANDROID__
+// Android lists other input devices as gamepads too (a wireless keyboard / mouse receiver's media keys: "Logitech USB
+// Receiver Mouse"), and the first one listed was taken: a DualSense connected beside it wasn't read until pressed. A
+// pad SDL knows (PlayStation, Xbox, Switch...) ranks over one with sticks and face buttons, which ranks over anything
+// else; the best one connected is read, and pressing another still switches to it. From Nycolazs's
+// LASRecomp-Android-Plus via mamcjr's LASRecompAndroid (both MIT).
+static int pad_rank(SDL_JoystickID id) {
+    SDL_GamepadType t = SDL_GetGamepadTypeForID(id);
+    if (t != SDL_GAMEPAD_TYPE_UNKNOWN && t != SDL_GAMEPAD_TYPE_STANDARD) return 3;
+    char *m = SDL_GetGamepadMappingForID(id);
+    int r = m && strstr(m, "leftx:") && strstr(m, ",a:") && strstr(m, ",b:") ? 2 : 1;
+    SDL_free(m);
+    return r;
+}
+#endif
 static void open_pad(SDL_JoystickID id) {
     if (!SDL_GetGamepadFromID(id)) SDL_OpenGamepad(id);
+#ifdef __ANDROID__
+    int r = pad_rank(id);
+    LOG("[input] connected: %s (rank %d)\n", SDL_GetGamepadNameForID(id), r);
+    if (!pad || r > pad_rank(SDL_GetGamepadID(pad))) use_pad(id, pad ? " (a better controller)" : "");
+#else
     if (!pad) use_pad(id, "");
+#endif
 }
+
+bool input_gamepad_connected(void) { return pad != NULL; }
+
+// touch screens: the on-screen controls (runtime/ui/mobile/touch_controls.mm)
+#if PLAT_TOUCH
+bool touch_handle_event(const SDL_Event *e);
+uint64_t touch_buttons(void);
+void touch_stick(int32_t *lx, int32_t *ly);
+void touch_pad_used(void);
+#else
+static bool touch_handle_event(const SDL_Event *e) { (void)e; return false; }
+static uint64_t touch_buttons(void) { return 0; }
+static void touch_stick(int32_t *lx, int32_t *ly) { *lx = *ly = 0; }
+static void touch_pad_used(void) {}
+#endif
 
 void input_handle_event(const SDL_Event *e) {
     static bool scanned;  // pads present at startup: their ADDED event may have gone to the start screen's loop
@@ -439,6 +475,7 @@ void input_handle_event(const SDL_Event *e) {
         for (int i = 0; ids && i < n; i++) open_pad(ids[i]);
         SDL_free(ids);
     }
+    if (touch_handle_event(e)) return;
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP: {
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) g_debug_frame_request = 1;
@@ -452,6 +489,7 @@ void input_handle_event(const SDL_Event *e) {
     }
     case SDL_EVENT_GAMEPAD_ADDED:
         open_pad(e->gdevice.which);
+        if (pad && SDL_GetGamepadID(pad) == e->gdevice.which) touch_pad_used();  // (the touch controls hide)
         break;
     case SDL_EVENT_GAMEPAD_REMOVED: {
         SDL_Gamepad *g = SDL_GetGamepadFromID(e->gdevice.which);
@@ -465,7 +503,11 @@ void input_handle_event(const SDL_Event *e) {
         if (!pad) {  // another one still connected takes over
             int n = 0;
             SDL_JoystickID *ids = SDL_GetGamepads(&n);
+#ifdef __ANDROID__
+            for (int i = 0; ids && i < n; i++)  // (the best one still connected)
+#else
             for (int i = 0; ids && i < n && !pad; i++)
+#endif
                 if (ids[i] != e->gdevice.which) open_pad(ids[i]);
             SDL_free(ids);
             note_family();
@@ -476,6 +518,7 @@ void input_handle_event(const SDL_Event *e) {
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
         if (e->gbutton.down && e->gbutton.which != TEST_DEVICE && !host_test) use_pad(e->gbutton.which, " (switched)");
         if (pad && e->gbutton.which != TEST_DEVICE && e->gbutton.which != SDL_GetGamepadID(pad)) break;  // (another pad)
+        if (e->gbutton.down && !host_test) touch_pad_used();  // (the touch controls hide)
         if (!host_test || e->gbutton.which == TEST_DEVICE) {  // (the press as the event has it, before reading the pad)
             uint64_t b = pad_bits(e->gbutton.button);
             note_press(e->gbutton.down ? b : 0, e->gbutton.down ? 0 : b);
@@ -483,7 +526,12 @@ void input_handle_event(const SDL_Event *e) {
         recompute_pad();
         break;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION:
-        if (!host_test && abs(e->gaxis.value) > 24000 && pad_at_rest()) use_pad(e->gaxis.which, " (switched)");
+        if (!host_test && abs(e->gaxis.value) > 24000 && pad_at_rest()
+#ifdef __ANDROID__
+            && (!pad || pad_rank(e->gaxis.which) >= pad_rank(SDL_GetGamepadID(pad)))  // (not to a lesser device's axis)
+#endif
+            )
+            use_pad(e->gaxis.which, " (switched)");
         if (pad && e->gaxis.which != SDL_GetGamepadID(pad)) break;  // (another pad's stick: not the game's)
         if ((e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
             !host_test) {  // (the triggers as buttons: past half way)
@@ -497,6 +545,8 @@ void input_handle_event(const SDL_Event *e) {
             }
         }
         recompute_pad();
+        // the controller in use (a stick or trigger well off centre - not drift; a press: above): the touch controls hide
+        if (abs(e->gaxis.value) > 12000) touch_pad_used();
         break;
     }
 }
@@ -771,11 +821,13 @@ void input_frame(uint64_t frame) {
     script_rx = rx;
     script_ry = ry;
 }
+// (touch_controls.mm, LARECOMP_TOUCH_SHOW_INPUT: the scripted presses drawn on the on-screen controls)
+void input_script_state(uint64_t *buttons, int32_t *lx, int32_t *ly) { *buttons = script_buttons, *lx = script_lx, *ly = script_ly; }
 
 extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or name entry up (it has the keys / pad)
 
 // Buttons held right now (keyboard, gamepad, test script), independent of whether the game polls (movies).
-uint64_t input_buttons_now(void) { return (menu_input_captured() ? 0 : key_buttons | pad_buttons) | script_buttons; }
+uint64_t input_buttons_now(void) { return (menu_input_captured() ? 0 : key_buttons | pad_buttons | touch_buttons()) | script_buttons; }
 
 static int32_t clamp_axis(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
 
@@ -819,7 +871,7 @@ static void fill_state(Cpu *c) {
         LOG("[input] watching controller object %llx\n", c->x[1] - 8);
     }
     bool menu = menu_input_captured();  // the overlay menu / name entry has the controls (typing there isn't for the game)
-    uint64_t held = key_buttons | pad_buttons;
+    uint64_t held = key_buttons | pad_buttons | touch_buttons();
     atomic_fetch_and(&press_unseen, ~held);  // (the game sees these now)
     static uint64_t tap, tap_frame;  // (pressed and released since the last poll: held for the rest of this frame)
     {
@@ -837,7 +889,9 @@ static void fill_state(Cpu *c) {
         if (g_inject_plus > 0) { until = renderer_present_count() + 10; g_inject_plus = 0; }
         if (renderer_present_count() < until) b |= 1ull << BTN_PLUS;
     }
-    int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly) + script_ly);
+    int32_t tlx, tly;
+    touch_stick(&tlx, &tly);
+    int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx + tlx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly + tly) + script_ly);
     int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry) + script_ry);
     if (!menu) {  // d-pad items (setting): the Items page assigns, play uses (runtime/hle/dpad_items.c; before mirroring:
         extern uint64_t dpad_items_input(uint64_t b);  // the d-pad as held)

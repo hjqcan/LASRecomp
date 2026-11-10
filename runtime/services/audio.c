@@ -16,7 +16,8 @@
 // third_party/ryujinx/LICENSE.txt).
 // Voices decode PCM16 / ADPCM wave buffers, resample to 48 kHz, and mix into their destination mix's
 // buffers; sub mixes route into their destination; the final mix feeds the device sink, which we
-// downmix to stereo and push to an SDL audio stream. Effects and splitters are not implemented.
+// downmix to stereo (or pass on as 5.1: Audio > Output) and push to an SDL audio stream. Effects and splitters
+// are not implemented.
 #define WB_COUNT 4
 #define MIXBUF_MAX 24
 #define HIST 4
@@ -87,8 +88,10 @@ typedef struct {
     uint8_t sink_used, sink_inputs, sink_input[6];
     Effect *fx;
     SDL_AudioStream *stream;
+    int out_ch;  // channels sent to the stream: 2, or 6 with Audio > Output 5.1
     FILE *wav;
     uint32_t wav_bytes;
+    int wav_ch;
     pthread_t thread;
     volatile bool quit;  // reboot (audio_reset)
 } Renderer;
@@ -477,7 +480,7 @@ static void apply_effects(Renderer *r, int32_t mix_id, Mix *m) {
 static int hf_log = -1;
 static double hf[1024];
 
-static void render_frame(Renderer *r, float *stereo) {
+static void render_frame(Renderer *r, float *out, int out_ch) {
     if (hf_log < 0) hf_log = getenv("LARECOMP_AUDIO_HF") ? 1 : 0;
     uint32_t N = r->sample_count;
     for (uint32_t m = 0; m < r->nmix; m++)
@@ -589,7 +592,7 @@ static void render_frame(Renderer *r, float *stereo) {
                 }
         }
     }
-    // final mix -> device sink (FL FR FC LFE BL BR) -> stereo
+    // final mix -> device sink (FL FR FC LFE BL BR) -> stereo, or 5.1 as is (SDL3's 5.1 order is the same)
     Mix *f = find_mix(r, 0);
     if (f) apply_effects(r, 0, f);
     for (uint32_t i = 0; i < N; i++) {
@@ -597,13 +600,17 @@ static void render_frame(Renderer *r, float *stereo) {
         if (f && r->sink_used)
             for (int c = 0; c < r->sink_inputs && c < 6; c++)
                 if (r->sink_input[c] < f->bufs) ch[c] = f->buf[r->sink_input[c] * N + i] * f->volume;
+        if (out_ch == 6) {
+            for (int c = 0; c < 6; c++) out[i * 6 + c] = clampf(ch[c] / 32768.f, -1, 1);
+            continue;
+        }
         float L = ch[0], R = ch[1];
         if (r->sink_inputs >= 6) {
             L += 0.707f * ch[2] + 0.251f * ch[3] + 0.707f * ch[4];
             R += 0.707f * ch[2] + 0.251f * ch[3] + 0.707f * ch[5];
         }
-        stereo[i * 2] = clampf(L / 32768.f, -1, 1);
-        stereo[i * 2 + 1] = clampf(R / 32768.f, -1, 1);
+        out[i * 2] = clampf(L / 32768.f, -1, 1);
+        out[i * 2 + 1] = clampf(R / 32768.f, -1, 1);
     }
 }
 
@@ -615,33 +622,45 @@ static void apply_gain(SDL_AudioStream *st) {
     if (st && SDL_GetAudioStreamGain(st) != g) SDL_SetAudioStreamGain(st, g);
 }
 
-static void wav_header(FILE *f, uint32_t bytes) {
-    uint32_t h[11] = {0x46464952, 36 + bytes, 0x45564157, 0x20746d66, 16, 0x00020003, 48000, 48000 * 8,
-                      0x00200008, 0x61746164, bytes};
+static void wav_header(FILE *f, uint32_t bytes, int ch) {
+    uint32_t h[11] = {0x46464952, 36 + bytes, 0x45564157, 0x20746d66, 16, 0x00000003 | (uint32_t)ch << 16, 48000,
+                      48000 * 4 * (uint32_t)ch, 0x00200000 | 4 * (uint32_t)ch, 0x61746164, bytes};
     fseek(f, 0, SEEK_SET);
     fwrite(h, 4, 11, f);
     fseek(f, 0, SEEK_END);
 }
 
+static void renderer_open_stream(Renderer *r);
+
+// Queued audio to keep ahead of the device, in bytes: >= 2 device periods.
+static int queue_target(Renderer *r, uint32_t N) {
+    int fb = (int)(N * r->out_ch * sizeof(float)), target = 4 * fb;
+    SDL_AudioSpec dev;
+    int dev_frames = 0;
+    if (r->stream && SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(r->stream), &dev, &dev_frames) && dev_frames > 0) {
+        int t = (2 * dev_frames * (int)r->sample_rate / (dev.freq ? dev.freq : 48000) + (int)N) * r->out_ch * (int)sizeof(float);
+        if (t > target) target = t;
+        LOG("[audren] device %d Hz, %d ch, %d frames/period; %d ch out, queue target %d samples\n", dev.freq,
+            dev.channels, dev_frames, r->out_ch, target / (r->out_ch * (int)sizeof(float)));
+    }
+    return target;
+}
+
 static void *renderer_tick(void *arg) {
     Renderer *r = arg;
-    float out[2 * 4096];
+    float out[6 * 4096];
     uint32_t N = r->sample_count > 4096 ? 4096 : r->sample_count;
-    int frame_bytes = (int)(N * 2 * sizeof(float));
     uint64_t next = 0;
     struct timespec now;
-    int target = 4 * frame_bytes;  // queued audio to keep ahead of the device: >= 2 device periods
-    if (r->stream) {
-        SDL_AudioSpec dev;
-        int dev_frames = 0;
-        if (SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(r->stream), &dev, &dev_frames) && dev_frames > 0) {
-            int t = (2 * dev_frames * (int)r->sample_rate / (dev.freq ? dev.freq : 48000) + (int)N) * 2 * (int)sizeof(float);
-            if (t > target) target = t;
-            LOG("[audren] device %d Hz, %d frames/period; queue target %d samples\n", dev.freq, dev_frames,
-                target / (2 * (int)sizeof(float)));
-        }
-    }
+    int target = queue_target(r, N);
     while (!r->quit) {
+        // Audio > Output changed: reopen the stream with the new channel count (what is queued is dropped)
+        if (r->out_ch != (g_settings.audio_out == AUDIO_OUT_51 ? 6 : 2)) {
+            if (r->stream) SDL_DestroyAudioStream(r->stream), r->stream = NULL;
+            renderer_open_stream(r);
+            target = queue_target(r, N);
+        }
+        int frame_bytes = (int)(N * r->out_ch * sizeof(float));
         if (r->stream) {
             while (SDL_GetAudioStreamQueued(r->stream) >= target && !r->quit) {
                 struct timespec ts = {0, 1000000};
@@ -656,17 +675,17 @@ static void *renderer_tick(void *arg) {
         }
         pthread_mutex_lock(&r->lock);
         if (r->state == 0) {
-            render_frame(r, out);
+            render_frame(r, out, r->out_ch);
             r->elapsed_frames++;
         } else {
             memset(out, 0, frame_bytes);
         }
         pthread_mutex_unlock(&r->lock);
         if (r->stream) { apply_gain(r->stream); SDL_PutAudioStreamData(r->stream, out, frame_bytes); }
-        if (r->wav && r->state == 0) {
+        if (r->wav && r->state == 0 && r->wav_ch == r->out_ch) {  // (the channel count the file was started with)
             fwrite(out, 1, frame_bytes, r->wav);
             r->wav_bytes += frame_bytes;
-            if ((r->elapsed_frames & 255) == 0) { wav_header(r->wav, r->wav_bytes); fflush(r->wav); }
+            if ((r->elapsed_frames & 255) == 0) { wav_header(r->wav, r->wav_bytes, r->wav_ch); fflush(r->wav); }
         }
         pthread_mutex_lock(&g_klock);
         kernel_signal(r->event);
@@ -930,18 +949,26 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
     (void)resp;
 }
 
-static void renderer_open_output(Renderer *r) {
-    if (getenv("LARECOMP_AUDIO_WAV")) {
-        r->wav = fopen(getenv("LARECOMP_AUDIO_WAV"), "wb");
-        if (r->wav) wav_header(r->wav, 0);
-    }
+// 5.1: the stream takes the sink's six channels and SDL fits them to the device (a stereo device gets SDL's own
+// downmix). Stereo: our downmix above, as before.
+static void renderer_open_stream(Renderer *r) {
+    r->out_ch = g_settings.audio_out == AUDIO_OUT_51 ? 6 : 2;
     if (getenv("LARECOMP_NO_AUDIO") && strcmp(getenv("LARECOMP_NO_AUDIO"), "0")) return;
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) { LOG("[audren] SDL audio init failed: %s\n", SDL_GetError()); return; }
-    SDL_AudioSpec spec = {SDL_AUDIO_F32, 2, (int)r->sample_rate};
+    SDL_AudioSpec spec = {SDL_AUDIO_F32, r->out_ch, (int)r->sample_rate};
     r->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
     if (!r->stream) { LOG("[audren] SDL audio open failed: %s\n", SDL_GetError()); return; }
     if (getenv("LARECOMP_AUDIO_GAIN")) SDL_SetAudioStreamGain(r->stream, (float)atof(getenv("LARECOMP_AUDIO_GAIN")));
     SDL_ResumeAudioStreamDevice(r->stream);
+}
+
+static void renderer_open_output(Renderer *r) {
+    renderer_open_stream(r);
+    if (getenv("LARECOMP_AUDIO_WAV")) {  // (what the stream gets: 2 or 6 channels, as Audio > Output is now)
+        r->wav = fopen(getenv("LARECOMP_AUDIO_WAV"), "wb");
+        r->wav_ch = r->out_ch;
+        if (r->wav) wav_header(r->wav, 0, r->wav_ch);
+    }
 }
 
 static void audio_renderer(Service *s, IpcReq *req, IpcResp *resp) {
@@ -983,7 +1010,10 @@ static void audio_device(Service *s, IpcReq *req, IpcResp *resp) {
         break;
     }
     case 4: case 11: case 12: resp->copy_handles[resp->ncopy++] = new_event_handle(); break;
-    case 5: OUT(uint32_t, 0) = 2; resp_size(resp, 4); break;  // GetActiveChannelCount
+    case 5:  // GetActiveChannelCount (the game doesn't ask: it always mixes 5.1)
+        OUT(uint32_t, 0) = g_settings.audio_out == AUDIO_OUT_51 ? 6 : 2;
+        resp_size(resp, 4);
+        break;
     case 8: OUT(float, 0) = 1.0f; resp_size(resp, 4); break;
     default: break;
     }
@@ -1087,7 +1117,7 @@ RT_ON_RESET(audio_reset) {
             r->quit = true;
             pthread_join(r->thread, NULL);
             if (r->stream) SDL_DestroyAudioStream(r->stream);
-            if (r->wav) { wav_header(r->wav, r->wav_bytes); fclose(r->wav); }
+            if (r->wav) { wav_header(r->wav, r->wav_bytes, r->wav_ch); fclose(r->wav); }
             for (uint32_t m = 0; m < r->nmix; m++) free(r->mix[m].buf);
             free(r->voice), free(r->chres), free(r->chst), free(r->mix), free(r->fx);  // (reverb delay lines leak)
             free(r);
@@ -1098,6 +1128,14 @@ RT_ON_RESET(audio_reset) {
     }
     LOG("[audio] reboot: %d outputs closed\n", n);
 }
+
+#ifdef __ANDROID__
+// A reboot, before the renderer lets the guest heap go (runtime/main.c teardown): with it placed as GPU memory
+// (VK_EXT_map_memory_placed, Turnip) it's unmapped there, and a renderer thread still mixing the game's voices read it
+// after, a crash on "back to the start screen" with sound playing. Safe to run again with the other resets. (From
+// mamcjr's LASRecompAndroid, MIT.)
+void audio_stop_all(void) { audio_reset(); }
+#endif
 
 // Buffers are copied into an SDL stream and released once the stream has drained below its target, so the
 // stream plays the role of the hardware queue. Without a device, buffers are released in real time.

@@ -16,6 +16,8 @@ RT_ON_RESET(hud_hearts_reset) { g_refresh = 0; }
 void hud_hearts_refresh(void) { g_refresh = 1; }
 
 void rt_hud_hearts_tick(Cpu *c) {
+    extern void rt_hud_corners_tick(uint64_t hud);
+    rt_hud_corners_tick(c->x[0]);  // (runtime/hle/hud_corners.c)
     if (!g_refresh) return;
     g_refresh = 0;
     Cpu saved = *c;
