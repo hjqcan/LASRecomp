@@ -5866,7 +5866,73 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
 }
 
 // ================================================================== compute
-typedef struct { Prog p; ShaderInfo *si; VkPipeline pipe; uint32_t local[3]; uint64_t code; } CsProg;
+// (fold) a 1x1x1 compute shader's packed form: its workgroups as the lanes of 64-wide workgroups (cs_fold_glsl), one
+// pipeline per grid size (the counts are specialization constants 3-5)
+typedef struct CsFold { struct CsProg *cp; uint32_t g[3]; VkPipeline pipe; _Atomic int state; } CsFold;
+#define CS_FOLD_MAX 4
+#define CS_FOLD_LOCAL 64u
+typedef struct CsProg { Prog p; ShaderInfo *si; VkPipeline pipe; uint32_t local[3]; uint64_t code;
+                        VkShaderModule fold_mod; CsFold fold[CS_FOLD_MAX]; int nfold; } CsProg;
+
+// A compute shader with 1x1x1 workgroups runs one lane of each wave: on Adreno (64 / 128 lanes) and Mali the field's
+// tile pass (30x17 groups) took 1 ms of an Adreno 650's 720p frame. If the workgroups can't see each other - no shared
+// memory, barriers, subgroup functions or group counts - each becomes one lane of a 64-wide group: the GLSL takes its
+// workgroup ID from the global index (lanes past the grid return) and its local ID is 0. Default on Adreno and Mali;
+// LARECOMP_VK_CS_FOLD=1 / =0 overrides.
+static bool cs_fold_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("LARECOMP_VK_CS_FOLD");
+        on = e ? atoi(e) != 0 : g_vk.props.vendorID == 0x5143 || g_vk.props.vendorID == 0x13B5;
+        LOG("[vk] 1x1x1 compute workgroups packed into %u-wide ones: %s (%s)\n", CS_FOLD_LOCAL, on ? "on" : "off",
+            e ? "LARECOMP_VK_CS_FOLD" : "default for this GPU");
+    }
+    return on;
+}
+static char *cs_fold_glsl(const char *src) {  // NULL: not foldable
+    const char *main_ = strstr(src, "void main() {\n");
+    if (!main_ || strstr(src, "shared ") || strstr(src, "barrier(") || strstr(src, "gl_NumWorkGroups") ||
+        strstr(src, "gl_GlobalInvocationID") || strstr(src, "gl_Subgroup") || strstr(src, "gl_WorkGroupSize"))
+        return NULL;
+    for (const char *p = strstr(src, "subgroup"); p; p = strstr(p + 1, "subgroup"))
+        if (p < src + 14 || strncmp(p - 14, "GL_KHR_shader_", 14)) return NULL;  // (a call, not the #extension lines)
+    static const char *const from[] = {"gl_WorkGroupID", "gl_LocalInvocationIndex", "gl_LocalInvocationID"};
+    static const char *const to[] = {"lg_wg", "0u", "uvec3(0u)"};
+    size_t cap = strlen(src) * 2 + 1024, n = 0;
+    char *o = malloc(cap);
+    for (const char *p = src; *p;) {
+        if (p == main_) {
+            n += (size_t)sprintf(o + n, "layout(constant_id = 3) const uint LG_GX = 1u;\nlayout(constant_id = 4) const uint LG_GY = 1u;\n"
+                                        "layout(constant_id = 5) const uint LG_GZ = 1u;\nvoid main() {\n"
+                                        "  uint lg_i = gl_GlobalInvocationID.x;\n  if (lg_i >= LG_GX * LG_GY * LG_GZ) return;\n"
+                                        "  uvec3 lg_wg = uvec3(lg_i %% LG_GX, (lg_i / LG_GX) %% LG_GY, lg_i / (LG_GX * LG_GY));\n");
+            p += strlen("void main() {\n");
+            continue;
+        }
+        int k = -1;
+        for (int i = 0; i < 3 && k < 0; i++) if (!strncmp(p, from[i], strlen(from[i]))) k = i;
+        if (k >= 0) { n += (size_t)sprintf(o + n, "%s", to[k]); p += strlen(from[k]); }
+        else o[n++] = *p++;
+        if (n + 512 > cap) { cap *= 2; o = realloc(o, cap); }
+    }
+    o[n] = 0;
+    return o;
+}
+static void build_cs_fold(void *arg) {
+    CsFold *f = arg;
+    CsProg *cp = f->cp;
+    uint32_t sv[6] = {CS_FOLD_LOCAL, 1, 1, f->g[0], f->g[1], f->g[2]};
+    VkSpecializationMapEntry me[6] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}, {3, 12, 4}, {4, 16, 4}, {5, 20, 4}};
+    VkSpecializationInfo spec = {6, me, sizeof sv, sv};
+    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = cp->fold_mod, .pName = "main",
+                                                .pSpecializationInfo = &spec},
+                                      .layout = cp->p.layout};
+    VkResult r = vk_create_compute_pipeline(&ci, &f->pipe);
+    if (r != VK_SUCCESS) LOG("[compute] cs %llx: packed pipeline failed: %d\n", (unsigned long long)cp->code, r);
+    atomic_store(&f->state, r == VK_SUCCESS ? 1 : 2);
+}
 
 static void build_compute(void *arg) {
     CsProg *cp = arg;
@@ -5899,6 +5965,15 @@ static void build_compute(void *arg) {
     VkResult r = vk_create_compute_pipeline(&ci, &cp->pipe);
     SLOW_FEEDBACK_HIT();
     atomic_fetch_add(&stat_compiles, 1);
+    if (r == VK_SUCCESS && cp->local[0] == 1 && cp->local[1] == 1 && cp->local[2] == 1 && cs_fold_on()) {
+        char *fg = cs_fold_glsl(cp->si->msl);  // (the packed module before the state says ready: dispatch reads it then)
+        size_t fn = 0;
+        uint32_t *fs = fg ? vk_glsl_to_spirv(fg, STAGE_COMPUTE, "cs fold", &fn) : NULL;
+        if (fs) cp->fold_mod = vk_module(fs, fn);
+        free(fs);
+        free(fg);
+        LOG("[compute] cs %llx: 1x1x1 workgroups %s\n", (unsigned long long)cp->code, cp->fold_mod ? "packed" : "not packed (they share state)");
+    }
     atomic_store(&cp->p.state, r == VK_SUCCESS ? 1 : 2);
     build_end(bs);
     if (r != VK_SUCCESS) LOG("[compute] cs %llx: pipeline failed: %d\n", (unsigned long long)cp->code, r);
@@ -6256,10 +6331,22 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     if (cp->si->uses_gmem_map && gmir_on()) gmir_table(5, cp->si->uses_gmem_store, cb, gmap_tab);
     else if (cp->si->uses_gmem_map) gfast_prepare(cb);
     VkDescriptorSet ds = stage_set(&cp->p, cp->p.set_layout[0], 0, 5, cp->si, NULL, NULL, gx, gy, gz, NULL, NULL, NULL);
-    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
+    CsFold *fold = NULL;  // (cs_fold_on) this grid's packed pipeline, once built
+    if (cp->fold_mod) {
+        for (int i = 0; i < cp->nfold && !fold; i++)
+            if (cp->fold[i].g[0] == gx && cp->fold[i].g[1] == gy && cp->fold[i].g[2] == gz) fold = &cp->fold[i];
+        if (!fold && cp->nfold < CS_FOLD_MAX) {
+            fold = &cp->fold[cp->nfold++];
+            fold->cp = cp; fold->g[0] = gx; fold->g[1] = gy; fold->g[2] = gz;
+            run_job(build_cs_fold, fold);
+        }
+        if (fold && atomic_load(&fold->state) != 1) fold = NULL;  // (building, or failed: the plain pipeline)
+    }
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, fold ? fold->pipe : cp->pipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
     if (gc_shift && cp->si->uses_gmem) gmem_chunk_bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, GMEM_CHUNK_SET(STAGE_COMPUTE), 1u << STAGE_COMPUTE);
-    rec_CmdDispatch(cb, gx, gy, gz);
+    if (fold) rec_CmdDispatch(cb, (gx * gy * gz + CS_FOLD_LOCAL - 1) / CS_FOLD_LOCAL, 1, 1);
+    else rec_CmdDispatch(cb, gx, gy, gz);
     if (cp->si->uses_gmem_map && cp->si->uses_gmem_store) {
         if (gmir_on()) gmir_after_dispatch(cb);  // (its slots: readbacks; what follows reads the slots)
         else gfast_finish(cb);
