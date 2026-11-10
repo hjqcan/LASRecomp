@@ -1396,7 +1396,7 @@ static void seed_header(const char *active) {
 }
 
 // ---- in game, in a seed (the menu bar's Randomizer): this seed's sheet first - the player's own rows, its spoiler log
-// and ID - and Randomizer Settings for the whole panel (a new seed, another seed). Outside a seed the panel at once.
+// and ID - and Randomizer Main Menu for the whole panel (a new seed, another seed). Outside a seed the panel at once.
 // (user 2026-11-09)
 static bool g_full;       // the whole panel is open over the sheet (B on its left column: back to the sheet)
 static void seed_sheet(float scale, const char *active) {
@@ -1417,7 +1417,7 @@ static void seed_sheet(float scale, const char *active) {
     if (opt_action("Spoiler log", locked ? "Locked" : "", NULL)) g_spoiler_seed = active;
     if (!sp || sp->id.empty()) opt_disable_next();
     if (opt_action("Copy seed ID", "", NULL) && sp) ImGui::SetClipboardText(sp->id.c_str());
-    if (opt_action("Randomizer Settings", "", "Make a new seed or switch to another one.")) g_full = true;
+    if (opt_action("Randomizer Main Menu", "", "Make a new seed or switch to another one.")) g_full = true;
     // Switch to vanilla on its own at the bottom of the rows (user 2026-11-10); phones' cards: a gap above it
     float row_h = ImGui::GetFontSize() * 1.9f, bottom = ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y - row_h;
     if (!PLAT_TOUCH && bottom > ImGui::GetCursorPosY()) ImGui::SetCursorPosY(bottom);
