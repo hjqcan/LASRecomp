@@ -210,6 +210,7 @@ without touching the installed game, your game files or your saves.
 - **[@missionfloyd](https://github.com/missionfloyd)** - a much smaller game code build, without debug info (#487)
 - **[@wolfchimneyrock](https://github.com/wolfchimneyrock)** - full speed on ARM Mali graphics (#527), the CPU and GPU working in parallel on Mali (#529), and faster render passes on Mali (#528, #534), a cheaper FSR upscale (#532), the game on the big cores of ARM and Intel hybrid CPUs on Linux (#533), no more flickering grass and shadows on Mali (#546), the game starting on Snapdragon (Adreno) devices (#561), much faster shaders on Mali and Adreno (#562, #563, #579), faster graphics memory on Mali with Mesa (#564), GPU tuning tools for Vulkan (#565), no more memory leak on Arm's Mali driver (#607), and smaller shader stacks that keep 4 GB Mali boards from running out of memory (#645)
 - **[@mamcjr](https://github.com/mamcjr)** - the Android port ([LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)), which we are bringing in piece by piece, starting with a guest window that can move
+- **[@bgevko](https://github.com/bgevko)** - an option to keep the area's music during Guardian Acorns and Pieces of Power (#642)
 
 Thanks also to everyone who reports issues and tests builds. Your logs and screenshots find most of the bugs.
 
