@@ -57,6 +57,8 @@ jobs:
           python3 tools/test_gamebuild_resume.py
       - name: Save I/O regression tests
         run: python3 tools/test_save.py
+      - name: Power-up music regression tests
+        run: python3 tools/test_powerup_music.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 tools/test_movie_extractor.c $(pkg-config --cflags --libs libavformat libavcodec libavutil libswscale) -pthread -o build/test-movie-extractor
@@ -183,6 +185,8 @@ jobs:
           python3 tools/test_gamebuild_resume.py
       - name: Save I/O regression tests
         run: python3 tools/test_save.py
+      - name: Power-up music regression tests
+        run: python3 tools/test_powerup_music.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 tools/test_movie_extractor.c $(pkg-config --cflags --libs libavformat libavcodec libavutil libswscale) -pthread -o build/test-movie-extractor
@@ -260,6 +264,8 @@ jobs:
           python3 tools/test_gamebuild_resume.py
       - name: Save I/O regression tests
         run: python3 tools/test_save.py
+      - name: Power-up music regression tests
+        run: python3 tools/test_powerup_music.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 -I"$(brew --prefix ffmpeg)/include" -L"$(brew --prefix ffmpeg)/lib" tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -pthread -o build/test-movie-extractor
@@ -369,6 +375,8 @@ jobs:
           python3 tools/test_windows_processes.py
       - name: Save I/O regression tests
         run: python3 tools/test_save.py
+      - name: Power-up music regression tests
+        run: python3 tools/test_powerup_music.py
       - name: Game-files delete guard (junctions, outside the data folder)
         run: python3 tools/test_delete_guard.py
       - name: Data folder move (cut off at every step)
@@ -465,6 +473,8 @@ jobs:
           python3 tools/test_windows_processes.py
       - name: Save I/O regression tests
         run: python3 tools/test_save.py
+      - name: Power-up music regression tests
+        run: python3 tools/test_powerup_music.py
       - name: Game-files delete guard (junctions, outside the data folder)
         run: python3 tools/test_delete_guard.py
       - name: Data folder move (cut off at every step)
@@ -543,6 +553,6 @@ jobs:
             grep -vE '^(META-INF/|res/|classes[0-9]*\.dex$|AndroidManifest\.xml$|resources\.arsc$|lib/arm64-v8a/lib(main|SDL3|shaderc_shared|hook_impl|main_hook|file_redirect_hook|gsl_alloc_hook|avcodec|avformat|avutil|swscale|pymain|python3\.14|capstone|unicorn|lz4|zig)\.so$|assets/gen\.zip$|assets/res/(Baloo2-SemiBold\.ttf|Baloo2-OFL\.txt|BIZUDPGothic-Regular\.ttf|BIZUDPGothic-OFL\.txt|DejaVuSans(-Bold)?\.ttf|DejaVu-LICENSE\.txt|icon\.png|libadrenotools-LICENSE\.txt|liblinkernsbypass-LICENSE\.txt|volk-LICENSE\.md)$)' \
             > unexpected.txt || true
           unzip -p "$APK" assets/gen.zip > gen.zip && unzip -Z1 gen.zip |
-            grep -vE '^(python/|site/|zig/|tools/(gen|lifter|analyze|nso|passes|patches|simd_c|game_addresses)\.py$|tools/(rando/)?$|tools/rando/patch_variants\.json$|runtime/(game_addresses/)?$|runtime/game_addresses/[a-z0-9_]+\.h$|gamelib-src/(cpu|simd|simd_fp|gamelib)\.h$|gamelib-src/gamelib_entry\.c$|gamelib-src/hle_symbols\.txt$|gamelib-src/$)' \
+            grep -vE '^(python/|site/|zig/|tools/(gen|lifter|analyze|nso|passes|patches|simd_c|game_addresses)\.py$|tools/(rando/)?$|tools/rando/patch_variants\.json$|runtime/(game_addresses/)?$|runtime/game_addresses/[a-z0-9_]+\.h$|gamelib-src/(cpu|simd|simd_fp|gamelib)\.h$|gamelib-src/gamelib_entry\.c$|gamelib-src/(hle_symbols|hot_functions(_v[0-9_]+)?)\.txt$|gamelib-src/$)' \
             | sed 's#^#gen.zip: #' >> unexpected.txt || true
           if [ -s unexpected.txt ]; then echo "unexpected files in the APK:"; cat unexpected.txt; exit 1; fi

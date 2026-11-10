@@ -241,7 +241,8 @@ static void setting_at_tick(void) {
         if (!strcmp(key, "dpad_mode")) { g_settings.dpad_mode = v; LOG("[qol] test: f%llu %s = %d\n", (unsigned long long)now, key, v); }
         if (!strcmp(key, "shadows")) { g_settings.shadow_quality = v; LOG("[qol] test: f%llu %s = %d\n", (unsigned long long)now, key, v); }
         bool *b = !strcmp(key, "move_360") ? &g_settings.move_360 : !strcmp(key, "blur_removal") ? &g_settings.blur_removal :
-                  !strcmp(key, "frame_interp") ? &g_settings.frame_interp : NULL;
+                  !strcmp(key, "frame_interp") ? &g_settings.frame_interp :
+                  !strcmp(key, "powerup_music") ? &g_settings.powerup_music : NULL;
         if (b) { *b = v != 0; LOG("[qol] test: f%llu %s = %d\n", (unsigned long long)now, key, v); }
         CosColour *c = !strcmp(key, "tunic") ? &g_settings.tunic : !strcmp(key, "hearts") ? &g_settings.hearts :
                        !strcmp(key, "hair") ? &g_settings.hair : !strcmp(key, "shield") ? &g_settings.shield :

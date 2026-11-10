@@ -1333,6 +1333,28 @@ void vk_exec_init(void) {
     const char *pe = getenv("LARECOMP_VK_PUSH_CB");
     LOG("[vk] constant-buffer push constants %s (%s)\n", (pe ? atoi(pe) != 0 : maxwell_glsl_push) ? "on" : "off",
         pe ? "LARECOMP_VK_PUSH_CB" : "default for this GPU");
+    {   // fragment quad xor shuffles through derivatives (shader.h maxwell_glsl_quad_deriv) where the driver has no subgroup
+        // operations in fragment shaders: Turnip on Adreno 6xx lists compute only, and the shaders' subgroupShuffleXor
+        // hung the GPU in Marin and Tarin's house (the lit pass behind the depth prepass; Retroid Pocket 5, Adreno 650).
+        // LARECOMP_VK_QUAD_DERIV=1 / =0 overrides.
+        VkPhysicalDeviceSubgroupProperties sgp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &sgp};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+        bool frag = (sgp.supportedStages & VK_SHADER_STAGE_FRAGMENT_BIT) && (sgp.supportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT);
+        const char *qe = getenv("LARECOMP_VK_QUAD_DERIV");
+        maxwell_glsl_quad_deriv = qe ? atoi(qe) != 0 : !frag;
+        LOG("[vk] fragment quad shuffles %s (%s; subgroup stages %#x, operations %#x)\n",
+            maxwell_glsl_quad_deriv ? "through derivatives" : "as subgroup shuffles", qe ? "LARECOMP_VK_QUAD_DERIV" :
+            frag ? "the driver has them in fragment shaders" : "the driver has no subgroups in fragment shaders",
+            sgp.supportedStages, sgp.supportedOperations);
+    }
+    {   // the HSV recolour behind a specialization constant (shader.h maxwell_glsl_tint_branch), by default on Adreno and
+        // Mali: unused, its code still cost Turnip 40% of the house's lit pass (720p, Adreno 650: 8.3 -> 5.0 ms without
+        // it); draws with a Cosmetics colour use the pipeline's RECOLOUR variant (draw). LARECOMP_VK_TINT_BRANCH overrides.
+        const char *te = getenv("LARECOMP_VK_TINT_BRANCH");
+        maxwell_glsl_tint_branch = te ? atoi(te) != 0 : g_vk.props.vendorID == 0x5143 || g_vk.props.vendorID == 0x13B5;
+        LOG("[vk] recolour variants %s (%s)\n", maxwell_glsl_tint_branch ? "on" : "off", te ? "LARECOMP_VK_TINT_BRANCH" : "default for this GPU");
+    }
     // fmin / fmax / saturate as the GPU's min / max / clamp (shader.h maxwell_glsl_fast_minmax) by default on Android,
     // where the fork it comes from measured it on Adreno (Turnip and Qualcomm's driver: the lit pass 1717 -> 1637
     // instructions). LARECOMP_VK_FAST_MINMAX=1 turns it on elsewhere, =0 off anywhere.
@@ -1477,7 +1499,10 @@ static void begin_pass(void) {
             extern bool rq_on(void);
             const char *e = getenv("LARECOMP_CHUNK_PASSES");
             chunk_env = e != NULL;
-            chunk = e ? atoi(e) : rq_on() ? 8 : 0;
+            // Adreno: one submission per list. Turnip on an Adreno 650 hung the GPU (VK_ERROR_DEVICE_LOST) at the
+            // opening's bloom passes at 720p (render scale 0.667) with 8-pass chunks, and every submission there ends in
+            // a flush and an idle gap: the house at 720p, GPU frame 19.5 -> 17.0 ms (Retroid Pocket 5).
+            chunk = e ? atoi(e) : rq_on() && g_vk.props.vendorID != 0x5143 ? 8 : 0;
         }
         int c = chunk;
         if (c > 0 && !chunk_env && heap_whole_userptr()) {  // (decided at boot: asked here, not cached before it)
@@ -2349,10 +2374,11 @@ typedef struct {
     uint32_t stride[17], divisor[17], used_streams;
     uint8_t blend[8][8];
     uint8_t blend_on, a2c, topo_class, poly_fill;
+    uint8_t recol;  // (maxwell_glsl_tint_branch) built with the HSV recolour (RECOLOUR = true)
     uint32_t write_mask[8];
 } PipeKey;
 
-typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; } Pipe;  // state: 0 building, 1 ready, 2 failed
+typedef struct Pipe { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; _Atomic(struct Pipe *) recol_pp; } Pipe;  // state: 0 building, 1 ready, 2 failed; recol_pp: its RECOLOUR variant
 // (record.c, at the bind) the pipeline of a Pipe: NULL while it builds (wait: sleeps until it is done) or failed
 static VkPipeline pipe_resolve(void *obj, bool wait) {
     Pipe *pp = obj;
@@ -2488,6 +2514,9 @@ typedef struct {
     VkPipelineDynamicStateCreateInfo dy;
     VkPipelineRenderingCreateInfo ri;
     VkGraphicsPipelineCreateInfo pi;
+    VkSpecializationMapEntry spe;  // (k->recol: RECOLOUR = true)
+    VkBool32 spv;
+    VkSpecializationInfo spi;
 } PipeCI;
 
 static void pipe_ci_fill(PipeCI *c, const PipeKey *k) {
@@ -2496,6 +2525,12 @@ static void pipe_ci_fill(PipeCI *c, const PipeKey *k) {
         .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = k->prog->vs, .pName = "main"};
     c->stages[1] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
         .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = k->a2c && k->prog->fs_late ? k->prog->fs_late : k->prog->fs, .pName = "main"};
+    if (k->recol) {
+        c->spe = (VkSpecializationMapEntry){RECOLOUR_SPEC_ID, 0, sizeof(VkBool32)};
+        c->spv = VK_TRUE;
+        c->spi = (VkSpecializationInfo){1, &c->spe, sizeof c->spv, &c->spv};
+        c->stages[1].pSpecializationInfo = &c->spi;
+    }
     uint32_t na = 0, nb = 0, nd = 0;
     for (int i = 0; i < 32; i++)
         if (k->attr_mask & (1u << i)) c->va[na++] = (VkVertexInputAttributeDescription){(uint32_t)i, k->attr_bind[i], k->attr_fmt[i], k->attr_off[i]};
@@ -5832,7 +5867,73 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
 }
 
 // ================================================================== compute
-typedef struct { Prog p; ShaderInfo *si; VkPipeline pipe; uint32_t local[3]; uint64_t code; } CsProg;
+// (fold) a 1x1x1 compute shader's packed form: its workgroups as the lanes of 64-wide workgroups (cs_fold_glsl), one
+// pipeline per grid size (the counts are specialization constants 3-5)
+typedef struct CsFold { struct CsProg *cp; uint32_t g[3]; VkPipeline pipe; _Atomic int state; } CsFold;
+#define CS_FOLD_MAX 4
+#define CS_FOLD_LOCAL 64u
+typedef struct CsProg { Prog p; ShaderInfo *si; VkPipeline pipe; uint32_t local[3]; uint64_t code;
+                        VkShaderModule fold_mod; CsFold fold[CS_FOLD_MAX]; int nfold; } CsProg;
+
+// A compute shader with 1x1x1 workgroups runs one lane of each wave: on Adreno (64 / 128 lanes) and Mali the field's
+// tile pass (30x17 groups) took 1 ms of an Adreno 650's 720p frame. If the workgroups can't see each other - no shared
+// memory, barriers, subgroup functions or group counts - each becomes one lane of a 64-wide group: the GLSL takes its
+// workgroup ID from the global index (lanes past the grid return) and its local ID is 0. Default on Adreno and Mali;
+// LARECOMP_VK_CS_FOLD=1 / =0 overrides.
+static bool cs_fold_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("LARECOMP_VK_CS_FOLD");
+        on = e ? atoi(e) != 0 : g_vk.props.vendorID == 0x5143 || g_vk.props.vendorID == 0x13B5;
+        LOG("[vk] 1x1x1 compute workgroups packed into %u-wide ones: %s (%s)\n", CS_FOLD_LOCAL, on ? "on" : "off",
+            e ? "LARECOMP_VK_CS_FOLD" : "default for this GPU");
+    }
+    return on;
+}
+static char *cs_fold_glsl(const char *src) {  // NULL: not foldable
+    const char *main_ = strstr(src, "void main() {\n");
+    if (!main_ || strstr(src, "shared ") || strstr(src, "barrier(") || strstr(src, "gl_NumWorkGroups") ||
+        strstr(src, "gl_GlobalInvocationID") || strstr(src, "gl_Subgroup") || strstr(src, "gl_WorkGroupSize"))
+        return NULL;
+    for (const char *p = strstr(src, "subgroup"); p; p = strstr(p + 1, "subgroup"))
+        if (p < src + 14 || strncmp(p - 14, "GL_KHR_shader_", 14)) return NULL;  // (a call, not the #extension lines)
+    static const char *const from[] = {"gl_WorkGroupID", "gl_LocalInvocationIndex", "gl_LocalInvocationID"};
+    static const char *const to[] = {"lg_wg", "0u", "uvec3(0u)"};
+    size_t cap = strlen(src) * 2 + 1024, n = 0;
+    char *o = malloc(cap);
+    for (const char *p = src; *p;) {
+        if (p == main_) {
+            n += (size_t)sprintf(o + n, "layout(constant_id = 3) const uint LG_GX = 1u;\nlayout(constant_id = 4) const uint LG_GY = 1u;\n"
+                                        "layout(constant_id = 5) const uint LG_GZ = 1u;\nvoid main() {\n"
+                                        "  uint lg_i = gl_GlobalInvocationID.x;\n  if (lg_i >= LG_GX * LG_GY * LG_GZ) return;\n"
+                                        "  uvec3 lg_wg = uvec3(lg_i %% LG_GX, (lg_i / LG_GX) %% LG_GY, lg_i / (LG_GX * LG_GY));\n");
+            p += strlen("void main() {\n");
+            continue;
+        }
+        int k = -1;
+        for (int i = 0; i < 3 && k < 0; i++) if (!strncmp(p, from[i], strlen(from[i]))) k = i;
+        if (k >= 0) { n += (size_t)sprintf(o + n, "%s", to[k]); p += strlen(from[k]); }
+        else o[n++] = *p++;
+        if (n + 512 > cap) { cap *= 2; o = realloc(o, cap); }
+    }
+    o[n] = 0;
+    return o;
+}
+static void build_cs_fold(void *arg) {
+    CsFold *f = arg;
+    CsProg *cp = f->cp;
+    uint32_t sv[6] = {CS_FOLD_LOCAL, 1, 1, f->g[0], f->g[1], f->g[2]};
+    VkSpecializationMapEntry me[6] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}, {3, 12, 4}, {4, 16, 4}, {5, 20, 4}};
+    VkSpecializationInfo spec = {6, me, sizeof sv, sv};
+    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = cp->fold_mod, .pName = "main",
+                                                .pSpecializationInfo = &spec},
+                                      .layout = cp->p.layout};
+    VkResult r = vk_create_compute_pipeline(&ci, &f->pipe);
+    if (r != VK_SUCCESS) LOG("[compute] cs %llx: packed pipeline failed: %d\n", (unsigned long long)cp->code, r);
+    atomic_store(&f->state, r == VK_SUCCESS ? 1 : 2);
+}
 
 static void build_compute(void *arg) {
     CsProg *cp = arg;
@@ -5865,6 +5966,15 @@ static void build_compute(void *arg) {
     VkResult r = vk_create_compute_pipeline(&ci, &cp->pipe);
     SLOW_FEEDBACK_HIT();
     atomic_fetch_add(&stat_compiles, 1);
+    if (r == VK_SUCCESS && cp->local[0] == 1 && cp->local[1] == 1 && cp->local[2] == 1 && cs_fold_on()) {
+        char *fg = cs_fold_glsl(cp->si->msl);  // (the packed module before the state says ready: dispatch reads it then)
+        size_t fn = 0;
+        uint32_t *fs = fg ? vk_glsl_to_spirv(fg, STAGE_COMPUTE, "cs fold", &fn) : NULL;
+        if (fs) cp->fold_mod = vk_module(fs, fn);
+        free(fs);
+        free(fg);
+        LOG("[compute] cs %llx: 1x1x1 workgroups %s\n", (unsigned long long)cp->code, cp->fold_mod ? "packed" : "not packed (they share state)");
+    }
     atomic_store(&cp->p.state, r == VK_SUCCESS ? 1 : 2);
     build_end(bs);
     if (r != VK_SUCCESS) LOG("[compute] cs %llx: pipeline failed: %d\n", (unsigned long long)cp->code, r);
@@ -6222,10 +6332,22 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     if (cp->si->uses_gmem_map && gmir_on()) gmir_table(5, cp->si->uses_gmem_store, cb, gmap_tab);
     else if (cp->si->uses_gmem_map) gfast_prepare(cb);
     VkDescriptorSet ds = stage_set(&cp->p, cp->p.set_layout[0], 0, 5, cp->si, NULL, NULL, gx, gy, gz, NULL, NULL, NULL);
-    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
+    CsFold *fold = NULL;  // (cs_fold_on) this grid's packed pipeline, once built
+    if (cp->fold_mod) {
+        for (int i = 0; i < cp->nfold && !fold; i++)
+            if (cp->fold[i].g[0] == gx && cp->fold[i].g[1] == gy && cp->fold[i].g[2] == gz) fold = &cp->fold[i];
+        if (!fold && cp->nfold < CS_FOLD_MAX) {
+            fold = &cp->fold[cp->nfold++];
+            fold->cp = cp; fold->g[0] = gx; fold->g[1] = gy; fold->g[2] = gz;
+            run_job(build_cs_fold, fold);
+        }
+        if (fold && atomic_load(&fold->state) != 1) fold = NULL;  // (building, or failed: the plain pipeline)
+    }
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, fold ? fold->pipe : cp->pipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
     if (gc_shift && cp->si->uses_gmem) gmem_chunk_bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, GMEM_CHUNK_SET(STAGE_COMPUTE), 1u << STAGE_COMPUTE);
-    rec_CmdDispatch(cb, gx, gy, gz);
+    if (fold) rec_CmdDispatch(cb, (gx * gy * gz + CS_FOLD_LOCAL - 1) / CS_FOLD_LOCAL, 1, 1);
+    else rec_CmdDispatch(cb, gx, gy, gz);
     if (cp->si->uses_gmem_map && cp->si->uses_gmem_store) {
         if (gmir_on()) gmir_after_dispatch(cb);  // (its slots: readbacks; what follows reads the slots)
         else gfast_finish(cb);
@@ -6982,6 +7104,19 @@ static void draw_(CmdRec *r, bool indexed) {
             int u = bottle == 3 || bottle == 6 ? 3 : 0;  // (fairy / Piece of Power models: their bone matrices - souls.c, triforce.c)
             escape_bottle_tint(bottle, (const float *)(uintptr_t)st.ubuf[0][u].addr, (uint32_t)st.ubuf[0][u].size, tint);
         }
+    }
+    if (maxwell_glsl_tint_branch && pr->fi->uses_tint && tint[3] < 0) {  // the HSV recolour: the pipeline built with it
+        Pipe *rp = atomic_load(&pp->recol_pp);
+        if (!rp) {
+            Pipe *n = calloc(1, sizeof *n), *none = NULL;
+            n->k = pp->k;
+            n->k.recol = 1;
+            if (atomic_compare_exchange_strong(&pp->recol_pp, &none, n)) run_job(build_pipeline, n);
+            else free(n);
+            rp = atomic_load(&pp->recol_pp);
+        }
+        // (still building: this draw without its colours, as the plain pipeline draws it)
+        if (atomic_load(&rp->state) == 1 && ss_need(SS_PIPE, ss.pipe == rp)) { ss.pipe = rp; rec_CmdBindPipelineObj(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rp); }
     }
     // fragment textures are bound before deciding the viewport (tex_sc / tex_wh), rscale depends on the decision:
     // build the vertex set now and the fragment set after the decision (stage_set fills tex_sc for stage 1).

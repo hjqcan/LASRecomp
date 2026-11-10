@@ -8,6 +8,7 @@
 
 #include "../game_addresses.h"
 #include "../rt.h"
+#include "../settings.h"
 #include "pace.h"
 #include "slowframe.h"
 
@@ -78,8 +79,21 @@ static uint64_t stat_pace_over;
 // (game manager +0x4e2, normally 0) is 1 while slow, the game's own value again after. Re-asserted every frame while held.
 // Returns whether the game is held (not when it allows no 30 fps mode itself: its most, +0x4e3, is 0).
 #define FW_MIN_EXTRA_VSYNCS 0x4e2  // (+0x4e3: the most, 1 - its 30 fps mode; +0x4e0 / +0x4e1: the current choice)
+// Internal FPS target (Video settings): 30 keeps the game in its 30 fps mode, and "30 outdoors, 60 indoors" does it in
+// the overworld (the level Field: Mabe Village, the beaches, the forest...) and not in houses, caves and dungeons. 60
+// is the pacer's own choice as before. Dynamic resolution follows the same target (output_scale.c dyn_update).
+bool pace_target_30(void) {
+#ifdef PACE_TEST
+    return false;
+#else
+    extern const char *game_level_name(void);  // hle/widescreen.c
+    return g_settings.fps_target == FPS_TARGET_30 || (g_settings.fps_target == FPS_TARGET_MIXED && !strcmp(game_level_name(), "Field"));
+#endif
+}
+
 static bool hold_30(bool on) {
     static bool held;
+    on = on || pace_target_30();  // (the Internal FPS target: held whatever the pacer measures)
     static uint8_t saved;
 #ifdef PACE_TEST  // (tools/test_pace.c: a simulated game manager)
     extern uint64_t pace_test_game_mgr;

@@ -14,6 +14,7 @@ Settings g_settings;
 bool g_gpu_integrated;
 void pace_hitch(const char *why) { (void)why; }
 void pace_settings_changed(const char *what) { (void)what; }
+bool pace_target_30(void) { return false; }
 
 // A fragment shader in the game's shape: the x taps' offsets from c4[0x240] and, when `compare`, a compare lookup on a
 // 2D array. Without the lookup a read of c4[0x240] is some other constant.

@@ -27,7 +27,7 @@ Report bugs as a [GitHub issue](https://github.com/peiikai/LASRecomp/issues). Pl
 
 - your platform (macOS / Windows / Linux), hardware (CPU, GPU) and window size / aspect ratio
 - what you did, what happened, and what you expected
-- for randomizer problems: the **seed ID** (Randomizer tab, Copy button), the settings, and where you got stuck
+- for randomizer problems: the **seed ID** (Randomizer, the seed's Copy seed ID), the settings, and where you got stuck
   (area / room, which items you had). A seed ID reproduces the exact seed on the same LAS Recomp version.
 - a screenshot or short clip if it's visual
 - the log: `lasrecomp.log` in the data folder (see "Where files live" in the README), always the latest run - or if
@@ -114,6 +114,8 @@ New menu text is written in English. Run `python3 tools/menu_strings.py check` t
 untranslated text shows in English.
 
 `python tools/test_save.py` exercises the production save handlers against temporary files, without game data.
+
+`python tools/test_powerup_music.py` checks power-up music toggles, guest-state preservation and reboot resets without game data.
 
 Build-cache regression tests use synthetic inputs and the production scheduler:
 `python tools/test_build_cache.py` and `python tools/test_gamebuild_resume.py`.
