@@ -15,6 +15,7 @@ Vendor IDs: 0x13B5 Arm (Mali), 0x5143 Qualcomm (Adreno), 0x8086 Intel, 0x1002 AM
 | Structured shaders (static branch stacks, no jump loop) | Mali, Adreno | PanVK (RK3588), Turnip | #562 | `LARECOMP_VK_STRUCTURE` |
 | c1 inlined, hot constant buffer words as push constants | Mali, Adreno | PanVK; Turnip (Adreno 643) | #563, #579 | `LARECOMP_VK_PUSH_CB`, `LARECOMP_VK_INLINE_C1` |
 | Fragment quad shuffles through derivatives (no subgroup operations in fragment shaders) | drivers that list subgroups for compute only (Turnip on Adreno 6xx) | Turnip 26.0 / 26.2, Adreno 650 (Retroid Pocket 5): a GPU hang in Marin and Tarin's house without it | | `LARECOMP_VK_QUAD_DERIV` |
+| One submission per command list (no 8-pass chunks) | Adreno | Turnip 26.0, Adreno 650: a GPU hang at 720p in the opening's bloom passes with chunks; house at 720p 19.5 -> 17.0 ms | | `LARECOMP_CHUNK_PASSES` |
 | Split pass barriers | Mali | PanVK | | `LARECOMP_VK_SPLIT_BARRIER` |
 | Command buffers release their memory at each begin (a memory leak without it) | Arm's driver (not PanVK) | libmali g29p1 (Mali-G610, RK3588) | | `LARECOMP_VK_CB_RELEASE` |
 | Branch stacks as variables instead of arrays | Intel | | #462 | `LARECOMP_VK_STACK_ARRAYS=1` gives arrays |

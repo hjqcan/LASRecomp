@@ -1491,7 +1491,10 @@ static void begin_pass(void) {
             extern bool rq_on(void);
             const char *e = getenv("LARECOMP_CHUNK_PASSES");
             chunk_env = e != NULL;
-            chunk = e ? atoi(e) : rq_on() ? 8 : 0;
+            // Adreno: one submission per list. Turnip on an Adreno 650 hung the GPU (VK_ERROR_DEVICE_LOST) at the
+            // opening's bloom passes at 720p (render scale 0.667) with 8-pass chunks, and every submission there ends in
+            // a flush and an idle gap: the house at 720p, GPU frame 19.5 -> 17.0 ms (Retroid Pocket 5).
+            chunk = e ? atoi(e) : rq_on() && g_vk.props.vendorID != 0x5143 ? 8 : 0;
         }
         int c = chunk;
         if (c > 0 && !chunk_env && heap_whole_userptr()) {  // (decided at boot: asked here, not cached before it)
