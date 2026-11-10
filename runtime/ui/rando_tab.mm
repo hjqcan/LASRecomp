@@ -1,5 +1,7 @@
-// Randomizer tab: choose / generate LAS-Randomizer seeds (rando/<seed>/). Switching seeds reboots the game in place
-// (game data is read at boot: runtime/main.c), the window stays; each seed keeps its own save slots.
+// Randomizer page: choose / generate LAS-Randomizer seeds (rando/<seed>/). Its own panel on the start screen (the
+// RANDOMIZER row's New Seed: launcher.mm) and the in-game menu bar's Randomizer (menu.mm), not a Settings tab.
+// Switching seeds reboots the game in place (game data is read at boot: runtime/main.c), the window stays; each seed
+// keeps its own save slots.
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -641,6 +643,28 @@ static void take_focus(int want) {
     opt_focus_item();
 }
 
+// ---- the player's own rows (not part of a seed): in their categories and on the in-game seed sheet
+static void row_tracker(void) {
+    opt_own_next();
+    if (opt_toggle("Overworld and Dungeon Check Tracker", &g_settings.tracker, true,
+                   "The overworld and dungeon maps show which checks you can reach with your items."))
+        settings_save();
+}
+
+// its doorway letters on the dungeon map (runtime/ui/chaos_overlay.mm): on = as you explore, every pair once you have
+// the map (CHAOS_LETTERS_MAP); off = none. (room_shuffle: the seed's, greyed out without it)
+static void row_door_letters(bool room_shuffle) {
+    bool on = g_settings.chaos_letters != CHAOS_LETTERS_OFF;
+    if (!room_shuffle) opt_disable_next();
+    opt_own_next();
+    if (opt_toggle("Map tracks door connections", &on, true,
+                   "Letter pairs on the dungeon map show which doorways connect. A pair shows up once you've used "
+                   "either door, and you see them all once you have the map.")) {
+        g_settings.chaos_letters = on ? CHAOS_LETTERS_MAP : CHAOS_LETTERS_OFF;
+        settings_save();
+    }
+}
+
 // ---- the categories' rows
 static void rows_general(void) {
     {  // starting items (part of the seed)
@@ -659,10 +683,7 @@ static void rows_general(void) {
                "The tunic effects stack, so with both tunics Link has double defense and double attack.");
     opt_toggle("Disable Guardian Acorns / Pieces of Power", &g_opts.no_buffs, false,
                "Disables Guardian Acorns and Pieces of Power from spawning.");
-    opt_own_next();  // (the player's own, not part of a seed)
-    if (opt_toggle("Overworld and Dungeon Check Tracker", &g_settings.tracker, true,
-                   "The overworld and dungeon maps show which checks you can reach with your items."))
-        settings_save();
+    row_tracker();
     opt_toggle("Fast Egg", &g_opts.fast_egg, true, "First drop in the Wind Fish Egg drops you to the boss.");
 }
 
@@ -795,18 +816,7 @@ static void rows_world(float scale) {
                        "Experimental. Shuffles dungeon rooms, creating new layouts."))
             g_opts.room_shuffle = ids[i];
     }
-    {  // its doorway letters on the dungeon map (runtime/ui/chaos_overlay.mm; a player setting, not part of the seed):
-       // on = as you explore, every pair once you have the map (CHAOS_LETTERS_MAP); off = none
-        bool on = g_settings.chaos_letters != CHAOS_LETTERS_OFF;
-        if (!g_opts.room_shuffle) opt_disable_next();
-        opt_own_next();
-        if (opt_toggle("Map tracks door connections", &on, true,
-                       "Letter pairs on the dungeon map show which doorways connect. A pair shows up once you've used "
-                       "either door, and you see them all once you have the map.")) {
-            g_settings.chaos_letters = on ? CHAOS_LETTERS_MAP : CHAOS_LETTERS_OFF;
-            settings_save();
-        }
-    }
+    row_door_letters(g_opts.room_shuffle != 0);
     opt_toggle("Shuffle instruments", &g_opts.shuffle_instruments, false,
                "The Siren Instruments are items in the pool instead of each dungeon's reward.");
     opt_toggle("Open Mabe Village", &g_opts.open_mabe, false, "Mabe Village's paths are open from the start.");
@@ -1385,6 +1395,38 @@ static void seed_header(const char *active) {
     }
 }
 
+// ---- in game, in a seed (the menu bar's Randomizer): this seed's sheet first - the player's own rows, its spoiler log
+// and ID - and Randomizer Main Menu for the whole panel (a new seed, another seed). Outside a seed the panel at once.
+// (user 2026-11-09)
+static bool g_full;       // the whole panel is open over the sheet (B on its left column: back to the sheet)
+static void seed_sheet(float scale, const char *active) {
+    const Seed *sp = NULL;
+    for (const Seed &x : g_seeds) if (x.name == active) sp = &x;
+    GenOpts so = g_opts;  // (the seed's own options, for its room shuffle; a seed from before IDs: the rows all open)
+    bool rooms = !sp || sp->id.empty() || !seed_id_decode(sp->id.c_str(), so).empty() || so.room_shuffle;
+    ImGui::TextColored(plastic_col(plastic_theme().title), "%s", active);
+    ImGui::TextDisabled(L("Seed ID: %s"), sp && !sp->id.empty() ? sp->id.c_str() : "-");
+    if (sp && sp->race) ImGui::TextDisabled(L("Race mode. Seed hash: %s"), hash_names(sp->id).c_str());
+    ImGui::Spacing();
+    opt_begin("##rando_sheet", scale);
+    row_tracker();
+    row_door_letters(rooms);
+    bool locked = sp && sp->race && !sp->race_done;  // (race mode: shut until the credits)
+    if (locked) opt_disable_next();
+    opt_button_next();
+    if (opt_action("Spoiler log", locked ? "Locked" : "", NULL)) g_spoiler_seed = active;
+    if (!sp || sp->id.empty()) opt_disable_next();
+    if (opt_action("Copy seed ID", "", NULL) && sp) ImGui::SetClipboardText(sp->id.c_str());
+    if (opt_action("Randomizer Main Menu", "", "Make a new seed or switch to another one.")) g_full = true;
+    // Switch to vanilla on its own at the bottom of the rows (user 2026-11-10); phones' cards: a gap above it
+    float row_h = ImGui::GetFontSize() * 1.9f, bottom = ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y - row_h;
+    if (!PLAT_TOUCH && bottom > ImGui::GetCursorPosY()) ImGui::SetCursorPosY(bottom);
+    else ImGui::Dummy(ImVec2(0, row_h));
+    if (opt_action("Switch to vanilla", "", "Leave this seed and play the normal game. Your seed's saves stay put."))
+        play_seed("");
+    opt_end();
+}
+
 extern "C" void rando_tab_draw(float scale) {
     if (!g_scanned) scan();
     static bool spoiler_test;  // LARECOMP_SPOILER_TEST=<seed>: open that seed's spoiler page (test hook)
@@ -1418,6 +1460,7 @@ extern "C" void rando_tab_draw(float scale) {
 
     int frame = ImGui::GetFrameCount();
     if (frame - g_last_frame > 1) {  // (back on the tab)
+        g_full = false;
         g_focus = FOCUS_NONE, g_in_right = false, g_confirm_delete = false;
         g_preset_confirm_delete = false, g_replace_preset.clear(), g_preset_msg.clear();
     }
@@ -1442,6 +1485,19 @@ extern "C" void rando_tab_draw(float scale) {
     if (cat_cycle > 0 && cat_frames++ % cat_cycle == 0) g_cat = cat_frames / cat_cycle % N_CAT;
 
     bool busy = g_gen_pid || g_gen_done;  // the generation overlay is up: the whole panel is greyed out under it
+    // (the start screen: no game loaded, nothing playing - and the seed's patches mustn't be applied yet)
+    const char *active = !g_start_screen && rando_seed_dir() ? rando_seed_dir() + 6 : NULL;
+    if (active && !g_full && !busy) {
+        seed_sheet(scale, active);
+        if (g_full) g_focus = FOCUS_CAT;  // (the panel: the cursor on its category)
+        return;
+    }
+    // B / Esc on the panel's left column, opened from the sheet: back to the sheet
+    if (active && g_full && !g_in_right && !busy && !ui_text_busy() && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
+        opt_pressed_back()) {
+        g_back_frame = frame, g_full = false;
+        return;
+    }
     // B / Esc in the right column: a step back (delete confirm -> the seed's actions -> the seed list -> the category);
     // Left too, on a row that doesn't step with left / right
     if (g_in_right && !busy && !ui_text_busy() && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
@@ -1457,8 +1513,6 @@ extern "C" void rando_tab_draw(float scale) {
     }
 
     ImGui::BeginDisabled(busy);
-    // (the start screen: no game loaded, nothing playing - and the seed's patches mustn't be applied yet)
-    const char *active = !g_start_screen && rando_seed_dir() ? rando_seed_dir() + 6 : NULL;
 
     opt_begin("##rando", scale, true);
     opt_compact();

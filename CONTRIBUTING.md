@@ -27,7 +27,7 @@ Report bugs as a [GitHub issue](https://github.com/peiikai/LASRecomp/issues). Pl
 
 - your platform (macOS / Windows / Linux), hardware (CPU, GPU) and window size / aspect ratio
 - what you did, what happened, and what you expected
-- for randomizer problems: the **seed ID** (Randomizer tab, Copy button), the settings, and where you got stuck
+- for randomizer problems: the **seed ID** (Randomizer, the seed's Copy seed ID), the settings, and where you got stuck
   (area / room, which items you had). A seed ID reproduces the exact seed on the same LAS Recomp version.
 - a screenshot or short clip if it's visual
 - the log: `lasrecomp.log` in the data folder (see "Where files live" in the README), always the latest run - or if

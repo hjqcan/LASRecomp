@@ -124,6 +124,7 @@ typedef struct {
     float touch_scale[TOUCH_NCTL];
     bool touch_hidden[TOUCH_NCTL];
     char rando_seed[128];  // active randomizer seed (rando/<name>/), empty = vanilla
+    char rando_last[128];  // the last seed played: where the start screen's Randomizer row starts (empty = New Seed)
     char rando_options[48];  // the Randomizer tab's New seed options: a seed ID without its random part (empty = defaults)
     // the player's own randomizer presets (rando_preset lines): "<name>|<options key>|<tracker><map letters>", "" = free
     char rando_presets[RANDO_PRESETS_MAX][100];

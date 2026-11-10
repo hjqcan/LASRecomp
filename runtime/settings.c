@@ -212,6 +212,10 @@ void settings_load(void) {
             strlcpy(g_settings.rando_seed, val, sizeof g_settings.rando_seed);
             continue;
         }
+        if (!strcmp(key, "rando_last")) {
+            strlcpy(g_settings.rando_last, val, sizeof g_settings.rando_last);
+            continue;
+        }
         if (!strcmp(key, "cosmetics_seed")) {
             strlcpy(g_settings.cosmetics_seed, val, sizeof g_settings.cosmetics_seed);
             continue;
@@ -348,6 +352,8 @@ void settings_load(void) {
     fclose(f);
     if (!tip_key) g_settings.menu_tip_seen = true;  // (a settings file from before the note: not a first launch)
     if (!aspect_key) g_settings.aspect_asked = true;  // (likewise: the aspect ratio was chosen already)
+    // (a settings file from before the Randomizer row: the seed PLAY started last is the row's start)
+    if (!g_settings.rando_last[0]) strlcpy(g_settings.rando_last, g_settings.rando_seed, sizeof g_settings.rando_last);
     if (g_settings.volume < 0) g_settings.volume = 0;
     if (g_settings.volume > 2) g_settings.volume = 2;
     if (g_settings.rumble_strength < 25 || g_settings.rumble_strength > 100) g_settings.rumble_strength = 100;
@@ -458,6 +464,7 @@ void settings_save(void) {
     if (g_settings.cosmetics_seed[0]) fprintf(f, "cosmetics_seed = %s\n", g_settings.cosmetics_seed);
     bind_settings_save(f);
     fprintf(f, "rando_seed = %s\n", g_settings.rando_seed);
+    if (g_settings.rando_last[0]) fprintf(f, "rando_last = %s\n", g_settings.rando_last);
     if (g_settings.rando_options[0]) fprintf(f, "rando_options = %s\n", g_settings.rando_options);
     for (int i = 0; i < RANDO_PRESETS_MAX; i++)
         if (g_settings.rando_presets[i][0]) fprintf(f, "rando_preset = %s\n", g_settings.rando_presets[i]);
