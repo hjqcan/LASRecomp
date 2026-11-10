@@ -1418,6 +1418,12 @@ static void seed_sheet(float scale, const char *active) {
     if (!sp || sp->id.empty()) opt_disable_next();
     if (opt_action("Copy seed ID", "", NULL) && sp) ImGui::SetClipboardText(sp->id.c_str());
     if (opt_action("Randomizer Settings", "", "Make a new seed or switch to another one.")) g_full = true;
+    // Switch to vanilla on its own at the bottom of the rows (user 2026-11-10); phones' cards: a gap above it
+    float row_h = ImGui::GetFontSize() * 1.9f, bottom = ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y - row_h;
+    if (!PLAT_TOUCH && bottom > ImGui::GetCursorPosY()) ImGui::SetCursorPosY(bottom);
+    else ImGui::Dummy(ImVec2(0, row_h));
+    if (opt_action("Switch to vanilla", "", "Leave this seed and play the normal game. Your seed's saves stay put."))
+        play_seed("");
     opt_end();
 }
 
