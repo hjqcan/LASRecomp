@@ -717,6 +717,16 @@ static void tab_display(void) {
         if (opt_preview("Internal resolution", &ri, res, NRES, rdef, d, false))
             g_settings.res_mode = res_mode[ri], g_settings.res_auto = false;
     }
+    {   // the game's own two frame rates (pace.c pace_target_30); display order -> FPS_TARGET_*
+        static const char *fps[] = {LN("30"), LN("30 outdoors, 60 indoors"), LN("60")};
+        static const int fps_target[] = {FPS_TARGET_30, FPS_TARGET_MIXED, FPS_TARGET_60};
+        int fi = 2;
+        for (int i = 0; i < 3; i++) if (fps_target[i] == g_settings.fps_target) fi = i;
+        if (opt_choice("Internal FPS target", &fi, fps, 3, 2,
+                       "The frame rate the game aims for. At 30, Dynamic resolution only lowers the resolution when 30 "
+                       "doesn't fit. 30 outdoors, 60 indoors runs the overworld at 30 and houses, caves and dungeons at 60."))
+            g_settings.fps_target = fps_target[fi];
+    }
     {   // each OS's own upscaler next to bilinear (UPSCALE_SHARP: MetalFX on macOS, AMD FSR 1 on Windows)
 #ifdef __APPLE__
         static const char *ups[] = {LN("Bilinear"), LN("MetalFX")};
