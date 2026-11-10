@@ -65,9 +65,9 @@ with tempfile.TemporaryDirectory() as directory:
         subprocess.run([str(exe), mode], env=env, check=True, capture_output=True)
         assert f'resolution = {saved}\n' in ini.read_text(), (lines, ini.read_text())
         count += 1
-    # Shadows (issue #602): Default unless the file says 2x, 3x, 4x or off ("high" from earlier test builds is 2x)
+    # Shadows (issue #602): Default unless the file says 0.5x, 2x, 3x, 4x or off ("high" from earlier test builds is 2x)
     for lines, saved in [([], 'default'), (['shadows = default'], 'default'), (['shadows = 2x'], '2x'), (['shadows = 3x'], '3x'),
-                         (['shadows = 4x'], '4x'), (['shadows = off'], 'off'), (['shadows = high'], '2x'), (['shadows = ultra'], 'default')]:
+                         (['shadows = 4x'], '4x'), (['shadows = off'], 'off'), (['shadows = 0.5x'], '0.5x'), (['shadows = high'], '2x'), (['shadows = ultra'], 'default')]:
         ini = directory / 'test.ini'
         ini.write_text('\n'.join(['resolution = 1x'] + lines) + '\n')
         subprocess.run([str(exe), 'res-chosen'], env=dict(os.environ, LARECOMP_SETTINGS=str(ini)), check=True, capture_output=True)

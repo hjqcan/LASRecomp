@@ -998,8 +998,9 @@ static void ao_grid_fix(Ctx *c, const uint64_t *code, size_t end, uint32_t pc) {
 }
 
 // The game's shadow lookups (issue #602): four compare taps on its shadow map (a 2D array sampler, one layer), offset
-// by the texel size the game writes to its scene constants (c4[0x240]: 1/2048, 1/2048). With the map larger than the
-// game's size (output_scale_shadow) the taps stay that far apart in the map, so the edges stay as wide as the Switch's.
+// by the texel size the game writes to its scene constants (c4[0x240]: 1/2048, 1/2048). With the map at another size
+// than the game's (output_scale_shadow) the taps would stay that far apart in the map, so the edges would stay as wide
+// as the Switch's at 2x to 4x, and the taps would fall between texels at 0.5x.
 // The texel size is divided by the map's scale, rscale[1 + slot].x: the real texel again, and the game's value at the
 // Switch's size. The reads go through a local set at the start, so a raw move of the constant is covered too. Without
 // a shadow array in the shader c4[0x240] is something else and is left alone.

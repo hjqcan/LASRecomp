@@ -55,6 +55,8 @@ int main(void) {
     assert(output_scale_shadow() == 3);
     g_settings.shadow_quality = SHADOW_4X;
     assert(output_scale_shadow() == 4);
+    g_settings.shadow_quality = SHADOW_HALF;
+    assert(output_scale_shadow() == 0.5f && !output_scale_shadow_off());
     g_settings.shadow_quality = 7;
     assert(output_scale_shadow() == 1);
     assert(!output_scale_shadow_off());
