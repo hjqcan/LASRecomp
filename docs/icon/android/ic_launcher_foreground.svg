@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Android adaptive icon, foreground layer (the 1024 canvas is the 108 dp layer). Made from docs/icon/icon.svg (the same scene at 79%,
+       carried out to the edges): keep the two in step.
+       PNGs: rsvg-convert -w <108 dp at each density> into android/app/src/main/res/mipmap-*/. -->
+  <defs>
+    <linearGradient id="sky" gradientUnits="userSpaceOnUse" x1="0" y1="100" x2="0" y2="924">
+      <stop offset="0" stop-color="#0b1a3a"/><stop offset="0.55" stop-color="#1d4f7a"/><stop offset="1" stop-color="#2e8c9c"/>
+    </linearGradient>
+    <linearGradient id="sea" gradientUnits="userSpaceOnUse" x1="0" y1="600" x2="0" y2="924">
+      <stop offset="0" stop-color="#1f6f8f"/><stop offset="1" stop-color="#0c2f4f"/>
+    </linearGradient>
+    <linearGradient id="sand" gradientUnits="userSpaceOnUse" x1="0" y1="770" x2="0" y2="924">
+      <stop offset="0" stop-color="#f3d79a"/><stop offset="1" stop-color="#c99a52"/>
+    </linearGradient>
+    <linearGradient id="blade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e9f3ff"/><stop offset="0.5" stop-color="#ffffff"/><stop offset="0.5" stop-color="#b9cbe0"/><stop offset="1" stop-color="#8fa6c2"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe08a"/><stop offset="1" stop-color="#c8891e"/>
+    </linearGradient>
+    <radialGradient id="moonglow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fff6d8" stop-opacity="0.55"/><stop offset="1" stop-color="#fff6d8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <g transform="translate(512 512) scale(0.79) translate(-512 -512)">
+    <rect x="-400" y="-400" width="1850" height="1000" fill="url(#sky)"/>
+    <g fill="#fff8e0">
+      <circle cx="210" cy="215" r="5"/><circle cx="300" cy="170" r="3.5"/><circle cx="395" cy="250" r="4"/>
+      <circle cx="250" cy="330" r="3"/><circle cx="470" cy="165" r="3"/><circle cx="820" cy="380" r="3.5"/>
+      <circle cx="560" cy="300" r="2.8"/><circle cx="60" cy="120" r="4"/><circle cx="980" cy="140" r="3.5"/>
+      <circle cx="40" cy="430" r="3"/><circle cx="1000" cy="500" r="3"/><circle cx="150" cy="40" r="3"/>
+    </g>
+    <circle cx="700" cy="275" r="200" fill="url(#moonglow)"/>
+    <circle cx="700" cy="275" r="92" fill="#fff3cf"/>
+    <circle cx="732" cy="252" r="82" fill="#25507c" opacity="0.18"/>
+    <rect x="-400" y="600" width="1850" height="850" fill="url(#sea)"/>
+    <path d="M-540 640 Q-460 620 -380 640 T-220 640 T-60 640 T100 640 T260 640 T420 640 T580 640 T740 640 T900 640 T1060 640 T1220 640 T1380 640 T1540 640" stroke="#7fd3e0" stroke-width="7" fill="none" opacity="0.7"/>
+    <path d="M-700 705 Q-600 685 -500 705 T-300 705 T-100 705 T100 705 T300 705 T500 705 T700 705 T900 705 T1100 705 T1300 705 T1500 705" stroke="#5fb8cf" stroke-width="6" fill="none" opacity="0.55"/>
+    <path d="M150 640 Q330 520 560 600 Q700 610 770 640 Z" fill="#14363f"/>
+    <path d="M300 585 Q360 470 430 560 Q470 520 520 590 Z" fill="#1b4a52"/>
+    <path d="M395 600 Q385 520 420 440" stroke="#0e2a31" stroke-width="16" fill="none" stroke-linecap="round"/>
+    <g fill="#0e2a31">
+      <path d="M420 440 Q360 410 320 440 Q365 420 420 446 Z"/>
+      <path d="M420 440 Q470 395 525 418 Q470 410 422 447 Z"/>
+      <path d="M420 440 Q400 380 350 375 Q395 395 416 446 Z"/>
+      <path d="M420 440 Q455 455 480 500 Q445 465 418 447 Z"/>
+    </g>
+    <g transform="translate(600 360) rotate(7)">
+      <path d="M-22 120 L22 120 L22 470 L0 520 L-22 470 Z" fill="url(#blade)" stroke="#5c728e" stroke-width="4"/>
+      <rect x="-80" y="96" width="160" height="30" rx="12" fill="url(#gold)" stroke="#7a4d10" stroke-width="4"/>
+      <rect x="-15" y="0" width="30" height="100" rx="8" fill="#3b5fa8" stroke="#1d335f" stroke-width="4"/>
+      <circle cx="0" cy="-10" r="24" fill="url(#gold)" stroke="#7a4d10" stroke-width="4"/>
+      <path d="M-30 128 L0 150 L30 128" fill="#c8891e"/>
+    </g>
+    <path d="M-400 1450 L-400 860 Q-150 850 100 820 Q330 750 560 790 Q760 820 924 770 Q1180 700 1450 745 L1450 1450 Z" fill="url(#sand)"/>
+    <path d="M520 812 Q640 770 760 808" fill="#e6c27d"/>
+    <path d="M540 868 Q640 842 750 870" stroke="#b5864a" stroke-width="10" fill="none" opacity="0.6" stroke-linecap="round"/>
+  </g>
+</svg>
