@@ -46,11 +46,17 @@ int main(void) {
     assert(!output_scale_is_shadow_map(1, 1, 1920, 1080, 0x35, true));
     assert(!output_scale_is_shadow_map(1, 1, 1024, 1024, 0x35, true));
 
-    // Default is the Switch's size, High twice it
+    // Default is the Switch's size, 2x to 4x that many times it; an out-of-range value is Default
     g_settings.shadow_quality = SHADOW_DEFAULT;
     assert(output_scale_shadow() == 1);
-    g_settings.shadow_quality = SHADOW_HIGH;
+    g_settings.shadow_quality = SHADOW_2X;
     assert(output_scale_shadow() == 2);
+    g_settings.shadow_quality = SHADOW_3X;
+    assert(output_scale_shadow() == 3);
+    g_settings.shadow_quality = SHADOW_4X;
+    assert(output_scale_shadow() == 4);
+    g_settings.shadow_quality = 7;
+    assert(output_scale_shadow() == 1);
 
     // the texel size follows the map's scale in both shader languages, for the slot the compare lookup uses
     char *m = translate(STAGE_FRAGMENT, false, true);

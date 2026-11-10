@@ -445,8 +445,8 @@ bool output_scale_is_shadow_map(uint32_t target, uint32_t samples, uint32_t w, u
     return target == 1 && samples <= 1 && w == 2048 && h == 2048 && format == 0x35 && render_target;
 }
 
-// Its scale: the Switch's size, or twice it (High), at any render scale. At four times the size the edges gained
-// little more for 300 MB. LARECOMP_SHADOW_SCALE=<n> (test): n times the Switch's size.
+// Its scale: 1 to 4 times the Switch's size (the Shadows setting), at any render scale. Each step costs more memory:
+// about 60 MB at 2x and 300 MB at 4x. LARECOMP_SHADOW_SCALE=<n> (test): n times the Switch's size.
 float output_scale_shadow(void) {
     static float test = -1;
     if (test < 0) {
@@ -454,7 +454,8 @@ float output_scale_shadow(void) {
         test = e ? (float)atof(e) : 0;
     }
     if (test >= 1 && test <= 4) return test;
-    return g_settings.shadow_quality == SHADOW_HIGH ? 2 : 1;
+    int q = g_settings.shadow_quality;
+    return q >= SHADOW_2X && q <= SHADOW_4X ? (float)(q + 1) : 1;
 }
 
 void output_scale_log(unsigned long long frame, double dw, double dh, const OutScale *o) {
