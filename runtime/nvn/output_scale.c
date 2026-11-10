@@ -473,6 +473,42 @@ float output_scale_ao(float al) {
     return g_settings.ao_quality == AO_HIGH ? fminf(2, fmaxf(1, 2 * al)) : 1;
 }
 
+// The game's shadow map: one 2048x2048 D24S8 render target for the whole scene (2D, not multisampled). Lit shaders take
+// four compare taps one texel apart, in the game's texel size (maxwell/translate.c shadow_taps).
+bool output_scale_is_shadow_map(uint32_t target, uint32_t samples, uint32_t w, uint32_t h, uint32_t format, bool render_target) {
+    return target == 1 && samples <= 1 && w == 2048 && h == 2048 && format == 0x35 && render_target;
+}
+
+// Its scale: half to 4 times the Switch's size (the Shadows setting), at any render scale. Each step up costs more
+// memory: about 60 MB at 2x and 300 MB at 4x; 0.5x saves 12 MB and a quarter of the pass's pixels, for weak GPUs.
+// LARECOMP_SHADOW_SCALE=<n> (test, 0.5 to 4): n times the Switch's size.
+float output_scale_shadow(void) {
+    static float test = -1;
+    if (test < 0) {
+        const char *e = getenv("LARECOMP_SHADOW_SCALE");
+        test = e ? (float)atof(e) : 0;
+    }
+    if (test >= 0.5f && test <= 4) return test;
+    int q = g_settings.shadow_quality;
+    return q == SHADOW_HALF ? 0.5f : q >= SHADOW_2X && q <= SHADOW_4X ? (float)(q - SHADOW_DEFAULT + 1) : 1;
+}
+
+// The polygon offset of draws into the shadow map: the game's slope factor counts in its map's texels, so with the map
+// n times the Switch's size the same factor pushes casters back 1/n as far, and thin casters (grass cards, the stones'
+// edges) shadow themselves - dark streaks at 4x. The factor is multiplied by the map's scale, the game's offset in the
+// scene again. LARECOMP_SHADOW_BIAS_RAW=1 (A/B tests): the game's factor as it is.
+float output_scale_shadow_slope(void) {
+    static int raw = -1;
+    if (raw < 0) raw = getenv("LARECOMP_SHADOW_BIAS_RAW") != NULL;
+    return raw ? 1 : output_scale_shadow();
+}
+
+// Shadows Off: the draws into the shadow map are skipped (renderer.m / vulkan/exec.c draw). The game still clears it to
+// 1.0 every frame, which its lit shaders' compare taps read as unshadowed, so nothing is shaded.
+bool output_scale_shadow_off(void) {
+    return g_settings.shadow_quality == SHADOW_OFF;
+}
+
 void output_scale_log(unsigned long long frame, double dw, double dh, const OutScale *o) {
     static double psx, psy, pdw, pdh;
     static int nlog;

@@ -66,6 +66,7 @@ Settings g_settings = {
     .walk_speed_dungeons = false,
     .upscaler = UPSCALE_SHARP,  // (MetalFX on macOS, AMD FSR 1 on Windows)
     .upscaler_auto = true,
+    .shadow_quality = SHADOW_DEFAULT,
     .res_auto = true,
     .livesplit_host = "localhost:16834",
 #ifndef __APPLE__
@@ -255,6 +256,10 @@ void settings_load(void) {
             else g_settings.upscaler = g_default_upscaler;
         }
         else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
+        else if (!strcmp(key, "shadows"))  // ("high": test builds of #602 before 3x and 4x, the same as 2x)
+            g_settings.shadow_quality = !strcmp(val, "2x") || !strcmp(val, "high") ? SHADOW_2X
+                                      : !strcmp(val, "3x") ? SHADOW_3X : !strcmp(val, "4x") ? SHADOW_4X : !strcmp(val, "off") ? SHADOW_OFF
+                                      : !strcmp(val, "0.5x") ? SHADOW_HALF : SHADOW_DEFAULT;
         else if (!strcmp(key, "fps_target")) g_settings.fps_target = !strcmp(val, "30") ? FPS_TARGET_30 : !strcmp(val, "mixed") ? FPS_TARGET_MIXED : FPS_TARGET_60;
         else if (!strcmp(key, "ambient_occlusion")) g_settings.ao_quality = !strcmp(val, "high") ? AO_HIGH : !strcmp(val, "off") ? AO_OFF : AO_SWITCH;
         else if (!strcmp(key, "inv_keys")) g_settings.inv_keys = atoi(val) != 0;
@@ -398,6 +403,11 @@ void settings_save(void) {
     fprintf(f, "upscaler = %s\n", g_settings.upscaler_auto ? "auto" : g_settings.upscaler == UPSCALE_METALFX ? "metalfx" :
                                    g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
+    {
+        static const char *sh[] = {"off", "0.5x", "default", "2x", "3x", "4x"};
+        int q = g_settings.shadow_quality;
+        fprintf(f, "shadows = %s\n", sh[q >= SHADOW_OFF && q <= SHADOW_4X ? q : SHADOW_DEFAULT]);
+    }
     fprintf(f, "ambient_occlusion = %s\n", g_settings.ao_quality == AO_HIGH ? "high" : g_settings.ao_quality == AO_OFF ? "off" : "switch");
     fprintf(f, "resolution = %s\n", g_settings.res_auto ? "auto" : res_name(g_settings.res_mode));
     fprintf(f, "fps_target = %s\n", g_settings.fps_target == FPS_TARGET_30 ? "30" : g_settings.fps_target == FPS_TARGET_MIXED ? "mixed" : "60");

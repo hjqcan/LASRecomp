@@ -239,6 +239,7 @@ static void setting_at_tick(void) {
         if (!strcmp(key, "screen_filter")) { g_settings.screen_filter = v; LOG("[qol] test: f%llu %s = %d\n", (unsigned long long)now, key, v); }
         if (!strcmp(key, "enemy_colours")) { g_settings.enemy_colours = v; LOG("[qol] test: f%llu %s = %d\n", (unsigned long long)now, key, v); }
         if (!strcmp(key, "dpad_mode")) { g_settings.dpad_mode = v; LOG("[qol] test: f%llu %s = %d\n", (unsigned long long)now, key, v); }
+        if (!strcmp(key, "shadows")) { g_settings.shadow_quality = v; LOG("[qol] test: f%llu %s = %d\n", (unsigned long long)now, key, v); }
         bool *b = !strcmp(key, "move_360") ? &g_settings.move_360 : !strcmp(key, "blur_removal") ? &g_settings.blur_removal :
                   !strcmp(key, "frame_interp") ? &g_settings.frame_interp :
                   !strcmp(key, "powerup_music") ? &g_settings.powerup_music : NULL;

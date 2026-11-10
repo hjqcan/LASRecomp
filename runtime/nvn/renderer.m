@@ -20,6 +20,7 @@
 #include "recolour.h"
 #include "slowframe.h"
 #include "weather.h"
+#include "output_scale.h"
 #include "../settings.h"
 
 static id<MTLDevice> dev;
@@ -4417,6 +4418,9 @@ static void draw_one(CmdRec *r, bool indexed) {
         static float last[3] = {0, 0, 0};
         float f[3] = {0, 0, 0};
         if ((st.poly[3] & 4) && !nobias) memcpy(f, st.poly_offset, sizeof f);
+        NvnTexture *sd = st.rt.depth;  // (the shadow map at another size than the game's: output_scale_shadow_slope)
+        if (f[0] && sd && output_scale_is_shadow_map(sd->target, sd->samples, sd->width, sd->height, sd->format, (sd->flags & 8) != 0))
+            f[0] *= output_scale_shadow_slope();
         if (decal_le) {  // (EPS in float units, 2^-24 at depth 0.5..1; a D16 buffer's unit is 2^-16)
             f[0] *= hw_scale;
             f[1] = f[1] * hw_scale - (st.rt.depth && st.rt.depth->format == 0x32 ? hw_eps / 256 : hw_eps);
@@ -5435,6 +5439,11 @@ static bool hud_bars_clear(void) {  // (false: not at the window's image yet, e.
 }
 
 static void draw(CmdRec *r, bool indexed) {
+    {   // Shadows Off (output_scale_shadow_off): nothing is drawn into the game's shadow map
+        NvnTexture *d = st.rt.depth;
+        if (d && output_scale_shadow_off() &&
+            output_scale_is_shadow_map(d->target, d->samples, d->width, d->height, d->format, (d->flags & 8) != 0)) return;
+    }
     static bool hud_bars;  // (the scene composite was drawn, its bars not cleared yet)
     extern bool hud_corners_active(void);
     if (hud_bars && hud_bars_clear()) hud_bars = false;

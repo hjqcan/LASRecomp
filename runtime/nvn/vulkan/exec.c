@@ -22,6 +22,7 @@
 #include "record.h"
 #include "../renderer.h"
 #include "../interp.h"
+#include "../output_scale.h"
 #include "../pace.h"
 #include "../recolour.h"
 #include "../screen_filter.h"
@@ -6750,6 +6751,11 @@ static bool hud_bars_clear(void) {  // (false: not at the window's image yet, e.
 }
 
 static void draw(CmdRec *r, bool indexed) {
+    {   // Shadows Off (output_scale_shadow_off): nothing is drawn into the game's shadow map
+        NvnTexture *d = st.rt.depth;
+        if (d && output_scale_shadow_off() &&
+            output_scale_is_shadow_map(d->target, d->samples, d->width, d->height, d->format, (d->flags & 8) != 0)) return;
+    }
     PROF_T0();
     static bool hud_bars;  // (the scene composite was drawn, its bars not cleared yet)
     extern bool hud_corners_active(void);
@@ -7015,6 +7021,9 @@ static void draw_(CmdRec *r, bool indexed) {
         if (off < 0) off = getenv("LARECOMP_NO_DEPTH_BIAS") != NULL;
         bool on = (st.poly[3] & 4) && !off;
         if (on) memcpy(f, st.poly_offset, sizeof f);
+        NvnTexture *sd = st.rt.depth;  // (the shadow map at another size than the game's: output_scale_shadow_slope)
+        if (f[0] && sd && output_scale_is_shadow_map(sd->target, sd->samples, sd->width, sd->height, sd->format, (sd->flags & 8) != 0))
+            f[0] *= output_scale_shadow_slope();
         if (equal_tol) { f[1] -= 8; on = true; }  // (see the EQUAL comment above: a few depth ulps nearer)
         if (ss_need(SS_DBE, ss.dbe == (VkBool32)on)) { ss.dbe = on; rec_CmdSetDepthBiasEnable(cb, on); }
         if (ss_need(SS_DB, !memcmp(ss.db, f, sizeof f))) { memcpy(ss.db, f, sizeof f); rec_CmdSetDepthBias(cb, f[1], f[2], f[0]); }

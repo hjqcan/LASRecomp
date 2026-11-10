@@ -13,6 +13,8 @@ enum { UPSCALE_BILINEAR = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /
 #define UPSCALE_SHARP UPSCALE_FSR1
 #endif
 enum { AA_OFF = 0, AA_SMAA = 1 };
+// the game's shadow map: none, half the Switch's size, or 1 to 4 times it (output_scale_shadow). In menu order.
+enum { SHADOW_OFF = 0, SHADOW_HALF, SHADOW_DEFAULT, SHADOW_2X, SHADOW_3X, SHADOW_4X };
 enum { FPS_TARGET_60 = 0, FPS_TARGET_30 = 1, FPS_TARGET_MIXED = 2 };  // Internal FPS target (pace.c pace_target_30)
 enum { AO_SWITCH = 0, AO_HIGH = 1, AO_OFF = 2 };  // the game's ambient occlusion: the Switch's size, up to twice it (output_scale_ao), or none
 enum { PROMPTS_AUTO = 0, PROMPTS_NINTENDO = 1, PROMPTS_XBOX = 2, PROMPTS_PLAYSTATION = 3 };
@@ -45,6 +47,7 @@ typedef struct {
     bool upscaler_auto;  // never chosen: the default for this GPU (settings_resolve_defaults); saved as "auto"
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     int ao_quality;      // AO_*: the resolution of the game's ambient occlusion
+    int shadow_quality;  // SHADOW_*: the resolution of the game's shadow map
     int fps_target;      // FPS_TARGET_*: the game's 30 or 60 fps mode, or 30 outdoors (the Field) and 60 indoors
     float volume;        // master volume, 1 = 100%
     int audio_out;       // AUDIO_OUT_*: speaker layout of the game's sound (runtime/services/audio.c)
