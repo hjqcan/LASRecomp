@@ -222,6 +222,22 @@ static void dyn_update(double now, double game_ms, double win_ms, double lines) 
     if (log < 0) log = getenv("LARECOMP_LOG_DYNRES") != NULL;
     double budget = DYN_BUDGET;
     bool hold_up = false;  // (20 -> 30 fps this time: the factor was set to fit it already)
+    // Internal FPS target 30 (pace_target_30: the setting, or outdoors with "30 outdoors, 60 indoors"): held at 30 from
+    // the start - the factor only goes down when even 30 doesn't fit, and 60 is never looked for. When the target goes
+    // back to 60 (indoors, or the setting changed) that hold ends and Dynamic aims for 60 again, as it would have.
+    extern bool pace_target_30(void);
+    static bool was_t30;
+    bool t30 = pace_target_30();
+    if (gpu && t30 && hold_vsyncs() < 2) {
+        LOG("[dynres] Internal FPS target 30: holding 30 fps (game %.1f + window %.1f ms at %.2f)\n", G, W, g_dyn);
+        g_hold_dt = 2 * 1000 / 60.0, g_hold_w = W;
+        g_floor_g = g_ref_g = G, g_ref_pending = false;
+        g_probing = false, g_hold_miss = g_hold_up_votes = g_hold_met_votes = 0;
+    } else if (was_t30 && !t30 && g_hold_dt > 0) {
+        LOG("[dynres] Internal FPS target 60 here: hold at %.0f fps ended\n", 1000 / g_hold_dt);
+        g_hold_dt = 0, g_probing = false, g_hold_miss = g_hold_up_votes = g_hold_met_votes = 0;
+    }
+    was_t30 = t30;
     if (gpu) {
         if (g_hold_dt > 0 && g_hold_w < 0) g_hold_w = W;  // (the window's size changed: its step's time there)
         else if (g_hold_dt > 0 && fabs(W - g_hold_w) > fmax(1.0, 0.25 * g_hold_w)) {  // another upscaler / AA
@@ -243,7 +259,7 @@ static void dyn_update(double now, double game_ms, double win_ms, double lines) 
             bool room = g_floor + W <= up_budget * DYN_HOLD_UP_FIT;
             g_hold_up_votes = room ? g_hold_up_votes + 1 : 0;
             bool met_now = met && g_hold_met_votes >= 2 && (g_probe_wait <= 10.0 || now >= g_probe_at);
-            if ((room && g_hold_up_votes >= 4 && now >= g_probe_at) || met_now) {
+            if (((room && g_hold_up_votes >= 4 && now >= g_probe_at) || met_now) && !(t30 && vs <= 2)) {  // (30 target: not above 30)
                 g_hold_up_votes = g_hold_miss = g_hold_met_votes = 0;
                 if (vs > 2) {
                     g_hold_dt = (vs - 1) * 1000 / 60.0;
@@ -273,7 +289,7 @@ static void dyn_update(double now, double game_ms, double win_ms, double lines) 
         // lighter) or 2 minutes have passed: a hold that is real (SMAA + FSR 1 at 1080p on the UHD 770) probes rarely.
         double floor_gw = g_ref_g > 0 ? g_floor_g * G / g_ref_g + W : -1;
         bool probe_ok = now - g_probe_fail_at > 120.0 || (floor_gw > 0 && floor_gw < 0.9 * g_probe_fail_gw);
-        if (g_hold_dt > 0 && !hold_up && hold_vsyncs() == 2 && avg_gpu < 0.7 * g_hold_dt && now >= g_probe_at && probe_ok) {
+        if (g_hold_dt > 0 && !hold_up && !t30 && hold_vsyncs() == 2 && avg_gpu < 0.7 * g_hold_dt && now >= g_probe_at && probe_ok) {
             LOG("[dynres] held at 30 with the GPU %.0f%% busy (game %.1f + window %.1f ms at %.2f): its clock may be down, "
                 "trying 60 at %.2f\n", 100 * avg_gpu / g_hold_dt, G, W, g_dyn, g_dyn_floor);
             g_hold_dt = 0, g_probing = true, g_probe_start = now, g_probe_good = 0;
@@ -463,14 +479,15 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     int mode = g_settings.res_mode;
     // The user changed a setting that changes the GPU's load (the menu, the start screen; Dynamic's own steps are g_dyn,
     // not a setting): the frame pacer's 30 fps hold and backoff were learned under the old load (pace.c).
-    static int p_mode = -1, p_ups, p_aa;
+    static int p_mode = -1, p_ups, p_aa, p_fps;
     if (p_mode >= 0) {
         extern void pace_settings_changed(const char *what);
         if (mode != p_mode) pace_settings_changed("resolution");
         else if (g_settings.upscaler != p_ups) pace_settings_changed("upscaler");
         else if (g_settings.antialias != p_aa) pace_settings_changed("anti-aliasing");
+        else if (g_settings.fps_target != p_fps) pace_settings_changed("Internal FPS target");
     }
-    p_mode = mode, p_ups = g_settings.upscaler, p_aa = g_settings.antialias;
+    p_mode = mode, p_ups = g_settings.upscaler, p_aa = g_settings.antialias, p_fps = g_settings.fps_target;
     if (forced > 0) h = forced;
     else if (mode >= 1 && mode <= 8) h = mode == 1 && g_gpu_integrated ? 720 / 1080.0 : mode;
     else {
