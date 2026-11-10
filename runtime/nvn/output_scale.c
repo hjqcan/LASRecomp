@@ -459,6 +459,16 @@ float output_scale_shadow(void) {
     return q == SHADOW_HALF ? 0.5f : q >= SHADOW_2X && q <= SHADOW_4X ? (float)(q - SHADOW_DEFAULT + 1) : 1;
 }
 
+// The polygon offset of draws into the shadow map: the game's slope factor counts in its map's texels, so with the map
+// n times the Switch's size the same factor pushes casters back 1/n as far, and thin casters (grass cards, the stones'
+// edges) shadow themselves - dark streaks at 4x. The factor is multiplied by the map's scale, the game's offset in the
+// scene again. LARECOMP_SHADOW_BIAS_RAW=1 (A/B tests): the game's factor as it is.
+float output_scale_shadow_slope(void) {
+    static int raw = -1;
+    if (raw < 0) raw = getenv("LARECOMP_SHADOW_BIAS_RAW") != NULL;
+    return raw ? 1 : output_scale_shadow();
+}
+
 // Shadows Off: the draws into the shadow map are skipped (renderer.m / vulkan/exec.c draw). The game still clears it to
 // 1.0 every frame, which its lit shaders' compare taps read as unshadowed, so nothing is shaded.
 bool output_scale_shadow_off(void) {
