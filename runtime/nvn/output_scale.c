@@ -458,6 +458,12 @@ float output_scale_shadow(void) {
     return q >= SHADOW_2X && q <= SHADOW_4X ? (float)(q + 1) : 1;
 }
 
+// Shadows Off: the draws into the shadow map are skipped (renderer.m / vulkan/exec.c draw). The game still clears it to
+// 1.0 every frame, which its lit shaders' compare taps read as unshadowed, so nothing is shaded.
+bool output_scale_shadow_off(void) {
+    return g_settings.shadow_quality == SHADOW_OFF;
+}
+
 void output_scale_log(unsigned long long frame, double dw, double dh, const OutScale *o) {
     static double psx, psy, pdw, pdh;
     static int nlog;

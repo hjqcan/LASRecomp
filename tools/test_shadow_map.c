@@ -57,6 +57,9 @@ int main(void) {
     assert(output_scale_shadow() == 4);
     g_settings.shadow_quality = 7;
     assert(output_scale_shadow() == 1);
+    assert(!output_scale_shadow_off());
+    g_settings.shadow_quality = SHADOW_OFF;  // (Off: the map stays at the Switch's size, nothing drawn into it)
+    assert(output_scale_shadow() == 1 && output_scale_shadow_off());
 
     // the texel size follows the map's scale in both shader languages, for the slot the compare lookup uses
     char *m = translate(STAGE_FRAGMENT, false, true);

@@ -20,6 +20,7 @@
 #include "recolour.h"
 #include "slowframe.h"
 #include "weather.h"
+#include "output_scale.h"
 #include "../settings.h"
 
 static id<MTLDevice> dev;
@@ -5435,6 +5436,11 @@ static bool hud_bars_clear(void) {  // (false: not at the window's image yet, e.
 }
 
 static void draw(CmdRec *r, bool indexed) {
+    {   // Shadows Off (output_scale_shadow_off): nothing is drawn into the game's shadow map
+        NvnTexture *d = st.rt.depth;
+        if (d && output_scale_shadow_off() &&
+            output_scale_is_shadow_map(d->target, d->samples, d->width, d->height, d->format, (d->flags & 8) != 0)) return;
+    }
     static bool hud_bars;  // (the scene composite was drawn, its bars not cleared yet)
     extern bool hud_corners_active(void);
     if (hud_bars && hud_bars_clear()) hud_bars = false;

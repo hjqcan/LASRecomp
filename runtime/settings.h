@@ -13,7 +13,7 @@ enum { UPSCALE_BILINEAR = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /
 #define UPSCALE_SHARP UPSCALE_FSR1
 #endif
 enum { AA_OFF = 0, AA_SMAA = 1 };
-enum { SHADOW_DEFAULT = 0, SHADOW_2X, SHADOW_3X, SHADOW_4X };  // the game's shadow map: 1 to 4 times the Switch's size (output_scale_shadow)
+enum { SHADOW_DEFAULT = 0, SHADOW_2X, SHADOW_3X, SHADOW_4X, SHADOW_OFF };  // the game's shadow map: 1 to 4 times the Switch's size (output_scale_shadow), or none
 enum { AO_SWITCH = 0, AO_HIGH = 1, AO_OFF = 2 };  // the game's ambient occlusion: the Switch's size, up to twice it (output_scale_ao), or none
 enum { PROMPTS_AUTO = 0, PROMPTS_NINTENDO = 1, PROMPTS_XBOX = 2, PROMPTS_PLAYSTATION = 3 };
 // Which face button confirms in our own menus (runtime/ui/pad_nav.mm); the game's input is never affected

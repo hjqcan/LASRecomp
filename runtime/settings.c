@@ -251,7 +251,7 @@ void settings_load(void) {
         else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
         else if (!strcmp(key, "shadows"))  // ("high": test builds of #602 before 3x and 4x, the same as 2x)
             g_settings.shadow_quality = !strcmp(val, "2x") || !strcmp(val, "high") ? SHADOW_2X
-                                      : !strcmp(val, "3x") ? SHADOW_3X : !strcmp(val, "4x") ? SHADOW_4X : SHADOW_DEFAULT;
+                                      : !strcmp(val, "3x") ? SHADOW_3X : !strcmp(val, "4x") ? SHADOW_4X : !strcmp(val, "off") ? SHADOW_OFF : SHADOW_DEFAULT;
         else if (!strcmp(key, "ambient_occlusion")) g_settings.ao_quality = !strcmp(val, "high") ? AO_HIGH : !strcmp(val, "off") ? AO_OFF : AO_SWITCH;
         else if (!strcmp(key, "inv_keys")) g_settings.inv_keys = atoi(val) != 0;
         else if (!strcmp(key, "dpad_mode")) g_settings.dpad_mode = !strcmp(val, "items") ? DPAD_ITEMS : !strcmp(val, "move") ? DPAD_MOVE : DPAD_NOTHING;
@@ -392,9 +392,9 @@ void settings_save(void) {
                                    g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
     {
-        static const char *sh[] = {"default", "2x", "3x", "4x"};
+        static const char *sh[] = {"default", "2x", "3x", "4x", "off"};
         int q = g_settings.shadow_quality;
-        fprintf(f, "shadows = %s\n", sh[q >= SHADOW_DEFAULT && q <= SHADOW_4X ? q : SHADOW_DEFAULT]);
+        fprintf(f, "shadows = %s\n", sh[q >= SHADOW_DEFAULT && q <= SHADOW_OFF ? q : SHADOW_DEFAULT]);
     }
     fprintf(f, "ambient_occlusion = %s\n", g_settings.ao_quality == AO_HIGH ? "high" : g_settings.ao_quality == AO_OFF ? "off" : "switch");
     fprintf(f, "resolution = %s\n", g_settings.res_auto ? "auto" : res_name(g_settings.res_mode));

@@ -748,11 +748,11 @@ static void tab_display(void) {
     opt_preview("Ambient occlusion", &g_settings.ao_quality, ao, 3, AO_SWITCH,
                "The soft shadows in corners and around objects. High draws them at up to twice the Switch's resolution, "
                "so their edges are sharper. Off removes them.");
-    static const char *shadows[] = {LN("Default"), LN("2x"), LN("3x"), LN("4x")};
+    static const char *shadows[] = {LN("Default"), LN("2x"), LN("3x"), LN("4x"), LN("Off")};
     preview_text(LN("Configure the shadows that objects and characters cast."), NULL);
-    opt_preview("Shadows", &g_settings.shadow_quality, shadows, 4, SHADOW_DEFAULT,
+    opt_preview("Shadows", &g_settings.shadow_quality, shadows, 5, SHADOW_DEFAULT,
                "The shadows that objects and characters cast. 2x to 4x draw them at that many times the Switch's "
-               "resolution, so their edges are sharper. Higher uses more graphics memory.");
+               "resolution, so their edges are sharper. Higher uses more graphics memory. Off removes them.");
 
     opt_end();
 }

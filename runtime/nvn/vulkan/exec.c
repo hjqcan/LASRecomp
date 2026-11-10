@@ -22,6 +22,7 @@
 #include "record.h"
 #include "../renderer.h"
 #include "../interp.h"
+#include "../output_scale.h"
 #include "../pace.h"
 #include "../recolour.h"
 #include "../screen_filter.h"
@@ -6628,6 +6629,11 @@ static bool hud_bars_clear(void) {  // (false: not at the window's image yet, e.
 }
 
 static void draw(CmdRec *r, bool indexed) {
+    {   // Shadows Off (output_scale_shadow_off): nothing is drawn into the game's shadow map
+        NvnTexture *d = st.rt.depth;
+        if (d && output_scale_shadow_off() &&
+            output_scale_is_shadow_map(d->target, d->samples, d->width, d->height, d->format, (d->flags & 8) != 0)) return;
+    }
     PROF_T0();
     static bool hud_bars;  // (the scene composite was drawn, its bars not cleared yet)
     extern bool hud_corners_active(void);

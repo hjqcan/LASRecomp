@@ -22,6 +22,7 @@ float output_scale_ao(float al);
 // The game's shadow map: is this texture it, and its scale (the Switch's size or twice it, at any render scale).
 bool output_scale_is_shadow_map(uint32_t target, uint32_t samples, uint32_t w, uint32_t h, uint32_t format, bool render_target);
 float output_scale_shadow(void);
+bool output_scale_shadow_off(void);  // Shadows Off: nothing is drawn into it
 // (diagnostics) "[scale] frame f drawable WxH -> render scale sx x sy" whenever the render scale or the window changes
 void output_scale_log(unsigned long long frame, double dw, double dh, const OutScale *o);  // the frame rate Dynamic holds (60 out of reach), else 0
 
