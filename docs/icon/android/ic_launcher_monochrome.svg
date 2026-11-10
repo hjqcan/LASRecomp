@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Android 13 themed icon, monochrome layer (only the alpha counts): the moon and the sword down to the sand line,
+       as placed in ic_launcher_foreground.svg. -->
+  <defs><clipPath id="above-sand"><rect x="0" y="0" width="1024" height="790"/></clipPath></defs>
+  <g transform="translate(512 512) scale(0.79) translate(-512 -512)" fill="#000000">
+    <circle cx="700" cy="275" r="92"/>
+    <g clip-path="url(#above-sand)">
+      <g transform="translate(600 360) rotate(7)">
+        <path d="M-22 120 L22 120 L22 470 L0 520 L-22 470 Z"/>
+        <rect x="-80" y="96" width="160" height="30" rx="12"/>
+        <rect x="-15" y="0" width="30" height="100" rx="8"/>
+        <circle cx="0" cy="-10" r="24"/>
+      </g>
+    </g>
+  </g>
+</svg>
