@@ -128,7 +128,7 @@ Use it with `LARECOMP_INPUT` (to get into a save) and `LARECOMP_SAVE_DIR` (so th
 
 | Variable | Values | What it does |
 |---|---|---|
-| `LARECOMP_SETTING_AT` | `frame:key=value,...` | Change an in-game menu setting at that frame. Keys: `move_360`, `blur_removal`, `frame_interp` (0 / 1), `dpad_mode` (0-2), `enemy_colours` (0-2), `screen_filter` (0-3), and the colour rows `tunic`, `hearts`, `hair`, `shield`, `skin`, `leaves`, `grass`, `sand` (palette name or `#RRGGBB`). |
+| `LARECOMP_SETTING_AT` | `frame:key=value,...` | Change an in-game menu setting at that frame. Keys: `move_360`, `blur_removal`, `frame_interp`, `powerup_music` (0 / 1), `dpad_mode` (0-2), `enemy_colours` (0-2), `screen_filter` (0-3), and the colour rows `tunic`, `hearts`, `hair`, `shield`, `skin`, `leaves`, `grass`, `sand` (palette name or `#RRGGBB`). |
 | `LARECOMP_COSMETICS` | `frame:tunic:hearts,...` | Set the tunic and heart colours (palette name or `#RRGGBB`) at that frame. |
 | `LARECOMP_DAMAGE` | multiplier, or `ohko` | Override the damage taken setting. |
 | `LARECOMP_WALK_SPEED` | multiplier | Override the walk speed setting. |

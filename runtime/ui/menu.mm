@@ -850,6 +850,8 @@ static void tab_audio(void) {
                "Stereo for speakers and headphones. 5.1 sends the game's surround mix to a 5.1 system.");
     opt_toggle("Movie audio", &g_settings.movie_audio, true,
                "Sound in the opening and ending movies. Changes the next time a movie plays.");
+    opt_toggle("Power-up music", &g_settings.powerup_music, true,
+               "Guardian Acorn and Piece of Power music. Off: keep the area's music. Both items still work.");
     opt_section("Effects");
     opt_toggle("Enable reverb", &g_settings.reverb, true,
                "The game's echo in caves, dungeons and big rooms.");
