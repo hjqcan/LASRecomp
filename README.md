@@ -198,8 +198,8 @@ without touching the installed game, your game files or your saves.
   the rumble test running in CI (#299), Linux builds finding their own SDL3 (#437), font re-imports that no longer
   empty the font (#490), a message box on Linux for a CPU without AVX2 (#491), the build and system in the log bot's
   summary (#582), an FFmpeg licence check that really checks (#583), the GPU driver in the log bot's summary (#588),
-  each attached log counted once (#589), the game files check in the log bot's summary (#600), and summaries for
-  logs attached by editing a comment (#601)
+  each attached log counted once (#589), the game files check in the log bot's summary (#600), summaries for
+  logs attached by editing a comment (#601), and a Linux AppImage build that stops when its container fails (#653)
 - **[@ky1vstar](https://github.com/ky1vstar)** - a much faster Linux ARM release build (#319), and touch menus and on-screen controls for phones (#634)
 - **[@theb0rg](https://github.com/theb0rg)** - the fix for AMD integrated graphics on Windows (#335)
 - **[@gtf-dot](https://github.com/gtf-dot)** - the game-text font on Linux (#330)
@@ -208,7 +208,7 @@ without touching the installed game, your game files or your saves.
   cheats and save editor (#453)
 - **[@wimw85](https://github.com/wimw85)** - much faster game code setup on the Steam Deck and other PCs (#434)
 - **[@missionfloyd](https://github.com/missionfloyd)** - a much smaller game code build, without debug info (#487)
-- **[@wolfchimneyrock](https://github.com/wolfchimneyrock)** - full speed on ARM Mali graphics (#527), the CPU and GPU working in parallel on Mali (#529), and faster render passes on Mali (#528, #534), a cheaper FSR upscale (#532), the game on the big cores of ARM and Intel hybrid CPUs on Linux (#533), no more flickering grass and shadows on Mali (#546), the game starting on Snapdragon (Adreno) devices (#561), much faster shaders on Mali and Adreno (#562, #563, #579), faster graphics memory on Mali with Mesa (#564), GPU tuning tools for Vulkan (#565), and no more memory leak on Arm's Mali driver (#607)
+- **[@wolfchimneyrock](https://github.com/wolfchimneyrock)** - full speed on ARM Mali graphics (#527), the CPU and GPU working in parallel on Mali (#529), and faster render passes on Mali (#528, #534), a cheaper FSR upscale (#532), the game on the big cores of ARM and Intel hybrid CPUs on Linux (#533), no more flickering grass and shadows on Mali (#546), the game starting on Snapdragon (Adreno) devices (#561), much faster shaders on Mali and Adreno (#562, #563, #579), faster graphics memory on Mali with Mesa (#564), GPU tuning tools for Vulkan (#565), no more memory leak on Arm's Mali driver (#607), and smaller shader stacks that keep 4 GB Mali boards from running out of memory (#645)
 - **[@mamcjr](https://github.com/mamcjr)** - the Android port ([LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)), which we are bringing in piece by piece, starting with a guest window that can move
 
 Thanks also to everyone who reports issues and tests builds. Your logs and screenshots find most of the bugs.

@@ -132,6 +132,8 @@ Use it with `LARECOMP_INPUT` (to get into a save) and `LARECOMP_SAVE_DIR` (so th
 | `LARECOMP_DAMAGE` | multiplier, or `ohko` | Override the damage taken setting. |
 | `LARECOMP_WALK_SPEED` | multiplier | Override the walk speed setting. |
 | `LARECOMP_MOVE_360` | 0 / 1 | Override the 360-degree movement setting. |
+| `LARECOMP_HOOKSHOT_8WAY` | 0 / 1 | Override the hookshot 8-direction aim setting. |
+| `LARECOMP_HOOKSHOT_LOG` | 1 | Log hookshot hits and each shot's direction before and after the 8-direction aim. |
 | `LARECOMP_BLUR_REMOVAL` | 0 / 1 | Override the blur removal setting. |
 | `LARECOMP_PROMPTS` | `xbox`, `playstation`, `nintendo`, other = auto | Force the button icon style. |
 | `LARECOMP_NO_BUFF` | 0 / 1 | Force the "no buff drops" option on or off. |

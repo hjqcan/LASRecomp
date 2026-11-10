@@ -48,16 +48,21 @@ static bool contains_nocase(const char *hay, const char *needle) {  // (no strca
 }
 
 // The graphics driver's own code (the crash was inside it, not in LAS Recomp): Vulkan drivers on Windows / Linux,
-// Apple's Metal driver
+// Apple's Metal driver, ARM Linux and Android drivers. Only the file name counts (#648: "igd" matched a folder called
+// Rigdon, so a crash in the game code read as a driver crash).
 static bool in_gpu_driver(uint64_t pc) {
     char m[512];
     if (!pc || !plat_module_name(pc, m, sizeof m)) return false;
+    const char *file = m;
+    for (const char *p = m; *p; p++)
+        if (*p == '/' || *p == '\\') file = p + 1;
+    // (Android's vendor drivers are vulkan.<soc>.so; only as a prefix, or libvulkan.so, the loader, would match too)
+    if (!strncmp(file, "vulkan.", 7)) return true;
     static const char *const drivers[] = {"nvoglv", "nvgpucomp", "nvwgf", "libnvidia", "amdvlk", "amdxc", "atiumd",
-                                          "atig6", "igvk", "igc64", "igd", "libvulkan_radeon", "libvulkan_intel",
-                                          "libvulkan_nouveau", "libvulkan_lvp", "libvulkan_virtio", "AGXMetal",
-                                          "MTLCompiler", "libLLVM", "radeonsi"};
+                                          "atig6", "igvk", "igc64", "igd", "libvulkan_", "libmali", "libGLES_mali",
+                                          "AGXMetal", "MTLCompiler", "libLLVM", "radeonsi"};
     for (size_t i = 0; i < sizeof drivers / sizeof *drivers; i++)
-        if (contains_nocase(m, drivers[i])) return true;
+        if (contains_nocase(file, drivers[i])) return true;
     return false;
 }
 
