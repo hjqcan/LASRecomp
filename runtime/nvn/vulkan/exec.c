@@ -1347,6 +1347,13 @@ void vk_exec_init(void) {
             frag ? "the driver has them in fragment shaders" : "the driver has no subgroups in fragment shaders",
             sgp.supportedStages, sgp.supportedOperations);
     }
+    {   // the HSV recolour behind a specialization constant (shader.h maxwell_glsl_tint_branch), by default on Adreno and
+        // Mali: unused, its code still cost Turnip 40% of the house's lit pass (720p, Adreno 650: 8.3 -> 5.0 ms without
+        // it); draws with a Cosmetics colour use the pipeline's RECOLOUR variant (draw). LARECOMP_VK_TINT_BRANCH overrides.
+        const char *te = getenv("LARECOMP_VK_TINT_BRANCH");
+        maxwell_glsl_tint_branch = te ? atoi(te) != 0 : g_vk.props.vendorID == 0x5143 || g_vk.props.vendorID == 0x13B5;
+        LOG("[vk] recolour variants %s (%s)\n", maxwell_glsl_tint_branch ? "on" : "off", te ? "LARECOMP_VK_TINT_BRANCH" : "default for this GPU");
+    }
     // fmin / fmax / saturate as the GPU's min / max / clamp (shader.h maxwell_glsl_fast_minmax) by default on Android,
     // where the fork it comes from measured it on Adreno (Turnip and Qualcomm's driver: the lit pass 1717 -> 1637
     // instructions). LARECOMP_VK_FAST_MINMAX=1 turns it on elsewhere, =0 off anywhere.
@@ -2366,10 +2373,11 @@ typedef struct {
     uint32_t stride[17], divisor[17], used_streams;
     uint8_t blend[8][8];
     uint8_t blend_on, a2c, topo_class, poly_fill;
+    uint8_t recol;  // (maxwell_glsl_tint_branch) built with the HSV recolour (RECOLOUR = true)
     uint32_t write_mask[8];
 } PipeKey;
 
-typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; } Pipe;  // state: 0 building, 1 ready, 2 failed
+typedef struct Pipe { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; _Atomic(struct Pipe *) recol_pp; } Pipe;  // state: 0 building, 1 ready, 2 failed; recol_pp: its RECOLOUR variant
 // (record.c, at the bind) the pipeline of a Pipe: NULL while it builds (wait: sleeps until it is done) or failed
 static VkPipeline pipe_resolve(void *obj, bool wait) {
     Pipe *pp = obj;
@@ -2505,6 +2513,9 @@ typedef struct {
     VkPipelineDynamicStateCreateInfo dy;
     VkPipelineRenderingCreateInfo ri;
     VkGraphicsPipelineCreateInfo pi;
+    VkSpecializationMapEntry spe;  // (k->recol: RECOLOUR = true)
+    VkBool32 spv;
+    VkSpecializationInfo spi;
 } PipeCI;
 
 static void pipe_ci_fill(PipeCI *c, const PipeKey *k) {
@@ -2513,6 +2524,12 @@ static void pipe_ci_fill(PipeCI *c, const PipeKey *k) {
         .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = k->prog->vs, .pName = "main"};
     c->stages[1] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
         .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = k->a2c && k->prog->fs_late ? k->prog->fs_late : k->prog->fs, .pName = "main"};
+    if (k->recol) {
+        c->spe = (VkSpecializationMapEntry){RECOLOUR_SPEC_ID, 0, sizeof(VkBool32)};
+        c->spv = VK_TRUE;
+        c->spi = (VkSpecializationInfo){1, &c->spe, sizeof c->spv, &c->spv};
+        c->stages[1].pSpecializationInfo = &c->spi;
+    }
     uint32_t na = 0, nb = 0, nd = 0;
     for (int i = 0; i < 32; i++)
         if (k->attr_mask & (1u << i)) c->va[na++] = (VkVertexInputAttributeDescription){(uint32_t)i, k->attr_bind[i], k->attr_fmt[i], k->attr_off[i]};
@@ -6991,6 +7008,19 @@ static void draw_(CmdRec *r, bool indexed) {
             int u = bottle == 3 || bottle == 6 ? 3 : 0;  // (fairy / Piece of Power models: their bone matrices - souls.c, triforce.c)
             escape_bottle_tint(bottle, (const float *)(uintptr_t)st.ubuf[0][u].addr, (uint32_t)st.ubuf[0][u].size, tint);
         }
+    }
+    if (maxwell_glsl_tint_branch && pr->fi->uses_tint && tint[3] < 0) {  // the HSV recolour: the pipeline built with it
+        Pipe *rp = atomic_load(&pp->recol_pp);
+        if (!rp) {
+            Pipe *n = calloc(1, sizeof *n), *none = NULL;
+            n->k = pp->k;
+            n->k.recol = 1;
+            if (atomic_compare_exchange_strong(&pp->recol_pp, &none, n)) run_job(build_pipeline, n);
+            else free(n);
+            rp = atomic_load(&pp->recol_pp);
+        }
+        // (still building: this draw without its colours, as the plain pipeline draws it)
+        if (atomic_load(&rp->state) == 1 && ss_need(SS_PIPE, ss.pipe == rp)) { ss.pipe = rp; rec_CmdBindPipelineObj(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rp); }
     }
     // fragment textures are bound before deciding the viewport (tex_sc / tex_wh), rscale depends on the decision:
     // build the vertex set now and the fragment set after the decision (stage_set fills tex_sc for stage 1).
