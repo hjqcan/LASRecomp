@@ -209,7 +209,14 @@ static bool tex_ao(const NvnTexture *t) {
     return t->format == 0x1 || (t->format == 0x35 && t->width <= 480);  // R8 unorm / D24S8, 16:9 (checked by the caller)
 }
 
+// The game's shadow map (one 2048x2048 depth-stencil, not 16:9, so the frame's scale never reaches it): its own scale,
+// output_scale_shadow(). Issue #602.
+static bool tex_shadow(const NvnTexture *t) {
+    return title_is_las() && output_scale_is_shadow_map(t->target, t->samples, t->width, t->height, t->format, (t->flags & 8) != 0);
+}
+
 static bool tex_scalable(const NvnTexture *t, bool render_target) {
+    if (tex_shadow(t)) return true;  // (its scale can change in the menu: 1 at Default)
     static int off = -1;  // (per texture lookup: cached)
     if (off < 0) off = getenv("LARECOMP_NO_SCALE") != NULL;
     if (off) return false;
@@ -222,8 +229,8 @@ static bool tex_scalable(const NvnTexture *t, bool render_target) {
 }
 // The scale a scalable texture is allocated and drawn at: the ambient occlusion's own, else the frame's
 // (the AO: uniform, by the height's)
-static float tex_alloc_x(const TexBackend *b) { return b->ao ? output_scale_ao(g_al_y) : g_al_x; }
-static float tex_alloc_y(const TexBackend *b) { return b->ao ? output_scale_ao(g_al_y) : g_al_y; }
+static float tex_alloc_x(const TexBackend *b) { if (b->shadow) return output_scale_shadow(); return b->ao ? output_scale_ao(g_al_y) : g_al_x; }
+static float tex_alloc_y(const TexBackend *b) { if (b->shadow) return output_scale_shadow(); return b->ao ? output_scale_ao(g_al_y) : g_al_y; }
 
 bool renderer_texture_first_write(NvnTexture *t) {
     TexBackend *b = t ? (TexBackend *)t->backend : NULL;
@@ -249,7 +256,7 @@ bool renderer_texture_frame_fresh(NvnTexture *t) {
     TexBackend *b = t ? (TexBackend *)t->backend : NULL;
     extern uint64_t renderer_exec_frame(void);
     uint64_t total_frames = renderer_exec_frame();  // (the frame being translated)
-    if (!b || !b->scalable || !(t->flags & 8) || b->frame_cleared == total_frames + 1) return false;
+    if (!b || !b->scalable || b->shadow || !(t->flags & 8) || b->frame_cleared == total_frames + 1) return false;
     // LARECOMP_NO_FRAME_CLEAR skips the clear only while the contents cover the whole target: below 1x a frame draws
     // into part of it, and the rest would show what an earlier frame left there (issue #205: the upper part flickered)
     // (Dynamic: the contents cover the whole target only at the factor 1 - its render scale is the allocation's)
@@ -263,7 +270,7 @@ bool renderer_texture_level_fresh(NvnTexture *t) {
     static int keep = -1;
     if (keep < 0) keep = getenv("LARECOMP_KEEP_TARGETS") != NULL;
     if (!b || keep || b->level_gen == g_level_gen) return false;
-    if (!b->scalable || !(t->flags & 8)) { b->level_gen = g_level_gen; return false; }
+    if (!b->scalable || b->shadow || !(t->flags & 8)) { b->level_gen = g_level_gen; return false; }
     bool fresh = b->level_gen != 0;
     b->level_gen = g_level_gen;
     return fresh;
@@ -354,8 +361,8 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     VkFmt mf = fmt_of(t->format);
     b->ax = b->scalable ? tex_alloc_x(b) : 1;
     b->ay = b->scalable ? tex_alloc_y(b) : 1;
-    b->sx = b->scalable ? (b->ao ? b->ax : g_rs_x) : 1;
-    b->sy = b->scalable ? (b->ao ? b->ay : g_rs_y) : 1;
+    b->sx = b->scalable ? (b->ao || b->shadow ? b->ax : g_rs_x) : 1;
+    b->sy = b->scalable ? (b->ao || b->shadow ? b->ay : g_rs_y) : 1;
     uint32_t tw = t->width ? t->width : 1, th = t->height ? t->height : 1;
     if (b->scalable) {
         tw = (uint32_t)lroundf(tw * b->ax); th = (uint32_t)lroundf(th * b->ay);
@@ -574,7 +581,8 @@ static TexBackend *tex_backend_for_usage(NvnTexture *t, bool render_target) {
     vk_collect_dead();
     b = calloc(1, sizeof *b);
     b->scalable = tex_scalable(t, render_target);
-    b->ao = b->scalable && tex_ao(t);
+    b->shadow = tex_shadow(t);
+    b->ao = b->scalable && !b->shadow && tex_ao(t);
     create_image(t, b);
     t->backend = b;
     live_add(t, b);
@@ -807,7 +815,7 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
 void renderer_mark_gpu_owned(NvnTexture *t) {
     TexBackend *b = tex_backend(t);
     b->gpu_owned = true;
-    if (b->scalable && !b->ao) { b->sx = g_rs_x; b->sy = g_rs_y; }
+    if (b->scalable && !b->ao && !b->shadow) { b->sx = g_rs_x; b->sy = g_rs_y; }
 }
 bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
 void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size; }

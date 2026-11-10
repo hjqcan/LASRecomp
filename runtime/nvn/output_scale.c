@@ -102,6 +102,8 @@ static double g_probe_fail_gw, g_probe_fail_at = -1000;      // the last failed 
 // changed at each factor since (G right after a step is the reference at the new factor): the part of G that
 // doesn't scale with the resolution makes area estimates optimistic (UHD 770 1080p: ~6.5 of 9.1 ms at 0.50)
 static double g_floor_g, g_ref_g;
+// Internal FPS target 30: G + W just under where the frames missed 30 (0: none yet), and when it last missed or eased
+static double g_t30_cap, g_t30_at;
 static bool g_ref_pending;
 static int g_hold_miss, g_hold_up_votes;  // held: decisions in a row over the hold's budget / with room for the next rate
 static int g_hold_met_votes;              // held at 20: decisions in a row whose frames already met 30 (with G + W in its budget)
@@ -222,6 +224,23 @@ static void dyn_update(double now, double game_ms, double win_ms, double lines) 
     if (log < 0) log = getenv("LARECOMP_LOG_DYNRES") != NULL;
     double budget = DYN_BUDGET;
     bool hold_up = false;  // (20 -> 30 fps this time: the factor was set to fit it already)
+    // Internal FPS target 30 (pace_target_30: the setting, or outdoors with "30 outdoors, 60 indoors"): held at 30 from
+    // the start - the factor only goes down when even 30 doesn't fit, and 60 is never looked for. When the target goes
+    // back to 60 (indoors, or the setting changed) that hold ends and Dynamic aims for 60 again, as it would have.
+    extern bool pace_target_30(void);
+    static bool was_t30;
+    bool t30 = pace_target_30();
+    if (gpu && t30 && hold_vsyncs() < 2) {
+        LOG("[dynres] Internal FPS target 30: holding 30 fps (game %.1f + window %.1f ms at %.2f)\n", G, W, g_dyn);
+        g_hold_dt = 2 * 1000 / 60.0, g_hold_w = W;
+        g_floor_g = g_ref_g = G, g_ref_pending = false;
+        g_probing = false, g_hold_miss = g_hold_up_votes = g_hold_met_votes = 0;
+        g_t30_cap = 0, g_t30_at = now;
+    } else if (was_t30 && !t30 && g_hold_dt > 0) {
+        LOG("[dynres] Internal FPS target 60 here: hold at %.0f fps ended\n", 1000 / g_hold_dt);
+        g_hold_dt = 0, g_probing = false, g_hold_miss = g_hold_up_votes = g_hold_met_votes = 0;
+    }
+    was_t30 = t30;
     if (gpu) {
         if (g_hold_dt > 0 && g_hold_w < 0) g_hold_w = W;  // (the window's size changed: its step's time there)
         else if (g_hold_dt > 0 && fabs(W - g_hold_w) > fmax(1.0, 0.25 * g_hold_w)) {  // another upscaler / AA
@@ -243,7 +262,7 @@ static void dyn_update(double now, double game_ms, double win_ms, double lines) 
             bool room = g_floor + W <= up_budget * DYN_HOLD_UP_FIT;
             g_hold_up_votes = room ? g_hold_up_votes + 1 : 0;
             bool met_now = met && g_hold_met_votes >= 2 && (g_probe_wait <= 10.0 || now >= g_probe_at);
-            if ((room && g_hold_up_votes >= 4 && now >= g_probe_at) || met_now) {
+            if (((room && g_hold_up_votes >= 4 && now >= g_probe_at) || met_now) && !(t30 && vs <= 2)) {  // (30 target: not above 30)
                 g_hold_up_votes = g_hold_miss = g_hold_met_votes = 0;
                 if (vs > 2) {
                     g_hold_dt = (vs - 1) * 1000 / 60.0;
@@ -273,7 +292,7 @@ static void dyn_update(double now, double game_ms, double win_ms, double lines) 
         // lighter) or 2 minutes have passed: a hold that is real (SMAA + FSR 1 at 1080p on the UHD 770) probes rarely.
         double floor_gw = g_ref_g > 0 ? g_floor_g * G / g_ref_g + W : -1;
         bool probe_ok = now - g_probe_fail_at > 120.0 || (floor_gw > 0 && floor_gw < 0.9 * g_probe_fail_gw);
-        if (g_hold_dt > 0 && !hold_up && hold_vsyncs() == 2 && avg_gpu < 0.7 * g_hold_dt && now >= g_probe_at && probe_ok) {
+        if (g_hold_dt > 0 && !hold_up && !t30 && hold_vsyncs() == 2 && avg_gpu < 0.7 * g_hold_dt && now >= g_probe_at && probe_ok) {
             LOG("[dynres] held at 30 with the GPU %.0f%% busy (game %.1f + window %.1f ms at %.2f): its clock may be down, "
                 "trying 60 at %.2f\n", 100 * avg_gpu / g_hold_dt, G, W, g_dyn, g_dyn_floor);
             g_hold_dt = 0, g_probing = true, g_probe_start = now, g_probe_good = 0;
@@ -281,6 +300,21 @@ static void dyn_update(double now, double game_ms, double win_ms, double lines) 
             g_probe_from = g_dyn, g_dyn = g_dyn_floor;
         }
         if (g_hold_dt > 0) budget = g_hold_dt * 0.87;
+        // Target 30: the frames themselves must come every 33.3 ms. G + W fitting the hold's budget isn't enough where the
+        // CPU's part of a frame doesn't overlap the GPU's (Retroid Pocket 5, Mabe Village: G + W 19 ms at 1.00 under a 29 ms
+        // budget, frames every 39-50 ms). Frames slower than the hold with the GPU a real part of them cap G + W just under
+        // what it was: the factor steps down to fit and raises stay under it. 30 s of frames on time eases the cap 5%.
+        if (t30 && g_hold_dt > 0 && hold_vsyncs() == 2) {
+            if (avg_dt > 1.06 * g_hold_dt && !spikes && avg_gpu > 0.4 * g_hold_dt && now >= g_dyn_cool_until) {
+                double cap = 0.92 * avg_gpu;
+                if (g_t30_cap <= 0 || cap < g_t30_cap)
+                    LOG("[dynres] Internal FPS target 30: frames every %.1f ms with game %.1f + window %.1f ms at %.2f: "
+                        "G + W kept under %.1f ms\n", avg_dt, G, W, g_dyn, cap);
+                g_t30_cap = g_t30_cap > 0 ? fmin(g_t30_cap, cap) : cap, g_t30_at = now;
+            } else if (g_t30_cap > 0 && avg_dt <= 1.02 * g_hold_dt && now - g_t30_at > 30.0)
+                g_t30_cap *= 1.05, g_t30_at = now;
+            if (g_t30_cap > 0) budget = fmin(budget, g_t30_cap);
+        }
         // 60 out of reach at the floor and the frames wait for the display: lower gains nothing, hold that frame rate
         // (whole refreshes of a 60 Hz display: a floor that alternates 1 and 2 of them - 40 fps - beats 30 at a higher
         // factor; at most 3 refreshes, 20 fps)
@@ -439,6 +473,42 @@ float output_scale_ao(float al) {
     return g_settings.ao_quality == AO_HIGH ? fminf(2, fmaxf(1, 2 * al)) : 1;
 }
 
+// The game's shadow map: one 2048x2048 D24S8 render target for the whole scene (2D, not multisampled). Lit shaders take
+// four compare taps one texel apart, in the game's texel size (maxwell/translate.c shadow_taps).
+bool output_scale_is_shadow_map(uint32_t target, uint32_t samples, uint32_t w, uint32_t h, uint32_t format, bool render_target) {
+    return target == 1 && samples <= 1 && w == 2048 && h == 2048 && format == 0x35 && render_target;
+}
+
+// Its scale: half to 4 times the Switch's size (the Shadows setting), at any render scale. Each step up costs more
+// memory: about 60 MB at 2x and 300 MB at 4x; 0.5x saves 12 MB and a quarter of the pass's pixels, for weak GPUs.
+// LARECOMP_SHADOW_SCALE=<n> (test, 0.5 to 4): n times the Switch's size.
+float output_scale_shadow(void) {
+    static float test = -1;
+    if (test < 0) {
+        const char *e = getenv("LARECOMP_SHADOW_SCALE");
+        test = e ? (float)atof(e) : 0;
+    }
+    if (test >= 0.5f && test <= 4) return test;
+    int q = g_settings.shadow_quality;
+    return q == SHADOW_HALF ? 0.5f : q >= SHADOW_2X && q <= SHADOW_4X ? (float)(q - SHADOW_DEFAULT + 1) : 1;
+}
+
+// The polygon offset of draws into the shadow map: the game's slope factor counts in its map's texels, so with the map
+// n times the Switch's size the same factor pushes casters back 1/n as far, and thin casters (grass cards, the stones'
+// edges) shadow themselves - dark streaks at 4x. The factor is multiplied by the map's scale, the game's offset in the
+// scene again. LARECOMP_SHADOW_BIAS_RAW=1 (A/B tests): the game's factor as it is.
+float output_scale_shadow_slope(void) {
+    static int raw = -1;
+    if (raw < 0) raw = getenv("LARECOMP_SHADOW_BIAS_RAW") != NULL;
+    return raw ? 1 : output_scale_shadow();
+}
+
+// Shadows Off: the draws into the shadow map are skipped (renderer.m / vulkan/exec.c draw). The game still clears it to
+// 1.0 every frame, which its lit shaders' compare taps read as unshadowed, so nothing is shaded.
+bool output_scale_shadow_off(void) {
+    return g_settings.shadow_quality == SHADOW_OFF;
+}
+
 void output_scale_log(unsigned long long frame, double dw, double dh, const OutScale *o) {
     static double psx, psy, pdw, pdh;
     static int nlog;
@@ -463,14 +533,15 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     int mode = g_settings.res_mode;
     // The user changed a setting that changes the GPU's load (the menu, the start screen; Dynamic's own steps are g_dyn,
     // not a setting): the frame pacer's 30 fps hold and backoff were learned under the old load (pace.c).
-    static int p_mode = -1, p_ups, p_aa;
+    static int p_mode = -1, p_ups, p_aa, p_fps;
     if (p_mode >= 0) {
         extern void pace_settings_changed(const char *what);
         if (mode != p_mode) pace_settings_changed("resolution");
         else if (g_settings.upscaler != p_ups) pace_settings_changed("upscaler");
         else if (g_settings.antialias != p_aa) pace_settings_changed("anti-aliasing");
+        else if (g_settings.fps_target != p_fps) pace_settings_changed("Internal FPS target");
     }
-    p_mode = mode, p_ups = g_settings.upscaler, p_aa = g_settings.antialias;
+    p_mode = mode, p_ups = g_settings.upscaler, p_aa = g_settings.antialias, p_fps = g_settings.fps_target;
     if (forced > 0) h = forced;
     else if (mode >= 1 && mode <= 8) h = mode == 1 && g_gpu_integrated ? 720 / 1080.0 : mode;
     else {

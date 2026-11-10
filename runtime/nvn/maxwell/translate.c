@@ -137,6 +137,7 @@ typedef struct {
     int struct_vars;       // its goto flags g0.. (GotoElimination)
     uint32_t *pop_target;  // per instruction word: the pc a SYNC / BRK / CONT goes to
     bool ao_taps;          // the AO blur's taps follow rscale[65].y (ao_grid_fix)
+    bool shadow_tap[2];    // the shadow map's texel size (x, y) is read: shadow_taps
     bool ao_pass;          // the AO pass: white while rscale[65].z > 0 (ao_grid_fix)
     int lmem_words;        // the local memory array's size in words (lmem_size; MSL: always LMEM_WORDS)
     // GLSL: each BRX whose jump table was read (brx_table_labels): its targets, so that static_stacks_resolve can walk
@@ -218,6 +219,12 @@ static const char *cbuf_ref(Ctx *c, int idx, int64_t off, const char *dyn, char 
     if (off + 16 > (int64_t)c->info->cbuf_size[idx]) c->info->cbuf_size[idx] = (uint32_t)((off + 16 + 255) & ~255);
     if (dyn) c->info->cbuf_dynamic |= 1u << idx;
     if (!dyn && idx < 18 && off >= 0 && (uint32_t)(off >> 4) + 1 > c->cbuf_need[idx]) c->cbuf_need[idx] = (uint32_t)(off >> 4) + 1;
+    if (!dyn && c->stage == STAGE_FRAGMENT && idx == 4 && (off == 0x240 || off == 0x244)) {  // (see shadow_taps)
+        int k = off == 0x244;
+        c->shadow_tap[k] = true;
+        sprintf(buf, "stap%d", k);
+        return buf;
+    }
     if (dyn) sprintf(buf, "cbr(cb%d, (%s) %c %lluu)", idx, dyn, off < 0 ? '-' : '+',
                      (unsigned long long)(off < 0 ? -off : off));
     else sprintf(buf, "cb%d[%lld][%lld]", idx, (long long)(off >> 4), (long long)((off >> 2) & 3));
@@ -1076,6 +1083,27 @@ static void ao_grid_fix(Ctx *c, const uint64_t *code, size_t end, uint32_t pc) {
             sp(&c->body, "      r%d = as_type<uint>(as_type<float>(r%d) + (as_type<float>(r%d) - as_type<float>(r%d)) / rscale[65][1]);\n",
                tap[i][k], k ? 9 : 8, tap[i][k], k ? 9 : 8);
     sp(&c->body, "    }\n");
+}
+
+// The game's shadow lookups (issue #602): four compare taps on its shadow map (a 2D array sampler, one layer), offset
+// by the texel size the game writes to its scene constants (c4[0x240]: 1/2048, 1/2048). With the map at another size
+// than the game's (output_scale_shadow) the taps would stay that far apart in the map, so the edges would stay as wide
+// as the Switch's at 2x to 4x, and the taps would fall between texels at 0.5x.
+// The texel size is divided by the map's scale, rscale[1 + slot].x: the real texel again, and the game's value at the
+// Switch's size. The reads go through a local set at the start, so a raw move of the constant is covered too. Without
+// a shadow array in the shader c4[0x240] is something else and is left alone.
+static void shadow_taps(Ctx *c, Str *s) {
+    int slot = -1;
+    for (int i = 0; i < c->info->ntex && slot < 0; i++)
+        if (c->info->tex[i].shadow && c->info->tex[i].type == TEXTYPE_2D_ARRAY) slot = i;
+    for (int k = 0; k < 2; k++) {
+        if (!c->shadow_tap[k]) continue;
+        if (slot >= 0 && c->uses_rscale)
+            sp(s, c->glsl ? "  uint stap%d = floatBitsToUint(uintBitsToFloat(cb4[36][%d]) / rscale[%d][0]);\n"
+                          : "  uint stap%d = as_type<uint>(as_type<float>(cb4[36][%d]) / rscale[%d][0]);\n", k, k, slot + 1);
+        else
+            sp(s, "  uint stap%d = cb4[36][%d];\n", k, k);
+    }
 }
 
 // A push / pop on stack `n` (ssy, pbk, pcnt). GLSL (maxwell_glsl_stack_vars, shader.h): 16 named variables, the
@@ -2550,6 +2578,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     }
     for (int i = 0; i < 256; i++)
         if (c->reg_used[i]) sp(&s, "  uint r%d = 0u;\n", i);
+    shadow_taps(c, &s);
     for (int i = 0; i < 7; i++)
         if (c->pred_used[i]) sp(&s, "  bool p%d = false;\n", i);
     if (c->uses_cc) sp(&s, "  uint cc = 0u; bool ccz = false, ccs = false;\n");
@@ -3594,6 +3623,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         for (int i = 0; i < info->ntex; i++) sp(&s, "  sampler s%d = ss[smap[%d]];\n", i, i);
     for (int i = 0; i < 256; i++)
         if (c->reg_used[i]) sp(&s, "  uint r%d = 0;\n", i);
+    shadow_taps(c, &s);
     for (int i = 0; i < 7; i++)
         if (c->pred_used[i]) sp(&s, "  bool p%d = false;\n", i);
     if (c->uses_cc) sp(&s, "  uint cc = 0; bool ccz = false, ccs = false;\n");

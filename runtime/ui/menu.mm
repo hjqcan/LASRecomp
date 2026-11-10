@@ -113,7 +113,7 @@ extern "C" void menu_close(void) { set_open(false); }
 // The menu in game: a bar drops down from the top over the game, its entries in a row (the one the cursor is on lit),
 // a close X at its right end; each entry opens its page in a window under it. The start screen's Settings is
 // launcher.mm's.
-enum { BAR_SETTINGS, BAR_WARP, BAR_EDITOR, BAR_RESET, BAR_QUIT, BAR_CLOSE, BAR_N };
+enum { BAR_SETTINGS, BAR_RANDO, BAR_WARP, BAR_EDITOR, BAR_RESET, BAR_QUIT, BAR_CLOSE, BAR_N };
 static std::atomic<int> g_page{-1};  // the entry whose page is open (-1: the bar alone)
 static int g_bar_cur;  // the bar's cursor (render thread)
 static void page_open(int page);
@@ -123,11 +123,12 @@ static int g_ask = -1;  // the bar's Reset or Quit asked (render thread): ask_po
 extern "C" void menu_test_open(void) {
     set_open(true);
     // (test) LARECOMP_MENU_BAR=<entry>: the bar alone, its cursor on that entry. Otherwise a page, as before the bar:
-    // LARECOMP_MENU_TAB=4 Warp, 2 Save Editor, 9 Quit, 14 Reset, any other a Settings tab
+    // LARECOMP_MENU_TAB=4 Warp, 2 Save Editor, 3 Randomizer, 9 Quit, 14 Reset, any other a Settings tab
     if (getenv("LARECOMP_MENU_BAR")) { g_bar_cur = atoi(getenv("LARECOMP_MENU_BAR")) % BAR_N; return; }
     int t = getenv("LARECOMP_MENU_TAB") ? atoi(getenv("LARECOMP_MENU_TAB")) : -1;
-    page_open(t == 4 ? BAR_WARP : t == 2 ? BAR_EDITOR : t == 9 ? BAR_QUIT : t == 14 ? BAR_RESET : BAR_SETTINGS);
-    if (t >= 0 && t != 2 && t != 4 && t != 9 && t != 14) { extern int g_tab_request_ext; g_tab_request_ext = t; }
+    page_open(t == 4 ? BAR_WARP : t == 2 ? BAR_EDITOR : t == 3 ? BAR_RANDO : t == 9 ? BAR_QUIT : t == 14 ? BAR_RESET
+                                                                                     : BAR_SETTINGS);
+    if (t >= 0 && t != 2 && t != 3 && t != 4 && t != 9 && t != 14) { extern int g_tab_request_ext; g_tab_request_ext = t; }
     // (test) LARECOMP_PREVIEW=<row label>: that row's live preview opens straight away (its page: LARECOMP_MENU_TAB)
     if (const char *row = getenv("LARECOMP_PREVIEW")) {
         if (t >= 0) g_tab = t;
@@ -160,6 +161,7 @@ static void set_open(bool open) {
 }
 
 static void page_open(int page) {
+    if (!title_is_las() && (page == BAR_RANDO || page == BAR_WARP || page == BAR_EDITOR)) return;
     g_bar_cur = page;
     if (page == BAR_SETTINGS) {
         static bool opened;  // the controller's cursor: the first tab (Controls) the first time this session, later the
@@ -738,6 +740,16 @@ static void tab_display(void) {
         if (opt_preview("Internal resolution", &ri, res, NRES, rdef, d, false))
             g_settings.res_mode = res_mode[ri], g_settings.res_auto = false;
     }
+    {   // the game's own two frame rates (pace.c pace_target_30); display order -> FPS_TARGET_*
+        static const char *fps[] = {LN("30"), LN("30 outdoors, 60 indoors"), LN("60")};
+        static const int fps_target[] = {FPS_TARGET_30, FPS_TARGET_MIXED, FPS_TARGET_60};
+        int fi = 2;
+        for (int i = 0; i < 3; i++) if (fps_target[i] == g_settings.fps_target) fi = i;
+        if (opt_choice("Internal FPS target", &fi, fps, 3, 2,
+                       "The frame rate the game aims for. At 30, Dynamic resolution only lowers the resolution when 30 "
+                       "doesn't fit. 30 outdoors, 60 indoors runs the overworld at 30 and houses, caves and dungeons at 60."))
+            g_settings.fps_target = fps_target[fi];
+    }
     {   // each OS's own upscaler next to bilinear (UPSCALE_SHARP: MetalFX on macOS, AMD FSR 1 on Windows)
 #ifdef __APPLE__
         static const char *ups[] = {LN("Bilinear"), LN("MetalFX")};
@@ -769,6 +781,12 @@ static void tab_display(void) {
     opt_preview("Ambient occlusion", &g_settings.ao_quality, ao, 3, AO_SWITCH,
                "The soft shadows in corners and around objects. High draws them at up to twice the Switch's resolution, "
                "so their edges are sharper. Off removes them.");
+    static const char *shadows[] = {LN("Off"), LN("0.5x"), LN("Default"), LN("2x"), LN("3x"), LN("4x")};
+    preview_text(LN("Configure the shadows that objects and characters cast."), NULL);
+    opt_preview("Shadows", &g_settings.shadow_quality, shadows, 6, SHADOW_DEFAULT,
+               "The shadows that objects and characters cast. 2x to 4x draw them at that many times the Switch's "
+               "resolution, so their edges are sharper. Higher uses more graphics memory. 0.5x is faster with blockier "
+               "edges. Off removes them.");
 
     opt_end();
 }
@@ -860,6 +878,8 @@ static void tab_audio(void) {
                "Stereo for speakers and headphones. 5.1 sends the game's surround mix to a 5.1 system.");
     opt_toggle("Movie audio", &g_settings.movie_audio, true,
                "Sound in the opening and ending movies. Changes the next time a movie plays.");
+    opt_toggle("Power-up music", &g_settings.powerup_music, true,
+               "Guardian Acorn and Piece of Power music. Off: keep the area's music. Both items still work.");
     opt_section("Effects");
     opt_toggle("Enable reverb", &g_settings.reverb, true,
                "The game's echo in caves, dungeons and big rooms.");
@@ -1180,7 +1200,7 @@ bool menu_preview_frame(float scale, ImFont *font, ImFont *font_big) {
 
 // false: nothing of the game is loaded yet - the tabs that need it are greyed out; prelaunch: the start screen's own
 // first tab, game files and fonts, drawn by launcher.mm). only: one page alone, without the tab bar (the in-game menu
-// bar's Warp, Save Editor and Quit).
+// bar's Randomizer, Warp, Save Editor and Quit).
 static void tabs_body(float scale, bool in_game, void (*prelaunch)(float), int only = -1000) {
     // (id: the page; -1 = Prelaunch)
     struct Tab { const char *name; int id; bool on; };
@@ -1189,7 +1209,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float), int o
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     static const char *names[] = {"Video", "Audio", "Saves", "Randomizer", "Warp", "Cheats", "Gameplay",
                                   "Cosmetics", "Controls", "Quit", "Photo mode", "Mods", "Workshop", "Performance"};
-    static const int order[] = {8, 0, 1, 6, 7, 10, 11, 12, 13, 3, 5, 4, 2, 9};  // existing IDs stay stable for test hooks
+    static const int order[] = {8, 0, 1, 6, 7, 10, 11, 12, 13, 5, 4, 2};  // existing IDs stay stable for test hooks
                                                                 // Cheats, Warp, Save Editor, Quit (ids stay: test hooks)
     int keep_tab = g_tab;
     if (only != -1000) tabs[ntabs++] = {names[only], only, true}, g_tab = only;
@@ -1398,14 +1418,15 @@ void menu_style_begin(float scale) {
 }
 void menu_style_end(void) { ImGui::GetStyle() = g_style_saved; }
 
-void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, void (*prelaunch)(float)) {
+// only: one page alone (the start screen's Randomizer panel: 3)
+void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, void (*prelaunch)(float), int only) {
     ImFont *f0 = g_font, *f1 = g_font_big;
     g_font = font, g_font_big = font_big;
     ImGuiStyle saved = ImGui::GetStyle();  // the menu's look (the start screen has its own style)
     style_init();
     style_parchment(ImGui::GetStyle());
     ImGui::GetStyle().ScaleAllSizes(scale);
-    tabs_body(scale, in_game, prelaunch);
+    tabs_body(scale, in_game, prelaunch, only);
     ImGui::GetStyle() = saved;
     g_font = f0, g_font_big = f1;
 }
@@ -1416,7 +1437,9 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
 // page's too).
 static double g_bar_t0 = -1;  // when the bar began to drop (-1: not shown - the menu is closed or a page is open)
 static void bar_draw(ImGuiIO &io, float scale) {
-    static const char *names[BAR_N] = {LN("Settings"), LN("Warp"), LN("Save Editor"), LN("Reset"), LN("Quit"), ""};
+    auto available = [](int k) { return title_is_las() || (k != BAR_RANDO && k != BAR_WARP && k != BAR_EDITOR); };
+    static const char *names[BAR_N] = {LN("Settings"), LN("Randomizer"), LN("Warp"), LN("Save Editor"), LN("Reset"),
+                                       LN("Quit"), ""};
     const PlasticTheme &pt = plastic_theme();
     double now = ImGui::GetTime();
     if (g_bar_t0 < 0) g_bar_t0 = now;
@@ -1442,7 +1465,10 @@ static void bar_draw(ImGuiIO &io, float scale) {
                            ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
                    : pressed(ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadLStickLeft, ImGuiKey_LeftArrow) ||
                            ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1 : 0;
-        if (step) g_bar_cur = (g_bar_cur + step + BAR_N) % BAR_N, menu_sfx_play(MENU_SFX_CURSOR);
+        if (step) {
+            do g_bar_cur = (g_bar_cur + step + BAR_N) % BAR_N; while (!available(g_bar_cur));
+            menu_sfx_play(MENU_SFX_CURSOR);
+        }
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
             if (g_bar_cur == BAR_CLOSE) set_open(false);
@@ -1456,6 +1482,7 @@ static void bar_draw(ImGuiIO &io, float scale) {
     last_mouse = io.MousePos;
     float x = wp.x + in, y = wp.y + in, pad = 22 * scale, gap = 10 * scale;
     for (int k = 0; k < BAR_CLOSE; k++) {
+        if (!available(k)) continue;
         float tw = ImGui::CalcTextSize(L(names[k])).x, w = tw + 2 * pad;
         ImGui::SetCursorScreenPos(ImVec2(x, y));
         ImGui::PushID(k);
@@ -1688,7 +1715,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
             // header as on the start screen's Settings: the page's title, and a close X in the corner (B / Esc too:
             // back to the bar). ("Title screen" - rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user
             // 2026-10-11.)
-            static const char *titles[] = {LN("Settings"), LN("Warp"), LN("Save Editor")};
+            static const char *titles[] = {LN("Settings"), LN("Randomizer"), LN("Warp"), LN("Save Editor")};
             ImGui::PushFont(g_font_big);
             ImGui::TextColored(plastic_col(plastic_theme().title), "%s", L(titles[page]));
             ImGui::PopFont();
@@ -1703,7 +1730,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
             }
 
             bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();  // (before
-            static const int only[] = {-1000, 4, 2};  // (the pages' tab ids)                    //  the pages run)
+            static const int only[] = {-1000, 3, 4, 2};  // (the pages' tab ids)                 //  the pages run)
             tabs_body(scale, true, NULL, only[page]);
             // B with nothing focused-deeper goes back to the bar (not the Esc / B that ends typing: typing is from the
             // frame before, so it's still true the frame a field lets go)

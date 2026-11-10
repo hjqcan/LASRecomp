@@ -1,7 +1,7 @@
-// Start screen, shown before the game boots (user 2026-10-08, styled after Dusklight's launcher): PLAY (with
-// ‹ Vanilla / seed › picker), SETTINGS, QUIT, game-files status at the lower left. Nothing of the game ships with
-// Multi: on first launch the user picks the folder with their own game files (a verified catalog build), we check the main
-// module's build id, copy the files and build the game's data image; PLAY stays disabled until that worked. The background is a frame of the game's own title movie (from the user's files) once extracted.
+// Start screen, shown before the game boots (user 2026-10-08, styled after Dusklight's launcher): PLAY (the vanilla
+// game), RANDOMIZER (‹ New Seed / a seed ›: user 2026-11-09), SETTINGS, QUIT, game-files status at the lower left.
+// Nothing of the game ships with Multi: on first launch the user picks the folder with their own game files (a verified catalog build), we check
+// the main module's build id (runtime/game_addresses/versions.h), copy the files and build the game's data image; PLAY stays disabled until that worked. The background is a frame of the game's own title movie (from the user's files) once extracted.
 //
 // Skipped with --play, LARECOMP_NO_LAUNCHER=1, or any scripted test run (LARECOMP_INPUT): tests boot straight in
 // (with LARECOMP_NO_LAUNCHER, set by tools/game_slot.sh, the app exits rather than show it: runtime/main.c).
@@ -989,12 +989,14 @@ static std::vector<std::string> list_seeds() {
 
 // ------------------------------------------------------------------ screen
 static ImFont *g_font_title, *g_font_menu, *g_font_small;
-enum Page { MAIN, SETTINGS, SETUP };  // SETTINGS: the in-game menu's tabs (runtime/ui/menu.mm)
+// SETTINGS: the in-game menu's tabs (runtime/ui/menu.mm); RANDO: the Randomizer panel (New Seed: rando_tab.mm)
+enum Page { MAIN, SETTINGS, SETUP, RANDO };
 static int g_refocus = MAIN;  // back on the main page: select the item of the page we came from (controllers)
 
 // A big menu line: gold + a marker when focused / hovered (keyboard, gamepad or mouse), grey when disabled
 static bool g_menu_small;  // sub pages: buttons in the small font
-void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, void (*prelaunch)(float));  // menu.mm
+void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, void (*prelaunch)(float),
+                    int only = -1000);  // menu.mm
 void menu_style_begin(float scale);  // (menu.mm: the menu's look, until menu_style_end)
 bool menu_preview_frame(float scale, ImFont *font, ImFont *font_big);  // (menu.mm: true while a live preview is up)
 void menu_style_end(void);
@@ -1004,7 +1006,7 @@ extern "C" void menu_apply_window_requests(void *sdl_window);
 extern "C" void input_cursor_event(const SDL_Event *e);  // runtime/hle/input.c
 extern "C" bool input_cursor_hidden(void);
 extern "C" int g_start_screen;  // runtime/hle/warp.c: the start screen is up (no game loaded: don't read its memory)
-// The Randomizer tab's Play / Play Now on the start screen (rando_tab.mm): start the game with that seed
+// The Randomizer panel's Play / Play Now on the start screen (rando_tab.mm): start the game with that seed
 static std::string g_play_seed;
 static bool g_play_seed_req, g_play_pending;
 extern "C" void launcher_play_seed(const char *seed) {
@@ -1287,13 +1289,13 @@ static void sparkle(ImDrawList *dl, ImVec2 c, float r, float k, float spin) {
     dl->AddConvexPolyFilled(pts, 8, IM_COL32(255, 248, 215, (int)(235 * k)));
 }
 
-// split .. split_end: that part of the label in its own colour (PLAY's choice: Vanilla in vanilla cream)
+// split .. split_end: that part of the label in its own colour (RANDOMIZER's choice: New Seed in vanilla cream)
 // A selected main-page item's look: a shadow band behind it (like the version corner's), feathered, with a warm glow
 // (at, sz: the item's text)
 static void menu_band(ImDrawList *dl, ImVec2 at, ImVec2 sz) {
     float x0 = ImGui::GetWindowPos().x, x1 = at.x + sz.x * 0.75f, x2 = at.x + sz.x + sz.y * 3.5f;
     float f = sz.y * 0.22f, y0 = at.y - f * 0.4f, y1 = y0 + f, y3 = at.y + sz.y + f * 0.2f, y2 = y3 - f;
-    if (PLAT_TOUCH) {  // (taller than PLAY's ‹ choice › boxes: the band frames them)
+    if (PLAT_TOUCH) {  // (taller than RANDOMIZER's ‹ choice › boxes: the band frames them)
         // (centred on the capitals' middle, as the boxes are - the line's middle is lower: room for descenders)
         ImFont *fn = ImGui::GetFont();
         const ImFontGlyph *gH = fn->FindGlyph('H');
@@ -1318,8 +1320,8 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
     ImGui::PushFont(g_menu_small ? g_font_small : g_font_menu);
     ImGui::BeginDisabled(!enabled);
     ImVec2 at = ImGui::GetCursorScreenPos();
-    // (the ID from the label's fixed part: PLAY's changes with the seed shown, and a new ID loses the selection)
-    ImGui::PushID(split ? "play" : label);
+    // (the ID from the label's fixed part: RANDOMIZER's changes with the seed shown, and a new ID loses the selection)
+    ImGui::PushID(label, split ? split : label + strlen(label));
     if (!split) label = ui_tr(label);
     ImVec2 sz = ImGui::CalcTextSize(label);
     // (EnableNav: otherwise an InvisibleButton can't be reached with the d-pad / arrow keys - ImGui 1.91)
@@ -1351,8 +1353,9 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
     return clicked;
 }
 
-// Phones: the main page's items larger, PLAY's row as boxes a finger can hit - PLAY, then ‹ [the choice] ›; a tap on an
-// arrow or a sideways swipe on the row steps the choice (g_pick_step, read by the caller)
+// Phones: the main page's items larger, RANDOMIZER's row as boxes a finger can hit - the title, then ‹ [the choice] ›;
+// a tap on an arrow or a sideways swipe on the row steps the choice (g_pick_step, read by the caller), stopping at
+// either end
 static const float kPhoneMenu = PLAT_TOUCH && !plat_touch_tablet() ? 1.25f : 1.0f;  // (a tablet: a monitor's size)
 static ImRect g_pick_rect;  // the ‹ choice › boxes as last drawn (the swipe's target)
 static int g_pick_step;     // -1 back, +1 on
@@ -1369,8 +1372,8 @@ static void pick_swipe_event(const SDL_Event &e, ImVec2 ds) {
     } else if (e.type == SDL_EVENT_FINGER_CANCELED) on = false;
 }
 
-static bool phone_play_row(const char *pick, int choice, const std::vector<std::string> &choices, bool on, bool live,
-                           float win_w, bool *hov, ImVec2 *play_at, bool *focused_once) {
+static bool phone_pick_row(const char *title, const char *pick, int choice, int n, bool on, bool live, float win_w,
+                           bool *hov) {
     ImGui::SetWindowFontScale(kPhoneMenu);
     ImGui::PushFont(g_font_menu);
     ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -1381,31 +1384,30 @@ static bool phone_play_row(const char *pick, int choice, const std::vector<std::
     const ImFontGlyph *gH = f->FindGlyph('H');
     auto mid = [&](float size) { return gH ? (gH->Y0 + gH->Y1) * 0.5f * size / f->FontSize : size * 0.5f; };
     float bh = h * 1.02f, cy = at.y + mid(h), y0 = cy - bh * 0.5f, y1 = cy + bh * 0.5f;
-    float pw = ImGui::CalcTextSize(L("PLAY")).x + pad;  // (PLAY bare, at the items' left edge; its target reaches the ‹)
+    float pw = ImGui::CalcTextSize(title).x + pad;  // (the title bare, at the items' left edge; its target reaches the ‹)
     float nroom = win_w * 0.9f - at.x - pw - 3 * gap - 2 * bh - 2 * pad;  // (a long name: smaller past 90% of the window)
     float ntw = ImGui::CalcTextSize(pick).x, nsc = ntw > nroom ? fmaxf(nroom / ntw, 0.55f) : 1.0f;
     ImVec2 pa(at.x, y0), pb(at.x + pw, y1), la(pb.x + gap, y0), lb(la.x + bh, y1);
     ImVec2 na(lb.x + gap, y0), nb(na.x + ntw * nsc + 2 * pad, y1), ra(nb.x + gap, y0), rb(ra.x + bh, y1);
     g_pick_rect = ImRect(la, rb);
-    bool many = choices.size() > 1;
+    bool can_back = choice > 0, can_on = choice < n - 1;  // (a step each way left)
 
-    if (!*focused_once) { ImGui::SetKeyboardFocusHere(); *focused_once = true; }
     ImGui::SetCursorScreenPos(pa);
     ImGui::BeginDisabled(!on);
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));  // (the box's gold edge shows it)
     bool pressed = ImGui::InvisibleButton("##play", ImVec2(pw, bh), ImGuiButtonFlags_EnableNav);
     ImGui::PopStyleColor();
     *hov = ImGui::IsItemFocused() || ImGui::IsItemHovered();
-    bool play_down = ImGui::IsItemActive();
+    bool play_down = ImGui::IsItemActive();  // (the title pressed)
     ImGui::EndDisabled();
 
     // the arrows' targets: their boxes and a margin (half the gap across, a third of a line up and down)
     ImVec2 m = ImGui::GetIO().MousePos;
     float ex = gap * 0.5f, ey = h * 0.33f;
     auto in = [&](ImVec2 a, ImVec2 b) { return m.x >= a.x - ex && m.x <= b.x + ex && m.y >= a.y - ey && m.y <= b.y + ey; };
-    int under = live && many ? (in(la, lb) ? -1 : in(ra, rb) ? 1 : 0) : 0;
+    int under = live ? (in(la, lb) && can_back ? -1 : in(ra, rb) && can_on ? 1 : 0) : 0;
     if (under && ImGui::IsMouseReleased(0)) g_pick_step = under;
-    if (!live || !many) g_pick_step = 0;
+    if (!live || (g_pick_step < 0 && !can_back) || (g_pick_step > 0 && !can_on)) g_pick_step = 0;
     bool held = under && ImGui::IsMouseDown(0);
 
     auto box = [&](ImVec2 a, ImVec2 b, bool lit, bool down) {
@@ -1416,22 +1418,22 @@ static bool phone_play_row(const char *pick, int choice, const std::vector<std::
     auto chevron = [&](ImVec2 a, ImVec2 b, int dir, bool lit) {
         float c = (a.x + b.x) * 0.5f, u = bh * 0.19f;
         ImVec2 pts[3] = {ImVec2(c - dir * u * 0.45f, cy - u), ImVec2(c + dir * u * 0.55f, cy), ImVec2(c - dir * u * 0.45f, cy + u)};
-        ImU32 col = !on || !many ? IM_COL32(170, 175, 200, 120) : lit ? IM_COL32(255, 236, 140, 255) : IM_COL32(255, 196, 64, 255);
+        bool can = dir < 0 ? can_back : can_on;  // (at an end: that arrow greyed out)
+        ImU32 col = !on || !can ? IM_COL32(170, 175, 200, 120) : lit ? IM_COL32(255, 236, 140, 255) : IM_COL32(255, 196, 64, 255);
         dl->AddPolyline(pts, 3, col, 0, bh * 0.1f);
     };
-    if (on && (*hov || play_down)) menu_band(dl, ImVec2(pa.x, at.y), ImVec2(ImGui::CalcTextSize(L("PLAY")).x, h));  // (behind the boxes)
+    if (on && (*hov || play_down)) menu_band(dl, ImVec2(pa.x, at.y), ImVec2(ImGui::CalcTextSize(title).x, h));  // (behind the boxes)
     box(la, lb, held && under < 0, held && under < 0);
     box(na, nb, false, false);
     box(ra, rb, held && under > 0, held && under > 0);
     chevron(la, lb, -1, held && under < 0);
     chevron(ra, rb, 1, held && under > 0);
-    *play_at = ImVec2(pa.x, at.y);
     // (as menu_item draws SETTINGS: white, or gold to orange on its band when selected)
     bool hot = on && (*hov || play_down);
     ImU32 top = !on ? IM_COL32(170, 175, 200, 140) : hot ? IM_COL32(255, 214, 64, 255) : IM_COL32(250, 250, 255, 255);
     ImU32 bottom = hot ? IM_COL32(255, 160, 50, 255) : top;
-    text_fx(dl, f, h, *play_at, top, bottom, L("PLAY"), on ? h * 0.05f : 0);
-    ImU32 nc = choice ? IM_COL32(250, 250, 255, 255) : IM_COL32(246, 232, 176, 255);  // ("Vanilla" in vanilla cream)
+    text_fx(dl, f, h, ImVec2(pa.x, at.y), top, bottom, title, on ? h * 0.05f : 0);
+    ImU32 nc = choice ? IM_COL32(250, 250, 255, 255) : IM_COL32(246, 232, 176, 255);  // ("New Seed" in vanilla cream)
     float nh = h * nsc;
     text_fx(dl, f, nh, ImVec2(na.x + pad, cy - mid(nh)), nc, nc, pick, nh * 0.05f);
 
@@ -2096,15 +2098,21 @@ extern "C" const char *launcher_run(const char *root) {
     std::string status = check_game_files(g_root);
     game_layout_select((g_root + "/exefs/main").c_str());
     if (check_copied_files(g_root).empty()) load_background(dev);  // (also behind an update of the game code)
+    // the RANDOMIZER row's choices: 0 New Seed, then the seeds (starting on the last one played)
     std::vector<std::string> seeds = list_seeds();
-    std::vector<std::string> choices = {"Vanilla"};
-    choices.insert(choices.end(), seeds.begin(), seeds.end());
     int choice = 0;
-    for (size_t i = 0; i < seeds.size(); i++)
-        if (seeds[i] == g_settings.rando_seed) choice = (int)i + 1;
+    auto choose = [&](const char *name) {
+        choice = 0;
+        for (size_t i = 0; i < seeds.size(); i++)
+            if (seeds[i] == name) choice = (int)i + 1;
+    };
+    choose(g_settings.rando_last);
+    // what the game starts with ("" vanilla): PLAY's, or the row's seed; until one is pressed, the seed of the last
+    // start (the test hooks that press PLAY themselves keep booting what they did)
+    std::string start_seed = g_settings.rando_seed;
     Page page = status.empty() ? MAIN : SETUP;
     bool play = false;
-    // LARECOMP_LAUNCHER_SHOT=<frame>[:<page>] (test): save build/launcher.png at that frame and exit; page: settings[:<tab>] / askdelete / setup / extracting / preparing
+    // LARECOMP_LAUNCHER_SHOT=<frame>[:<page>] (test): save build/launcher.png at that frame and exit; page: settings[:<tab>] / rando / askdelete / setup / extracting / preparing
     long shot_at = getenv("LARECOMP_LAUNCHER_SHOT") ? atol(getenv("LARECOMP_LAUNCHER_SHOT")) : 0, frame = 0;
     if (shot_at) {
 #ifdef __APPLE__
@@ -2113,6 +2121,7 @@ extern "C" const char *launcher_run(const char *root) {
         const char *pg = strchr(getenv("LARECOMP_LAUNCHER_SHOT"), ':');
         if (pg && (!strncmp(pg + 1, "settings", 8) || !strcmp(pg + 1, "askdelete"))) page = SETTINGS, menu_tabs_focus(true);
         if (pg && !strcmp(pg + 1, "setup")) page = SETUP;
+        if (pg && !strcmp(pg + 1, "rando")) page = RANDO, menu_tabs_focus(false);
         if (pg && !strcmp(pg + 1, "preparing")) page = SETUP, prep_progress(666, 1585), set_job(LN("Preparing shaders"));
         if (pg && !strcmp(pg + 1, "skipask")) page = SETUP, prep_progress(666, 1585), set_job(LN("Preparing shaders")), g_prep_skip_ask = true;
         if (pg && !strncmp(pg + 1, "fail", 4)) page = SETUP, set_failure(atoi(pg + 5));  // (the failure messages)
@@ -2224,9 +2233,9 @@ extern "C" const char *launcher_run(const char *root) {
         }
         if (play) break;
         menu_apply_window_requests(win);  // (the Video tab's Fullscreen)
-        // the seed PLAY would start, kept current (Settings > Gameplay greys out what that seed forces)
-        snprintf(g_settings.rando_seed, sizeof g_settings.rando_seed, "%s", choice ? choices[choice].c_str() : "");
-        workshop_selection(g_root.c_str(),g_settings.rando_seed);
+        // no seed on the start screen: PLAY is the vanilla game (Settings > Gameplay greys out only what a seed forces)
+        g_settings.rando_seed[0] = 0;
+    workshop_selection(g_root.c_str(),g_settings.rando_seed);
         if (g_files_deleted) {  // (Settings > Prelaunch deleted them)
             g_files_deleted = false;
             if (g_profile >= 0) g_root = game_profile_dir(g_profile);
@@ -2236,13 +2245,11 @@ extern "C" const char *launcher_run(const char *root) {
 #if PLAT_TOUCH
         if (char qs[128]; plat_touch_play_request(qs, sizeof qs)) launcher_play_seed(qs);
 #endif
-        // the Randomizer tab's Play or a launcher shortcut: that seed, then PLAY as if pressed (first-launch
+        // the Randomizer panel's Play or a launcher shortcut: that seed, then PLAY as if pressed (first-launch
         // questions); a seed deleted since leaves the start screen as it is
         if (g_play_seed_req) {
             g_play_seed_req = false;
             seeds = list_seeds();
-            choices = {"Vanilla"};
-            choices.insert(choices.end(), seeds.begin(), seeds.end());
             int want = g_play_seed.empty() ? 0 : -1;
             for (size_t i = 0; i < seeds.size(); i++)
                 if (seeds[i] == g_play_seed) want = (int)i + 1;
@@ -2253,7 +2260,8 @@ extern "C" const char *launcher_run(const char *root) {
                 fprintf(stderr, "[launcher] play: the game files aren't ready\n");
 #endif
             } else {
-                choice = want;
+                if (want) choice = want;  // (the row on that seed, back from the game's Title screen)
+                start_seed = g_play_seed;
                 bind_capture_cancel();
                 settings_save();
                 page = MAIN;
@@ -2336,7 +2344,7 @@ extern "C" const char *launcher_run(const char *root) {
             menu_sfx_set_game_dir(g_root.c_str());
             game_layout_select((g_root + "/exefs/main").c_str());
             status = check_game_files(g_root);
-            seeds = list_seeds(); choices = {"Vanilla"}; choices.insert(choices.end(), seeds.begin(), seeds.end()); choice = 0;
+            seeds = list_seeds(); choice = 0; start_seed.clear();
             g_settings.rando_seed[0] = 0;
             pthread_mutex_lock(&g_lock);
             if (!auto_selected) {
@@ -2359,8 +2367,7 @@ extern "C" const char *launcher_run(const char *root) {
             status = check_game_files(g_root);
             game_layout_select((g_root + "/exefs/main").c_str());
             seeds = list_seeds();
-            choices = {"Vanilla"};
-            choices.insert(choices.end(), seeds.begin(), seeds.end());
+            start_seed.clear();
             choice = 0;
             if (status.empty() && !setup_failed) { if (!g_bg) load_background(dev); page = MAIN; start_background_prep(); }
             if (status.empty() && ap && getenv("LARECOMP_LAUNCHER_PREPARE")) play = true;
@@ -2411,6 +2418,29 @@ extern "C" const char *launcher_run(const char *root) {
             if (!vk_frame_begin(clear_col)) { SDL_Delay(16); continue; }
             ImGui_ImplVulkan_NewFrame();
 #endif
+            if (input_cursor_hidden()) io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+            else io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+            ImGui_ImplSDL3_NewFrame();
+            // (test) LARECOMP_LAUNCHER_KEYS=<frame>:<key>,...: that key pressed at that frame, let go 2 frames later.
+            // Keys: left right up down enter esc (keyboard), pl pr pu pd pa pb (controller d-pad, confirm, back)
+            if (static const char *keys = getenv("LARECOMP_LAUNCHER_KEYS"); keys) {
+                io.BackendFlags |= ImGuiBackendFlags_HasGamepad;  // (no controller needed for its presses)
+                static long kf;
+                kf++;
+                for (const char *k = keys; k && *k; k = strchr(k, ',') ? strchr(k, ',') + 1 : NULL) {
+                    long at = atol(k);
+                    const char *name = strchr(k, ':');
+                    if (!name || (kf != at && kf != at + 2)) continue;
+                    static const struct { const char *n; ImGuiKey k; } map[] = {
+                        {"left", ImGuiKey_LeftArrow}, {"right", ImGuiKey_RightArrow}, {"up", ImGuiKey_UpArrow},
+                        {"down", ImGuiKey_DownArrow}, {"enter", ImGuiKey_Enter}, {"esc", ImGuiKey_Escape},
+                        {"pl", ImGuiKey_GamepadDpadLeft}, {"pr", ImGuiKey_GamepadDpadRight}, {"pu", ImGuiKey_GamepadDpadUp},
+                        {"pd", ImGuiKey_GamepadDpadDown}, {"pa", ImGuiKey_GamepadFaceDown}, {"pb", ImGuiKey_GamepadFaceRight}};
+                    size_t len = strcspn(name + 1, ",");
+                    for (auto &m : map)
+                        if (strlen(m.n) == len && !strncmp(name + 1, m.n, len)) io.AddKeyEvent(m.k, kf == at);
+                }
+            }
             // the backend (manual mode, no gamepads of its own) clears HasGamepad every frame, and ImGui then drops the
             // controller presses launcher_pad_event fed in and turns gamepad navigation off: set it again while a
             // controller is connected
@@ -2484,40 +2514,67 @@ extern "C" const char *launcher_run(const char *root) {
             bool typing = typed_before || ui_text_busy();
 
             if (page == MAIN) {
-                {  // the four items close together, the block anchored where QUIT always was (the gap to the status
-                   // line stays)
+                {  // the items close together, the block anchored where QUIT always was (the gap to the status line
+                   // stays)
                     ImGui::PushFont(g_font_menu);
                     float h = ImGui::CalcTextSize("A").y, sp = ImGui::GetStyle().ItemSpacing.y;
                     ImGui::PopFont();
                     auto pitch = [&](float gap) { return h + 6 + gap * h + (gap >= 0 ? 2 : 1) * sp; };
                     g_menu_gap = -0.18f;
-                    ImGui::SetCursorPosY(285 * s + 3 * pitch(0.35f) - 3 * pitch(g_menu_gap));
+                    ImGui::SetCursorPosY(285 * s + 3 * pitch(0.35f) - 4 * pitch(g_menu_gap));
                 }
-                bool hov = false;
-                char label[192], pick[160];
-                if (choice) snprintf(pick, sizeof pick, L("Rando: %s"), choices[choice].c_str());
-                else snprintf(pick, sizeof pick, "%s", L("Vanilla"));  // (choice 0 = Vanilla)
-                snprintf(label, sizeof label, "%s    \xe2\x80\xb9 %s \xe2\x80\xba", L("PLAY"), pick);
+                // PLAY: the vanilla game
                 ImGui::SetCursorPosX(x0);
-                int arrow = 0;
                 static bool focused_once;
-                bool pressed;
-                ImVec2 play_at;
+                if (!focused_once) { ImGui::SetKeyboardFocusHere(); focused_once = true; }
+                ImVec2 play_at = ImGui::GetCursorScreenPos();
+                if (PLAT_TOUCH) ImGui::SetWindowFontScale(kPhoneMenu);
+                bool pressed = menu_item(L("PLAY"), status.empty());
+                ImGui::SetWindowFontScale(1.0f);
+                if (pressed) start_seed.clear();
+                if (status.empty()) {  // PLAY twinkles now and then while the game is ready
+                    if (PLAT_TOUCH) ImGui::SetWindowFontScale(kPhoneMenu);
+                    ImGui::PushFont(g_font_menu);
+                    float w = ImGui::CalcTextSize(L("PLAY")).x, h = ImGui::CalcTextSize(L("PLAY")).y;
+                    ImGui::PopFont();
+                    float t = (float)ImGui::GetTime(), ph = fmodf(t, 3.6f), ph2 = fmodf(t + 0.45f, 3.6f);
+                    float k1 = ph < 0.9f ? sinf(ph / 0.9f * 3.14159265f) : 0, k2 = ph2 < 0.7f ? sinf(ph2 / 0.7f * 3.14159265f) : 0;
+                    ImDrawList *dl = ImGui::GetWindowDrawList();
+                    sparkle(dl, ImVec2(play_at.x + w + h * 0.05f, play_at.y + h * 0.22f), h * 0.2f, k1, t * 0.6f);
+                    sparkle(dl, ImVec2(play_at.x + w - h * 0.32f, play_at.y + h * 0.08f), h * 0.11f, k2 * 0.8f, -t * 0.8f);
+                    ImGui::SetWindowFontScale(1.0f);
+                }
+
+                if (title_is_las() && game_profile_las_extensions(g_profile)) {
+                // RANDOMIZER ‹ New Seed / Seed: <name> ›: New Seed opens the Randomizer panel, a seed starts the game with
+                // it. Left / right step through them and stop at either end (keyboard, controller, the mouse on the
+                // arrows, a tap or swipe on phones).
+                bool hov = false;
+                char pick[160];
+                if (choice) snprintf(pick, sizeof pick, L("Seed: %s"), seeds[choice - 1].c_str());
+                else snprintf(pick, sizeof pick, "%s", L("New Seed"));
+                const int n = (int)seeds.size() + 1;
+                ImGui::SetCursorPosX(x0);
+                if (g_refocus == RANDO) ImGui::SetKeyboardFocusHere(), g_refocus = MAIN;
+                int arrow = 0;
+                bool rando_pressed;
 #if PLAT_TOUCH
-                pressed = phone_play_row(pick, choice, choices, status.empty(),
-                                         status.empty() && !waiting && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId),
-                                         ds.x, &hov, &play_at, &focused_once);
+                rando_pressed = phone_pick_row(L("RANDOMIZER"), pick, choice, n, status.empty(),
+                                               status.empty() && !waiting && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId),
+                                               ds.x, &hov);
                 if (g_pick_step) {  // (an arrow tapped or the choice swiped)
-                    choice = (choice + g_pick_step + (int)choices.size()) % (int)choices.size();
+                    choice = std::max(0, std::min(choice + g_pick_step, n - 1));
                     g_pick_step = 0;
                 }
 #else
+                char label[192];
+                snprintf(label, sizeof label, "%s    \xe2\x80\xb9 %s \xe2\x80\xba", L("RANDOMIZER"), pick);
                 // a long seed name may run past the other items (to 80% of the window); beyond that the line shrinks
                 ImGui::PushFont(g_font_menu);
                 float fit = (ds.x * 0.8f - x0) / ImGui::CalcTextSize(label).x;
                 ImGui::PopFont();
                 if (fit < 1) ImGui::SetWindowFontScale(fit < 0.55f ? 0.55f : fit);
-                // the ‹ › arrows are clickable with the mouse: they cycle Vanilla / seeds instead of starting the game
+                // the ‹ › arrows are clickable with the mouse: they step the choice instead of pressing the row
                 {
                     ImGui::PushFont(g_font_menu);
                     ImVec2 at = ImGui::GetCursorScreenPos();
@@ -2531,31 +2588,40 @@ extern "C" const char *launcher_run(const char *root) {
                     if (in_y && m.x >= rx - pad && m.x <= rx + aw + pad) arrow = 1;
                     ImGui::PopFont();
                 }
-                if (!focused_once) { ImGui::SetKeyboardFocusHere(); focused_once = true; }
-                play_at = ImGui::GetCursorScreenPos();
                 const char *name = strstr(label, "\xe2\x80\xb9") + 4, *name_end = strstr(label, " \xe2\x80\xba");
-                pressed = menu_item(label, status.empty(), &hov, name,
-                                    choice ? IM_COL32(250, 250, 255, 255) : IM_COL32(246, 232, 176, 255),
-                                    name_end);  // (the choice keeps its colour when hovered: "Rando: <seed>" white,
-                                                //  "Vanilla" vanilla cream; the arrows stay white)
-#endif
-                if (status.empty()) {  // PLAY twinkles now and then while the game is ready
-                    if (PLAT_TOUCH) ImGui::SetWindowFontScale(kPhoneMenu);
-                    ImGui::PushFont(g_font_menu);
-                    float w = ImGui::CalcTextSize(L("PLAY")).x, h = ImGui::CalcTextSize(L("PLAY")).y;
-                    ImGui::PopFont();
-                    float t = (float)ImGui::GetTime(), ph = fmodf(t, 3.6f), ph2 = fmodf(t + 0.45f, 3.6f);
-                    float k1 = ph < 0.9f ? sinf(ph / 0.9f * 3.14159265f) : 0, k2 = ph2 < 0.7f ? sinf(ph2 / 0.7f * 3.14159265f) : 0;
-                    ImDrawList *dl = ImGui::GetWindowDrawList();
-                    sparkle(dl, ImVec2(play_at.x + w + h * 0.05f, play_at.y + h * 0.22f), h * 0.2f, k1, t * 0.6f);
-                    sparkle(dl, ImVec2(play_at.x + w - h * 0.32f, play_at.y + h * 0.08f), h * 0.11f, k2 * 0.8f, -t * 0.8f);
-                }
+                rando_pressed = menu_item(label, status.empty(), &hov, name,
+                                          choice ? IM_COL32(250, 250, 255, 255) : IM_COL32(246, 232, 176, 255),
+                                          name_end);  // (the choice keeps its colour when hovered: a seed white, "New
+                                                      //  Seed" vanilla cream; the arrows stay white)
                 ImGui::SetWindowFontScale(1.0f);
-                if (pressed && arrow && ImGui::IsMouseReleased(0)) {  // (a mouse click on an arrow: a step, to the ends)
-                    choice = std::max(0, std::min(choice + arrow, (int)choices.size() - 1));
-                    pressed = false;
+                if (rando_pressed && arrow && ImGui::IsMouseReleased(0)) {  // (a mouse click on an arrow: a step, to the ends)
+                    choice = std::max(0, std::min(choice + arrow, n - 1));
+                    rando_pressed = false;
                 }
-                // first PLAY ever: the aspect ratio question, then how to reach our menu, then the game
+#endif
+                if (hov && status.empty()) {
+                    if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft))
+                        choice = std::max(choice - 1, 0);
+                    if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight))
+                        choice = std::min(choice + 1, n - 1);
+                    // left / right are ours while the row is selected: ImGui's navigation would otherwise take them too,
+                    // find nothing beside it and scroll the window (the row loses its highlight, the stepping stops)
+                    ImGuiID own = ImGui::GetID("##rando_lr");
+                    for (ImGuiKey k : {ImGuiKey_LeftArrow, ImGuiKey_RightArrow, ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadDpadRight})
+                        ImGui::SetKeyOwner(k, own);
+                }
+                static int logged = -1;
+                if (choice != logged)
+                    logged = choice, fprintf(stderr, "[launcher] randomizer row: %s\n", choice ? seeds[choice - 1].c_str() : "New Seed");
+                if (rando_pressed && !choice) {  // New Seed: the Randomizer panel
+                    menu_tabs_focus(false);
+                    page = RANDO;
+                    rando_pressed = false;
+                }
+                if (rando_pressed) start_seed = seeds[choice - 1], pressed = true;
+                }
+
+                // first start ever: the aspect ratio question, then how to reach our menu, then the game
                 if (g_play_pending && status.empty()) pressed = true, g_play_pending = false;
                 if (pressed) {
                     if (!g_settings.aspect_asked) ImGui::OpenPopup("##aspect");
@@ -2568,17 +2634,6 @@ extern "C" const char *launcher_run(const char *root) {
                     else ImGui::OpenPopup("##menutip");
                 }
                 if (menu_tip(s)) play = true;
-                if (hov && status.empty()) {
-                    if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft))
-                        choice = std::max(choice - 1, 0);
-                    if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight))
-                        choice = std::min(choice + 1, (int)choices.size() - 1);
-                    // left / right are ours while PLAY is selected: ImGui's navigation would otherwise take them too,
-                    // find nothing beside PLAY and scroll the window (PLAY loses its highlight, the cycling stops)
-                    ImGuiID own = ImGui::GetID("##play_lr");
-                    for (ImGuiKey k : {ImGuiKey_LeftArrow, ImGuiKey_RightArrow, ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadDpadRight})
-                        ImGui::SetKeyOwner(k, own);
-                }
                 ImGui::SetCursorPosX(x0);
                 if (g_refocus == SETTINGS) ImGui::SetKeyboardFocusHere(), g_refocus = MAIN;  // (back from Settings: it
                 if (menu_item("GAME VERSION", !busy)) { menu_tabs_focus(true); page = SETTINGS; }
@@ -2613,9 +2668,9 @@ extern "C" const char *launcher_run(const char *root) {
                 preview_safe_area(sl, st, sr, sb);
                 menu_preview_frame(sc, g_font_small, g_font_menu);
                 pieces = true;
-            } else if (page == SETTINGS) {
+            } else if (page == SETTINGS || page == RANDO) {
                 // the in-game menu's tabs (runtime/ui/menu.mm), in a window like the in-game one; tabs that need a
-                // loaded game say so
+                // loaded game say so. RANDO: the Randomizer page alone (its own panel, not one of Settings' tabs)
                 float sc, w, h;
                 ImVec2 centre;
                 panel_layout(ds, &sc, &w, &h, &centre);
@@ -2636,7 +2691,7 @@ extern "C" const char *launcher_run(const char *root) {
                 plastic_widgets(true);  // (popups, buttons and fields inside as pieces too)
                 ImGui::PushFont(g_font_small);
                 ImGui::PushFont(g_font_menu);
-                ImGui::TextColored(plastic_col(plastic_theme().title), "%s", L("Settings"));
+                ImGui::TextColored(plastic_col(plastic_theme().title), "%s", page == RANDO ? L("Randomizer") : L("Settings"));
                 ImGui::PopFont();
                 bool back;
                 {  // close: the round X in the corner (B / Esc too)
@@ -2644,7 +2699,8 @@ extern "C" const char *launcher_run(const char *root) {
                     back = plastic_close_corner(bx, sc);
                 }
                 bool popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);  // (before the pages run, like the menu)
-                menu_tabs_draw(sc, g_font_small, g_font_menu, false, prelaunch_tab);
+                if (page == RANDO) menu_tabs_draw(sc, g_font_small, g_font_menu, false, NULL, 3);
+                else menu_tabs_draw(sc, g_font_small, g_font_menu, false, prelaunch_tab);
                 int cap_dev;
                 bind_capture_active(&cap_dev, NULL, NULL);
                 if (!popup && !typing && cap_dev < 0 && !controls_ui_took_back() && !rando_tab_took_back() && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
@@ -2656,14 +2712,10 @@ extern "C" const char *launcher_run(const char *root) {
                 if (back) {
                     bind_capture_cancel();
                     settings_save();
-                    page = MAIN, g_refocus = SETTINGS;
-                    std::string cur = choices[choice];  // seeds made / renamed / deleted in the Randomizer tab
+                    g_refocus = page, page = MAIN;
+                    std::string cur = choice ? seeds[choice - 1] : "";  // seeds made / renamed / deleted in the panel
                     seeds = list_seeds();
-                    choices = {"Vanilla"};
-                    choices.insert(choices.end(), seeds.begin(), seeds.end());
-                    choice = 0;
-                    for (size_t i = 0; i < choices.size(); i++)
-                        if (choices[i] == cur) choice = (int)i;
+                    choose(cur.c_str());
                 }
             } else if (update_only) {
                 pthread_mutex_lock(&g_lock);
@@ -2984,7 +3036,7 @@ extern "C" const char *launcher_run(const char *root) {
             }
             ImGui::EndDisabled();
             {   // (another data folder picked: move / start fresh, then restart; from Settings: in its look)
-                bool in_settings = page == SETTINGS;
+                bool in_settings = page == SETTINGS || page == RANDO;
                 if (in_settings) menu_style_begin(ds.y / 1080.0f), plastic_widgets(true), pieces = true;
                 data_folder_popup(s);
                 if (in_settings) plastic_widgets(false), menu_style_end();
@@ -3050,8 +3102,9 @@ extern "C" const char *launcher_run(const char *root) {
 #endif
         }
     }
-    // play: remember the choice, hand the window to the game
-    snprintf(g_settings.rando_seed, sizeof g_settings.rando_seed, "%s", choice ? choices[choice].c_str() : "");
+    // play: remember the seed (the RANDOMIZER row starts on the last one played), hand the window to the game
+    snprintf(g_settings.rando_seed, sizeof g_settings.rando_seed, "%s", start_seed.c_str());
+    if (!start_seed.empty()) snprintf(g_settings.rando_last, sizeof g_settings.rando_last, "%s", start_seed.c_str());
     workshop_selection(g_root.c_str(),g_settings.rando_seed);
     settings_save();
 #ifdef __APPLE__

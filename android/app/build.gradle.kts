@@ -87,7 +87,6 @@ val prepareLasRecomp by tasks.registering {
         val out = gen.get().asFile
         for (lib in libs) lib.copyTo(out.resolve("jniLibs/arm64-v8a/${lib.name}"), overwrite = true)
         for ((name, f) in res) f.copyTo(out.resolve("assets/res/$name"), overwrite = true)
-        res.getValue("icon.png").copyTo(out.resolve("res/mipmap-xxxhdpi/ic_launcher.png"), overwrite = true)
     }
 }
 // The game code builder's files, unpacked by the activity into <internal files>/gen (runtime/gamebuild.c): Python's

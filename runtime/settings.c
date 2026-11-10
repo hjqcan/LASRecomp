@@ -49,6 +49,7 @@ Settings g_settings = {
     .volume = 1.0f,
     .reverb = true,
     .movie_audio = true,
+    .powerup_music = true,
     .menu_sounds = true,
     .rumble = true,
     .rumble_strength = 100,
@@ -66,6 +67,7 @@ Settings g_settings = {
     .walk_speed_dungeons = false,
     .upscaler = UPSCALE_SHARP,  // (MetalFX on macOS, AMD FSR 1 on Windows)
     .upscaler_auto = true,
+    .shadow_quality = SHADOW_DEFAULT,
     .res_auto = true,
     .livesplit_host = "localhost:16834",
 #ifndef __APPLE__
@@ -213,6 +215,10 @@ void settings_load(void) {
             strlcpy(g_settings.rando_seed, val, sizeof g_settings.rando_seed);
             continue;
         }
+        if (!strcmp(key, "rando_last")) {
+            strlcpy(g_settings.rando_last, val, sizeof g_settings.rando_last);
+            continue;
+        }
         if (!strcmp(key, "cosmetics_seed")) {
             strlcpy(g_settings.cosmetics_seed, val, sizeof g_settings.cosmetics_seed);
             continue;
@@ -229,6 +235,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
+        else if (!strcmp(key, "powerup_music")) g_settings.powerup_music = atoi(val) != 0;
         else if (!strcmp(key, "menu_sounds")) g_settings.menu_sounds = atoi(val) != 0;
         else if (!strcmp(key, "show_fps")) {  // (older files: 0 / 1, and 1 was the top right)
             static const char *const corners[] = {"off", "top_left", "top_right", "bottom_left", "bottom_right"};
@@ -252,6 +259,11 @@ void settings_load(void) {
             else g_settings.upscaler = g_default_upscaler;
         }
         else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
+        else if (!strcmp(key, "shadows"))  // ("high": test builds of #602 before 3x and 4x, the same as 2x)
+            g_settings.shadow_quality = !strcmp(val, "2x") || !strcmp(val, "high") ? SHADOW_2X
+                                      : !strcmp(val, "3x") ? SHADOW_3X : !strcmp(val, "4x") ? SHADOW_4X : !strcmp(val, "off") ? SHADOW_OFF
+                                      : !strcmp(val, "0.5x") ? SHADOW_HALF : SHADOW_DEFAULT;
+        else if (!strcmp(key, "fps_target")) g_settings.fps_target = !strcmp(val, "30") ? FPS_TARGET_30 : !strcmp(val, "mixed") ? FPS_TARGET_MIXED : FPS_TARGET_60;
         else if (!strcmp(key, "ambient_occlusion")) g_settings.ao_quality = !strcmp(val, "high") ? AO_HIGH : !strcmp(val, "off") ? AO_OFF : AO_SWITCH;
         else if (!strcmp(key, "inv_keys")) g_settings.inv_keys = atoi(val) != 0;
         else if (!strcmp(key, "dpad_mode")) g_settings.dpad_mode = !strcmp(val, "items") ? DPAD_ITEMS : !strcmp(val, "move") ? DPAD_MOVE : DPAD_NOTHING;
@@ -350,6 +362,8 @@ void settings_load(void) {
     fclose(f);
     if (!tip_key) g_settings.menu_tip_seen = true;  // (a settings file from before the note: not a first launch)
     if (!aspect_key) g_settings.aspect_asked = true;  // (likewise: the aspect ratio was chosen already)
+    // (a settings file from before the Randomizer row: the seed PLAY started last is the row's start)
+    if (!g_settings.rando_last[0]) strlcpy(g_settings.rando_last, g_settings.rando_seed, sizeof g_settings.rando_last);
     if (g_settings.volume < 0) g_settings.volume = 0;
     if (g_settings.volume > 2) g_settings.volume = 2;
     if (g_settings.rumble_strength < 25 || g_settings.rumble_strength > 100) g_settings.rumble_strength = 100;
@@ -378,6 +392,7 @@ void settings_save(void) {
     fprintf(f, "audio_output = %s\n", k_audio_out_keys[g_settings.audio_out == AUDIO_OUT_51]);
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
+    fprintf(f, "powerup_music = %d\n", g_settings.powerup_music);
     fprintf(f, "menu_sounds = %d\n", g_settings.menu_sounds);
     {
         static const char *const corners[] = {"off", "top_left", "top_right", "bottom_left", "bottom_right"};
@@ -392,8 +407,14 @@ void settings_save(void) {
     fprintf(f, "upscaler = %s\n", g_settings.upscaler_auto ? "auto" : g_settings.upscaler == UPSCALE_METALFX ? "metalfx" :
                                    g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
+    {
+        static const char *sh[] = {"off", "0.5x", "default", "2x", "3x", "4x"};
+        int q = g_settings.shadow_quality;
+        fprintf(f, "shadows = %s\n", sh[q >= SHADOW_OFF && q <= SHADOW_4X ? q : SHADOW_DEFAULT]);
+    }
     fprintf(f, "ambient_occlusion = %s\n", g_settings.ao_quality == AO_HIGH ? "high" : g_settings.ao_quality == AO_OFF ? "off" : "switch");
     fprintf(f, "resolution = %s\n", g_settings.res_auto ? "auto" : res_name(g_settings.res_mode));
+    fprintf(f, "fps_target = %s\n", g_settings.fps_target == FPS_TARGET_30 ? "30" : g_settings.fps_target == FPS_TARGET_MIXED ? "mixed" : "60");
     fprintf(f, "inv_keys = %d\n", g_settings.inv_keys);
     fprintf(f, "dpad_mode = %s\n", g_settings.dpad_mode == DPAD_ITEMS ? "items" : g_settings.dpad_mode == DPAD_MOVE ? "move" : "nothing");
     fprintf(f, "touch_controls = %s\n", g_settings.touch_mode == 1 ? "always" : g_settings.touch_mode == 2 ? "off" : "auto");
@@ -461,6 +482,7 @@ void settings_save(void) {
     bind_settings_save(f);
     fprintf(f, "rando_seed = %s\n", g_settings.rando_seed);
     fprintf(f, "game_profile = %s\n", game_profile_setting(g_settings.game_profile));
+    if (g_settings.rando_last[0]) fprintf(f, "rando_last = %s\n", g_settings.rando_last);
     if (g_settings.rando_options[0]) fprintf(f, "rando_options = %s\n", g_settings.rando_options);
     for (int i = 0; i < RANDO_PRESETS_MAX; i++)
         if (g_settings.rando_presets[i][0]) fprintf(f, "rando_preset = %s\n", g_settings.rando_presets[i]);

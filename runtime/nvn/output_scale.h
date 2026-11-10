@@ -1,6 +1,7 @@
 // Output resolution (runtime/nvn/output_scale.c), shared by the Metal and Vulkan backends.
 #pragma once
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef struct {
     double sx, sy;             // render scale (relative to the game's 1920x1080 sizes): what a frame is drawn at
@@ -18,6 +19,11 @@ double output_scale_dynamic_hold_fps(void);
 // The scale of the game's ambient occlusion targets (metal.m / vulkan/textures.c tex_ao) at allocation scale `al`: 1 =
 // the Switch's size, up to 2 (Video tab "Ambient occlusion"). 0: LARECOMP_AO_SCALED=1, they follow the render scale.
 float output_scale_ao(float al);
+// The game's shadow map: is this texture it, and its scale (the Switch's size or twice it, at any render scale).
+bool output_scale_is_shadow_map(uint32_t target, uint32_t samples, uint32_t w, uint32_t h, uint32_t format, bool render_target);
+float output_scale_shadow(void);
+float output_scale_shadow_slope(void);  // the slope factor of its polygon offset times this
+bool output_scale_shadow_off(void);  // Shadows Off: nothing is drawn into it
 // (diagnostics) "[scale] frame f drawable WxH -> render scale sx x sy" whenever the render scale or the window changes
 void output_scale_log(unsigned long long frame, double dw, double dh, const OutScale *o);  // the frame rate Dynamic holds (60 out of reach), else 0
 

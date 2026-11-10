@@ -63,6 +63,8 @@ jobs:
           python3 tools/test_gamebuild_resume.py
       - name: Save I/O regression tests
         run: python3 tools/test_save.py
+      - name: Power-up music regression tests
+        run: python3 tools/test_powerup_music.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 tools/test_movie_extractor.c $(pkg-config --cflags --libs libavformat libavcodec libavutil libswscale) -pthread -o build/test-movie-extractor
@@ -230,6 +232,8 @@ jobs:
           python3 tools/test_gamebuild_resume.py
       - name: Save I/O regression tests
         run: python3 tools/test_save.py
+      - name: Power-up music regression tests
+        run: python3 tools/test_powerup_music.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 tools/test_movie_extractor.c $(pkg-config --cflags --libs libavformat libavcodec libavutil libswscale) -pthread -o build/test-movie-extractor
@@ -313,6 +317,8 @@ jobs:
           python3 tools/test_gamebuild_resume.py
       - name: Save I/O regression tests
         run: python3 tools/test_save.py
+      - name: Power-up music regression tests
+        run: python3 tools/test_powerup_music.py
       - name: Movie extractor lifecycle regression
         run: |
           clang -std=gnu11 -O1 -I"$(brew --prefix ffmpeg)/include" -L"$(brew --prefix ffmpeg)/lib" tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -pthread -o build/test-movie-extractor
@@ -458,6 +464,8 @@ jobs:
           python3 tools/test_save_mount.py
       - name: Save I/O regression tests
         run: python3 tools/test_save.py
+      - name: Power-up music regression tests
+        run: python3 tools/test_powerup_music.py
       - name: Game-files delete guard (junctions, outside the data folder)
         run: python3 tools/test_delete_guard.py
       - name: Data folder move (cut off at every step)
@@ -595,6 +603,8 @@ jobs:
           python3 tools/test_windows_processes.py
       - name: Save I/O regression tests
         run: python3 tools/test_save.py
+      - name: Power-up music regression tests
+        run: python3 tools/test_powerup_music.py
       - name: Game-files delete guard (junctions, outside the data folder)
         run: python3 tools/test_delete_guard.py
       - name: Data folder move (cut off at every step)
