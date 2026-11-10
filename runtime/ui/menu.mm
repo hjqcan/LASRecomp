@@ -14,16 +14,20 @@
 
 #include "imgui.h"
 #include "localization.h"
+#include "i18n.h"
+#include "live_preview.h"
 #include "option_rows.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
 #include "pad_nav.h"
 #include "plastic.h"
+#include "mobile/touch_ui.h"
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
 #else
 #include "imgui_impl_vulkan.h"
 extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.cpp
+extern "C" void vk_imgui_fonts_rebuild(void);
 // runtime/nvn/vulkan/device.c: the command buffer ImGui records into (a secondary one the recorder thread executes in
 // the window image's commands, or that buffer itself after the recorder caught up), then handed back
 extern "C" void *vk_overlay_begin(void *window_cmd);
@@ -58,16 +62,21 @@ bool rando_tab_took_back(void);  // rando_tab.mm: B went back a step in the righ
 bool save_editor_took_back(void);  // save_editor.mm (the same)
 bool warp_tab_took_back(void);  // warp_tab.mm (the same)
 #include "../input_bind.h"
+#include "../livesplit.h"
 #include "../paths.h"
+#include "../platform.h"
+#include "../rando.h"
 }
 
 // ------------------------------------------------------------------ state shared with the main thread
 static std::atomic<bool> g_open{false};
 static std::atomic<bool> g_text_busy{false};  // a text field / the on-screen keyboard has the keys (render thread: ui_text_busy)
+static std::atomic<bool> g_text_typed{false};  // an ImGui text field has the focus: the system keyboard follows (phones)
 static std::atomic<bool> g_want_fullscreen_apply{false};
 
 struct QEvent {
-    enum { KEY, ANALOG, MOUSE_POS, MOUSE_BUTTON, WHEEL, TEXT } kind;
+    enum { KEY, ANALOG, MOUSE_POS, MOUSE_BUTTON, WHEEL, FINGER, TEXT, RELEASE_ALL } kind;
+    SDL_Event finger;  // (FINGER: the event itself - touch_ui.h runs on the render thread)
     ImGuiKey key;
     bool down;
     float value, x, y;
@@ -77,6 +86,20 @@ struct QEvent {
 static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::vector<QEvent> q_events;
 static float g_pixel_density = 1;
+static int g_win_px_w = 1, g_win_px_h = 1;  // (touch positions come normalized)
+static std::atomic<int> g_safe_l{0}, g_safe_t{0}, g_safe_r{0}, g_safe_b{0};  // insets, pixels (phones: notch, home bar)
+#if PLAT_TOUCH
+// (runtime/hle/hud_corners.c) the side insets as a share of the window's width
+extern "C" void menu_safe_insets(float *l, float *r) {
+    float w = ImGui::GetCurrentContext() ? ImGui::GetIO().DisplaySize.x : 0;
+    *l = w > 0 ? g_safe_l.load() / w : 0, *r = w > 0 ? g_safe_r.load() / w : 0;
+}
+#endif
+static std::atomic<bool> g_ime_send{false};  // the text field being typed in: its frame, points, to give SDL (phones)
+static SDL_Rect g_ime_rect;
+// Phones: the menu a third larger than on a 1080-line monitor (a 6.5" screen held at arm's length: rows to touch);
+// a tablet's screen is a monitor's size at arm's length: the monitor's scale
+static const float kUi = PLAT_TOUCH && !plat_touch_tablet() ? 1.35f : 1.0f;
 
 static void push(const QEvent &e) {
     pthread_mutex_lock(&q_lock);
@@ -87,25 +110,65 @@ static void push(const QEvent &e) {
 bool menu_is_open(void) { return g_open.load(); }
 static void set_open(bool open);
 extern "C" void menu_close(void) { set_open(false); }
+// The menu in game: a bar drops down from the top over the game, its entries in a row (the one the cursor is on lit),
+// a close X at its right end; each entry opens its page in a window under it. The start screen's Settings is
+// launcher.mm's.
+enum { BAR_SETTINGS, BAR_WARP, BAR_EDITOR, BAR_RESET, BAR_QUIT, BAR_CLOSE, BAR_N };
+static std::atomic<int> g_page{-1};  // the entry whose page is open (-1: the bar alone)
+static int g_bar_cur;  // the bar's cursor (render thread)
+static void page_open(int page);
+extern "C" void menu_toggle(void) { set_open(!g_open.load()); }  // (the touch controls' menu button)
+static int g_tab = -1000, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab; -1000: the first tab)
+static int g_ask = -1;  // the bar's Reset or Quit asked (render thread): ask_popup
 extern "C" void menu_test_open(void) {
     set_open(true);
-    if (getenv("LARECOMP_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("LARECOMP_MENU_TAB")); }
+    // (test) LARECOMP_MENU_BAR=<entry>: the bar alone, its cursor on that entry. Otherwise a page, as before the bar:
+    // LARECOMP_MENU_TAB=4 Warp, 2 Save Editor, 9 Quit, 14 Reset, any other a Settings tab
+    if (getenv("LARECOMP_MENU_BAR")) { g_bar_cur = atoi(getenv("LARECOMP_MENU_BAR")) % BAR_N; return; }
+    int t = getenv("LARECOMP_MENU_TAB") ? atoi(getenv("LARECOMP_MENU_TAB")) : -1;
+    page_open(t == 4 ? BAR_WARP : t == 2 ? BAR_EDITOR : t == 9 ? BAR_QUIT : t == 14 ? BAR_RESET : BAR_SETTINGS);
+    if (t >= 0 && t != 2 && t != 4 && t != 9 && t != 14) { extern int g_tab_request_ext; g_tab_request_ext = t; }
+    // (test) LARECOMP_PREVIEW=<row label>: that row's live preview opens straight away (its page: LARECOMP_MENU_TAB)
+    if (const char *row = getenv("LARECOMP_PREVIEW")) {
+        if (t >= 0) g_tab = t;
+        preview_open(row, -1);
+    }
 }
 
 void menu_tabs_focus(bool first_tab);
+#if PLAT_TOUCH
+extern "C" void touch_reset(void);  // mobile/touch_controls.mm (on-screen controls)
+extern "C" bool touch_visible(void);
+extern "C" void touch_draw(ImDrawList *dl, float w, float h, ImFont *font);
+#else
+static void touch_reset(void) {}
+static bool touch_visible(void) { return false; }
+static void touch_draw(ImDrawList *, float, float, ImFont *) {}
+#endif
 static void set_open(bool open) {
     if (open == g_open.load()) return;
+    g_page = -1;  // (the bar alone first)
     g_open.store(open);
     menu_sfx_play(open ? MENU_SFX_OPEN : MENU_SFX_CLOSE);
     input_reset();  // nothing held while the menu had focus leaks into the game
+    touch_reset();  // (nor touches: the menu takes them, their lifts included)
     bind_capture_cancel();
-    if (open) {
-        if (title_is_las()) save_editor_on_open();
+    // nor the other way round: the releases of what was held when it closed never reach the menu (it isn't capturing
+    // then), so it starts with nothing held - else the cursor kept scrolling, or a press went missing, on the next open
+    { QEvent q = {}; q.kind = QEvent::RELEASE_ALL; push(q); }
+    if (!open) { settings_save(); osk_cancel(); g_text_busy = false; preview_reset(); }
+}
+
+static void page_open(int page) {
+    g_bar_cur = page;
+    if (page == BAR_SETTINGS) {
         static bool opened;  // the controller's cursor: the first tab (Controls) the first time this session, later the
         menu_tabs_focus(!opened);  // selected one
         opened = true;
-    }
-    else { settings_save(); osk_cancel(); g_text_busy = false; }
+    } else menu_tabs_focus(false);  // (a page alone: the first Down goes to its first row)
+    if (page == BAR_EDITOR && title_is_las()) save_editor_on_open();
+    if (page == BAR_RESET || page == BAR_QUIT) { g_ask = page; return; }  // (a question over the bar: ask_popup)
+    g_page = page;
 }
 
 static ImGuiKey key_from_scancode(SDL_Scancode sc) {
@@ -173,11 +236,16 @@ static int kbd_cut(char *s, int max_units) {
 extern "C" bool menu_input_captured(void) { return capturing(); }
 
 bool menu_handle_event(const SDL_Event *e) {
-    if(input_second_event(e))return false;
-    static bool back_down, start_down;
+    if (input_second_event(e)) return false;
+    static uint32_t pad_held;  // (controller buttons down, by bit: the menu's two-button shortcuts)
     if (g_open.load() && bind_capture_event(e)) return true;  // Controls tab waiting for a new binding: it takes the press
     if (e->type == SDL_EVENT_KEY_DOWN) g_last_pad = false;
     if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) g_last_pad = true;
+    if (PLAT_TOUCH) {  // (osk.mm: a finger or a controller types - the device used last)
+        if (e->type == SDL_EVENT_FINGER_DOWN) g_last_pad = false, ui_typing_pad(false);
+        if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) ui_typing_pad(true);
+        if (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && abs(e->gaxis.value) > 12000) g_last_pad = true, ui_typing_pad(true);
+    }
     if (g_kbd.load() == 1 && e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat) {  // Enter confirms, Esc cancels
         if (e->key.scancode == SDL_SCANCODE_RETURN || e->key.scancode == SDL_SCANCODE_KP_ENTER) { g_kbd = 2; return true; }
         if (e->key.scancode == SDL_SCANCODE_ESCAPE) { g_kbd = 3; return true; }
@@ -233,9 +301,10 @@ bool menu_handle_event(const SDL_Event *e) {
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: {
         bool down = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
-        if (e->gbutton.button == SDL_GAMEPAD_BUTTON_BACK) back_down = down;
-        if (e->gbutton.button == SDL_GAMEPAD_BUTTON_START) start_down = down;
-        if (down && !typing && ((back_down && start_down) || e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE)) {
+        if (e->gbutton.button < 32) pad_held = down ? pad_held | 1u << e->gbutton.button : pad_held & ~(1u << e->gbutton.button);
+        // the player's shortcuts (Controls > Configure inputs > Open menu; Home and Back + Start by default). A Home
+        // that isn't one goes on below, not taken (#591: it opens Steam's and other launchers' overlays).
+        if (down && !typing && bind_menu_pressed(e->gbutton.button, pad_held)) {
             if (photo_mode_active()) photo_mode_exit(); else set_open(!g_open.load());
             return true;
         }
@@ -270,10 +339,12 @@ bool menu_handle_event(const SDL_Event *e) {
     }
     case SDL_EVENT_MOUSE_MOTION:
         if (!capturing()) return false;
+        if (PLAT_TOUCH && e->motion.which == SDL_TOUCH_MOUSEID) return true;  // (the finger itself: FINGER below)
         { QEvent q = {}; q.kind = QEvent::MOUSE_POS; q.x = e->motion.x * g_pixel_density; q.y = e->motion.y * g_pixel_density; push(q); }
         return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
         if (!capturing()) return false;
+        if (PLAT_TOUCH && e->button.which == SDL_TOUCH_MOUSEID) return true;
         {
             QEvent q = {};
             q.kind = QEvent::MOUSE_BUTTON;
@@ -284,19 +355,72 @@ bool menu_handle_event(const SDL_Event *e) {
         return true;
     case SDL_EVENT_MOUSE_WHEEL:
         if (!capturing()) return false;
+        if (PLAT_TOUCH && e->wheel.which == SDL_TOUCH_MOUSEID) return true;
         { QEvent q = {}; q.kind = QEvent::WHEEL; q.x = e->wheel.x; q.y = e->wheel.y; push(q); }
         return true;
+#if PLAT_TOUCH
+    case SDL_EVENT_FINGER_DOWN: case SDL_EVENT_FINGER_UP: case SDL_EVENT_FINGER_MOTION: case SDL_EVENT_FINGER_CANCELED:
+        if (!capturing()) return false;
+        {   // touch screens (touch_ui.h, on the render thread: drain_events)
+            QEvent q = {};
+            q.kind = QEvent::FINGER, q.finger = *e;
+            push(q);
+        }
+        return true;
+#endif
     default:
         return false;
     }
+}
+
+// Remember window size (Video tab): the window opens at the size it had when LAS Recomp last quit. The size is taken
+// at exit (every quit ends in exit()), not in fullscreen or maximized - those keep the last plain window's size.
+static SDL_Window *g_remember_win;
+static void remember_at_exit(void) {
+    if (!g_settings.remember_window || !g_remember_win) return;
+    SDL_WindowFlags fl = SDL_GetWindowFlags(g_remember_win);
+    int w, h;
+    if ((fl & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_MINIMIZED)) || !SDL_GetWindowSize(g_remember_win, &w, &h))
+        return;
+    if (w == g_settings.window_w && h == g_settings.window_h) return;
+    g_settings.window_w = w, g_settings.window_h = h;
+    settings_save();
+}
+extern "C" void rt_window_size(int *w, int *h) {  // before the window is made: the remembered size, if it's on
+    if (g_settings.remember_window && g_settings.window_w >= 320 && g_settings.window_h >= 180)
+        *w = g_settings.window_w, *h = g_settings.window_h;
+}
+extern "C" void rt_window_remember(void *w) {
+    if (!g_remember_win) atexit(remember_at_exit);
+    g_remember_win = (SDL_Window *)w;
 }
 
 extern "C" uint32_t g_window_resize_request;  // (test scripts: runtime/hle/input.c "resize")
 void menu_apply_window_requests(void *win) {
     SDL_Window *w = (SDL_Window *)win;
     g_pixel_density = SDL_GetWindowPixelDensity(w);
-    static bool text_input;
+    SDL_GetWindowSizeInPixels(w, &g_win_px_w, &g_win_px_h);
+#if PLAT_TOUCH
+    // phones: text input shows the system keyboard - only while an ImGui text field has the focus (not the on-screen
+    // keys or the system prompt), not the whole time the menu is open
+    bool want_text = capturing() && g_text_typed.load();
+    if (g_ime_send.exchange(false)) SDL_SetTextInputArea(w, &g_ime_rect, 0);  // (SDL slides the view up off the keyboard)
+    {   // the safe area (points -> pixels): the menu keeps out of the notch and the home indicator. Held while the
+        // system keyboard is up: SDL slides the view up to keep the text field (ImGui's IME rect) above the keyboard,
+        // which takes the view's bottom off the home indicator - a new safe area, which would move the field, and SDL
+        // would slide again: the screen shook back and forth between the two.
+        SDL_Rect sa;
+        int ww, wh;
+        bool kbd = want_text || SDL_TextInputActive(w) || SDL_ScreenKeyboardShown(w);
+        if (!kbd && SDL_GetWindowSafeArea(w, &sa) && SDL_GetWindowSize(w, &ww, &wh) && ww > 0 && wh > 0) {
+            g_safe_l = (int)(sa.x * g_pixel_density), g_safe_t = (int)(sa.y * g_pixel_density);
+            g_safe_r = (int)((ww - sa.x - sa.w) * g_pixel_density), g_safe_b = (int)((wh - sa.y - sa.h) * g_pixel_density);
+        }
+    }
+#else
     bool want_text = capturing();
+#endif
+    static bool text_input;
     if (want_text != text_input) {
         if (want_text) SDL_StartTextInput(w);
         else SDL_StopTextInput(w);
@@ -305,7 +429,11 @@ void menu_apply_window_requests(void *win) {
     static bool first = true;
     if (first || g_want_fullscreen_apply.exchange(false)) {
         first = false;
+#ifdef __ANDROID__
+        SDL_SetWindowFullscreen(w, true);  // (always: there is no window to go back to)
+#else
         SDL_SetWindowFullscreen(w, g_settings.fullscreen);
+#endif
     }
     if (uint32_t r = __atomic_exchange_n(&g_window_resize_request, 0u, __ATOMIC_RELAXED))
         SDL_SetWindowSize(w, (int)(r >> 16), (int)(r & 0xffff));
@@ -324,7 +452,6 @@ void menu_set_scene(id<MTLTexture> tex, const float uv[4]) {
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
 static ImFont *g_font, *g_font_big;
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Baloo 2); everything else keeps g_font
-static int g_tab = -1000, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab; -1000: the first tab)
 static int g_focus_tab = -99;  // put the nav cursor on this tab next frame (-100: the selected one; -99: none)
 static int g_focus_frames;
 
@@ -411,18 +538,12 @@ static void style_parchment(ImGuiStyle &s) {
 }
 
 
-#ifdef __APPLE__
-static void init(id<MTLDevice> dev) {
-#else
-static void init(void) {
-#endif
-    IMGUI_CHECKVERSION();
-    g_ctx = ImGui::CreateContext();
-    ImGui::SetCurrentContext(g_ctx);
+// The fonts, with the glyphs of the menus' language (i18n.h): again when it changes
+static void load_fonts(void) {
     ImGuiIO &io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
-    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
-    io.IniFilename = NULL;
+    io.Fonts->Clear();
+    g_font = g_font_big = g_menu_font = g_menu_font_big = NULL;
+    i18n_fonts_stale(io.Fonts);
     ImFontConfig cfg;
     cfg.OversampleH = 2;
     char dejavu[1024];  // none of the system's: the bundled DejaVu Sans (third_party/fonts/DejaVu, in every release)
@@ -434,22 +555,45 @@ static void init(void) {
         if (!p) continue;
         if (FILE *f = fopen(p, "rb")) fclose(f);  // a missing file is an assertion in ImGui, not a NULL return
         else continue;
-        if (!g_font) g_font = io.Fonts->AddFontFromFileTTF(p, 34, &cfg);
-        if (g_font && !g_font_big) { ImFontConfig b = cfg; b.FontNo = 0; g_font_big = io.Fonts->AddFontFromFileTTF(p, 56, &b); }
+        if (!g_font) g_font = io.Fonts->AddFontFromFileTTF(p, 34, &cfg, i18n_glyph_ranges()), i18n_merge_fonts(io.Fonts, 34);
+        if (g_font && !g_font_big) {
+            ImFontConfig b = cfg;
+            b.FontNo = 0;
+            g_font_big = io.Fonts->AddFontFromFileTTF(p, 56, &b, i18n_glyph_ranges());
+            i18n_merge_fonts(io.Fonts, 56);
+        }
     }
     // the menu window itself: Baloo 2 SemiBold, as on the start screen (shipped, OFL), at its Settings window's sizes; the
     // FPS counter, overlays and on-screen keyboard keep the fonts above
     char baloo[1024];
     if (const char *f = getenv("LARECOMP_MENU_FONT")) strlcpy(baloo, f, sizeof baloo);  // (test) another weight / face
     if (getenv("LARECOMP_MENU_FONT") || rt_resource("Baloo2-SemiBold.ttf", "third_party/fonts/Baloo2/Baloo2-SemiBold.ttf", baloo, sizeof baloo)) {
-        g_menu_font = io.Fonts->AddFontFromFileTTF(baloo, 39, &cfg);
-        g_menu_font_big = io.Fonts->AddFontFromFileTTF(baloo, 72, &cfg);
+        g_menu_font = io.Fonts->AddFontFromFileTTF(baloo, 39, &cfg, i18n_glyph_ranges());
+        i18n_merge_fonts(io.Fonts, 39, 0.8f);
+        g_menu_font_big = io.Fonts->AddFontFromFileTTF(baloo, 72, &cfg, i18n_glyph_ranges());
+        i18n_merge_fonts(io.Fonts, 72, 0.8f);
     }
-    if (!g_font) g_font = io.Fonts->AddFontDefault();
+    if (!g_font) g_font = io.Fonts->AddFontDefault(), i18n_merge_fonts(io.Fonts, 13);
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
-    for (ImFont *font : {g_font, g_font_big, g_menu_font, g_menu_font_big}) ui_merge_language_font(font);
     ui_add_user_font();
+}
+
+#ifdef __APPLE__
+static id<MTLDevice> g_dev;  // (the font texture again: load_fonts)
+static void init(id<MTLDevice> dev) {
+    g_dev = dev;
+#else
+static void init(void) {
+#endif
+    IMGUI_CHECKVERSION();
+    g_ctx = ImGui::CreateContext();
+    ImGui::SetCurrentContext(g_ctx);
+    ImGuiIO &io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    io.IniFilename = NULL;
+    load_fonts();
     style_init();
 #ifdef __APPLE__
     ImGui_ImplMetal_Init(dev);
@@ -459,11 +603,15 @@ static void init(void) {
     g_inited = true;
 }
 
+static TouchUi g_touch;  // (render thread)
 static void drain_events(ImGuiIO &io) {
     pthread_mutex_lock(&q_lock);
     std::vector<QEvent> ev;
     ev.swap(q_events);
     pthread_mutex_unlock(&q_lock);
+    // a rebind (Controls tab) takes every release while it waits: the confirm press that started it, a stick let go
+    static bool capture_was;
+    if (bind_capture_active(NULL, NULL, NULL) != capture_was) capture_was = !capture_was, ui_pad_release_all(io);
     for (const QEvent &q : ev) {
         switch (q.kind) {
         case QEvent::KEY: io.AddKeyEvent(q.key, q.down); break;
@@ -471,7 +619,13 @@ static void drain_events(ImGuiIO &io) {
         case QEvent::MOUSE_POS: io.AddMousePosEvent(q.x, q.y); break;
         case QEvent::MOUSE_BUTTON: io.AddMouseButtonEvent(q.button, q.down); break;
         case QEvent::WHEEL: io.AddMouseWheelEvent(q.x, q.y); break;
+        case QEvent::FINGER:
+            io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
+            g_touch.event(&q.finger, (float)g_win_px_w, (float)g_win_px_h, [&](float x, float y) { io.AddMousePosEvent(x, y); },
+                          [&](bool down) { io.AddMouseButtonEvent(0, down); });
+            break;
         case QEvent::TEXT: io.AddInputCharactersUTF8(q.text); break;
+        case QEvent::RELEASE_ALL: ui_pad_release_all(io); break;
         }
     }
 }
@@ -480,26 +634,76 @@ extern "C" void renderer_get_scale(float *sx, float *sy);
 extern "C" int input_pad_family(void);  // runtime/hle/input.c
 extern "C" double output_scale_dynamic_factor(void);
 
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+// Metal HUD turned on while its library isn't loaded (the game started with the setting off): it shows only after a
+// restart (runtime/main.c metal_hud_relaunch). LARECOMP_MENU_HUD_RESTART=1 (test): the note opens with the Video tab.
+static void metal_hud_restart_popup(float scale) {
+    static bool test = getenv("LARECOMP_MENU_HUD_RESTART") != NULL;
+    if (test) test = false, ImGui::OpenPopup("##hudrestart");
+    if (!ImGui::BeginPopupModal("##hudrestart", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar))
+        return;
+    ImGui::PushFont(g_font_big);
+    ImGui::TextColored(plastic_col(plastic_theme().title), "%s", L("Restart required"));
+    ImGui::PopFont();
+    ImGui::Spacing();
+    ImGui::TextUnformatted(L("The Metal HUD shows after you restart the game."));
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::SetItemDefaultFocus();
+    if (ImGui::Button(L("OK"), ImVec2(220 * scale, 0)) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+        ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+#endif
+
 static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
     opt_section("Display");
-    const char *aspects[] = {"Unlocked", "Original 16:9"};
-    opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
-               "Unlocked: the view fills the window, so wider (or taller) windows show more of the island - up to "
-               "ultrawide; houses and dungeons keep their framing. Original 16:9: the game's own framing, with bars.");
+    const char *aspects[] = {LN("Unlocked"), LN("Original 16:9")};
+    preview_text(LN("Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9."), NULL);
+    opt_preview("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
+               "Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps "
+               "the game's 16:9 view with bars.");
     bool fs = g_settings.fullscreen;
-    if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
+    if (!PLAT_TOUCH && opt_toggle("Fullscreen", &fs, false, "Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
         g_want_fullscreen_apply.store(true);
     }
-    opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
+    static const char *fps_corners[] = {LN("Off"), LN("Top left"), LN("Top right"), LN("Bottom left"), LN("Bottom right")};
+    opt_choice("Show FPS", &g_settings.show_fps, fps_corners, N_FPS_CORNERS, FPS_OFF,
+               "Shows the frame rate in a corner of the screen.");
+    opt_toggle("Frame Generation", &g_settings.frame_interp, false,
+               "Experimental. Draws extra images between the game's frames for smoother motion, up to your display's "
+               "refresh rate. On a 120 Hz display the game shows 120 fps. Some visual glitches are possible.");
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+    if (opt_toggle("Metal HUD", &g_settings.metal_hud, false,
+                   "Shows Apple's performance overlay with frame rate, GPU time and memory. Turning it on may need a "
+                   "restart.") &&
+        g_settings.metal_hud && !getenv("MTL_HUD_ENABLED"))
+        ImGui::OpenPopup("##hudrestart");
+    metal_hud_restart_popup(scale);
+#endif
+    {   // (a live preview, as an Off / On choice)
+        static const char *oo[] = {LN("Off"), LN("On")};
+        int rb = g_settings.blur_removal;
+        if (opt_preview("Remove blur", &rb, oo, 2, 0, "Turns off the tilt-shift blur at the top and bottom of the screen."))
+            g_settings.blur_removal = rb;
+    }
+    if (!PLAT_TOUCH) {  // (a phone's window is the screen, and the app in the background is paused anyway)
+        opt_toggle("Pause on focus lost", &g_settings.pause_unfocused, false,
+                   "The game pauses while its window isn't in front.");
+        opt_toggle("Remember window size", &g_settings.remember_window, false,
+                   "The window opens at the size it was when you quit.");
+    }
 
     opt_section("Rendering");
     // display order -> RES_* (the ini / enum order predates the menu order)
     // (up to 4x: 7680 x 4320, 8K - more only ran out of GPU memory, and sat next to 75% in the list)
     // (Match display in the middle: left from it 75% / 50% / 25%, right Dynamic then 1x-4x; user 2026-10-11)
-    static const char *res[] = {"25%", "50%", "75%", "Match display", "Dynamic", "1x", "2x", "3x", "4x"};
+    static const char *res[] = {LN("25%"), LN("50%"), LN("75%"), LN("Match display"), LN("Dynamic"),
+                                LN("1x"), LN("2x"), LN("3x"), LN("4x")};
     static const int res_mode[] = {RES_Q25, RES_Q50, RES_Q75, RES_MATCH, RES_DYNAMIC, 1, 2, 3, 4};
     enum { RES_MATCH_AT = 3 };
     enum { NRES = sizeof res_mode / sizeof res_mode[0] };
@@ -511,68 +715,88 @@ static void tab_display(void) {
         }
         float sx, sy;
         renderer_get_scale(&sx, &sy);
-        char d[1600];
-        int n = snprintf(d, sizeof d, ui_tr("How sharp the 3D image is. Match display: your screen's own resolution. Dynamic: "
-                                      "as sharp as your GPU keeps at full speed. 1x-4x: the Switch's 1080p times that%s. "
-                                      "75%% / 50%% / 25%%: a share of the display, for slower machines.\n\nRendering at "
-                                      "%.0f x %.0f."), ui_tr(g_gpu_integrated ? " (1x: 720p on this GPU)" : ""), 1920.0 * sx, 1080.0 * sy);
-        if (g_settings.res_mode == RES_DYNAMIC)
-            snprintf(d + n, sizeof d - n, ui_tr(" Dynamic: %.0f%% of the display right now."), output_scale_dynamic_factor() * 100);
-        if (opt_choice("Internal resolution", &ri, res, NRES, rdef, d, false))
+        char d[1024];  // (in the menus' language already: the row leaves it as it is)
+        int n = snprintf(d, sizeof d,
+                         g_gpu_integrated
+                             ? L("How sharp the 3D image is. Match display uses your screen's resolution, and Dynamic "
+                                 "goes as sharp as your GPU can at full speed. 1x to 4x multiply the Switch's 1080p, and "
+                                 "1x is 720p on this GPU. 75%%, 50%% and 25%% are for slower machines.\n\nRendering at "
+                                 "%.0f x %.0f.")
+                             : L("How sharp the 3D image is. Match display uses your screen's resolution, and Dynamic "
+                                 "goes as sharp as your GPU can at full speed. 1x to 4x multiply the Switch's 1080p. 75%%, "
+                                 "50%% and 25%% are for slower machines.\n\nRendering at %.0f x %.0f."),
+                         1920.0 * sx, 1080.0 * sy);
+        if (g_settings.res_mode == RES_DYNAMIC && n > 0 && n < (int)sizeof d) {
+            char dyn[256];
+            snprintf(dyn, sizeof dyn, L("Dynamic is at %.0f%% of the display right now."), output_scale_dynamic_factor() * 100);
+            snprintf(d + n, sizeof d - n, " %s", dyn);
+        }
+        char note[32];  // (the preview's value: "50% (800×450)", its text the user's - 2026-11-03)
+        snprintf(note, sizeof note, "%.0f×%.0f", 1920.0 * sx, 1080.0 * sy);
+        preview_text(LN("Configure the resolution used for rendering the game. Higher values are more demanding on "
+                        "your graphics hardware."), note);
+        if (opt_preview("Internal resolution", &ri, res, NRES, rdef, d, false))
             g_settings.res_mode = res_mode[ri], g_settings.res_auto = false;
     }
     {   // each OS's own upscaler next to bilinear (UPSCALE_SHARP: MetalFX on macOS, AMD FSR 1 on Windows)
 #ifdef __APPLE__
-        static const char *ups[] = {"Bilinear", "MetalFX"};
-        const char *ud = "How the image is scaled up to the window when it renders at a lower resolution. MetalFX: Apple's "
-                         "upscaler, sharper. Bilinear: plain and soft.";
+        static const char *ups[] = {LN("Bilinear"), LN("MetalFX")};
+        const char *ud = LN("How the picture is scaled up when it renders below your window's resolution. MetalFX is "
+                            "Apple's upscaler and looks sharper, Bilinear is plain and soft.");
 #else
-        static const char *ups[] = {"Bilinear", "AMD FSR 1"};
-        const char *ud = "How the image is scaled up to the window when it renders at a lower resolution. AMD FSR 1: "
-                         "edge-aware upscaling and sharpening, sharper. Bilinear: plain and soft.";
+        static const char *ups[] = {LN("Bilinear"), LN("AMD FSR 1")};
+        const char *ud = LN("How the picture is scaled up when it renders below your window's resolution. AMD FSR 1 "
+                            "sharpens edges as it scales, Bilinear is plain and soft.");
 #endif
         int ui = g_settings.upscaler == UPSCALE_BILINEAR ? 0 : 1;
-        char udm[1600];
+        char udm[1024];
         if (g_settings.res_mode == RES_MATCH) {  // (renders at the window's size: nothing to scale up)
-            snprintf(udm, sizeof udm, ui_tr("%s\n\nNot used at Match display: the game already renders at your display's resolution."), ui_tr(ud));
+            snprintf(udm, sizeof udm, "%s\n\n%s", L(ud),
+                     L("Does nothing at Match display, since the game already renders at your screen's resolution."));
             ud = udm;
             opt_disable_next();
         }
-        if (opt_choice("Upscaler", &ui, ups, 2, g_default_upscaler == UPSCALE_BILINEAR ? 0 : 1, ud))
+        preview_text(LN("Configure how the game is scaled up to fit your window."), NULL);
+        if (opt_preview("Upscaler", &ui, ups, 2, g_default_upscaler == UPSCALE_BILINEAR ? 0 : 1, ud))
             g_settings.upscaler = ui ? UPSCALE_SHARP : UPSCALE_BILINEAR, g_settings.upscaler_auto = false;
     }
-    static const char *aa[] = {"Off", "SMAA"};
-    opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
-               "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
-               "blends only along them, so textures stay sharp. Most useful at a lower internal resolution.");
+    static const char *aa[] = {LN("Off"), LN("SMAA")};
+    preview_text(LN("Configure the smoothing of jagged edges. SMAA keeps textures sharp."), NULL);
+    opt_preview("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
+               "Smooths jagged edges. SMAA keeps textures sharp and helps most at a lower internal resolution.");
+    static const char *ao[] = {LN("Default"), LN("High"), LN("Off")};
+    preview_text(LN("Configure the soft shadows where objects meet the ground and walls."), NULL);
+    opt_preview("Ambient occlusion", &g_settings.ao_quality, ao, 3, AO_SWITCH,
+               "The soft shadows in corners and around objects. High draws them at up to twice the Switch's resolution, "
+               "so their edges are sharper. Off removes them.");
 
-    opt_section("Game");
-    opt_toggle("Remove blur", &g_settings.blur_removal, false,
-               "Turns off the tilt-shift blur at the top and bottom of the screen.");
-    opt_toggle("Hide Hero Mode icon", &g_settings.hide_hero_icon, false,
-               "Hides the Hero Mode emblem in the corner of the screen while playing a Hero Mode file.");
     opt_end();
 }
 
-extern "C" bool cosmetics_seed_on(void);  // runtime/cosmetics_seed.c
+extern "C" bool cosmetics_seed_on(void);      // runtime/cosmetics_seed.c
+extern "C" void cosmetics_seed_apply(void);
+extern "C" bool weather_cycle_on(void);       // runtime/nvn/weather_cycle.c
 
 // Cosmetics: tunic / heart colours, live (runtime/nvn/texpatch.c), and recolours by draw (runtime/nvn/recolour*.c);
-// a seed made with "Random cosmetics" fills the rows left on Default (shown as "Seed: <colour>")
+// a seed made with "Random cosmetics" puts its own set into the rows the first time it's played (cosmetics_seed.c),
+// and they stay the player's to change: "Seed's look" puts the seed's back, "Default all" the game's own
 static void tab_cosmetics(void) {
     opt_begin("##cosmetics", ImGui::GetFontSize() / 34);
     CosColour *rows[] = {&g_settings.tunic, &g_settings.hearts, &g_settings.hair, &g_settings.skin, &g_settings.shield,
                          &g_settings.leaves, &g_settings.grass, &g_settings.sand, &g_settings.water,
                          &g_settings.fences, &g_settings.walls, &g_settings.houses};
-    if (opt_button("Randomize all", "Every color below gets a random color."))
+    if (opt_button("Randomize all", "Picks a random color for everything below."))
         for (CosColour *c : rows) c->pick = 1 + rand() % (COL_RANDOM - 1);  // (a named colour: shown as what it is)
-    if (opt_button("Default all", "Everything on this page back to the game's own look.")) {
+    if (opt_button("Default all", "Puts everything on this page back to the game's normal look.")) {
         for (CosColour *c : rows) c->pick = COL_DEFAULT;
         g_settings.enemy_colours = 0;
         g_settings.screen_filter = 0;
+        g_settings.weather = 0;
     }
+    if (cosmetics_seed_on() && opt_button("Seed's look", "Puts everything on this page back to this seed's look."))
+        cosmetics_seed_apply();
     opt_section("Colors");
-    opt_colour("Tunic color", &g_settings.tunic, COL_SLOT_TUNIC,
-               "Link's tunic color. Default: the game's own (or the randomizer seed's).");
+    opt_colour("Tunic color", &g_settings.tunic, COL_SLOT_TUNIC, "Link's tunic color.");
     opt_colour("Heart color", &g_settings.hearts, COL_SLOT_HEARTS, "The color of the hearts on the HUD.");
     opt_colour("Hair color", &g_settings.hair, COL_SLOT_HAIR, "Link's hair color.");
     opt_colour("Body color", &g_settings.skin, COL_SLOT_SKIN, "Link's body color.");  // (larecomp.ini: skin)
@@ -581,18 +805,18 @@ static void tab_cosmetics(void) {
     {   // Season: fills Leaves, Grass and Sand at once (palette: Orange 2, Gold 3, Pink 9, White 10; Water stays out: it
         // has no season, and white water would read as ice; nor fences, walls or houses: wood and stone have none);
         // "Mixed" when they match none
-        static const char *const names[] = {"Spring", "Autumn", "Winter", "Cherry blossom", "Mixed"};
+        static const char *const names[] = {LN("Spring"), LN("Autumn"), LN("Winter"),
+                                             LN("Cherry blossom"), LN("Mixed")};
         static const int preset[4][3] = {{COL_DEFAULT, COL_DEFAULT, COL_DEFAULT}, {2, 3, 3}, {10, 10, 10},
                                          {9, COL_DEFAULT, COL_DEFAULT}};
-        int cur = 4;  // (as shown: a row on Default shows the seed's colour, if it has its own)
+        int cur = 4;
         for (int i = 0; i < 4; i++)
-            if (col_pick(&g_settings.leaves, COL_SLOT_LEAVES) == preset[i][0] &&
-                col_pick(&g_settings.grass, COL_SLOT_GRASS) == preset[i][1] &&
-                col_pick(&g_settings.sand, COL_SLOT_SAND) == preset[i][2])
+            if (g_settings.leaves.pick == preset[i][0] && g_settings.grass.pick == preset[i][1] &&
+                g_settings.sand.pick == preset[i][2])
                 cur = i;
         int v = cur;
-        if (opt_choice("Season", &v, names, 5, 0, "Sets the leaves, grass and sand colors below.") && v != cur) {
-            if (v == 4) v = cur == 0 ? 3 : 0;  // (Mixed is never chosen: past the ends, back round)
+        // (Mixed is never chosen: it's there only while the colours match no season; Right stops at Cherry blossom)
+        if (opt_choice("Season", &v, names, cur == 4 ? 5 : 4, 0, "Sets the leaves, grass and sand colors below.") && v != cur) {
             g_settings.leaves.pick = preset[v][0];
             g_settings.grass.pick = preset[v][1];
             g_settings.sand.pick = preset[v][2];
@@ -600,72 +824,182 @@ static void tab_cosmetics(void) {
     }
     opt_colour("Leaves color", &g_settings.leaves, COL_SLOT_LEAVES, "The overworld's tree leaves and bushes.");
     opt_colour("Grass color", &g_settings.grass, COL_SLOT_GRASS, "The overworld's grass.");
-    opt_colour("Sand color", &g_settings.sand, COL_SLOT_SAND, "The beaches, the desert and the sandy south.");
+    opt_colour("Sand color", &g_settings.sand, COL_SLOT_SAND, "The beaches, the desert and other sandy ground.");
     opt_colour("Water color", &g_settings.water, COL_SLOT_WATER, "The sea, rivers, ponds, waterfalls and dungeon water.");
     opt_colour("Fence color", &g_settings.fences, COL_SLOT_FENCES, "The wooden fences.");
     opt_colour("Wall color", &g_settings.walls, COL_SLOT_WALLS, "The overworld's cliff walls and ledges.");
-    opt_colour("House color", &g_settings.houses, COL_SLOT_HOUSES, "The village houses' roofs.");
+    opt_colour("House color", &g_settings.houses, COL_SLOT_HOUSES, "The roofs of the village houses.");
     opt_section("Enemies");
-    {   // (Off in a seed with its own cosmetics: "Seed", its enemies are per seed)
-        const char *modes[N_ENEMY_COLOUR_MODES];
-        for (int i = 0; i < N_ENEMY_COLOUR_MODES; i++) modes[i] = g_enemy_colour_modes[i];
-        if (cosmetics_seed_on()) modes[0] = "Seed";
-        opt_choice("Enemy colors", &g_settings.enemy_colours, modes, N_ENEMY_COLOUR_MODES, 0,
-                   "Each kind of enemy in another color. Enemies whose color shows their strength or type keep theirs.");
-    }
+    opt_choice("Enemy colors", &g_settings.enemy_colours, g_enemy_colour_modes, N_ENEMY_COLOUR_MODES, 0,
+               "Gives each kind of enemy a new color. Enemies whose color shows how strong they are keep theirs.");
     opt_section("Screen");
-    opt_choice("Screen filter", &g_settings.screen_filter, g_screen_filters, N_SCREEN_FILTERS, 0,
-               "A filter over the whole picture, the HUD included.");
+    opt_preview("Screen filter", &g_settings.screen_filter, g_screen_filters, N_SCREEN_FILTERS, 0,
+               "Puts a filter over the whole screen, HUD included.");
+#ifdef __APPLE__  // (the Metal renderer draws it; Vulkan: not yet - the setting does nothing there)
+    {   // (the seed's weather cycle: "Seed", the seed's weather - locked)
+        const char *names[N_WEATHERS];
+        for (int i = 0; i < N_WEATHERS; i++) names[i] = g_weathers[i];
+        bool cycle = weather_cycle_on();
+        int shown = 0;
+        if (cycle) names[0] = LN("Seed"), opt_disable_next();
+        opt_choice("Weather", cycle ? &shown : &g_settings.weather, names, N_WEATHERS, 0,
+                   cycle ? "This seed picked the weather. Commit to it!" : "Rain, snow, a storm or a blizzard on the overworld.");
+    }
+#endif
     opt_end();
 }
 
 static void tab_audio(void) {
     opt_begin("##audio", ImGui::GetFontSize() / 34);
-    opt_section("Sound");
+    opt_section("Volume");
     float pct = roundf(g_settings.volume * 100);
     if (opt_slider("Volume", &pct, 0, 200, 5, 100, "%g%%",
-                   "The game's volume. 100% is the game's own level; above it, louder."))
+                   "The game's volume. 100% is normal, higher is louder."))
         g_settings.volume = pct / 100.0f;
-    opt_toggle("Room reverb", &g_settings.reverb, true,
-               "The game's echo in caves, dungeons and big rooms.");
+    opt_choice("Output", &g_settings.audio_out, g_audio_outs, N_AUDIO_OUTS, AUDIO_OUT_STEREO,
+               "Stereo for speakers and headphones. 5.1 sends the game's surround mix to a 5.1 system.");
     opt_toggle("Movie audio", &g_settings.movie_audio, true,
-               "Sound in the game's movies (the opening and the ending). Applies the next time a movie starts.");
+               "Sound in the opening and ending movies. Changes the next time a movie plays.");
+    opt_section("Effects");
+    opt_toggle("Enable reverb", &g_settings.reverb, true,
+               "The game's echo in caves, dungeons and big rooms.");
+    opt_toggle("LAS Recomp menu sounds", &g_settings.menu_sounds, true,
+               "Sounds when you move around and pick things in LAS Recomp's menus.");
     opt_end();
 }
 
-// Quit: back to the start screen (in game: the game reboots to it) or out to the desktop. Each asks first (progress
-// since the last save is lost); B / Esc or Cancel backs out.
-extern "C" void rt_request_reboot(int kind);  // runtime/main.c (RT_REBOOT_TITLE = 2: the start screen)
-static void tab_quit(float scale, bool in_game) {
-    static int ask;  // 0: the two choices; 1: start screen?; 2: desktop?
-    if (ask && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
-        ask = 0;
-    const char *lost = in_game ? ui_tr("\n\nProgress since your last save is lost.") : "";
-    char d1[600], d2[600];
-    snprintf(d1, sizeof d1, ui_tr("Leaves the game and goes back to the Multi start screen.%s"), lost);
-    snprintf(d2, sizeof d2, ui_tr("Closes Multi.%s"), lost);
-    opt_begin("##quit", scale);
-    opt_section("Quit");
-    if (!ask) {
-        if (!in_game) opt_disable_next();  // (already on it)
-        if (opt_action("Quit to Start Screen", "", in_game ? d1 : "You're on the start screen.")) ask = 1;
-        if (opt_action("Quit to Desktop", "", d2)) ask = 2;
-    } else {
-        if (opt_action(ask == 1 ? "Yes, quit to Start Screen" : "Yes, quit to Desktop", "", ask == 1 ? d1 : d2)) {
-            settings_save();
-            if (ask == 1) {
-                rt_request_reboot(2);
-                set_open(false);
-            } else {
-                SDL_Event q = {};
-                q.type = SDL_EVENT_QUIT;
-                SDL_PushEvent(&q);
-            }
-            ask = 0;
-        }
-        if (opt_action("Cancel", "", "Stays where you are.")) ask = 0;
+extern "C" void rt_request_reboot(int kind);  // runtime/main.c (rt.h's RT_REBOOT_GAME / RT_REBOOT_TITLE)
+
+// Reset and Quit (the bar's entries): a question over the bar, as Reset to vanilla's (user 2026-11-03). Reset: the game
+// boots again (the intro movie). Quit: back to the start screen ("Return to Launcher") or out to the desktop. B / Esc
+// is Cancel, where the cursor starts.
+static void ask_popup(float scale) {
+    if (g_ask >= 0 && !ImGui::IsPopupOpen("##ask")) ImGui::OpenPopup("##ask");
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, ImGui::GetIO().DisplaySize.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("##ask", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar |
+                                                   ImGuiWindowFlags_NoMove))
+        return;
+    bool quit = g_ask == BAR_QUIT;
+    // LARECOMP_MENU_ASK=cancel / launcher / reset (test): presses that button a few frames after the question opens
+    static const char *test = getenv("LARECOMP_MENU_ASK");
+    static int frames;
+    frames++;
+    bool test_cancel = test && frames == 30 && !strcmp(test, "cancel");
+    bool test_launcher = test && frames == 30 && !strcmp(test, "launcher");
+    bool test_reset = test && frames == 30 && !strcmp(test, "reset");
+    ImGui::PushFont(g_menu_font_big);
+    ImGui::TextColored(plastic_col(plastic_theme().title), "%s", quit ? L("Quit") : L("Reset Game"));
+    ImGui::PopFont();
+    ImGui::Spacing();
+    ImGui::TextUnformatted(L("Progress since your last save is lost."));
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImVec2 bs(260 * scale, 0);  // (all one width: the longest label's, "Return to Launcher" ran past its button)
+    for (const char *s : {L("Cancel"), L("Reset"), L("Return to Launcher"), L("Quit")})
+        bs.x = fmaxf(bs.x, ImGui::CalcTextSize(s).x + 2 * ImGui::GetStyle().FramePadding.x + 16 * scale);
+    bool done = false;
+    if (ImGui::Button(L("Cancel"), bs) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+        ImGui::IsKeyPressed(ImGuiKey_Escape, false) || test_cancel) {
+        menu_sfx_play(MENU_SFX_CANCEL);
+        done = true;
     }
-    opt_end();
+    ImGui::SetItemDefaultFocus();
+    if (!quit) {
+        ImGui::SameLine();
+        if (ImGui::Button(L("Reset"), bs) || test_reset) {
+            LOG("[menu] reset: the game boots again\n");
+            settings_save();
+            rt_request_reboot(RT_REBOOT_GAME);
+            done = true;
+            set_open(false);
+        }
+    } else {
+        ImGui::SameLine();
+        if (ImGui::Button(L("Return to Launcher"), bs) || test_launcher) {
+            LOG("[menu] quit: back to the start screen\n");
+            settings_save();
+            rt_request_reboot(RT_REBOOT_TITLE);
+            done = true;
+            set_open(false);
+        }
+#if !PLAT_TOUCH  // (phone apps don't quit themselves)
+        ImGui::SameLine();
+        if (ImGui::Button(L("Quit"), bs)) {
+            LOG("[menu] quit: to the desktop\n");
+            settings_save();
+            SDL_Event q = {};
+            q.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&q);
+            done = true;
+        }
+#endif
+    }
+    if (done) g_ask = -1, frames = 0, ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+// Reset to vanilla (the round arrow beside the close X): the game as Nintendo made it - 16:9, the Gameplay tab (but
+// its language and LiveSplit address), Cheats and Cosmetics at their defaults; Video / Audio otherwise and the controls
+// stay. A seed being played ends: the game boots again without it (as the Randomizer tab's Switch to vanilla).
+static void reset_to_vanilla(void) {
+    Settings &s = g_settings;
+    s.aspect = ASPECT_ORIGINAL;
+    s.cheat_hookshot = s.no_buff_drops = s.mirror_mode = false;
+    s.walk_speed = 1.0f, s.walk_speed_dungeons = false;
+    s.diff_damage = 1.0f, s.diff_ohko = false;
+    s.timer = false, s.timer_pos = TIMER_POS_LEFT;
+    if (s.livesplit) s.livesplit = false, livesplit_poke();
+    s.cheat_hearts = s.cheat_ammo = s.cheat_rupees = false;
+    for (CosColour *c : {&s.tunic, &s.hearts, &s.hair, &s.skin, &s.shield, &s.leaves, &s.grass, &s.sand, &s.water,
+                         &s.fences, &s.walls, &s.houses})
+        c->pick = COL_DEFAULT;
+    s.enemy_colours = 0, s.screen_filter = 0;
+    LOG("[menu] reset to vanilla%s\n", rando_seed_dir() ? " (leaving the seed)" : "");
+    settings_save();
+    if (rando_seed_dir()) {
+        rando_select("");
+        rt_request_reboot(RT_REBOOT_GAME);
+        set_open(false);
+    }
+}
+
+static void vanilla_popup(float scale) {
+    // LARECOMP_MENU_VANILLA=ask / reset / cancel (test): the question opens with the menu; reset / cancel press that
+    // button a few frames later
+    static const char *test = getenv("LARECOMP_MENU_VANILLA");
+    static int test_frames;
+    if (test && !test_frames++) ImGui::OpenPopup("##vanilla");
+    bool test_reset = test && test_frames == 30 && !strcmp(test, "reset");
+    bool test_cancel = test && test_frames == 30 && !strcmp(test, "cancel");
+    if (!ImGui::BeginPopupModal("##vanilla", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar))
+        return;
+    ImGui::PushFont(g_font_big);
+    ImGui::TextColored(plastic_col(plastic_theme().title), "%s", L("Reset to vanilla?"));
+    ImGui::PopFont();
+    ImGui::Spacing();
+    ImGui::TextUnformatted(L("This resets your settings to the vanilla game experience.\nYour controls stay as they are."));
+    if (rando_seed_dir()) {
+        ImGui::Spacing();
+        ImGui::TextUnformatted(L("This also ends the current randomizer seed.\nIts save files are kept."));
+    }
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImVec2 bs(220 * scale, 0);
+    for (const char *s : {L("Reset"), L("Cancel")})
+        bs.x = fmaxf(bs.x, ImGui::CalcTextSize(s).x + 2 * ImGui::GetStyle().FramePadding.x + 16 * scale);
+    if (ImGui::Button(L("Reset"), bs) || test_reset) {
+        ImGui::CloseCurrentPopup();
+        reset_to_vanilla();
+    }
+    ImGui::SameLine();
+    ImGui::SetItemDefaultFocus();
+    if (ImGui::Button(L("Cancel"), bs) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+        ImGui::IsKeyPressed(ImGuiKey_Escape, false) || test_cancel) {
+        LOG("[menu] reset to vanilla cancelled\n");
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 extern "C" bool inventory_overlay_wanted(void);
@@ -681,6 +1015,9 @@ extern "C" void race_overlay_draw(ImVec2 display, ImFont *font, float scale);
 extern "C" bool pickup_flyin_wanted(void);  // (silent pickups: pickup_flyin.mm)
 extern "C" void pickup_flyin_draw(ImVec2 display, ImFont *font, float scale);
 extern "C" bool race_overlay_key(char *out, size_t cap);
+extern "C" bool dpad_overlay_wanted(void);  // (d-pad items' HUD cross: dpad_overlay.mm)
+extern "C" void dpad_overlay_key(char *out, size_t cap);
+extern "C" void dpad_overlay_draw(ImVec2 display, ImFont *font, float scale);
 
 // ---- reusing the overlay's last drawing (LARECOMP_OVERLAY_CACHE=0: off, a new ImGui frame every present as before)
 // While only the FPS counter and / or the run timer are up (no menu, no input, nothing interactive or animated), the
@@ -691,7 +1028,7 @@ extern "C" bool race_overlay_key(char *out, size_t cap);
 // The FPS counter then shows the same average as ImGui's io.Framerate (the last 60 frame times), sampled twice a
 // second instead of every frame.
 static int g_ov_cache = -1;
-static char g_ov_key[96];
+static char g_ov_key[288];
 static int g_ov_same;  // frames built in a row with g_ov_key
 static float g_fps_dt[60];
 static int g_fps_n, g_fps_i;
@@ -713,12 +1050,29 @@ RT_ON_RESET(menu_reset) {
     set_open(false);
     g_kbd = 0;
     osk_cancel();
+#if PLAT_TOUCH
+    plat_touch_prompt_cancel();
+#endif
     pthread_mutex_lock(&q_lock);
     q_events.clear();
     pthread_mutex_unlock(&q_lock);
 }
 
 static void keyboard_draw(ImGuiIO &io, float scale) {
+    static bool was_open, was_pad;
+    bool pad = g_last_pad.load(), appearing = !was_open || pad != was_pad;  // (switching device: focus the new one)
+    was_open = true, was_pad = pad;
+#if PLAT_TOUCH
+    if (!pad) {
+        // a phone without a controller: the system's text prompt (its keyboard, paste), as the menu's own fields;
+        // nothing of ours under it
+        if (appearing) plat_touch_prompt(L("Enter your name"), "", g_kbd_text, 0, L("OK"), L("Cancel"));
+        int r = plat_touch_prompt_poll(g_kbd_text, sizeof g_kbd_text);
+        if (r) g_kbd = r > 0 ? 2 : 3;
+        if (g_kbd.load() != 1) was_open = false;
+        return;
+    }
+#endif
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
                                                   IM_COL32(0, 0, 0, (int)(plastic_theme().dim * 255)));
     float w = fminf(io.DisplaySize.x * 0.9f, 1100 * scale);
@@ -727,11 +1081,8 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
     ImGui::Begin("##kbd", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                                     ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::PushFont(g_font_big);
-    ImGui::TextColored(plastic_col(plastic_theme().title), "%s", ui_tr("Enter your name"));
+    ImGui::TextColored(plastic_col(plastic_theme().title), "%s", L("Enter your name"));
     ImGui::PopFont();
-    static bool was_open, was_pad;
-    bool pad = g_last_pad.load(), appearing = !was_open || pad != was_pad;  // (switching device: focus the new one)
-    was_open = true, was_pad = pad;
     if (!pad) {  // keyboard: type straight into the field
         if (appearing) ImGui::SetKeyboardFocusHere();
         ImGui::SetNextItemWidth(-1);
@@ -741,9 +1092,12 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
                          [](ImGuiInputTextCallbackData *d) -> int { return d->EventChar < 0x20 ? 1 : 0; });
         ImGui::PopFont();
         int units = kbd_cut(g_kbd_text, g_kbd_max);
-        ImGui::TextDisabled(ui_tr("Enter  confirm      Esc  cancel      (%d / %d)"), units, g_kbd_max);
-    } else {  // controller: on-screen keyboard (osk.mm, shared with our menus' text fields)
-        int r = osk_keys(g_kbd_text, sizeof g_kbd_text, g_kbd_max, appearing, scale, g_font_big);
+        ImGui::TextDisabled(L("Enter  confirm      Esc  cancel      (%d / %d)"), units, g_kbd_max);
+    } else {  // controller: on-screen keyboard (osk.mm, shared with our menus' text fields; a phone's keys for fingers too)
+#if PLAT_TOUCH
+        if (appearing) plat_touch_prompt_cancel();  // (a controller picked up mid-entry: the prompt goes)
+#endif
+        int r = osk_keys(g_kbd_text, sizeof g_kbd_text, g_kbd_max, appearing, scale, g_font_big, true, PLAT_TOUCH && !plat_touch_tablet());
         if (r) g_kbd = r > 0 ? 2 : 3;  // (Start / + confirms in menu_handle_event too)
     }
     ImGui::End();
@@ -814,9 +1168,20 @@ static void focus_check(bool down, bool up, bool any_down, int focused_tab, int 
 }
 
 // The tab bar and its pages, into the current window: the in-game menu, and the start screen's Settings (in_game
+// The live preview (live_preview.h) of a row on the page shown: instead of the tabs, until it closes. The pages with
+// opt_preview rows: Video, Cosmetics.
+static void preview_page(void) {
+    if (g_tab == 0) tab_display();
+    else if (g_tab == 7) tab_cosmetics();
+}
+bool menu_preview_frame(float scale, ImFont *font, ImFont *font_big) {
+    return preview_active() && (preview_draw(scale, font, font_big, preview_page), true);
+}
+
 // false: nothing of the game is loaded yet - the tabs that need it are greyed out; prelaunch: the start screen's own
-// first tab, game files and fonts, drawn by launcher.mm).
-static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
+// first tab, game files and fonts, drawn by launcher.mm). only: one page alone, without the tab bar (the in-game menu
+// bar's Warp, Save Editor and Quit).
+static void tabs_body(float scale, bool in_game, void (*prelaunch)(float), int only = -1000) {
     // (id: the page; -1 = Prelaunch)
     struct Tab { const char *name; int id; bool on; };
     Tab tabs[15];
@@ -826,23 +1191,28 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                                   "Cosmetics", "Controls", "Quit", "Photo mode", "Mods", "Workshop", "Performance"};
     static const int order[] = {8, 0, 1, 6, 7, 10, 11, 12, 13, 3, 5, 4, 2, 9};  // existing IDs stay stable for test hooks
                                                                 // Cheats, Warp, Save Editor, Quit (ids stay: test hooks)
-    for (int i : order)  // (Quit: in game only - the start screen has its own QUIT, and an eleventh tab cut names short)
+    int keep_tab = g_tab;
+    if (only != -1000) tabs[ntabs++] = {names[only], only, true}, g_tab = only;
+    else for (int i : order)  // (Quit: in game only - the start screen has its own QUIT, and an eleventh tab cut names short)
         if (((title_is_las() && (in_game || game_profile_las_extensions(game_profile_active()))) || i == 8 || i == 0 || i == 1 || i == 9 || i == 13) && (i != 9 || !prelaunch)) tabs[ntabs++] = {names[i], i, in_game || (i != 4 && i != 5)};
     int cur = 0;  // g_tab / g_tab_request hold ids
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
     if (!tabs[cur].on) cur = 0;
-    // L/R (or Q/E) switch tabs, skipping greyed-out ones (not while typing: Q / E are letters then, and the on-screen
+    // L/R (or Q/E) switch tabs, skipping greyed-out ones and stopping at the first / last (not while typing: Q / E are letters then, and the on-screen
     // keyboard has the controller)
+    static const int cycle = getenv("LARECOMP_MENU_TAB_CYCLE") ? atoi(getenv("LARECOMP_MENU_TAB_CYCLE")) : 0;
+    static int cycle_frames, cycle_i;  // (test) <frames>: each tab in turn, that many frames each (screenshot series)
+    if (cycle > 0 && cycle_frames++ % cycle == 0 && cycle_i < ntabs) g_tab_request_ext = tabs[cycle_i++].id;
     if (g_tab_request_ext >= 0) { g_tab_request = g_tab_request_ext; g_tab_request_ext = -1; }
     bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();
     static int focused_tab = -99;  // the tab the controller's cursor is on (from the frame before; -99: none)
     bool switching = false;  // (L / R this frame: the page changes next frame)
-    if (!any_popup && !typing) {
+    if (!any_popup && !typing && only == -1000) {
         int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
                  : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1 : 0;
-        if (step) {
-            int i = cur;
-            do i = (i + step + ntabs) % ntabs; while (!tabs[i].on);
+        int i = cur;
+        if (step) do i += step; while (i >= 0 && i < ntabs && !tabs[i].on);
+        if (step && i >= 0 && i < ntabs) {
             g_tab_request = tabs[i].id;
             // the cursor goes onto the new tab (left behind on the tab bar, A on it switched straight back - user
             // 2026-10-11; left in the old page, it stayed on a row that is gone, and Down went on from where that row
@@ -879,7 +1249,9 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     ImGuiContext &g = *ImGui::GetCurrentContext();
     ImGuiWindow *root = ImGui::GetCurrentWindow()->RootWindow;
     static bool nav_in_page;  // (the frame before: the cursor on a control of the page - its child windows)
-    if (nav_in_page && g.NavJustMovedToId && g.NavWindow == root && !any_popup) g_focus_tab = -100, g_focus_frames = 0;
+    static ImGuiID tabs_win;  // (the tab bar's own scrolling child, when the tabs don't fit: part of the bar, not the page)
+    bool nav_on_bar = g.NavWindow && (g.NavWindow == root || g.NavWindow->ID == tabs_win);
+    if (nav_in_page && g.NavJustMovedToId && nav_on_bar && !any_popup) g_focus_tab = -100, g_focus_frames = 0;
     // The tabs: a row of our own pieces (the selected one orange), each a button the controller's cursor can stand on;
     // the selected tab's page under them
     if (g_tab_request != -2)
@@ -891,20 +1263,42 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
         for (int k = 0; k < ntabs; k++) found |= tabs[k].id == g_tab && tabs[k].on;
         if (!found) g_tab = tabs[cur].on ? tabs[cur].id : tabs[0].id;
     }
-    {
+    if (only == -1000) {
         const PlasticTheme &pt = plastic_theme();
-        ImDrawList *dl = ImGui::GetWindowDrawList();
         float gap = 8 * scale, pad = 20 * scale, th = ImGui::GetFontSize() + 20 * scale;
         float tw[16], text_w[16], total = 0, avail = ImGui::GetContentRegionAvail().x - 4 * scale;
-        for (int k = 0; k < ntabs; k++) text_w[k] = ImGui::CalcTextSize(ui_tr(tabs[k].name)).x, total += text_w[k] + (k ? gap : 0);
-        if (total + 2 * pad * ntabs > avail) pad = fmaxf((avail - total) / (2 * ntabs), 3 * scale);  // (a narrow window: tighter)
+        for (int k = 0; k < ntabs; k++)  // (each tab also sits 2 px right of the cursor: counted, or the bar overflowed)
+            text_w[k] = ImGui::CalcTextSize(L(tabs[k].name)).x, total += text_w[k] + (k ? gap : 0) + 2 * scale;
+        // a narrow window: tighter tabs; still too wide: on a phone the bar scrolls sideways instead of squeezing them,
+        // on the desktop the names (long ones: Russian, German) a little smaller
+        const float min_pad = 12 * scale;
+        bool scroll = PLAT_TOUCH && total + 2 * min_pad * ntabs > avail;
+        if (scroll) pad = min_pad;
+        else if (total + 2 * pad * ntabs > avail) pad = fmaxf((avail - total) / (2 * ntabs), 3 * scale);
+        float tfs = ImGui::GetFontSize();
+        if (!scroll) {
+            float names = total - gap * (ntabs - 1) - 2 * scale * ntabs;
+            float room = avail - gap * (ntabs - 1) - (2 * pad + 2 * scale) * ntabs;
+            if (names > room && names > 0) {
+                float k = fmaxf(room / names, 0.6f);
+                tfs *= k;
+                for (int i = 0; i < ntabs; i++) text_w[i] *= k;
+            }
+        }
         for (int k = 0; k < ntabs; k++) tw[k] = text_w[k] + 2 * pad;
+        if (scroll) {
+            ImGui::BeginChild("##tabs", ImVec2(avail + 4 * scale, th + 6 * scale), ImGuiChildFlags_NavFlattened,
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoBackground);
+            tabs_win = ImGui::GetCurrentWindow()->ID;
+        }
+        ImDrawList *dl = ImGui::GetWindowDrawList();
         float used_width = 0;
+        static int shown_sel = -99;  // (the selected tab brought into view once, when it changes)
         if (g_focus_tab == -1 && !prelaunch) g_focus_tab = 8;  // (no Prelaunch in game: Controls, the first tab)
         for (int k = 0; k < ntabs; k++) {
             const Tab &t = tabs[k];
             ImGui::BeginDisabled(!t.on);  // (out of the game: Save Editor, Warp, Cheats)
-            if (k && used_width + gap + tw[k] <= avail) { ImGui::SameLine(0, gap); used_width += gap; }
+            if (k && (scroll || used_width + gap + tw[k] <= avail)) { ImGui::SameLine(0, gap); used_width += gap; }
             else used_width = 0;
             used_width += tw[k];
             ImVec2 p = ImGui::GetCursorScreenPos();
@@ -924,9 +1318,11 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 // a few frames: the page's child window appearing makes ImGui pick its first widget once it's laid out
                 if (++g_focus_frames >= 4) g_focus_tab = -99, g_focus_frames = 0;
                 else g_focus_tab = t.id;
+                if (scroll) ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeX);
             }
             if (clicked && t.on) g_tab = t.id;
             bool sel = t.id == g_tab;
+            if (scroll && sel && shown_sel != t.id) shown_sel = t.id, ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeX);
             bool lit = (ImGui::IsItemFocused() && g.NavCursorVisible) || ImGui::IsItemHovered();
             ImVec4 col = sel ? pt.tab_sel : lit ? pt.row_mark : pt.tab;
             if (sel && lit) col = ImVec4(col.x * 0.88f, col.y * 0.88f, col.z * 0.88f, col.w);  // (the cursor on it: deeper)
@@ -934,12 +1330,14 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             plastic_pill(dl, ImVec2(p.x, p.y + (sel ? 0 : 2 * scale)), ImVec2(p.x + tw[k], p.y + th - 2 * scale), 10 * scale, col,
                          (sel ? 7 : 4) * scale, sel ? 1.0f : 0.55f, scale, sel);
             ImU32 tc = sel ? pt.text_sel : t.on ? pt.text : pt.text_dim;
-            ImVec2 ts(text_w[k], ImGui::GetFontSize());
-            dl->AddText(ImVec2(p.x + (tw[k] - ts.x) * 0.5f, p.y + (th - ts.y) * 0.5f - (sel ? 2 : 1) * scale), tc, ui_tr(t.name));
+            ImVec2 ts(text_w[k], tfs);
+            dl->AddText(ImGui::GetFont(), tfs, ImVec2(p.x + (tw[k] - ts.x) * 0.5f, p.y + (th - ts.y) * 0.5f - (sel ? 2 : 1) * scale),
+                        tc, L(t.name));
             if (ImGui::IsItemFocused()) focused_tab = t.id;
             else if (focused_tab == t.id) focused_tab = -99;
             ImGui::EndDisabled();
         }
+        if (scroll) ImGui::EndChild();
     }
     for (int k = 0; k < ntabs; k++) {
         const Tab &t = tabs[k];
@@ -964,7 +1362,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
         case 6: difficulty_draw(scale); break;
         case 7: tab_cosmetics(); break;
         case 8: controls_tab_draw(scale); break;
-        case 9: tab_quit(scale, in_game); break;
+        case 9: g_ask = BAR_QUIT; break;
         case 10: photo_mode_tab(scale, in_game); break;
         case 11: mods_draw(scale, in_game); break;
         case 12: workshop_draw(scale, in_game); break;
@@ -978,7 +1376,8 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
         ImGui::EndChild();
     }
     opt_focus_first_left();  // (no page drawn: nothing took it)
-    nav_in_page = g.NavWindow && g.NavWindow != g.NavWindow->RootWindow && g.NavWindow->RootWindow == root;
+    nav_in_page = g.NavWindow && g.NavWindow != g.NavWindow->RootWindow && g.NavWindow->RootWindow == root &&
+                  g.NavWindow->ID != tabs_win;
     // (checks: fresh presses only - a held key's repeats come faster than a check's few frames)
     bool down1 = down && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, false) ||
                           ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown, false) || ImGui::IsKeyPressed(ImGuiKey_DownArrow, false));
@@ -986,6 +1385,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                       ImGui::IsKeyPressed(ImGuiKey_GamepadLStickUp, false) || ImGui::IsKeyPressed(ImGuiKey_UpArrow, false));
     for (int k = 0; k < ntabs; k++)
         if (tabs[k].id == g_tab) focus_check(down1, up1, down, focused_tab, g_tab, tabs[k].name);
+    if (only != -1000) g_tab = keep_tab;
 }
 
 // The menu's look for a window of the start screen's (its game files window): until menu_style_end
@@ -1010,10 +1410,89 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
     g_font = f0, g_font_big = f1;
 }
 
+// The menu bar (in game; its window is drawn in the menu's font), only while no page is open: left / right (d-pad,
+// stick, arrows, L / R, Q / E) move the cursor, A / Enter opens the entry, B / Esc closes the menu. The mouse lights
+// the entry under it, a click opens it (the page is drawn from the next frame: the press that opened it isn't the
+// page's too).
+static double g_bar_t0 = -1;  // when the bar began to drop (-1: not shown - the menu is closed or a page is open)
+static void bar_draw(ImGuiIO &io, float scale) {
+    static const char *names[BAR_N] = {LN("Settings"), LN("Warp"), LN("Save Editor"), LN("Reset"), LN("Quit"), ""};
+    const PlasticTheme &pt = plastic_theme();
+    double now = ImGui::GetTime();
+    if (g_bar_t0 < 0) g_bar_t0 = now;
+    float e = fminf((float)(now - g_bar_t0) / 0.18f, 1);  // (drops down from above the screen, slowing as it lands)
+    e = 1 - (1 - e) * (1 - e) * (1 - e);
+    ImGui::PushFont(g_menu_font);
+    float fs = ImGui::GetFontSize(), in = 30 * scale, ph = fs + 20 * scale, m = 12 * scale;
+    // (phones: inside the safe area, as the page window - the wider side inset on both sides)
+    float sx = PLAT_TOUCH ? (float)fmaxf(g_safe_l, g_safe_r) : 0, sy = PLAT_TOUCH ? (float)g_safe_t : 0;
+    float bh = ph + 2 * in, top = m + sy - (1 - e) * (bh + m + sy);
+    ImGui::SetNextWindowPos(ImVec2(m + sx, top), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x - 2 * (m + sx), bh), ImGuiCond_Always);
+    ImGui::Begin("##bar", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                    ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+    // the keys
+    if (!ui_text_busy() && g_ask < 0) {
+        auto pressed = [](ImGuiKey a, ImGuiKey b, ImGuiKey c) {
+            return ImGui::IsKeyPressed(a) || ImGui::IsKeyPressed(b) || ImGui::IsKeyPressed(c);
+        };
+        int step = pressed(ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadLStickRight, ImGuiKey_RightArrow) ||
+                           ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
+                   : pressed(ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadLStickLeft, ImGuiKey_LeftArrow) ||
+                           ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1 : 0;
+        if (step) g_bar_cur = (g_bar_cur + step + BAR_N) % BAR_N, menu_sfx_play(MENU_SFX_CURSOR);
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
+            if (g_bar_cur == BAR_CLOSE) set_open(false);
+            else page_open(g_bar_cur), menu_sfx_play(MENU_SFX_DECIDE);
+        } else if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+            set_open(false);
+    }
+    // the entries: a row from the left, the cursor's lit as the selected tab is
+    static ImVec2 last_mouse(-1, -1);  // (not io.MouseDelta: none for the mouse's first move)
+    bool mouse_moved = io.MousePos.x != last_mouse.x || io.MousePos.y != last_mouse.y;
+    last_mouse = io.MousePos;
+    float x = wp.x + in, y = wp.y + in, pad = 22 * scale, gap = 10 * scale;
+    for (int k = 0; k < BAR_CLOSE; k++) {
+        float tw = ImGui::CalcTextSize(L(names[k])).x, w = tw + 2 * pad;
+        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        ImGui::PushID(k);
+        bool clicked = ImGui::InvisibleButton("##entry", ImVec2(w, ph), ImGuiButtonFlags_PressedOnClick);
+        ImGui::PopID();
+        bool hot = ImGui::IsItemHovered();
+        if (hot && mouse_moved && g_bar_cur != k) g_bar_cur = k, menu_sfx_play(MENU_SFX_CURSOR);
+        if (clicked) page_open(k), menu_sfx_play(MENU_SFX_DECIDE);
+        // (as the Settings window's tabs: tabs_body - the user wants the bar's look to match Settings, 2026-11-03)
+        bool sel = k == g_bar_cur;
+        ImVec4 col = sel ? pt.tab_sel : hot ? pt.row_mark : pt.tab;
+        if (sel && hot) col = ImVec4(col.x * 0.88f, col.y * 0.88f, col.z * 0.88f, col.w);
+        plastic_pill(dl, ImVec2(x, y + (sel ? 0 : 2 * scale)), ImVec2(x + w, y + ph - 2 * scale), 10 * scale, col,
+                     (sel ? 7 : 4) * scale, sel ? 1.0f : 0.55f, scale, sel);
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(x + pad, y + (ph - fs) * 0.5f - (sel ? 2 : 1) * scale),
+                    sel ? pt.text_sel : pt.text, L(names[k]));
+        x += w + gap;
+    }
+    // the close X at the right end (the cursor on it: a ring round it)
+    float bx = ph;
+    ImVec2 xp(wp.x + ws.x - in - bx, y);
+    if (g_bar_cur == BAR_CLOSE)
+        plastic_pill(dl, ImVec2(xp.x - 5 * scale, xp.y - 5 * scale), ImVec2(xp.x + bx + 5 * scale, xp.y + bx + 5 * scale),
+                     bx * 0.5f + 5 * scale, pt.tab_sel, 7 * scale, 1.0f, scale, true);
+    ImGui::SetCursorScreenPos(xp);
+    if (plastic_close_button(bx, scale)) set_open(false);
+    if (ImGui::IsItemHovered() && mouse_moved && g_bar_cur != BAR_CLOSE)
+        g_bar_cur = BAR_CLOSE, menu_sfx_play(MENU_SFX_CURSOR);
+    ImGui::End();
+    ImGui::PopFont();
+}
+
 // Whether menu_render draws anything: the menu, the keyboard, an overlay (FPS, inventory, tracker, chaos, race, a
-// pickup card).
-static bool render_needed(bool open, bool kbd, bool inv, bool trk, bool trkd, bool chaos, bool race, bool flyin) {
-    return open || kbd || g_settings.show_fps || inv || trk || trkd || chaos || race || flyin || photo_mode_active() || workshop_overlay_wanted();
+// pickup card, the d-pad cross, the touch controls).
+static bool render_needed(bool open, bool kbd, bool inv, bool trk, bool trkd, bool chaos, bool race, bool flyin, bool dpad,
+                          bool touch) {
+    return open || kbd || g_settings.show_fps || inv || trk || trkd || chaos || race || flyin || dpad || touch || photo_mode_active() || workshop_overlay_wanted();
 }
 
 #ifdef __APPLE__
@@ -1034,12 +1513,14 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool kbd = g_kbd.load() == 1;
     bool race = title_is_las() && race_overlay_wanted();  // (run timer, race seed hash: race_overlay.mm)
     bool flyin = title_is_las() && pickup_flyin_wanted() && !open;  // (a silent pickup's card)
+    bool dpad = title_is_las() && !open && dpad_overlay_wanted();
 #ifdef __APPLE__
     plastic_perf_note(cb, open);  // (LARECOMP_UI_PERF test only)
 #else
     plastic_perf_note_vk(open);
 #endif
-    if (!render_needed(open, kbd, inv, trk, trkd, chaos, race, flyin)) {
+    bool touch = !open && !kbd && touch_visible();  // (on-screen controls: mobile/touch_controls.mm)
+    if (!render_needed(open, kbd, inv, trk, trkd, chaos, race, flyin, dpad, touch)) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         g_ov_same = 0;  // (shown again: built afresh first)
         return;
@@ -1054,7 +1535,9 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     io.DisplaySize = ImVec2((float)tw, (float)th);
     io.DisplayFramebufferScale = ImVec2(1, 1);
     static double last;
-    double now = SDL_GetTicks() / 1000.0;
+    // (nanoseconds: two images drawn within a millisecond - an in-between and its frame on Vulkan - counted the gap as
+    // 1/60 s, and 120 images a second showed as 70 fps)
+    double now = SDL_GetTicksNS() / 1e9;
     io.DeltaTime = last > 0 && now > last ? (float)(now - last) : 1.0f / 60;
     last = now;
     if (g_ov_cache < 0) g_ov_cache = !getenv("LARECOMP_OVERLAY_CACHE") || atoi(getenv("LARECOMP_OVERLAY_CACHE")) != 0;
@@ -1062,14 +1545,16 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     key[0] = 0;
     if (g_ov_cache) {
         fps_note(now, io.DeltaTime);
-        char rk[64];
-        // (only the FPS counter and the run timer; input only reaches ImGui while the menu or the name entry is up)
-        if (!open && !kbd && !inv && !trk && !trkd && !chaos && !flyin && race_overlay_key(rk, sizeof rk)) {
+        char rk[64], dk[160] = "";
+        // (only the FPS counter, the run timer and the d-pad cross; input only reaches ImGui while the menu or the name
+        // entry is up)
+        if (!open && !kbd && !inv && !trk && !trkd && !chaos && !flyin && !touch && race_overlay_key(rk, sizeof rk)) {
             pthread_mutex_lock(&q_lock);
             bool events = !q_events.empty();
             pthread_mutex_unlock(&q_lock);
-            if (!events) snprintf(key, sizeof key, "%.0fx%.0f fps %d %.0f | %s", tw, th, (int)g_settings.show_fps,
-                                  g_settings.show_fps ? g_fps_shown : 0.0, rk);
+            if (dpad) dpad_overlay_key(dk, sizeof dk);
+            if (!events) snprintf(key, sizeof key, "%.0fx%.0f fps %d %.0f | %s | %s", tw, th, (int)g_settings.show_fps,
+                                  g_settings.show_fps ? g_fps_shown : 0.0, rk, dk);
         }
         ImDrawData *dd = ImGui::GetDrawData();
         if (key[0] && g_ov_same >= 3 && !strcmp(key, g_ov_key) && dd && dd->Valid) {
@@ -1094,10 +1579,13 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         else { memcpy(g_ov_key, key, sizeof key); g_ov_same = key[0] ? 1 : 0; }
     }
     drain_events(io);
-    // fonts are built at 34/56 px for a ~1080 px tall output; scale to the window
-    float scale = (float)(th / 1080.0);
+    // fonts are built at 34/56 px for a ~1080 px tall output; scale to the window (phones: kUi larger)
+    float scale = (float)(th / 1080.0) * kUi;
     if (scale < 0.45f) scale = 0.45f;
     io.FontGlobalScale = scale;
+    // a drag / flick: this frame's scroll, applied after NewFrame (touch_scroll_apply)
+    float touch_px = g_touch.frame(io.DeltaTime, [&](float x, float y) { io.AddMousePosEvent(x, y); },
+                                   [&](bool down) { io.AddMouseButtonEvent(0, down); });
 
 #ifdef __APPLE__
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -1119,23 +1607,38 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         style_scale = scale;
     }
     ImGui::GetStyle() = ov_style;
+    if (i18n_fonts_stale(io.Fonts)) {  // (the Language setting changed: the glyphs of the new one)
+        load_fonts();
+#ifdef __APPLE__
+        ImGui_ImplMetal_DestroyFontsTexture();
+        ImGui_ImplMetal_CreateFontsTexture(g_dev);
+#else
+        vk_imgui_fonts_rebuild();
+#endif
+    }
 #ifdef __APPLE__
     ImGui_ImplMetal_NewFrame(rp);
 #else
     ImGui_ImplVulkan_NewFrame();
 #endif
     ImGui::NewFrame();
+    g_touch.scroll_apply(touch_px);
 
     if (g_settings.show_fps && !photo_mode_active()) {
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 16 * scale, 16 * scale), 0, ImVec2(1, 0));
+        int c = g_settings.show_fps;
+        bool right = c == FPS_TOP_RIGHT || c == FPS_BOTTOM_RIGHT, bottom = c == FPS_BOTTOM_LEFT || c == FPS_BOTTOM_RIGHT;
+        float m = 16 * scale;
+        ImGui::SetNextWindowPos(ImVec2(right ? io.DisplaySize.x - m : m, bottom ? io.DisplaySize.y - m : m), 0,
+                                ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f));
         ImGui::SetNextWindowBgAlpha(0.5f);
         ImGui::Begin("##fps", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                         ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
-        ImGui::Text("%.0f fps", g_ov_cache ? g_fps_shown : io.Framerate);
+        ImGui::Text(L("%.0f fps"), g_ov_cache ? g_fps_shown : io.Framerate);
         ImGui::End();
     }
 
     if (race) race_overlay_draw(io.DisplaySize, g_menu_font_big, scale);
+    if (dpad) dpad_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont(), scale);
     if (flyin) pickup_flyin_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont(), scale);
     if (trk) tracker_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     if (chaos) chaos_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
@@ -1143,46 +1646,79 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     if (inv) {
         inventory_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     }
+    if (touch) touch_draw(ImGui::GetBackgroundDrawList(), io.DisplaySize.x, io.DisplaySize.y, g_font_big ? g_font_big : ImGui::GetFont());
 
     if (open || kbd) {  // (the menu's colours; its windows, popups and buttons as plastic pieces)
         ImGui::GetStyle() = menu_style;
         plastic_widgets(true);
     }
-    if (open) {
-        // dim the game behind the menu
-        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
-                                                      IM_COL32(0, 0, 0, (int)(plastic_theme().dim * 255)));
-        float w = fminf(io.DisplaySize.x * 0.9f, 1500 * scale), h = io.DisplaySize.y - 2 * 18 * scale;  // (all the height: a slim margin)
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
-        ImGui::Begin("##menu", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-        ImFont *keep_big = g_font_big;  // (the window in the menu's font; header() uses g_font_big)
-        g_font_big = g_menu_font_big;
-        ImGui::PushFont(g_menu_font);
-        // header as on the start screen's Settings: the title, and a close X in the corner (B / Esc too). ("Title
-        // screen" - rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user 2026-10-11.)
-        ImGui::PushFont(g_font_big);
-        ImGui::TextColored(plastic_col(plastic_theme().title), "%s", ui_tr("Settings"));
-        ImGui::PopFont();
-        {
-            float bx = 44 * scale;
-            if (plastic_close_corner(bx, scale)) set_open(false);
-        }
-
-        bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();  // (before the
-        tabs_body(scale, true, NULL);                                                                          //  pages run)
-        // B with nothing focused-deeper closes the menu (not the Esc / B that ends typing: typing is from the frame
-        // before, so it's still true the frame a field lets go)
-        if (!any_popup && !typing && !ui_text_busy() && !controls_ui_took_back() && !rando_tab_took_back() &&
-            !save_editor_took_back() && !warp_tab_took_back() &&
-            ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
-            (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
-            set_open(false);
-        ImGui::PopFont();
-        g_font_big = keep_big;
-        ImGui::End();
-        osk_draw(g_font_big, scale);  // (a text field activated with the controller)
+    if (!open || preview_active()) g_bar_t0 = -1;
+    if (open && preview_active()) {  // (the live preview: the game, a panel at the bottom)
+        if (PLAT_TOUCH) preview_safe_area(g_safe_l, g_safe_t, g_safe_r, g_safe_b);  // (the menu window's)
+        menu_preview_frame(scale, g_menu_font, g_menu_font_big);
         menu_sfx_frame(true);
+    } else if (open) {
+        // A page open: the bar goes up and the page has the whole screen (user 2026-11-03); B brings the bar down again
+        int page = g_page.load();
+        if (page < 0) bar_draw(io, scale), ask_popup(scale);
+        else g_bar_t0 = -1;
+        static int shown = -1;  // (a page just opened takes ImGui's focus)
+        if (page < 0) shown = -1;
+        if (page >= 0) {
+            // dim the game behind the page (the bar alone leaves it as it is)
+            ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
+                                                          IM_COL32(0, 0, 0, (int)(plastic_theme().dim * 255)));
+            if (page != shown) ImGui::SetNextWindowFocus(), shown = page;
+            float w = fminf(io.DisplaySize.x * 0.9f, 1500 * scale), h = io.DisplaySize.y - 2 * 18 * scale;  // (all the height: a slim margin)
+            ImVec2 centre(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+#if PLAT_TOUCH
+            {   // phones: the whole safe area (the notch and the home indicator left out), centred on the screen: the
+                // wider side inset on both sides (the notch is on one side only in landscape)
+                float sx = fmaxf(g_safe_l, g_safe_r), sy = fmaxf(g_safe_t, g_safe_b);
+                w = io.DisplaySize.x - 2 * sx - 2 * 12 * scale;
+                h = io.DisplaySize.y - 2 * sy - 2 * 12 * scale;
+            }
+#endif
+            ImGui::SetNextWindowPos(centre, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
+            ImGui::Begin("##menu", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+            ImFont *keep_big = g_font_big;  // (the window in the menu's font; header() uses g_font_big)
+            g_font_big = g_menu_font_big;
+            ImGui::PushFont(g_menu_font);
+            // header as on the start screen's Settings: the page's title, and a close X in the corner (B / Esc too:
+            // back to the bar). ("Title screen" - rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user
+            // 2026-10-11.)
+            static const char *titles[] = {LN("Settings"), LN("Warp"), LN("Save Editor")};
+            ImGui::PushFont(g_font_big);
+            ImGui::TextColored(plastic_col(plastic_theme().title), "%s", L(titles[page]));
+            ImGui::PopFont();
+            bool back = false;
+            {
+                float bx = 44 * scale;
+                if (plastic_close_corner(bx, scale)) back = true;
+                if (page == BAR_SETTINGS) {
+                    if (plastic_reset_corner(bx, scale)) ImGui::OpenPopup("##vanilla");
+                    vanilla_popup(scale);
+                }
+            }
+
+            bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();  // (before
+            static const int only[] = {-1000, 4, 2};  // (the pages' tab ids)                    //  the pages run)
+            tabs_body(scale, true, NULL, only[page]);
+            // B with nothing focused-deeper goes back to the bar (not the Esc / B that ends typing: typing is from the
+            // frame before, so it's still true the frame a field lets go)
+            if (!any_popup && !typing && !ui_text_busy() && !controls_ui_took_back() && !rando_tab_took_back() &&
+                !save_editor_took_back() && !warp_tab_took_back() &&
+                ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+                (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
+                back = true;
+            if (back && g_page.load() == page) g_page = -1;
+            ImGui::PopFont();
+            g_font_big = keep_big;
+            ImGui::End();
+            osk_draw(g_font_big, scale);  // (a text field activated with the controller)
+            menu_sfx_frame(true);
+        } else menu_sfx_idle_check();
     }
 
     if (photo_mode_active()) photo_mode_draw(scale);
@@ -1192,6 +1728,15 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui::GetStyle() = ov_style;
     ImGui::Render();
     g_text_busy = open && ui_text_busy();
+    g_text_typed = open && ui_text_typed_into();
+    {   // (phones: the field's frame for SDL's keyboard, pixels -> points; this context has no ImGui platform backend)
+        ImVec2 mn, mx;
+        if (PLAT_TOUCH && ui_text_field_rect(&mn, &mx)) {
+            float d = g_pixel_density;
+            g_ime_rect = {(int)(mn.x / d), (int)(mn.y / d), (int)((mx.x - mn.x) / d), (int)((mx.y - mn.y) / d)};
+            g_ime_send = true;
+        }
+    }
     // the pieces (and, the menu open over the game, the small copy of the game image they read): only with the menu or
     // the name entry up
     bool pieces = open || kbd;

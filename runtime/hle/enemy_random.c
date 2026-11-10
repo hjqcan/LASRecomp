@@ -271,6 +271,16 @@ static int pick_for(const Slot *s, int *restr, int *nr) {
 // Actor `s`'s record = the seed's (`seed`) made into enemy `pick`.
 static void apply_pick(Slot *s, const uint8_t *seed, int pick) {
     memcpy(s->rec, seed, REC);
+    // The Armos statues on stairs (Field_10N: Armos 0x16, flag 16 AppearStairsFld10N; Field_11O: Armos 0x15, flag 18
+    // AppearStairsFld11O) have the stairs' flag as their switch 0. The seed sets it at the start, and a vanilla Armos
+    // clears it as it is made, so the stairs vanish: whatever stands there carries no switch (enemies.py STAIR_GUARDS
+    // does the same in seeds made after this; this covers the ones made before).
+    uint16_t sw0;
+    memcpy(&sw0, s->rec + 0x7C, 2);
+    if (s->rec[0x78] == 1 && ((s->vtype == 0x16 && sw0 == 16) || (s->vtype == 0x15 && sw0 == 18))) {
+        s->rec[0x78] = 4;
+        memset(s->rec + 0x7C, 0, 2);
+    }
     int type = pick;
     if (pick == 0x4A) type = 0x4A + rnd_below(3);       // Stretchy Ghosts: a colour
     else if (pick == 0x4D) type = 0x4D + rnd_below(3);  // Color Dungeon orbs: a colour
@@ -463,4 +473,41 @@ void rt_enemy_spawn(uint64_t info) {
         memcpy((void *)(uintptr_t)(info + 0x10), s->rec + 0x38, 0x40);
     }
     pthread_mutex_unlock(&g_lock);
+}
+
+// Seeds with randomized enemies (either mode) open the stairs under the Armos statues of Armos island (flag 16,
+// AppearStairsFld10N) and the Armos maze (flag 18, AppearStairsFld11O) at the start (LAS player_start.py), but a vanilla
+// Armos made there cleared its spot's flag (apply_pick / enemies.py STAIR_GUARDS now keep it), so saves played before
+// may have lost those stairs: each time a save comes into play (its body CRC changes: a load, or the game saving it),
+// a started game (FirstClear, flag 214, set by that same start event) gets both flags back.
+static int g_stairs_seed = -1;  // (per seed: settings.json "randomize-enemies")
+static uint32_t g_stairs_crc;
+RT_ON_RESET(enemy_stairs_reset) { g_stairs_seed = -1; g_stairs_crc = 0; }
+void enemy_stairs_tick(void) {
+    extern bool flags_ext_get(int idx);
+    extern void flags_put(int idx, bool on);
+    if (g_stairs_seed < 0) {
+        g_stairs_seed = 0;
+        const char *dir = rando_seed_dir();
+        char p[600];
+        FILE *f = dir ? (snprintf(p, sizeof p, "%s/settings.json", dir), fopen(p, "rb")) : NULL;
+        if (f) {
+            static char buf[1 << 16];
+            size_t n = fread(buf, 1, sizeof buf - 1, f);
+            buf[n] = 0;
+            fclose(f);
+            g_stairs_seed = strstr(buf, "\"randomize-enemies\": true") != NULL;
+        }
+    }
+    if (!g_stairs_seed) return;
+    uint32_t crc = LD32(GA(LIVE_SAVE) + 0x5EC4);  // (the save's body CRC: runtime/hle/flags_ext.c)
+    if (crc == g_stairs_crc) return;
+    g_stairs_crc = crc;
+    if (!flags_ext_get(214)) return;  // (FirstClear: not a started game yet - the start event sets them)
+    static const int stairs[2] = {16, 18};
+    for (int i = 0; i < 2; i++)
+        if (!flags_ext_get(stairs[i])) {
+            flags_put(stairs[i], true);
+            LOG("[enemyrand] save in play: stairs flag %d set again (randomized enemies open those stairs)\n", stairs[i]);
+        }
 }

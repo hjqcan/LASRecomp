@@ -11,11 +11,13 @@ with tempfile.TemporaryDirectory() as directory:
     directory = Path(directory)
     exe = directory / ('settings-test.exe' if os.name == 'nt' else 'settings-test')
     subprocess.run(shlex.split(os.environ.get('CC', 'clang')) +
-                   ['-std=gnu11', '-Iruntime', 'runtime/settings.c', 'runtime/cosmetic_colour.c', 'tools/test_settings.c', '-o', str(exe), '-lm'],
+                   ['-std=gnu11', '-Iruntime', 'runtime/settings.c', 'runtime/cosmetic_colour.c', 'tools/test_settings.c', '-o', str(exe), '-lm'] +
+                   (['-framework', 'CoreFoundation'] if sys.platform == 'darwin' else []),
                    cwd=ROOT, check=True)
     cases = [(setting, {}, code) for setting, code in
              [('zh-CN', 'zh-Hans'), ('zh-TW', 'zh-Hant'), ('zh-Hans', 'zh-Hans'),
-              ('zh-Hant', 'zh-Hant'), ('en-US', 'en-US'), ('ja', 'ja'), ('unknown', 'en-US')]]
+              ('zh-Hant', 'zh-Hant'), ('en-US', 'en-US'), ('ja', 'ja'), ('unknown', 'auto'),
+              ('pt-BR', 'en-US')]]
     if sys.platform.startswith('linux'):
         for locale in ['zh_CN.UTF-8', 'zh_SG.UTF-8', 'zh-Hans', 'zh-Hans-HK', 'zh_Hans_CN', 'zh']:
             cases.append(('auto', {'LC_ALL': locale}, 'zh-Hans'))
@@ -25,7 +27,8 @@ with tempfile.TemporaryDirectory() as directory:
         cases += [('auto', {'LC_MESSAGES': 'zh_HK.UTF-8', 'LANG': 'zh_CN.UTF-8'}, 'zh-Hant'),
                   ('auto', {'LANG': 'zh_MO.UTF-8'}, 'zh-Hant'),
                   ('auto', {'LC_ALL': 'zh_CN.UTF-8', 'LC_MESSAGES': 'zh_HK.UTF-8'}, 'zh-Hans'),
-                  ('auto', {'LC_ALL': 'ja_JP.UTF-8'}, 'ja'), ('auto', {'LC_ALL': 'C'}, 'en-US')]
+                  ('auto', {'LC_ALL': 'ja_JP.UTF-8'}, 'ja'), ('auto', {'LC_ALL': 'C'}, 'en-US'),
+                  ('auto', {'LC_ALL': 'pt_BR.UTF-8'}, 'en-US')]
     count = 0
     for newline in ['\n', '\r\n']:
         for setting, locale, code in cases:
@@ -39,7 +42,7 @@ with tempfile.TemporaryDirectory() as directory:
                 env.update(locale)
                 subprocess.run([str(exe), code, seed], env=env, check=True, capture_output=True)
                 saved = ini.read_text()
-                expected = 'auto' if setting in ['auto', 'unknown'] else code
+                expected = 'auto' if setting in ['auto', 'unknown'] else setting if setting == 'pt-BR' else code  # (the menus' only)
                 assert f'language = {expected}\n' in saved
                 assert f'rando_seed = {seed}\n' in saved
                 assert 'acnh_speedfix60 = 1\n' in saved

@@ -39,7 +39,7 @@ IMGUI    := third_party/imgui
 # -mllvm -disable-licm-promotion: LLVM's LICM pass takes minutes on the few generated files that hold one giant function (main_404 / main_406:
 # 12 and 11 minutes at -O1 on a Steam Deck, 33 and 56 s without the promotion; the rest of the files cost the same). Keep in step with GAMELIB_CFLAGS
 # in runtime/gamebuild.c (the start screen's build of the same code).
-GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -mllvm -disable-licm-promotion -Iruntime
+GENFLAGS := -O1 -g0 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -mllvm -disable-licm-promotion -Iruntime
 
 # The game code (made by `make gen` from your own game files) is its own library next to the app (runtime/gamelib.h);
 # the app itself holds none of it
@@ -52,8 +52,9 @@ GEN_OBJ  := $(patsubst %.c,$(B)/obj/%.o,$(patsubst $(GEN)/%,%,$(GEN_SRC))) $(B)/
 RT_SRC   := $(wildcard runtime/*.c runtime/*.cpp) $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
             $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c
 RT_HDRS  := $(wildcard runtime/*.h runtime/game_addresses/*.h runtime/services/*.h) runtime/game_installations.inc $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
-            $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h)
-UI_SRC   := $(wildcard runtime/ui/*.mm)
+            $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h) $(wildcard runtime/ui/mobile/*.h) \
+            $(wildcard runtime/ui/lang/*.inc)
+UI_SRC   := $(wildcard runtime/ui/*.mm) $(wildcard runtime/ui/mobile/*.mm)  # (mobile/: the touch layer, empty off PLAT_TOUCH)
 UI_OBJ   := $(patsubst runtime/%.mm,$(B)/rt/%.o,$(UI_SRC))
 IMGUI_OBJ := $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
              $(B)/imgui/imgui_impl_sdl3.o
@@ -66,7 +67,7 @@ EXE      := $(B)/lasrecomp
 DEPINC   := -I$(SDL)/include -I$(FFMPEG)/include -I$(OPUS)/include
 LDFLAGS  := -L$(SDL)/lib -lSDL3 -Wl,-rpath,$(SDL)/lib -L$(FFMPEG)/lib -lavformat -lavcodec -lavutil -lswscale -Wl,-rpath,$(FFMPEG)/lib \
             -L$(OPUS)/lib -Wl,-rpath,$(OPUS)/lib \
-            -framework CoreFoundation -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore -framework AppKit -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers
+            -framework CoreFoundation -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore -framework CoreVideo -framework AppKit -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers
 BACKEND_SRC := $(wildcard runtime/nvn/*.m)
 BACKEND_OBJ := $(patsubst runtime/%.m,$(B)/rt/%.o,$(BACKEND_SRC))
 IMGUI_OBJ += $(B)/imgui/imgui_impl_metal.o
@@ -101,11 +102,20 @@ EXE      := $(B)/lasrecomp.exe
 DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
 OSFLAGS  := -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S -DWIN32_LEAN_AND_MEAN -DNOMINMAX \
             $(if $(RELEASE),-DLARECOMP_ZIP_BUILD)  # (the log's [info] line: the release zip)
+# ARM64 (MSYS2 CLANGARM64): the guest's FP/SIMD as inline asm, as on Apple Silicon and Linux aarch64
+WINARCH  := $(firstword $(subst -, ,$(shell $(CC) -dumpmachine)))
+ifeq ($(WINARCH),aarch64)
+GENSIMD  := --simd asm
+else
 GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA for the lifted FP/SIMD code (simd.h); override for older CPUs
+endif
 GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
 LDFLAGS  := -fuse-ld=lld -Wl,--stack,16777216 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
             -lvulkan-1 -lws2_32 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared \
             $(if $(RELEASE),-Wl$(comma)--subsystem$(comma)windows -Wl$(comma)--strip-debug)  # release: no console window (log -> lasrecomp.log + lasrecomp-backup-*.log), no debug info
+ifeq ($(WINARCH),aarch64)
+LDFLAGS  += -lpthread  # (winpthreads: linked implicitly by UCRT64's toolchain, not by CLANGARM64's)
+endif
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
 BACKEND_OBJ += $(B)/rt/platform/windows_rc.o  # the .exe's icon (Explorer, taskbar)
@@ -119,6 +129,16 @@ GAMELIB_LDFLAGS := -shared -fuse-ld=lld $(B)/lasrecomp.dll.a
 GAMELIB_SHARED := -shared  # (+ the import library: runtime/gamebuild.c)
 endif
 LDFLAGS += -lopus
+
+# DYN_BASE=1: the guest window starts where the process has room instead of at 0x70_0000_0000 (runtime/rt.h), as on
+# Android; on the desktop it is for testing that path. The game code is generated with gen.py --dyn-base, and the
+# define is part of GENFLAGS so such a library has its own id.
+ifneq ($(DYN_BASE),)
+GENSIMD  += --dyn-base
+GENFLAGS += -DLARECOMP_DYN_BASE
+OSFLAGS  += -DLARECOMP_DYN_BASE
+DYNFLAG  := -DLARECOMP_DYN_BASE
+endif
 
 # GAMELIB_ID: what the game code library is built from (the generator, the headers it is compiled against, the
 # flags). A library with another id is rebuilt by the start screen, never loaded.
@@ -140,7 +160,7 @@ RT_OBJ   := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/
 # no path of this machine in what ships: debug info and __FILE__ name the checkout as "." (Windows: its C:/ form too)
 PATHMAP  := -ffile-prefix-map=$(CURDIR)=. $(if $(filter windows,$(PLATFORM)),-ffile-prefix-map=$(shell cygpath -m '$(CURDIR)')=.)
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn $(DEPINC) $(OSFLAGS) $(PATHMAP)
-CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn $(DEPINC) $(PATHMAP)
+CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn $(DEPINC) $(PATHMAP) $(DYNFLAG)
 
 all: $(EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))
 
@@ -280,8 +300,13 @@ dmg: app
 # with build/deps-win/bin first (the FFmpeg DLL names are the same as MSYS2's GPL ones). vulkan-1.dll is left
 # out: every Vulkan driver installs the loader in System32. Saves, seeds and game files go next to the exe at run time.
 # Needs: Windows 10+ x64, a Vulkan 1.3 driver, an AVX2 CPU (GENARCH x86-64-v3; checked at startup).
+# ARM64 (experimental, from an MSYS2 CLANGARM64 shell): the same steps give LAS Recomp-<version>-windows-arm64.zip; its
+# helpers are built with an x64 Python 3.12 (RANDO_PY=...: capstone / unicorn have no ARM64 Windows wheels) and run
+# under emulation, everything else is ARM64.
 DIST     := build/dist/Multi
 WIN_B    := build/win-release
+# the zip's platform name, as the update check names it (runtime/ui/launcher.mm LARECOMP_PLATFORM)
+WINZIP   := windows$(if $(filter aarch64,$(WINARCH)),-arm64)
 deps-windows:
 	tools/build_deps_windows.sh
 dist:
@@ -307,7 +332,7 @@ dist:
 	cp third_party/ryujinx/LICENSE.txt "$(DIST)/Ryujinx-LICENSE.txt"
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
 	cp -R build/helper/rando-gen "$(DIST)/"
-	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/lasrecomp.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
+	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/lasrecomp.exe | awk '(/ucrt64/ || /clangarm64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
 	    xargs -I{} cp -u {} "$(DIST)/"
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
 	# (no path of this machine inside: build/deps-win, debug info, zig's runtime. Not on CI: its paths name no one)
@@ -315,9 +340,9 @@ dist:
 	    case "$$(basename "$$(cygpath -u "$$USERPROFILE")")" in runner|runneradmin) h= ;; *) h=$$(cygpath -m "$$USERPROFILE") ;; esac; \
 	    ! grep -rlaiF -e "$(CURDIR)" -e "$$(cygpath -m '$(CURDIR)')" -e "$$(cygpath -w '$(CURDIR)')" \
 	        $${h:+-e "$$h" -e "$$(cygpath -w "$$h")"} "$(DIST)"; fi
-	cd build/dist && if command -v zip >/dev/null; then zip -qr "Multi-$(VERSION)-windows.zip" "Multi"; \
-	    else /c/Windows/System32/tar.exe -a -cf "Multi-$(VERSION)-windows.zip" "Multi"; fi
-	@echo "build/dist/Multi-$(VERSION)-windows.zip"
+	cd build/dist && if command -v zip >/dev/null; then zip -qr "Multi-$(VERSION)-$(WINZIP).zip" "Multi"; \
+	    else /c/Windows/System32/tar.exe -a -cf "Multi-$(VERSION)-$(WINZIP).zip" "Multi"; fi
+	@echo "build/dist/Multi-$(VERSION)-$(WINZIP).zip"
 
 # Seed generator as a standalone helper, so players need no Python: build/helper/rando-gen/ (rando-gen[.exe] +
 # _internal/), frozen by PyInstaller from tools/rando/rando_gen.spec in its own venv (build/rando-venv). Ship the

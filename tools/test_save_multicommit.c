@@ -24,7 +24,7 @@ uint64_t rt_romfs_bytes;
 const GameVersion *game_version(void) { return NULL; }
 uint64_t game_romfs_bytes(const GameVersion *v) { return 0; }
 GameRomfsCheck *game_romfs_check_begin(const GameVersion *v) { return NULL; }
-bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size) { return true; }
+bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size, uint64_t *bytes) { return true; }
 int game_romfs_check_end(GameRomfsCheck *c) { return 0; }
 bool game_romfs_exefs_copy(const char *root, const char *rel, uint64_t size) { return false; }
 #ifdef __linux__
@@ -153,3 +153,8 @@ int main(int argc,char **argv) {
     assert(ipc_handle_request(&cpu,session)==0xE401);
     puts("PASS: real session/domain multi-commit IPC, ten staged files, retained mounts, invalid inputs and failure/retry");
 }
+
+void dpad_items_save_read(const char *path, uint64_t addr, int64_t off, int64_t size) {}
+void dpad_items_save_written(const char *path, uint64_t addr, int64_t off, int64_t size) {}
+void weather_cycle_save_read(const char *path, uint64_t addr, int64_t off, int64_t size) {}
+void weather_cycle_save_written(const char *path, uint64_t addr, int64_t off, int64_t size) {}

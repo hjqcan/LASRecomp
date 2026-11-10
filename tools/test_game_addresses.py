@@ -144,11 +144,13 @@ if ((argc == 3 || argc == 4) && !strcmp(argv[1], "romfs")) {
     GameRomfsCheck *c = game_romfs_check_begin(v);
     char line[1100], path[1024];
     unsigned long long size;
+    uint64_t bytes = 0;
     while (fgets(line, sizeof line, stdin)) {
         if (sscanf(line, "%llu %1023[^\n]", &size, path) != 2) continue;
         if (argc == 4 && game_romfs_exefs_copy(argv[3], path, size)) printf("copy %s\n", path);
-        else if (!game_romfs_check_file(c, path, size)) printf("odd %s %llu\n", path, size);
+        else if (!game_romfs_check_file(c, path, size, &bytes)) printf("odd %s %llu\n", path, size);
     }
+    printf("bytes %llu %llu\n", (unsigned long long)bytes, (unsigned long long)game_romfs_bytes(v));
     printf("missing %d\n", game_romfs_check_end(c));
     return 0;
 }
@@ -203,18 +205,29 @@ for rel, size in (('region_common/event/x.bfevfl', 2712), ('a', 0), ('b c/d.bin'
     assert int(native('hash', rel, size)[0], 16) == romfs_files.entry_hash(rel, size), rel
 
 
-def romfs_check(build_id, files, game=None):
+def romfs_check(build_id, files, game=None, bytes_out=None):
+    # the odd and copied files, how many of the version's are missing; bytes_out: [the game's files' bytes, the
+    # version's total]
     out = subprocess.run([str(exe), 'romfs', build_id] + ([str(game)] if game else []),
                          input=''.join(f'{n} {p}\n' for p, n in files), encoding='utf-8',
                          capture_output=True, check=True).stdout.splitlines()
-    assert out[-1].startswith('missing '), out
-    return out[:-1], int(out[-1].split()[1])
+    assert out[-1].startswith('missing ') and out[-2].startswith('bytes '), out
+    if bytes_out is not None:
+        bytes_out[:] = map(int, out[-2].split()[1:])
+    return out[:-2], int(out[-1].split()[1])
 
 
 made_up = [('region_common/made_up.bin', 12), ('Ä/ü.bin', 3)]
 assert romfs_check('-', made_up) == ([], 0)  # (no version: no check)
 for key, (label, bid) in VERSIONS.items():
     assert romfs_check(bid, made_up) == (['odd region_common/made_up.bin 12', 'odd Ä/ü.bin 3'], 3836), key
+# the files that aren't the game's add no bytes (#553: a 6 GB extra file in romfs tripped "damaged or changed"); with no
+# version every file's are added
+total = []
+romfs_check(VERSIONS['v1_0_1'][1], made_up + [('extra.bin', 6314471936)], bytes_out=total)
+assert total == [0, 6232003903], total
+romfs_check('-', made_up, bytes_out=total)
+assert total == [15, 0], total
 
 # copies of the game code's six exefs files at the romfs root (#389: 3842 files) are skipped, only when each is the
 # same file as its exefs one; any other extra there is still odd
@@ -310,9 +323,17 @@ if games:
     # every RomFS file is one of its version's, every one of them there
     for key, folder in games.items():
         files = romfs_files.romfs_files(folder/'romfs')
-        out, missing = romfs_check(VERSIONS[key][1], sorted(files.items()), folder)
+        total = []
+        out, missing = romfs_check(VERSIONS[key][1], sorted(files.items()), folder, total)
         copies = [line for line in out if line.startswith('copy ')]
         assert out == copies and not missing, (key, out[:20], missing)
+        assert total[0] == total[1], (key, total)  # (the game's files add up to the version's total)
+        # an extra file beside them leaves the total; one of them a byte longer is odd, missing and short
+        extra = romfs_check(VERSIONS[key][1], sorted(files.items()) + [('extra.bin', 5)], folder, total)
+        assert extra == (copies + ['odd extra.bin 5'], 0) and total[0] == total[1], (key, extra, total)
+        (rel, size), *rest = sorted(files.items())
+        out, missing = romfs_check(VERSIONS[key][1], [(rel, size + 1)] + rest, folder, total)
+        assert missing == 1 and f'odd {rel} {size + 1}' in out and total[0] == total[1] - size, (key, missing, total)
         print(f'{key}: {len(files) - len(copies)} RomFS files, all the game\'s' +
               (f' ({len(copies)} copies of the game code at the root, ignored)' if copies else ''))
     from nso import Nso

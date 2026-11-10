@@ -6,6 +6,7 @@
 #include <stdatomic.h>
 #include "../runtime/nvn/rqueue.c"
 
+uint64_t interp_replay_ns(uint64_t now) { return 0; }
 volatile int g_rt_unwind;
 __thread uint64_t g_blocked_ns;
 static _Atomic unsigned entered, allow, completed;

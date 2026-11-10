@@ -559,10 +559,7 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
     if (!renderer_prepare_begin()) { free(list); LOG("[shader] preparation: no GPU device yet\n"); return false; }
     uint64_t seen_game;
     char *seen = shader_seen_read(&seen_game);  // (the player's own list: after the shipped one)
-    int total = 0;
-    for (char *p = list; *p; p++) total += *p == '\n';
-    for (char *p = seen; p && *p; p++) total += *p == '\n';
-    if (progress) progress(0, total + 1);
+    if (progress) progress(0, 0);  // (the total once the game files are indexed)
     {   // A managed installation or selected version can change between runs.
         idx_clear();
         idx_dir(romfs, 0);
@@ -594,33 +591,53 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         shader_seen_prep_done(game, keep);
         free(keep);
     }
-    FILE **files = calloc((size_t)idx_nfiles + 1, sizeof *files);
-    int done = 0, prepared = 0, missing = 0, failed = 0, prepared_seen = 0;
+    // The records this run prepares, counted first so the count the start screen shows is real: lines that parse,
+    // the player's own ones not in the shipped list, and only those whose shaders are in the game files
+    int nwork = 0, cap = 0, missing = 0, nshipped = 0;  // (work[0 .. nshipped): the shipped list's)
+    char **work = NULL;
     for (int own = 0; own < 2; own++)  // the shipped list, then the player's own
-    for (char *line = own ? seen : list, *next; line && *line && !(cancel && *cancel); line = next) {
+    for (char *line = own ? seen : list, *next; line && *line; line = next) {
         next = strchr(line, '\n');
         if (next) *next++ = 0;
         else next = line + strlen(line);
         ShaderRec r;
         if (!shader_rec_parse(line, &r)) continue;
         if (own && !getenv("LARECOMP_SHADER_LIST") && shader_seen_shipped(line)) continue;  // (prepared already)
+        if (!idx_find(r.vs) || (r.kind == 'G' && !idx_find(r.fs))) { missing++; continue; }
+        if (nwork == cap) work = realloc(work, (size_t)(cap = cap ? cap * 2 : 1024) * sizeof *work);
+        work[nwork++] = line;
+        if (!own) nshipped = nwork;
+    }
+    // done - pending moves both ways a little (builds finish on other threads): the count shown only goes up, and
+    // never past the total
+    int total = nwork, shown = 0;
+#define PREP_REPORT(d) do { int d_ = (d); if (d_ > total) d_ = total; if (d_ > shown) shown = d_; \
+                            if (progress) progress(shown, total); } while (0)
+    PREP_REPORT(0);
+    FILE **files = calloc((size_t)idx_nfiles + 1, sizeof *files);
+    int done = 0, prepared = 0, failed = 0, prepared_seen = 0;
+    for (int i = 0; i < nwork && !(cancel && *cancel); i++) {
+        ShaderRec r;
+        shader_rec_parse(work[i], &r);
         const IdxEnt *ev = idx_find(r.vs), *ef = r.kind == 'G' ? idx_find(r.fs) : NULL;
         ShaderBlob bv = {0}, bf = {0};
-        uint8_t *dv = ev ? blob_read(ev, &bv, files) : NULL, *df = ef ? blob_read(ef, &bf, files) : NULL;
+        uint8_t *dv = blob_read(ev, &bv, files), *df = ef ? blob_read(ef, &bf, files) : NULL;
         if (!dv || (r.kind == 'G' && !df)) missing++;
-        else if (renderer_prepare(&r, &bv, &bf)) *(own ? &prepared_seen : &prepared) += 1;
+        else if (renderer_prepare(&r, &bv, &bf)) *(i >= nshipped ? &prepared_seen : &prepared) += 1;
         else failed++;
         free(dv);
         free(df);
-        if (progress && (++done & 7) == 0) progress(done - renderer_prepare_pending(), total + 1);
+        if ((++done & 7) == 0) PREP_REPORT(done - renderer_prepare_pending());
     }
     while (!(cancel && *cancel) && renderer_prepare_pending()) {  // (the last builds)
-        if (progress) progress(done - renderer_prepare_pending(), total + 1);
+        PREP_REPORT(done - renderer_prepare_pending());
         struct timespec ts = {0, 5000000};
         nanosleep(&ts, NULL);
     }
     if (!(cancel && *cancel)) renderer_prepare_end();
-    if (progress) progress(total + 1, total + 1);
+    PREP_REPORT(total);
+#undef PREP_REPORT
+    free(work);
     for (int i = 0; i < idx_nfiles; i++) if (files[i]) fclose(files[i]);
     free(files);
     free(list);

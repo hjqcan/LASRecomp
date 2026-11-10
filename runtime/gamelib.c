@@ -76,6 +76,41 @@ bool gamelib_present(const char *game_dir) {
     return false;
 }
 
+#ifdef __ANDROID__
+// Android mounts shared storage (the data folder, where the setup builds the library) noexec: dlopen refuses a library
+// there. It is loaded from a copy in the app's internal storage, made again when the built one changed (its size and
+// time, kept next to the copy).
+#include <SDL3/SDL.h>
+#include <sys/stat.h>
+static const char *loadable_copy(const char *path) {
+    static char dst[1100];
+    const char *in = SDL_GetAndroidInternalStoragePath();
+    struct stat st;
+    if (!in || stat(path, &st) != 0) return path;
+    snprintf(dst, sizeof dst, "%s/%s", in, GAMELIB_NAME);
+    if (!strcmp(dst, path)) return path;
+    char stamp[1200], want[2400], have[2400] = "";
+    snprintf(stamp, sizeof stamp, "%s.from", dst);
+    snprintf(want, sizeof want, "%s\n%lld:%lld", path, (long long)st.st_size, (long long)st.st_mtime);
+    FILE *f = fopen(stamp, "rb");
+    if (f) { size_t n = fread(have, 1, sizeof have - 1, f); have[n] = 0; fclose(f); }
+    if (strcmp(have, want) || !exists(dst)) {
+        char tmp[1200];
+        snprintf(tmp, sizeof tmp, "%s.tmp", dst);
+        FILE *a = fopen(path, "rb"), *b = fopen(tmp, "wb");
+        bool ok = a && b;
+        static char buf[1 << 20];
+        for (size_t n; ok && (n = fread(buf, 1, sizeof buf, a)) > 0;) ok = fwrite(buf, 1, n, b) == n;
+        if (a) fclose(a);
+        if (b) ok &= fclose(b) == 0;
+        if (!ok || rename(tmp, dst) != 0) { remove(tmp); LOG("[gamelib] couldn't copy %s to %s\n", path, dst); return path; }
+        if ((f = fopen(stamp, "wb"))) { fputs(want, f); fclose(f); }
+        LOG("[gamelib] copied to internal storage to load it: %s\n", dst);
+    }
+    return dst;
+}
+#endif
+
 static const GameLibTables *validate_tables(const GameLibTables *t, const char *path, const char *game_dir) {
     if (!t || t->abi != GAMELIB_ABI || !t->id || strcmp(t->id, GAMELIB_ID)) {
         snprintf(g_error, sizeof g_error, "%s was built for another version", path);
@@ -95,7 +130,7 @@ static const GameLibTables *validate_tables(const GameLibTables *t, const char *
             !*m->count || *m->count>UINT64_C(10000000)) {
             snprintf(g_error,sizeof g_error,"Invalid compiled module: %s",expected->name); return NULL;
         }
-        uint64_t end=i+1<p->module_count?p->modules[i+1].base:HLE_BASE;
+        uint64_t end=i+1<p->module_count?p->modules[i+1].base:GUEST_CANON + 0x0080000000ull;
         for (uint64_t j=0;j<*m->count;j++) {
             if (!m->fns[j] || (m->addrs[j]&3) || m->addrs[j]<m->base || m->addrs[j]>=end ||
                 (j && m->addrs[j]<=m->addrs[j-1])) {
@@ -107,6 +142,9 @@ static const GameLibTables *validate_tables(const GameLibTables *t, const char *
 }
 
 static const GameLibTables *open_lib(const char *path, const char *game_dir) {
+#ifdef __ANDROID__
+    path = loadable_copy(path);
+#endif
 #ifdef _WIN32
     HMODULE h = LoadLibraryA(path);
     if (!h) { snprintf(g_error, sizeof g_error, "can't load %s (error %lu)", path, GetLastError()); return NULL; }
@@ -133,6 +171,15 @@ static const GameLibTables *open_lib(const char *path, const char *game_dir) {
         }
         memcpy(g_research_stores,manifest,65);
     }
+#if defined(LARECOMP_DYN_BASE) && !defined(_WIN32)
+    // its addresses follow the guest window wherever it is (gen.py --dyn-base: lasgame_gb; rt.h)
+    void (*set_base)(uint64_t) = (void (*)(uint64_t))dlsym(h, "lasgame_set_guest_base");
+    if (!set_base) {
+        snprintf(g_error, sizeof g_error, "%s wasn't generated for a moving guest window (gen.py --dyn-base)", path);
+        return NULL;
+    }
+    set_base(GUEST_LO);
+#endif
     return t;
 }
 

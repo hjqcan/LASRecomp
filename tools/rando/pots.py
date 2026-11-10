@@ -9,11 +9,13 @@ sets a new GlobalFlags entry so it stays collected. The pot keeps its vanilla dr
 Logic (LAS logic.yml vocabulary; everything also needs LAS's `break-pot` = bracelet | bombs | sword:2):
   houses / caves  region of the door outside (tools/rando/entrance_data.yml) & that door's requirements
   Kanalet Castle  kanalet-inside;  Southern Face Shrine: armos-maze
-  dungeons        conservative: the dungeon region AND every LAS location condition in that dungeon, i.e. the pot
-                  counts as reachable only once the whole dungeon is (all keys, boss, every item check). Per-room
-                  logic would be more generous; this never puts progression somewhere the player can't get to.
-                  Owl statues count without their Stone Beak: it only lets Link read them (it put every dungeon
-                  pot behind its Stone Beak, which also made the beaks hint-sheet steps).
+  dungeons        the pot's room: VANILLA_ROOMS (LAS's own conditions for that room, from the checks in it or the
+                  rooms around it); breaking the pot is all a pot needs once Link is in the room. Room shuffle:
+                  the room's cell in the new layout (tools/rando/room_logic.py, as the chests; 'room-local' is what
+                  the pot itself needs there). A room the table doesn't have keeps the old conservative rule: the
+                  dungeon region AND every LAS location condition in that dungeon (owl statues without their Stone
+                  Beak). That rule counted every pot as late as the whole dungeon (all keys, the boss, every
+                  chest): a pot shield could sit behind the shutters only a shield opens (seed LuckyMarin18).
 """
 import copy
 import glob
@@ -39,6 +41,41 @@ DUNGEONS = {  # level -> (LAS location prefix, region, spoiler region)
     'Lv07EagleTower': ('D7', 'eagle-tower', 'eagle-tower'),
     'Lv08TurtleRock': ('D8', 'turtle-rock', 'turtle-rock'),
     'Lv10ClothesDungeon': ('D0', 'color-dungeon', 'color-dungeon'),
+}
+# reaching a dungeon pot's room in the vanilla layout, in LAS's terms (logic.yml): the condition of a check in the room
+# (its check-only extras left out where they're the chest's own: a kill puzzle, an owl's Stone Beak), else of the rooms
+# it is reached from, plus the doors in between (locks: the dungeon's key count LAS uses beyond them, or all keys).
+# Rooms missing here (unclear way in: Face Shrine 06F, Turtle Rock 05G, Catfish's Maw 03B / 05E) keep the old rule.
+VANILLA_ROOMS = {
+    'D0': {'05C': 'D0-6D & key-D0:3 & hit-color-dungeon-switch', '05D': 'D0-6D', '06D': 'D0-6D',
+           '07C': 'D0-8C & kill-goblin[heavy]', '07E': 'D0-8C & kill-goblin[heavy]', '08F': 'D0-8C & kill-goblin[heavy]'},
+    'D2': {'02C': 'D2-4C', '02D': 'D2-4C & break-pot & hit-crystal-switch', '02G': 'D2-2F & key-D2:5', '03F': 'D2-2F',
+           '04C': 'D2-4C', '06G': 'D2-7D & (feather | (rooster & bad-pets)) & hit-crystal-switch & key-D2:3',
+           '07F': 'D2-7D & (feather | (rooster & bad-pets)) & hit-crystal-switch', '08C': 'D2-8C',
+           '08D': 'D2-7D & key-D2:5', '08F': 'D2-7D & (feather | (rooster & bad-pets)) & hit-crystal-switch'},
+    'D3': {'01A': 'D3-4C & kill-zol-red & kill-stalfos', '01B': 'D3-4C & bombs & kill-zol-green',
+           '03C': 'D3-4C', '03D': 'D3-4C & bombs', '03G': 'D3-3G', '05G': 'D3-4B & key-D3:1', '08B': 'D3-8B'},
+    'D4': {'04E': 'D4-4E', '04G': 'D4-5G', '05B': 'D4-5B', '05C': 'D4-4C', '05G': 'D4-5G', '06C': 'D4-6C',
+           '06F': 'D4-8D & key-D4:2 & kill-spiny & kill-zol-red & (flippers | (rooster & bad-pets))', '07C': 'D4-6C'},
+    'D5': {'01E': 'D5-5G & break-pot & kill-zol-green & (feather | (rooster & bad-pets) | hookshot)',
+           '02F': 'D5-5G & (hookshot | (rooster & bad-pets))', '02G': 'D5-5G & (hookshot | (rooster & bad-pets))',
+           '03G': 'D5-5G & (hookshot | dash-jump | (rooster & bad-pets))', '05G': 'D5-5G',
+           '06C': 'D5-7F & kill-helmasaur & (hookshot | (rooster & bad-pets))', '06E': 'D5-7F & kill-helmasaur',
+           '07D': 'D5-7F & kill-helmasaur'},
+    'D6': {'02H': 'D6-4H & kill-pols-voice', '03G': 'D6-4H & bombs & hookshot & bracelet & key-D6:3',
+           '03H': 'D6-4H & kill-pols-voice',
+           '04A': 'D6-8D & kill-wizzrobe & (bracelet:2 | shoot-arrows | rod | bombs | boomerang | hookshot)',
+           '04C': 'D6-8D & (bracelet:2 | shoot-arrows | rod | bombs | boomerang | hookshot)',
+           '04G': '(D6-4H & bombs) | (D6-8D & bracelet:2 & kill-wizzrobe)', '04H': 'D6-4H',
+           '05B': 'D6-8D & (bracelet:2 | shoot-arrows | rod | bombs | boomerang | hookshot)',
+           '06G': 'D6-8D & bracelet:2 & kill-wizzrobe & kill-star', '08F': 'D6-8D',
+           '08G': 'D6-8D & bracelet:2 & kill-wizzrobe'},
+    'D7': {'03B': 'D7-2D & hit-crystal-switch & bombs', '04D': 'D7-2D & hit-crystal-switch', '07B': 'D7-2D',
+           '08A': 'D7-2D'},
+    'D8': {'03C': '(D8-4C & kill-vire & kill-rope & hookshot) | (D8-8D & rod & feather & hookshot)',
+           '06H': 'D8-8D & feather & (break-pot | (rooster & bad-pets))',
+           '07E': 'D8-8D & (feather | (break-pot & kill-vire))', '08E': 'D8-8D & (feather | (break-pot & kill-vire))',
+           '08H': 'D8-8D & feather & (break-pot | (rooster & bad-pets))'},
 }
 SPECIAL = {  # level -> (region, extra condition)
     'KanaletCastle': ('kanalet-inside', None),
@@ -152,8 +189,8 @@ def add_to_logic(pots, logic_defs, item_defs, entrance_data, traps='none', rng=N
     for p in pots:
         lv = p['level']
         if lv in DUNGEONS:
-            _, region, spoiler = DUNGEONS[lv]
-            cond = _and(dungeon_cond[lv], 'break-pot')
+            prefix, region, spoiler = DUNGEONS[lv]
+            cond = _and(VANILLA_ROOMS.get(prefix, {}).get(p['room'].rsplit('_', 1)[1]) or dungeon_cond[lv], 'break-pot')
         elif lv in SPECIAL:
             region, extra = SPECIAL[lv]
             cond, spoiler = _and(extra, 'break-pot'), spoiler_of.get(region)
@@ -166,6 +203,8 @@ def add_to_logic(pots, logic_defs, item_defs, entrance_data, traps='none', rng=N
         name = location_name(p)
         loc = {'type': 'item', 'subtype': 'standing', 'content': 'rupee-5', 'region': region,
                'spoiler-region': spoiler or 'mabe-village', 'condition-basic': cond}
+        if lv in DUNGEONS:  # (room shuffle: reaching the pot's cell, then this - room_logic.apply)
+            loc['room-local'] = 'break-pot'
         if p.get('shell') is not None and seashell_spots.absorb(logic_defs, p['shell'], loc):
             absorbed += 1
         logic_defs[name] = loc
@@ -200,6 +239,43 @@ def mark_refills(placements):
             idx[loc] = REFILL_INDEX
             n += 1
     return n
+
+
+def _snap_spot(room, x, y, z):
+    """Where a bush's / rock's item should stand: None when (x, z) is fine, else the centre of the nearest walkable
+    tile. The item spawns where its host stood, and one standing on a tile edge was hard to pick up (rock-03E-5 by the
+    Bottle Grotto door: on the line between a blocked tile and the one south of it, a wall on that line - Link had to
+    run back and forth over it; user, beta 6). The height stays: the grid's floor height isn't the ground's there (the
+    rock and Link stand at 13.125 where the grid says 13.49). Room grid: bushes._pit_tiles."""
+    import struct
+    g = next((e for e in room.fixed_hash.entries if e.name == b'grid'), None)
+    g = g and {e.name: e for e in g.data.entries}
+    if not g or b'info' not in g or b'data' not in g:
+        return None
+    rows, cols = struct.unpack_from('<HH', g[b'info'].data, 0)
+    ox, oz = struct.unpack_from('<2f', g[b'info'].data, 8)
+    raw = g[b'data'].data
+
+    def tile(c, r):  # (flags, floor height), None off the grid
+        if not (0 <= c < cols and 0 <= r < rows):
+            return None
+        return raw[0x10 * (r * cols + c)], struct.unpack_from('<f', raw, 0x10 * (r * cols + c) + 0xC)[0]
+    fx, fz = (x - ox) / 1.5, (z - oz) / 1.5
+    here = tile(int(fx // 1), int(fz // 1))
+    edge = min(fx % 1, 1 - fx % 1) < 0.01 or min(fz % 1, 1 - fz % 1) < 0.01
+    if here is None or not edge:
+        return None  # (off-centre but inside one tile: fine - e.g. rock-07F-1)
+    best = None
+    for c in range(int(fx // 1) - 1, int(fx // 1) + 2):
+        for r in range(int(fz // 1) - 1, int(fz // 1) + 2):
+            t = tile(c, r)
+            if t is None or t[0] & 3:  # (bit 0: pit / deep water, bit 1: collision)
+                continue
+            cx, cz = ox + (c + 0.5) * 1.5, oz + (r + 0.5) * 1.5
+            d = (cx - x) ** 2 + (cz - z) ** 2
+            if best is None or d < best[0] - 1e-6:
+                best = (d, cx, y, cz)
+    return best and best[1:]
 
 
 def apply(locs, mods, out_dir, romfs, leb, event_tools, oead_tools, item_get, data, flag_prefix='LARPot',
@@ -285,6 +361,12 @@ def apply(locs, mods, out_dir, romfs, leb, event_tools, oead_tools, item_get, da
                 cut = next_flag
                 sheet['values'].append({'symbol': f'{flag_prefix}Cut{cut}', 'index': cut})
                 next_flag += 1
+            if cut_flag:  # (a bush / rock: its item stands where it stood - both moved, the runtime pairs them by position)
+                spot = _snap_spot(room, pot.posX, pot.posY, pot.posZ)
+                if spot:
+                    print(f'{name}: item spot ({pot.posX:g}, {pot.posY:g}, {pot.posZ:g}) -> ({spot[0]:g}, {spot[1]:g}, '
+                          f'{spot[2]:g})')
+                    pot.posX, pot.posY, pot.posZ = spot
             it = copy.deepcopy(pot)
             # the pot's own key under our tag: actor keys are unique per LEVEL, and a key a second room of the level
             # also uses spawns only once (issue #65: the item of the n-th pot of a room took the key of the n-th pot of

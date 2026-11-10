@@ -7,12 +7,14 @@
 
 #include "imgui.h"
 #include "localization.h"
+#include "i18n.h"
 #include "option_rows.h"
 
 extern "C" {
 #include "../hle.h"
 #include "../settings.h"
 int game_in_play(void);
+void hud_hearts_refresh(void);
 }
 
 // GA(LIVE_SAVE): main + 0x1CBB220
@@ -61,12 +63,12 @@ extern "C" void cheats_frame(void) {
         fill_ammo(ARROWS, 3, 5, 30);
         fill_ammo(POWDER, 8, 3, 20);
     }
-    if (g_settings.cheat_rupees && F<uint32_t>(RUPEES) != 999) F<uint32_t>(RUPEES) = 999;
+    if (g_settings.cheat_rupees && F<uint32_t>(RUPEES) != 9999) F<uint32_t>(RUPEES) = 9999;
 }
 
 extern "C" void cheats_draw(float scale) {
     if (!game_in_play()) {
-        ImGui::TextDisabled("%s", ui_tr("Load a save file and get into the game to use cheats."));
+        ImGui::TextDisabled("%s", L("Load a save to use cheats."));
         return;
     }
     opt_begin("##cheats", scale);
@@ -74,20 +76,20 @@ extern "C" void cheats_draw(float scale) {
     if (opt_toggle("Infinite hearts", &g_settings.cheat_hearts, false, "Health refills to full whenever Link is hurt."))
         settings_save();
     if (opt_toggle("Infinite ammo", &g_settings.cheat_ammo, false,
-                   "Bombs, arrows and Magic Powder stay full.\n\nOnly for the bags Link already owns."))
+                   "Bombs, arrows and Magic Powder never run out, for any bag you already have."))
         settings_save();
-    if (opt_toggle("Infinite rupees", &g_settings.cheat_rupees, false, "Rupees stay at 999.")) settings_save();
+    if (opt_toggle("Infinite rupees", &g_settings.cheat_rupees, false, "Rupees stay at 9999.")) settings_save();
 
     opt_section("One time");
-    if (opt_button("Max hearts", "Gives all 9 Heart Containers and 32 Pieces of Heart (20 hearts), then refills them.\n\n"
-                                 "The hearts on the HUD update after the next screen change.")) {
+    if (opt_button("Max hearts", "Gives you all 20 hearts and fills them.")) {
         F<uint16_t>(CONTAINERS) = 0x1FF;
         F<uint64_t>(PIECES) = 0xFFFFFFFFull;
         F<int16_t>(HP) = (int16_t)max_hp();
+        hud_hearts_refresh();
     }
     if (opt_button("Refill hearts", "Refills health to full.")) F<int16_t>(HP) = (int16_t)max_hp();
-    if (opt_button("Max ammo capacity", "Upgrades the bomb bag and quiver to 60 and Magic Powder to 40, then fills "
-                                        "them (for the bags Link owns).")) {
+    if (opt_button("Max ammo capacity", "Upgrades bombs and arrows to 60 and Magic Powder to 40, then fills them. "
+                                        "Only for bags you already have.")) {
         F<uint8_t>(UPGRADES) |= 0x38;  // bits 3-5: powder 40, bombs 60, arrows 60
         fill_ammo(BOMBS, 2, 4, 30);
         fill_ammo(ARROWS, 3, 5, 30);
@@ -96,12 +98,13 @@ extern "C" void cheats_draw(float scale) {
 
     opt_section("Companion");
     {  // save+0x555D: the follower (verified: setting it spawns that companion at the next screen / room load)
-        static const char *const names[] = {"None", "BowWow", "Marin", "Ghost", "Flying Rooster"};
+        static const char *const names[] = {LN("None"), LN("BowWow"), LN("Marin"), LN("Ghost"),
+                                             LN("Flying Rooster")};
         int cur = F<uint8_t>(0x555D);
         if (cur < 0 || cur > 4) cur = 0;
         if (opt_choice("Companion", &cur, names, 5, 0,
-                       "Who follows Link. They join at the next screen change.\n\n"
-                       "Story events may expect a specific companion."))
+                       "Pick who follows Link. They show up after the next screen change. Some story events expect a "
+                       "certain companion."))
             F<uint8_t>(0x555D) = (uint8_t)cur;
     }
     opt_end();

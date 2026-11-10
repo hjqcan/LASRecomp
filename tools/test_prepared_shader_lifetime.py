@@ -30,14 +30,15 @@ typedef struct {
     void *pmemo, *scache[2];
     bool prepared; ShaderJob job;
 } Prog;
-typedef struct { VkPipeline pipe; bool prepared; ShaderJob job; } Pipe;
-typedef struct { Prog p; ShaderInfo *si; VkPipeline pipe; uint32_t local[3]; } CsProg;
+typedef struct Pipe { VkPipeline pipe; bool prepared; ShaderJob job; _Atomic(struct Pipe *) recol_pp; } Pipe;
+typedef struct { Prog p; ShaderInfo *si; VkPipeline pipe; uint32_t local[3]; uintptr_t fold_mod; struct { VkPipeline pipe; } fold[4]; int nfold; } CsProg;
 static struct { int dev; } g_vk;
 static unsigned destroyed[128], freed_shaders, cache_resets;
 static _Atomic unsigned next_handle;
 static uintptr_t handle(void) { unsigned h = atomic_fetch_add(&next_handle, 1) + 1; assert(h < 128); return h; }
 static void destroy(uintptr_t h) { assert(h && h < 128 && destroyed[h]++ == 0); }
 static void vkDestroyPipeline(int d, uintptr_t h, void *a) { destroy(h); }
+static void vkDestroyShaderModule(int d, uintptr_t h, void *a) { destroy(h); }
 static void vkDestroyPipelineLayout(int d, uintptr_t h, void *a) { destroy(h); }
 static void vkDestroyDescriptorSetLayout(int d, uintptr_t h, void *a) { destroy(h); }
 static void maxwell_free(ShaderInfo *s) { if (s) { assert(s->marker == 42); freed_shaders++; free(s); } }
@@ -89,6 +90,9 @@ static void cycle(bool sync) {
     cs->p.owned_sets = normal_cs->p.owned_sets = 1;
     cs->p.set_layout[1] = normal_cs->p.set_layout[1] = heap_layout;
     prepared->set_layout[2] = ordinary->set_layout[2] = heap_layout;
+    cs->fold_mod = handle(); normal_cs->fold_mod = handle();
+    cs->nfold = normal_cs->nfold = 1;
+    cs->fold[0].pipe = handle(); normal_cs->fold[0].pipe = handle();
     cs->pipe = handle(); normal_cs->pipe = handle(); prep_own(cs, PREP_COMPUTE);
     PREP_PUT(prep_cs, 2, cs); g_cs_tab[0].cp = g_cs_tab[1].cp = cs; g_cs_tab[2].cp = normal_cs; g_cs_n = 3;
     prep_job(&prepared->job, compile, prepared);
@@ -100,6 +104,7 @@ static void cycle(bool sync) {
         prep_job(&p->job, pipeline, in);
     }
     Pipe *normal = calloc(1, sizeof *normal); normal->pipe = handle(); pipe_tab[2].pipe = normal; pipe_count = 3;
+    Pipe *recol = calloc(1, sizeof *recol); recol->pipe = handle(); atomic_store(&normal->recol_pp, recol);
     // Reset while jobs may still be queued/running: every owner outlives its callback.
     vk_exec_reset();
     assert(freed_shaders == before + 4 && !prep_owned && !prep_pending);

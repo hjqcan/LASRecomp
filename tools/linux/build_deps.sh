@@ -99,7 +99,8 @@ if [ ! -f "$P/lib/libavcodec.so" ]; then
         --enable-decoder=vp9,vp8,vorbis,opus,h264,aac --enable-parser=vp9,vp8,vorbis,opus,h264,aac \
         && make -j"$JOBS" && make install)
 fi
-grep -q 'GPL version 3\|--enable-gpl' "$P/lib/pkgconfig/libavcodec.pc" && { echo "deps: FFmpeg is not LGPL"; exit 1; }
+# (the library's own license and configure line: avcodec_license(), avcodec_configuration(); its .pc file has neither)
+grep -qa 'GPL version 3\|--enable-gpl' "$P/lib/libavcodec.so" && { echo "deps: FFmpeg is not LGPL"; exit 1; }
 
 # shaderc as one shared library (glslang, SPIRV-Tools inside), the libshaderc_shared the Windows build links too;
 # its DEPS file pins the glslang / SPIRV-Tools / SPIRV-Headers commits (utils/git-sync-deps clones them)

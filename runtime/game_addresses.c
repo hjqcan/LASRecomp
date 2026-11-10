@@ -81,6 +81,16 @@ bool game_version_select(const char *game_dir, char *why, size_t why_size) {
     }
     g_version = v;
     g_ga = v->addrs;
+#ifdef LARECOMP_DYN_BASE
+    // The tables hold the game's own addresses (GUEST_CANON..): moved to where the window is (rt.h). Everything in
+    // GameAddrs is a uint64_t address, so the table is walked as an array.
+    static GameAddrs moved;
+    moved = *v->addrs;
+    uint64_t *p = (uint64_t *)&moved;
+    for (size_t i = 0; i < sizeof moved / sizeof *p; i++)
+        if (p[i] >= GUEST_CANON && p[i] < GUEST_CANON + GUEST_SIZE) p[i] = p[i] - GUEST_CANON + GUEST_LO;
+    g_ga = &moved;
+#endif
     char label[32];
     LOG("[game] version %s (main build ID %.16s, address table %s)\n",
         game_release_label(exefs, label, sizeof label), v->build_id, v->key);
@@ -125,8 +135,11 @@ uint64_t game_romfs_hash(const char *rel, uint64_t size) {
     return h;
 }
 
-bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size) {
-    if (!c) return true;
+bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size, uint64_t *bytes) {
+    if (!c) {
+        if (bytes) *bytes += size;
+        return true;
+    }
     uint64_t h = game_romfs_hash(rel, size);
     size_t lo = 0, hi = ROMFS_ENTRIES;
     while (lo < hi) {
@@ -136,6 +149,7 @@ bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size) {
     }
     if (lo == ROMFS_ENTRIES || romfs_files[lo].hash != h || !(romfs_files[lo].versions & c->version)) return false;
     c->seen[lo] = 1;
+    if (bytes) *bytes += size;
     return true;
 }
 

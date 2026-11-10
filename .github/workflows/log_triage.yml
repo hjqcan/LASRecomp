@@ -14,8 +14,8 @@ name: Log triage
 on:
   issues:
     types: [opened, edited]
-  issue_comment:
-    types: [created]
+  issue_comment:  # (edited too: a log attached by editing the comment just posted, #367)
+    types: [created, edited]
   workflow_dispatch:
     inputs:
       issue:

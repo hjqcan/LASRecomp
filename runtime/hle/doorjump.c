@@ -59,14 +59,15 @@ static void load(void) {
     char line[256];
     int cap = 0;
     while (fgets(line, sizeof line, f)) {
+        if (line[0] == '#') continue;
         Jump j;
         char cell[8], side[4], tcell[8], tside[4];
         j.depth = 0.9f;  // how far past the target edge Link lands (Chaos: further when the target has its own door)
         j.height = -100.0f;
         j.lateral = 0.0f;  // (10th column: Link lands this far along the edge from the partner's centre - where half
                            // of a two-tile doorway's way in is a pit, #383; dungeon_gen.landing_depth)
-        int n = sscanf(line, "%39s %7s %3s %d %d %7s %3s %f %f %f", j.level, cell, side, &j.own, &j.partner, tcell, tside,
-                       &j.depth, &j.height, &j.lateral);
+        int n = sscanf(line, "%39s %7s %3s %d %d %7s %3s %f %f %f", j.level, cell, side, &j.own, &j.partner, tcell,
+                       tside, &j.depth, &j.height, &j.lateral);
         if (n != 5 && n != 7 && n != 8 && n != 9 && n != 10) continue;
         j.row = atoi(cell);  // "08C" -> row 8, column C
         j.col = cell[2] - 'A';
@@ -77,8 +78,9 @@ static void load(void) {
             // its pair: the reverse row's, if seen already
             for (int k = 0; k < g_npairs && j.pair < 0; k++) {
                 const ChaosPair *q = &g_pairs[k];
-                if (!strcmp(q->level, j.level) && q->col[1] == j.col && q->row[1] == j.row && q->side[1] == j.side &&
-                    q->slot[1] == j.own && q->col[0] == j.tcol && q->row[0] == j.trow && q->side[0] == j.tside)
+                if (!strcmp(q->level, j.level) && q->col[1] == j.col && q->row[1] == j.row &&
+                    q->side[1] == j.side && q->slot[1] == j.own && q->col[0] == j.tcol && q->row[0] == j.trow &&
+                    q->side[0] == j.tside)
                     j.pair = k, g_pairs[k].two = true;
             }
             bool self = j.trow == j.row && j.tcol == j.col && j.tside == j.side && j.partner == j.own;
@@ -307,8 +309,9 @@ static void test_tick(uint64_t frame, uint64_t pc, const char *lv) {
     } else if (placed >= 0 && (long)frame == placed + 300) {
         float x = pos[0], z = pos[2];
         int c = (int)floorf(x / 15.0f), r = (int)floorf(z / 12.0f) + 1;
+        bool ok = r == er && c == ec;
         LOG("[doorjump-test] %s %c -> now in %02d%c (%.2f, %.2f), expected %02d%c: %s (%d jumps fired)\n", cell, side, r,
-            'A' + c, x, z, er, 'A' + ec, (r == er && c == ec) ? (fell ? "FELL" : "PASS") : g_jumps_fired ? "FAIL-after-jump" : "FAIL",
+            'A' + c, x, z, er, 'A' + ec, ok ? (fell ? "FELL" : "PASS") : g_jumps_fired ? "FAIL-after-jump" : "FAIL",
             g_jumps_fired);
         at = -1;
     }

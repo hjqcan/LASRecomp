@@ -266,6 +266,12 @@ BLOCKING = (0x8, 0x9, 0x13, 0x14, 0x2E, 0x2F, 0x30, 0x35, 0x36, 0x41, 0x4D)  # s
 # arenas - none has a randomized land enemy today, kept so if the room data or a generated dungeon ever has one)
 ONE_PER_ROOM = (0x21E, 0x55, 0x5F)
 ARENA_TYPES = set(range(0x51, 0x71)) | {0xB9}  # (the game's mini-boss and boss actors; 0x55: Kanalet's own Soldier)
+# LARecomp: the two Armos statues standing on stairs (Armos island, the Armos maze cave). Their switch 0 is the stairs'
+# own flag (AppearStairsFld10N / Fld11O), which player_start.py sets at the start when enemies are randomized. The
+# vanilla Armos clears that flag as it is made (tested 2026-10-28), and in Random mode any re-roll can bring it back,
+# so a randomized enemy on these spots carries no switch: the stairs stay open. (runtime/hle/enemy_random.c does the
+# same for seeds made before this.)
+STAIR_GUARDS = {'Field_10N': 16, 'Field_11O': 18}
 
 
 def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy_settings: dict, rand_state: tuple):
@@ -315,6 +321,10 @@ def shuffleEnemyActors(room_data, folder: str, file: str, enemy_ids: dict, enemy
     for e, act in enumerate(room_data.actors):
         if act.type not in total_ids or e in excluded_actors: # check for valid enemy actors
             continue
+
+        if enemy_settings['types'] and folder == 'Field' and act.switches[0] == (1, STAIR_GUARDS.get(file[:-4])):
+            act.switches[0] = (4, 0)  # (LARecomp: STAIR_GUARDS)
+            edited_room = True
 
         if enemy_settings['types']:
             enemy_type = [v for k,v in ENEMY_DATA['Actors'].items() if v['id'] == act.type][0]['type']

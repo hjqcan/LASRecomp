@@ -6,6 +6,9 @@
 #define RT_ON_RESET(fn) static void fn(void)
 #include "../runtime/hle/enemy_random.c"
 
+const GameAddrs *g_ga;
+bool flags_ext_get(int idx) { abort(); }
+void flags_put(int idx, bool on) { abort(); }
 static TitleProfile profile;
 static const char *seed;
 static unsigned seed_reads;

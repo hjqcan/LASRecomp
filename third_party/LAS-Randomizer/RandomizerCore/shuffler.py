@@ -1,12 +1,11 @@
 from PySide6 import QtCore
 from .Paths.randomizer_paths import IS_RUNNING_FROM_SOURCE
 import RandomizerCore.spoiler as spoiler
+from RandomizerCore.Randomizers.data import start_dungeon_items as start_dungeon_item_kinds
 import re
 import copy
 import random
 import traceback
-
-KEY_RINGS = {}  # [LAS Recomp] key rings: 'keyring-Dn' -> that dungeon's keys, counted as key-Dn (tools/rando/key_rings.py)
 
 TEST_PLACEMENTS = { # example: testing specific items in chests
     # 'woods-crossing-cave-chest': 'bottle',
@@ -143,15 +142,8 @@ class ItemShuffler(QtCore.QThread):
                 self.vanilla_locations.add(inst)
         
         # if start with compass & map setting is enabled, adding them into the starting item setting
-        dungeon_item_setting = self.settings['dungeon-items']
-        if dungeon_item_setting != 'none':
-            to_check = ()
-            if dungeon_item_setting == 'mc':
-                to_check = ('map', 'compass')
-            elif dungeon_item_setting == 'mcb':
-                to_check = ('map', 'compass', 'stone-beak')
-            elif dungeon_item_setting == 'stone-beak':
-                to_check = 'stone-beak'
+        to_check = start_dungeon_item_kinds(self.settings)
+        if to_check:
 
             start_dungeon_items = [s for s in self.item_defs if s.startswith(to_check)]
             for e, item in enumerate(start_dungeon_items):
@@ -294,8 +286,6 @@ class ItemShuffler(QtCore.QThread):
             access[new] += 1
         else:
             access[new] = 1
-        if new in KEY_RINGS:
-            access['key-' + new[8:]] = access.get('key-' + new[8:], 0) + KEY_RINGS[new]
         return access
     
     
@@ -304,11 +294,6 @@ class ItemShuffler(QtCore.QThread):
             access[toRemove] -= 1
             if access[toRemove] == 0:
                 access.pop(toRemove)
-            if toRemove in KEY_RINGS:
-                k = 'key-' + toRemove[8:]
-                access[k] = access.get(k, 0) - KEY_RINGS[toRemove]
-                if access[k] <= 0:
-                    access.pop(k)
         return access
     
     
@@ -816,23 +801,16 @@ class ItemShuffler(QtCore.QThread):
 
             # if settings['dungeon-items'] == 'keys':
             #     item_pool = [s for s in item_pool if s.startswith(('map', 'compass', 'stone'))]
-            dungeon_item_setting = self.settings['dungeon-items']
-            if dungeon_item_setting != 'none':
-                to_check = ()
-                if dungeon_item_setting == 'mc':
-                    to_check = ('map', 'compass')
-                elif dungeon_item_setting == 'mcb':
-                    to_check = ('map', 'compass', 'stone-beak')
-                elif dungeon_item_setting == 'stone-beak':
-                    to_check = 'stone-beak'
+            to_check = start_dungeon_item_kinds(self.settings)
+            if to_check:
                 item_pool = [s for s in items if len(s) >= 2 and s[-2:] == f'D{i}' and not s.startswith(to_check)]
             else:
                 item_pool = [s for s in items if len(s) >= 2 and s[-2:] == f'D{i}']
 
             # LARecomp keysanity: these dungeon items go to the general pool (anywhere) instead of their own dungeon
             ks = self.settings.get('keysanity', 'off')
-            ks_free = {'keys': ('key-', 'keyring-'), 'keys+nk': ('key-', 'keyring-', 'nightmare-key-'),
-                       'all': ('key-', 'keyring-', 'nightmare-key-', 'map', 'compass', 'stone-beak')}.get(ks, ())
+            ks_free = {'keys': ('key-',), 'keys+nk': ('key-', 'nightmare-key-'),
+                       'all': ('key-', 'nightmare-key-', 'map', 'compass', 'stone-beak')}.get(ks, ())
             if ks_free:
                 item_pool = [s for s in item_pool if not s.startswith(ks_free)]
 
@@ -843,6 +821,7 @@ class ItemShuffler(QtCore.QThread):
             
             # Keep track of where we placed items. this is necessary to undo placements if we get stuck
             placement_tracker = []
+            undos = 0  # (LAS Recomp: the undo / reshuffle can go round forever - room shuffle gives up the layout)
             
             # Iterate through the dungeon items for that dungeon (inherently in order of nightmare key, small keys, stone beak, compass, map)
             while item_pool and self.thread_active:
@@ -871,6 +850,9 @@ class ItemShuffler(QtCore.QThread):
                                                    "reachable without it" + ''.join(
                                     f"\n  {l}: {self.logic_defs[l].get('condition-basic')}" for l in sorted(location_pool)
                                     if verbose))
+                            undos += 1
+                            if undos > 60 and self.settings.get('dungeon-of'):
+                                raise RuntimeError(f"can't place the items of D{i}: {undos} tries")
                             undo_location = placement_tracker.pop(0)
                             location_pool.append(undo_location)
                             locations.append(undo_location)
@@ -928,8 +910,8 @@ class ItemShuffler(QtCore.QThread):
 
         # LAS Recomp keysanity: the freed dungeon items are progression - place them with the important items, not after
         # all the junk (last, only the leftover spots were left: long undo loops)
-        ks_free = {'keys': ('key-', 'keyring-'), 'keys+nk': ('key-', 'keyring-', 'nightmare-key-'),
-                   'all': ('key-', 'keyring-', 'nightmare-key-', 'map', 'compass', 'stone-beak')}.get(
+        ks_free = {'keys': ('key-',), 'keys+nk': ('key-', 'nightmare-key-'),
+                   'all': ('key-', 'nightmare-key-', 'map', 'compass', 'stone-beak')}.get(
                        self.settings.get('keysanity', 'off'), ())
         if ks_free:
             freed = [s for s in items if s.startswith(ks_free) and s[-2:-1] == 'D' and s[-1].isdigit()]

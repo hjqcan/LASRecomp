@@ -17,13 +17,21 @@ harness=r'''
 static bool shader_debug(void) { return false; }
 '''+helper+r'''
 int main(void) {
-    uint64_t blob[24]={0}, *code=blob+16;
+    uint64_t blob[32]={0}, *code=blob+16;
     code[1]=0x0100000000070002ull | ((uint64_t)0x3fc00000 << 20);
     code[2]=0xeff000000707ff02ull;
     code[3]=0xe30000000007000full;
     code[5]=0xe24000000007000full | ((uint64_t)0xfffff8 << 20);
+    blob[24] = 0x123456789abcdef0ull;
+    uint64_t const_code_size = 24 * sizeof *blob;
+    void *with_constants = shader_snapshot((uintptr_t)blob, &const_code_size, STAGE_VERTEX, 8);
+    assert(const_code_size == 0xa0);
+    assert(!memcmp((uint8_t *)with_constants + const_code_size, &blob[24], 8));
+    blob[24] = 0;
+    assert(*(uint64_t *)((uint8_t *)with_constants + const_code_size) == 0x123456789abcdef0ull);
+    free(with_constants);
     uint64_t size=0x10000;
-    void *copy=shader_snapshot((uintptr_t)blob,&size,STAGE_VERTEX);
+    void *copy=shader_snapshot((uintptr_t)blob,&size,STAGE_VERTEX,0);
     assert(size==0xa0 && !memcmp(copy,blob,size));
     ShaderKey key={.glsl=1};
     ShaderInfo *before=maxwell_translate((uint8_t *)blob,sizeof blob,STAGE_VERTEX,&key);
@@ -32,8 +40,8 @@ int main(void) {
     assert(before->msl && after->msl && !strcmp(before->msl,after->msl));
     maxwell_free(before); maxwell_free(after); free(copy);
     assert(maxwell_code_size((uint8_t *)blob,0x20,STAGE_VERTEX)==0);
-    size=0x20; assert(!shader_snapshot((uintptr_t)blob,&size,STAGE_VERTEX) && size==0);
-    size=0x10000; assert(!shader_snapshot(0,&size,STAGE_VERTEX) && size==0);
+    size=0x20; assert(!shader_snapshot((uintptr_t)blob,&size,STAGE_VERTEX,0) && size==0);
+    size=0x10000; assert(!shader_snapshot(0,&size,STAGE_VERTEX,0) && size==0);
     ShaderInfo *bad=maxwell_translate((uint8_t *)blob,0x20,STAGE_FRAGMENT,&key);
     assert(!bad->msl && strstr(bad->error,"truncated")); maxwell_free(bad);
     puts("PASS: shader snapshots stop at padding, survive source reuse and reject truncated headers");

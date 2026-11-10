@@ -103,15 +103,15 @@ uint64_t guest_sym(const char *name) {
     return a;
 }
 
-static uint64_t hle_next = HLE_HEAP;
-RT_ON_RESET(hle_heap_reset) { hle_next = HLE_HEAP; }  // (guest memory, wiped by the reboot)
+static uint64_t hle_used;  // (from HLE_HEAP: an offset, as the window can move - rt.h)
+RT_ON_RESET(hle_heap_reset) { hle_used = 0; }  // (guest memory, wiped by the reboot)
 
 void *hle_alloc(uint64_t size) {
     static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&m);
-    uint64_t a = hle_next;
-    hle_next += (size + 63) & ~63ull;
-    if (hle_next > HLE_HEAP + HLE_HEAP_SIZE) FATAL("HLE heap exhausted\n");
+    uint64_t a = HLE_HEAP + hle_used;
+    hle_used += (size + 63) & ~63ull;
+    if (hle_used > HLE_HEAP_SIZE) FATAL("HLE heap exhausted\n");
     pthread_mutex_unlock(&m);
     plat_commit(a, size);
     memset((void *)a, 0, size);
@@ -123,12 +123,23 @@ void dispatch_init(void) {  // (after gamelib_load)
     debug_jpeg_entry = getenv("LARECOMP_LOG_JPEG") ?
         loader_find_symbol("_ZN2nn5image11JpegEncoder6EncodeEPmPvmS3_mPNS0_11ExifBuilderE") : 0;
     const GameLibTables *g = gamelib_tables();
+#ifdef LARECOMP_DYN_BASE
+    static uint64_t *moved[TITLE_MAX_MODULES];
+#endif
     table_count = g->module_count;
     memset(tables, 0, sizeof tables);
     for (unsigned i=0; i<table_count; i++) {
         const GameLibModule *m=&g->modules[i];
         uint64_t n=*m->count;
-        tables[i]=(FnTable){m->addrs,m->fns,n,m->addrs[0],m->addrs[n-1]};
+        const uint64_t *addrs = m->addrs;
+#ifdef LARECOMP_DYN_BASE
+        free(moved[i]);
+        moved[i] = malloc(n * sizeof *moved[i]);
+        if (!moved[i]) FATAL("out of memory\n");
+        for (uint64_t j = 0; j < n; j++) moved[i][j] = addrs[j] - GUEST_CANON + GUEST_LO;
+        addrs = moved[i];
+#endif
+        tables[i]=(FnTable){addrs,m->fns,n,addrs[0],addrs[n-1]};
         LOG("[dispatch] %s: %llu functions\n",m->name,(unsigned long long)n);
     }
 }

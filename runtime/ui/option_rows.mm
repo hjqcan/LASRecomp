@@ -16,7 +16,10 @@ extern "C" {
 #include "../cosmetic_colour.h"
 #include "../input_bind.h"
 #include "../menu_sfx.h"
+#include "../platform.h"
 }
+#include "i18n.h"
+#include "live_preview.h"
 #include "option_rows.h"
 #include "localization.h"
 #include "osk.h"
@@ -34,6 +37,11 @@ static int g_half;  // (opt_pair_next: 1 the next row is a line's left half, 2 i
 static float g_desc_w, g_desc_max, g_desc_max_last;  // (opt_list_begin: the description's width; the page's tallest)
 static bool g_listed;  // (this page has opt_list_begin's list on the right)
 static std::string g_page;  // (the page drawn last: its last shown description isn't carried to another)
+// Phones: a page without a right pane is one column of cards (the Android port's 3b4d0504) - the name, its description
+// under it, the value with larger arrows on the right - instead of rows with the description in a pane beside them
+static bool g_cards;
+// Phones: opt_list_begin's list is cards too, filling its pane - no description box under it
+static bool g_list_cards;
 
 static bool g_next_disabled;
 static std::vector<OptLine> *g_collect;  // (opt_collect_begin: rows are only read, not drawn)
@@ -81,9 +89,10 @@ bool opt_nav_step(int dir) {
 }
 static std::unordered_map<ImGuiID, int> g_ids;  // this page's rows so far, by id (two rows with one label)
 static bool g_held;  // the last row's left / right has been held a while (steppers go faster)
+static bool g_click_silent;  // this frame's click did nothing (a finger on a ◀ value ▶ row's body): no decide sound
 void opt_indent(int step) { g_indent = g_indent + step < 0 ? 0 : g_indent + step; }
 
-void opt_begin(const char *id, float scale) {
+void opt_begin(const char *id, float scale, bool split) {
     g_scale = scale;
     g_take_first = g_focus_req;
     g_focus_req = false;
@@ -101,15 +110,17 @@ void opt_begin(const char *id, float scale) {
     g_row_h = 1.9f, g_listed = false;
     g_desc_max_last = g_desc_max, g_desc_max = 0;
     if (g_page != id) g_page = id, g_desc_shown.clear(), g_desc_max_last = 0, g_desc_w = 0;
+    g_cards = PLAT_TOUCH && !split;
     ImVec2 avail = ImGui::GetContentRegionAvail();
+    float pane_w = g_cards ? avail.x : avail.x * 0.48f;
     {   // the rows' pane: a recessed well
         ImVec2 a = ImGui::GetCursorScreenPos();
         float m = 6 * scale;
-        plastic_well(ImGui::GetWindowDrawList(), ImVec2(a.x - m, a.y - m), ImVec2(a.x + avail.x * 0.48f + m, a.y + avail.y + m), scale);
+        plastic_well(ImGui::GetWindowDrawList(), ImVec2(a.x - m, a.y - m), ImVec2(a.x + pane_w + m, a.y + avail.y + m), scale);
     }
     ImGui::PushID(id);
-    ImGui::BeginChild("##rows", ImVec2(avail.x * 0.48f, avail.y), ImGuiChildFlags_None, ImGuiWindowFlags_NavFlattened);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 4 * scale));  // (rows close)
+    ImGui::BeginChild("##rows", ImVec2(pane_w, avail.y), ImGuiChildFlags_None, ImGuiWindowFlags_NavFlattened);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, (g_cards ? 10 : 4) * scale));  // (rows close)
     g_desc_first.clear();
     g_ids.clear();
     g_pane = 0;
@@ -117,8 +128,7 @@ void opt_begin(const char *id, float scale) {
 
 void opt_section(const char *title) {
     if (g_collect) return;
-    std::string t = ui_tr(title);
-    for (char &c : t) c = (char)toupper((unsigned char)c);
+    std::string t = i18n_upper(L(title));
     if (ImGui::GetCursorPosY() > ImGui::GetStyle().WindowPadding.y + 1) ImGui::Dummy(ImVec2(0, 10 * g_scale));
     ImGui::TextColored(plastic_col(plastic_theme().section), "%s", t.c_str());
 }
@@ -126,12 +136,23 @@ void opt_section(const char *title) {
 // One row: draws it, handles A / click and left / right while selected. Returns 2 (A / click), -1 / +1 (left / right) or 0.
 // arrows: ◀ value ▶ (a choice of several, or a stepper): left / right step it, and the arrows click too
 // chevron: a ">" on the right (opt_link)
-static int row(const char *label, const std::string &value, bool changed, const char *desc, bool upper = true,
+// The label, value and description are English (i18n.h): shown in the menus' language. The label stays the row's id.
+static bool g_value_shown;  // (the next row's value is already in the menus' language: a number put in L(fmt), a name)
+static bool g_label_shown;  // (opt_shown_next: the label too)
+void opt_shown_next(void) { g_value_shown = g_label_shown = true; }
+static float g_value_x, g_value_cy;
+void opt_last_value_pos(float *x, float *cy) { *x = g_value_x, *cy = g_value_cy; }
+static int row(const char *label, const std::string &value_en, bool changed, const char *desc_en, bool upper = true,
                bool arrows = false, bool chevron = false) {
-    bool lr = arrows || g_lr_row;
+    const std::string &value = g_value_shown ? value_en : L_line(value_en);
+    const char *desc = L(desc_en);
+    const char *label_shown = g_label_shown ? label : L(label);
+    // (phones: a row with a description is a card wherever it is - a two-pane page's left rows too)
+    bool lr = arrows || g_lr_row, cards = g_cards || g_list_cards || (PLAT_TOUCH && desc && *desc);
     g_lr_row = false;
+    g_value_shown = g_label_shown = false;
     if (g_collect) {
-        if (!g_next_disabled && !g_next_own && !value.empty()) g_collect->push_back({upper ? ui_tr(label) : label, value, changed, g_indent});
+        if (!g_next_disabled && !g_next_own && !value.empty()) g_collect->push_back({label_shown, value, changed, g_indent});
         g_next_disabled = g_next_mark = g_next_warn = g_row_button = g_next_own = false;
         g_half = 0;
         return 0;
@@ -149,6 +170,21 @@ static int row(const char *label, const std::string &value, bool changed, const 
     ImVec2 p = ImGui::GetCursorScreenPos();
     float w = ImGui::GetContentRegionAvail().x, h = ImGui::GetFontSize() * g_row_h;
     if (half == 1) w = (w - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    // a card: the description under the name, wrapped clear of the value (its arrows / chevron included); a value
+    // wider than half the card goes on a line of its own under the description, and the description takes the width
+    const float dscale = 0.8f, cfs = ImGui::GetFontSize();
+    float card_pad = 24 * g_scale, desc_w = 0, desc_h = 0;
+    bool value_below = false;
+    if (cards) {
+        float vw = value.empty() ? 0 : ImGui::CalcTextSize(value.c_str()).x;
+        if (arrows && vw > 0) vw += 2 * (cfs * 0.6f + cfs * 0.55f);
+        if (chevron) vw += cfs * 0.75f;
+        float room = w - 2 * card_pad - 16 * g_scale - 14 * g_scale;  // (the value's own right pad)
+        value_below = vw > 0 && vw + cfs > room * 0.5f && desc && *desc;
+        desc_w = value_below || vw <= 0 ? room : room - vw - cfs;
+        if (desc && *desc) desc_h = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize() * dscale, FLT_MAX, desc_w, desc).y;
+        h = ImGui::GetFontSize() * 1.3f + desc_h + 26 * g_scale + (value_below ? cfs * 1.4f : 0);
+    }
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));  // (the row's own border shows the selection)
     bool clicked = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     ImGui::PopStyleColor();
@@ -174,7 +210,26 @@ static int row(const char *label, const std::string &value, bool changed, const 
     bool mark = g_next_mark, warn = g_next_warn;
     g_next_disabled = g_next_mark = g_next_warn = g_next_own = false;
     bool hov = ImGui::IsItemHovered(), foc = ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible;
-    int step = clicked && !off ? 2 : 0;
+    // (phones: a finger on a ◀ value ▶ row is only on its arrows - the body neither lights up nor steps; the
+    // controller still focuses and steps the row)
+    bool tap_steps = !(PLAT_TOUCH && arrows && ImGui::GetIO().MouseSource == ImGuiMouseSource_TouchScreen);
+    float arrow_lx = 0, arrow_rx = 0, arrow_aw = 0, arrow_hit = 0;
+    if (arrows && !value.empty()) {  // (the arrows' places, as drawn below)
+        float fs0 = ImGui::GetFontSize(), aw = fs0 * (cards ? 0.6f : 0.42f), gap = fs0 * 0.55f;
+        float right0 = p.x + w - 16 * g_scale - 14 * g_scale;
+        arrow_rx = right0 - aw, arrow_lx = arrow_rx - gap - ImGui::CalcTextSize(value.c_str()).x - gap - aw, arrow_aw = aw;
+        arrow_hit = tap_steps ? gap : fs0 * 1.2f;  // (a finger: wider targets)
+    }
+    int arrow_under = 0;  // (the arrow the mouse is over: -1 / +1)
+    if (hov && arrows && !value.empty()) {
+        float mx = ImGui::GetIO().MousePos.x;
+        if (mx >= arrow_lx - arrow_hit && mx <= arrow_lx + arrow_aw + arrow_hit) arrow_under = -1;
+        else if (mx >= arrow_rx - arrow_hit && mx <= arrow_rx + arrow_aw + arrow_hit) arrow_under = 1;
+    }
+    if (!tap_steps && !arrow_under) hov = false;  // (the finger on the body: not a highlight)
+    // (nor a press: no sound - menu_sfx_frame plays on the press frame, before the button reports the click)
+    if (!tap_steps && !arrow_under && ImGui::IsItemHovered() && ImGui::IsMouseClicked(0)) g_click_silent = true;
+    int step = clicked && !off && tap_steps ? 2 : 0;
     if (clicked && off) menu_sfx_play(MENU_SFX_BEEP);  // (greyed out: can't change)
     g_held = false;
     if (foc && !off) {
@@ -211,28 +266,29 @@ static int row(const char *label, const std::string &value, bool changed, const 
     if (off) col = sel ? pt.row_mark : ImVec4(col.x, col.y, col.z, col.w * 0.5f);  // (greyed out, the cursor on it: ochre)
     float dep = (sel ? 7 : button ? 6 : 3.5f) * g_scale;
     plastic_pill(dl, ImVec2(p.x + 3 * g_scale, p.y + 1 * g_scale), ImVec2(p.x + w - 8 * g_scale, p.y + h - 3 * g_scale),
-                 h * 0.5f, col, dep, sel || button ? 1.0f : 0.6f, g_scale, sel && !off);
-    float lpad = h * 0.66f;  // (the label clear of the pill's rounded end)
-    std::string t = upper ? ui_tr(label) : label;
-    if (upper)
-        for (char &c : t) c = (char)toupper((unsigned char)c);
+                 cards ? fminf(h * 0.5f, fs * 0.9f) : h * 0.5f, col, dep, sel || button ? 1.0f : 0.6f, g_scale, sel && !off);
+    float lpad = cards ? card_pad : h * 0.66f;  // (the label clear of the pill's rounded end)
+    std::string t = upper && !cards ? i18n_upper(label_shown) : std::string(label_shown);
     float ty = p.y + (h - fs) * 0.5f - 1 * g_scale;
+    if (value_below) ty = p.y + h - fs * 1.4f - 12 * g_scale;  // (the value's own line, at the card's foot)
     bool light = !off && (sel || button);
     ImU32 on_col = sel ? pt.text_sel : pt.text_button;  // (text on the selection / on a button)
     ImU32 label_col = off ? pt.text_dim : light ? on_col : pt.text;
-    dl->AddText(ImVec2(p.x + lpad, ty), label_col, t.c_str());
+    if (cards) {  // (the label at the card's top, its description under it; a row's label: below, clear of the value)
+        float top = p.y + 12 * g_scale;
+        dl->AddText(ImVec2(p.x + lpad, top), label_col, t.c_str());
+        if (desc_h > 0)
+            dl->AddText(ImGui::GetFont(), fs * dscale, ImVec2(p.x + lpad, top + fs * 1.2f),
+                        (label_col & 0x00FFFFFFu) | ((off ? 0x90u : 0xB8u) << 24), desc, NULL, desc_w);
+    }
     float right = p.x + w - pad - 14 * g_scale;  // (the value's right edge)
     ImU32 ac = off ? pt.text_dim : light ? on_col : pt.arrow;  // (arrows, chevron)
     if (arrows && !value.empty()) {  // ◀ value ▶, drawn (the fonts have no arrow glyphs); a click on one steps
-        float aw = fs * 0.42f, gap = fs * 0.55f, cy = ty + fs * 0.52f;
+        float aw = fs * (cards ? 0.6f : 0.42f), gap = fs * 0.55f, cy = ty + fs * 0.52f;
         float rx = right - aw, lx = rx - gap - ImGui::CalcTextSize(value.c_str()).x - gap - aw;
         dl->AddTriangleFilled(ImVec2(lx, cy), ImVec2(lx + aw, cy - aw * 0.75f), ImVec2(lx + aw, cy + aw * 0.75f), ac);
         dl->AddTriangleFilled(ImVec2(rx + aw, cy), ImVec2(rx, cy - aw * 0.75f), ImVec2(rx, cy + aw * 0.75f), ac);
-        if (clicked && !off) {
-            float mx = ImGui::GetIO().MousePos.x, hit = gap;
-            if (mx >= lx - hit && mx <= lx + aw + hit) step = -1;
-            else if (mx >= rx - hit && mx <= rx + aw + hit) step = 1;
-        }
+        if (clicked && !off && arrow_under) step = arrow_under;
         right = rx - gap;
     }
     if (chevron) {  // ">", drawn (as the arrows above)
@@ -242,10 +298,33 @@ static int row(const char *label, const std::string &value, bool changed, const 
         right -= cw + fs * 0.55f;
         if (step == 1) step = 2, menu_sfx_play(MENU_SFX_DECIDE);  // (Right opens it too)
     }
+    g_value_x = 0;
     if (!value.empty()) {
         float vw = ImGui::CalcTextSize(value.c_str()).x, vx = right - vw;
         ImU32 vc = off ? pt.text_dim : light ? on_col : changed ? pt.value_changed : pt.value;
         dl->AddText(ImVec2(vx, ty), vc, value.c_str());
+        right = vx;
+        g_value_x = vx, g_value_cy = ty + fs * 0.52f;
+    }
+    if (!cards) {  // the label, clear of the value: a long one (German, French) a little smaller, then cut short with "..."
+        float room = right - (p.x + lpad) - fs * (value.empty() && !chevron && !arrows ? 0.2f : 0.7f);
+        float lw = ImGui::CalcTextSize(t.c_str()).x, lfs = fs;
+        if (lw > room && room > 0) lfs = fmaxf(fs * 0.78f, fs * room / lw);
+        float lty = ty + (fs - lfs) * 0.55f;
+        if (lw * lfs / fs <= room || room <= 0) {
+            dl->AddText(ImGui::GetFont(), lfs, ImVec2(p.x + lpad, lty), label_col, t.c_str());
+        } else {
+            const char *end = t.c_str() + t.size();
+            float ew = ImGui::GetFont()->CalcTextSizeA(lfs, FLT_MAX, 0, "...").x;
+            while (end > t.c_str() && ImGui::GetFont()->CalcTextSizeA(lfs, FLT_MAX, 0, t.c_str(), end).x + ew > room) {
+                do end--; while (end > t.c_str() && (*end & 0xC0) == 0x80);  // (a whole UTF-8 character)
+            }
+            std::string cut = std::string(t.c_str(), end) + "...";
+            static std::unordered_map<std::string, bool> cut_logged;  // (test: names too long for their row, once each)
+            bool &logged = cut_logged[t];
+            if (!logged && getenv("LARECOMP_I18N_MISSING")) logged = true, fprintf(stderr, "[i18n] cut: \"%s\"\n", t.c_str());
+            dl->AddText(ImGui::GetFont(), lfs, ImVec2(p.x + lpad, lty), label_col, cut.c_str());
+        }
     }
     if (dup) ImGui::PopID();
     ImGui::PopID();
@@ -259,7 +338,7 @@ static void step_sfx(int step) {
 
 bool opt_toggle(const char *label, bool *v, bool def, const char *desc) {
     g_lr_row = true;  // (left / right flip it)
-    int step = row(label, ui_tr(*v ? "On" : "Off"), *v != def, desc);
+    int step = row(label, *v ? LN("On") : LN("Off"), *v != def, desc);
     if (!step) return false;  // (any step flips it)
     step_sfx(step);
     *v = !*v;
@@ -267,11 +346,24 @@ bool opt_toggle(const char *label, bool *v, bool def, const char *desc) {
 }
 
 bool opt_choice(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap) {
+    return opt_preview(label, v, names, n, def, desc, wrap, false);
+}
+
+// (opt_choice, with preview: A / a click on the row opens the live preview instead of stepping)
+bool opt_preview(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap,
+                 bool preview) {
+    bool scan = preview && preview_scanning(), off = g_next_disabled;
     int cur = *v >= 0 && *v < n ? *v : 0;
-    int step = row(label, ui_tr(names[cur]), cur != def, desc, true, true);
+    // (preview: a chevron - A / a click / Right opens it, the value doesn't step here)
+    int step = row(label, names[cur], cur != def, desc, true, !preview, preview);
+    if (scan) return preview_row(label, v, names, n, def, desc, wrap, off);  // (row: only read, as the others)
+    if (preview) {
+        if (step == 2 && !g_collect) preview_open(label, opt_item_nav_focused() ? (int)g_rows.size() - 1 : -1);
+        return false;
+    }
     if (!step) return false;
     int nv = cur + (step == 2 ? 1 : step);
-    nv = wrap ? (nv + n) % n : nv < 0 ? 0 : nv >= n ? n - 1 : nv;
+    nv = wrap && step == 2 ? nv % n : nv < 0 ? 0 : nv >= n ? n - 1 : nv;
     if (nv == cur) return false;
     step_sfx(step);
     *v = nv;
@@ -279,8 +371,9 @@ bool opt_choice(const char *label, int *v, const char *const *names, int n, int 
 }
 
 bool opt_slider(const char *label, float *v, float lo, float hi, float step, float def, const char *fmt, const char *desc) {
-    char buf[32];
-    snprintf(buf, sizeof buf, ui_tr(fmt), *v);
+    char buf[64];
+    snprintf(buf, sizeof buf, L(fmt), *v);
+    g_value_shown = true;
     int s = row(label, buf, fabsf(*v - def) > step * 0.01f, desc, true, true);
     if (!s) return false;
     float eps = step * 0.01f, n = roundf(*v / step) * step + (s == 2 ? step : s * step);
@@ -293,9 +386,10 @@ bool opt_slider(const char *label, float *v, float lo, float hi, float step, flo
 
 bool opt_int(const char *label, int *v, int lo, int hi, int step, int def, const char *fmt, const char *desc,
              const char *lo_name) {
-    char buf[48];
-    if (lo_name && *v == lo) snprintf(buf, sizeof buf, "%s", ui_tr(lo_name));
-    else snprintf(buf, sizeof buf, ui_tr(fmt), *v);
+    char buf[96];
+    if (lo_name && *v == lo) snprintf(buf, sizeof buf, "%s", L(lo_name));
+    else snprintf(buf, sizeof buf, L(fmt), *v);
+    g_value_shown = true;
     int s = row(label, buf, *v != def, desc, true, true);
     if (!s) return false;
     int d = s == 2 ? step : s * step * (g_held && hi - lo > 40 * step ? 10 : 1);
@@ -337,12 +431,7 @@ bool opt_colour(const char *label, CosColour *c, int slot, const char *desc) {
     int prev = c->pick;
     const char *names[N_COL];
     for (int i = 0; i < N_COL; i++) names[i] = g_col_names[i];
-    char seed[48];
-    int sp = col_pick(c, slot);  // (Default: the seed's own colour, shown as such)
-    uint32_t srgb = 0;  // (the seed's own colours are any colour: shown as #RRGGBB)
-    if (sp == COL_CUSTOM && col_seed_rgb(c, slot, &srgb)) snprintf(seed, sizeof seed, ui_tr("Seed: #%06X"), (unsigned)srgb);
-    else if (c->pick == COL_DEFAULT && sp != COL_DEFAULT) snprintf(seed, sizeof seed, ui_tr("Seed: %s"), ui_tr(g_col_names[sp]));
-    if (c->pick == COL_DEFAULT && sp != COL_DEFAULT) names[0] = seed;
+    (void)slot;
     bool changed = opt_choice(label, &c->pick, names, N_COL, COL_DEFAULT, desc);
     if (g_collect) return false;
     if (changed && c->pick == COL_CUSTOM && prev != COL_CUSTOM)  // (Custom starts from the colour it was on)
@@ -351,9 +440,8 @@ bool opt_colour(const char *label, CosColour *c, int slot, const char *desc) {
     ImGui::PushID(label);
     char hex[16];
     snprintf(hex, sizeof hex, "#%06X", (unsigned)(c->rgb & 0xFFFFFF));
-    opt_indent(1);
-    bool open = opt_action("Custom color", hex, "Any color: pick its hue, saturation and brightness.", true, true);
-    opt_indent(-1);
+    g_value_shown = true;
+    bool open = opt_action("Custom color", hex, "Pick any color by hue, saturation and brightness.", true, true);
     ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
     {   // a swatch of it, left of the value
         float fs = ImGui::GetFontSize(), sw = fs * 1.1f, vw = ImGui::CalcTextSize(hex).x;
@@ -379,7 +467,7 @@ bool opt_colour(const char *label, CosColour *c, int slot, const char *desc) {
             c->rgb = (uint32_t)lroundf(f[0] * 255) << 16 | (uint32_t)lroundf(f[1] * 255) << 8 | (uint32_t)lroundf(f[2] * 255);
             changed = true;
         }
-        if (ImGui::Button(ui_label("Done").c_str(), ImVec2(ImGui::GetFontSize() * 11, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        if (ImGui::Button(L("Done"), ImVec2(ImGui::GetFontSize() * 11, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
@@ -401,15 +489,24 @@ bool opt_text(const char *label, char *buf, size_t cap, const char *hint, const 
     static int focus;        // frames left to give it the keyboard focus
     ImGuiID id = ImGui::GetID(label);
     if (editing != id || g_collect) {
-        if (row(label, buf[0] ? buf : ui_tr(hint ? hint : ""), false, desc) == 2) editing = id, focus = 2;
+        g_value_shown = true;  // (what was typed, as typed)
+        if (row(label, buf[0] ? buf : (hint ? L(hint) : ""), false, desc) == 2) editing = id, focus = 2;
         return false;
     }
     ImGui::PushID(label);
     ImGui::SetNextItemWidth(-1);
+#if PLAT_TOUCH
+    // (a keyboard of ours or the system's prompt took the field: no more focus requests - the field would come back
+    //  to life under them, and the system keyboard with it)
+    if (osk_is_open()) focus = 0;
+#endif
     if (focus > 0) ImGui::SetKeyboardFocusHere(), focus--;
-    bool done = ui_input_text("##text", buf, cap, ImGuiInputTextFlags_EnterReturnsTrue, ui_tr(hint), ui_tr(label));
-    if (ImGui::IsItemFocused()) g_desc_focus = desc ? desc : "";
+    bool done = ui_input_text("##text", buf, cap, ImGuiInputTextFlags_EnterReturnsTrue, L(hint), L(label));
+    if (ImGui::IsItemFocused()) g_desc_focus = desc ? L(desc) : "";
     if (done || ui_input_text_cancelled() || (focus == 0 && !ImGui::IsItemActive() && !osk_is_open())) editing = 0;
+#if PLAT_TOUCH
+    if (editing == 0 && ImGui::IsItemActive()) ImGui::ClearActiveID();  // (done under the prompt: the system keyboard would stay)
+#endif
     ImGui::PopID();
     return done;
 }
@@ -460,6 +557,7 @@ static void right_begin(const char *id, ImGuiWindowFlags flags) {
 }
 
 void opt_desc_text(void) {
+    if (PLAT_TOUCH) return;  // (phones: each card has its own)
     // after opt_list_begin's rows: a row of the right pane hovered wins, then the left's hovered, the right's selected,
     // the left's selected (other pages: the left's, as left_end picked)
     if (g_listed) {
@@ -478,6 +576,7 @@ void opt_desc_text(void) {
 
 void opt_end(void) {
     left_end();
+    if (g_cards) { ImGui::PopID(); return; }  // (the descriptions are in the cards)
     right_begin("##desc", ImGuiWindowFlags_NoNav);
     opt_desc_text();
     stick_scroll();
@@ -486,6 +585,7 @@ void opt_end(void) {
 }
 
 void opt_split(void) {
+    IM_ASSERT(!g_cards && "opt_begin(id, scale, true) for a page with opt_split");
     left_end();
     g_left_hover = g_desc_hover, g_left_focus = g_desc_focus, g_left_hov_set = g_hov_set, g_left_foc_set = g_foc_set;
     g_desc_hover.clear(), g_desc_focus.clear();
@@ -509,15 +609,33 @@ void opt_pair_next(void) { g_half = 1; }
 void opt_list_begin(void) {
     // room under the list for the page's longest description (as last frame measured it; 2 lines at least): a longer
     // list scrolls
-    g_desc_w = ImGui::GetContentRegionAvail().x, g_listed = true;
+    // The width the description wraps at, measured as if the pane had a scrollbar whether or not it has one now: a
+    // width that followed the scrollbar re-wrapped the text, which moved the list, which toggled the scrollbar - the
+    // rows and the text flashed every frame (Bushsanity's three lines)
+    ImGuiWindow *win = ImGui::GetCurrentWindow();
+    g_desc_w = ImGui::GetContentRegionAvail().x - (win->ScrollbarY ? 0 : ImGui::GetStyle().ScrollbarSize), g_listed = true;
     float line = ImGui::GetFontSize() * 1.3f, avail = ImGui::GetContentRegionAvail().y;
-    float desc = (g_desc_max_last > line * 2 ? g_desc_max_last : line * 2) + 16 * g_scale;
+    // (+ opt_list_end's groove and the spacing around it, so the pane itself never needs to scroll)
+    float desc = (g_desc_max_last > line * 2 ? g_desc_max_last : line * 2) + 14 * g_scale +
+                 2 * ImGui::GetStyle().ItemSpacing.y + 4 * g_scale;
     float maxh = avail - desc > avail * 0.35f ? avail - desc : avail * 0.35f;
+    if (PLAT_TOUCH) {  // (the descriptions are in the cards: the list has the whole pane)
+        g_list_cards = true;
+        ImGui::BeginChild("##list", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 10 * g_scale));
+        return;
+    }
     ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, maxh));
     ImGui::BeginChild("##list", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
 }
 
 void opt_list_end(void) {
+    if (g_list_cards) {
+        g_list_cards = false;
+        ImGui::PopStyleVar();
+        ImGui::EndChild();
+        return;
+    }
     ImGui::EndChild();
     // a groove between the list and the description under it
     ImVec2 p = ImGui::GetCursorScreenPos();
@@ -571,8 +689,17 @@ static bool is_tab(ImGuiID id) {
     return false;
 }
 
+// (a mouse click on a scroll bar plays nothing)
+static bool on_scrollbar(ImGuiContext &g) {
+    ImGuiWindow *w = g.HoveredWindow;
+    return w && (g.HoveredId == ImGui::GetWindowScrollbarID(w, ImGuiAxis_Y) ||
+                 g.HoveredId == ImGui::GetWindowScrollbarID(w, ImGuiAxis_X));
+}
+
 extern "C" void menu_sfx_frame(bool back_ok) {
     ImGuiContext &g = *ImGui::GetCurrentContext();
+    bool silent = g_click_silent;
+    g_click_silent = false;
     static ImGuiContext *ctx;  // (the start screen's and the game's overlay are two)
     static ImGuiID last;
     if (ctx != &g) ctx = &g, last = 0;
@@ -581,7 +708,7 @@ extern "C" void menu_sfx_frame(bool back_ok) {
     if (!ui_text_busy() && cap < 0) {
         if (back_ok && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
             menu_sfx_play(MENU_SFX_CANCEL);
-        else if (g.NavActivatePressedId || (ImGui::IsMouseClicked(0) && g.HoveredId))
+        else if (g.NavActivatePressedId || (ImGui::IsMouseClicked(0) && g.HoveredId && !on_scrollbar(g) && !silent))
             menu_sfx_play(is_tab(g.NavActivatePressedId ? g.NavActivatePressedId : g.HoveredId) ? MENU_SFX_TAB
                                                                                                 : MENU_SFX_DECIDE);
         else if (g.NavCursorVisible && g.NavId && last && g.NavId != last)

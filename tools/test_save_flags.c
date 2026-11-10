@@ -3,6 +3,7 @@
 
 static void save_slot(Service *mount, unsigned value, unsigned flags) {
     uint8_t bytes[BODY_CRC+4]; memset(bytes, value, sizeof bytes);
+    uint32_t rupees = 9999; memcpy(bytes+0x7C, &rupees, 4); memcpy(bytes+0x5540, &rupees, 4);
     memset(g_buf+256, 0, EXT); g_buf[256] = (uint8_t)flags;
     IpcResp opened = open_file(mount, "/savedata0.bin", 2); assert(!opened.result);
     assert(!write_file(opened.objects[0], bytes, sizeof bytes, 0)); close_file(opened.objects[0]);
@@ -13,6 +14,7 @@ static void read_slot(Service *mount, unsigned data, unsigned flags) {
     IpcReq q = {.cmd=0, .data=(const uint8_t *)args, .nb=1}; q.b[0] = (IpcBuf){(uintptr_t)bytes, sizeof bytes};
     IpcResp r = {0}; file(opened.objects[0], &q, &r); close_file(opened.objects[0]);
     assert(!r.result && bytes[0] == data && g_nslots == 1 && g_slots[0].ext[0] == flags);
+    uint32_t rupees = data == 0x11 ? 0x11111111 : 9999; assert(!memcmp(bytes+0x7C, &rupees, 4) && !memcmp(bytes+0x5540, &rupees, 4));
     assert(!strstr(g_slots[0].path, ".pending"));
 }
 static Service *remount(Service *old) {

@@ -3,6 +3,7 @@
 // HLE registrations are suppressed so unrelated runtime functions can be dropped.
 #include <SDL3/SDL.h>
 static void input_reset(void);
+static void input_pad_poll(void);
 static void input_load_user_mappings(void);
 static bool input_user_blocked(const SDL_Event *e);
 static int input_pad_family(void);
@@ -47,10 +48,6 @@ KEvent *kernel_create_event_pair(uint32_t *w, uint32_t *r) { abort(); }
 KSharedMem *kernel_create_shared_memory(uint64_t size, void (*on_map)(KSharedMem *), uint32_t *handle) { abort(); }
 Service *service_new(const char *n, ServiceHandler h, void *state) { abort(); }
 void ipc_return_object(IpcResp *r, Service *s) { abort(); }
-// The controller light (input_led_poll) and the menus' button family (input_menu_family) in input.c; not under test.
-int game_in_play(void) { abort(); }
-int cheats_link_health(int *max) { abort(); }
-int bind_label_family(void) { abort(); }
 
 static IpcResp request(uint32_t cmd, const void *data, uint32_t size) {
     IpcReq r = {.cmd=cmd, .data=data, .data_size=size}; IpcResp out = {0};

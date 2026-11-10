@@ -146,7 +146,7 @@ static bool apple_pos(uint64_t a, float out[3]) {
     return true;
 }
 
-static void kill(Cpu *c, uint64_t a) {
+static void apple_kill(Cpu *c, uint64_t a) {
     uint64_t saved[31], sp = c->sp, pc = c->pc;
     memcpy(saved, c->x, sizeof saved);
     c->x[0] = a;
@@ -214,14 +214,14 @@ void apple_trees_tick(Cpu *c, uint64_t frame) {
             bool done = flags_ext_get(r->flag_idx) || shell_spot_out(r->name);  // (found, or its item still out)
             if (done) {
                 if (live(a)) {
-                    kill(c, a);
+                    apple_kill(c, a);
                     LOG("[apples] %s: %s - its apple taken away\n", r->name,
                         flags_ext_get(r->flag_idx) ? "found" : "item still out");
                 }
                 continue;
             }
             if (bonk) {  // (no item hanging: it flies out from the falling apple)
-                if (live(a) && apple_pos(a, at) && shell_spot_launch(c, r->name, at, zone_near(at), LD64(tree + 0x48), LD64(tree + 0x50))) kill(c, a);
+                if (live(a) && apple_pos(a, at) && shell_spot_launch(c, r->name, at, zone_near(at), LD64(tree + 0x48), LD64(tree + 0x50))) apple_kill(c, a);
                 continue;
             }
             if (!tr->has_foot && live(a) && apple_pos(a, at)) tr->has_foot = foot_of(at, tr);
@@ -231,7 +231,7 @@ void apple_trees_tick(Cpu *c, uint64_t frame) {
                 float p[3] = {tr->foot[0] + k_hang[k][0], tr->foot[1] + k_hang[k][1], tr->foot[2] + k_hang[k][2]};
                 shell_spot_hang(c, r->name, p, tr->zone, LD64(tree + 0x48), LD64(tree + 0x50));
             }
-            if (live(a) && shell_spot_hanging(r->name, at)) kill(c, a);
+            if (live(a) && shell_spot_hanging(r->name, at)) apple_kill(c, a);
         }
     }
 }

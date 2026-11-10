@@ -69,7 +69,8 @@ int main(int argc, char **argv) {
     assert(argc == 3);
     settings_load();
     assert(!g_settings.upscaler_auto);
-    assert(!strcmp(settings_language(), argv[1]));
+    if (!strcmp(argv[1], "auto")) assert(g_settings.language == LANG_AUTO);
+    else assert(!strcmp(settings_language(), argv[1]));
     assert(!strcmp(g_settings.rando_seed, argv[2]));
     assert(g_settings.aspect == ASPECT_ORIGINAL);
     assert(g_settings.upscaler == UPSCALE_BILINEAR);

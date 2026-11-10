@@ -208,7 +208,7 @@ void loader_load(const char *exefs) {
         Module *m = &g_modules[g_nmodules++];
         m->name = profile->modules[i].name;
         snprintf(path, sizeof path, "%s/%s", exefs, m->name);
-        load_nso(m, path, profile->modules[i].base);
+        load_nso(m, path, profile->modules[i].base - GUEST_CANON + GUEST_LO);
         for (unsigned j = 0; j < i; j++) {
             Module *other = &g_modules[j];
             if (m->base < other->base + other->size && other->base < m->base + m->size)

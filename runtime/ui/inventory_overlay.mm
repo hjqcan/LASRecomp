@@ -15,6 +15,7 @@
 
 #include <string>
 #include "imgui.h"
+#include "i18n.h"
 
 extern "C" {
 #include "../hle.h"
@@ -45,13 +46,13 @@ static uint64_t g_items_obj;  // the Items page (x0 of ITEMS_PAGE_SITE); +0x4020
 // Trade quest shuffle lets Link carry several at once, so the row tells which he still has. TradeBananasDone is
 // seed_tables.py's alias (KikiGone with open-bridge, else StickDrop - which open-bridge sets at the start).
 static const struct { const char *name, *flag, *done; } kTrade[] = {
-    {"Doll", "TradeYoshiDollGet", "RibbonDrop"}, {"Ribbon", "TradeRibbonGet", "DogfoodDrop"},
-    {"Dog Food", "TradeDogFoodGet", "BananaDrop"}, {"Bananas", "TradeBananasGet", "TradeBananasDone"},
-    {"Stick", "TradeStickGet", "HoneycombDrop"}, {"Honey", "TradeHoneycombGet", "PineappleGet"},
-    {"Pineapple", "TradePineappleGet", "HibiscusDrop"}, {"Hibiscus", "TradeHibiscusGet", "LetterDrop"},
-    {"Letter", "TradeLetterGet", "BroomDrop"}, {"Broom", "TradeBroomGet", "FishhookDrop"},
-    {"Hook", "TradeFishingHookGet", "BrassiereDrop"}, {"Necklace", "TradeNecklaceGet", "ScaleDrop"},
-    {"Scale", "TradeMermaidsScaleGet", "MarthaStatueOpened"}, {"Lens", NULL, NULL}};
+    {LN("Doll"), "TradeYoshiDollGet", "RibbonDrop"}, {LN("Ribbon"), "TradeRibbonGet", "DogfoodDrop"},
+    {LN("Dog Food"), "TradeDogFoodGet", "BananaDrop"}, {LN("Bananas"), "TradeBananasGet", "TradeBananasDone"},
+    {LN("Stick"), "TradeStickGet", "HoneycombDrop"}, {LN("Honey"), "TradeHoneycombGet", "PineappleGet"},
+    {LN("Pineapple"), "TradePineappleGet", "HibiscusDrop"}, {LN("Hibiscus"), "TradeHibiscusGet", "LetterDrop"},
+    {LN("Letter"), "TradeLetterGet", "BroomDrop"}, {LN("Broom"), "TradeBroomGet", "FishhookDrop"},
+    {LN("Hook"), "TradeFishingHookGet", "BrassiereDrop"}, {LN("Necklace"), "TradeNecklaceGet", "ScaleDrop"},
+    {LN("Scale"), "TradeMermaidsScaleGet", "MarthaStatueOpened"}, {LN("Lens"), NULL, NULL}};
 static int g_trade_flag[14], g_trade_done[14];  // -1 = not in the seed's flags.tsv (older seeds: no "done" flags)
 static int g_trade_loaded;
 
@@ -95,6 +96,8 @@ extern "C" int inventory_items_cursor(void) {
     uint32_t i = LD32(g_items_obj + 0x4020);
     return i < 12 ? (int)i : -1;
 }
+// dpad_items.c: the Items page's object (its cells: +0x598 + 0x280 * cell = the cell's item slot)
+extern "C" uint64_t inventory_items_obj(void) { return g_items_obj; }
 
 static bool companion_card(void) {
     int o[6];
@@ -272,7 +275,7 @@ static void confirm_glyph(ImDrawList *dl, ImFont *font, ImVec2 c, float r) {
         return;
     }
     static const char *const nin[4] = {"B", "A", "Y", "X"}, *const xb[4] = {"A", "B", "X", "Y"};  // south east west north
-    const char *l = h >= 0 && h <= 3 ? (fam == 1 ? xb[h] : nin[h]) : bind_pad_label(h, fam);
+    const char *l = h >= 0 && h <= 3 ? (fam == 1 ? xb[h] : nin[h]) : L(bind_pad_label(h, fam));
     float fs = r * 1.45f;
     ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, l);
     dl->AddText(font, fs, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), fg, l);
@@ -301,7 +304,7 @@ static void pets_draw(ImDrawList *dl, ImFont *font, float ox, float oy, float u)
     // companion card: the free strip left of the panel, under the heart container
     int o[6], n = pets_menu_options(o), cur = pets_current();
     if (n < 2) return;
-    static const char *const kShort[5] = {"None", "BowWow", "Marin", "Ghost", "Rooster"};
+    static const char *const kShort[5] = {LN("None"), LN("BowWow"), LN("Marin"), LN("Ghost"), LN("Rooster")};
     ImVec2 a(ox + 62 * u, oy + 214 * u), b(ox + 140 * u, oy + 486 * u);
     float cx = (a.x + b.x) * 0.5f;
     dl->AddRectFilled(a, b, IM_COL32(52, 38, 20, 215), 12 * u);
@@ -310,7 +313,7 @@ static void pets_draw(ImDrawList *dl, ImFont *font, float ox, float oy, float u)
         ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
         dl->AddText(font, fs, ImVec2(cx - ts.x * 0.5f, y), col, t);
     };
-    text("Companion", a.y + 8 * u, 15 * u, IM_COL32(240, 206, 110, 255));
+    text(L("Companion"), a.y + 8 * u, 15 * u, IM_COL32(240, 206, 110, 255));
     ImVec2 ic(cx, a.y + 64 * u);
     dl->AddCircleFilled(ic, 28 * u, IM_COL32(120, 92, 40, 235), 32);
     dl->AddCircle(ic, 28 * u, IM_COL32(255, 220, 120, 255), 32, 2 * u);
@@ -323,15 +326,16 @@ static void pets_draw(ImDrawList *dl, ImFont *font, float ox, float oy, float u)
         ImVec2 ra(a.x + 6 * u, y - 2 * u), rb(b.x - 6 * u, y + 20 * u);
         if (on) dl->AddRectFilled(ra, rb, IM_COL32(120, 92, 40, 235), 6 * u);
         if (i == sel) dl->AddRect(ra, rb, IM_COL32(250, 226, 90, 255), 6 * u, 0, 2 * u);
-        text(kShort[o[i]], y, 16 * u, on || i == sel ? IM_COL32(255, 240, 200, 255) : IM_COL32(170, 150, 115, 230));
+        text(L(kShort[o[i]]), y, 16 * u, on || i == sel ? IM_COL32(255, 240, 200, 255) : IM_COL32(170, 150, 115, 230));
     }
     if (sel >= 0) {  // on the slot: the game-style cursor around the card, "(A) Choose" under the list
         cursor_frame(dl, ImVec2(a.x - 6 * u, a.y - 6 * u), ImVec2(b.x + 6 * u, b.y + 6 * u), u);
         float y = b.y - 22 * u, fs = 15 * u;
-        ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, "Choose");
+        const char *ch = L("Choose");
+        ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, ch);
         float w = 22 * u + ts.x, x0 = cx - w * 0.5f;
         confirm_glyph(dl, font, ImVec2(x0 + 8 * u, y), 9 * u);
-        dl->AddText(font, fs, ImVec2(x0 + 22 * u, y - ts.y * 0.5f), IM_COL32(255, 245, 225, 255), "Choose");
+        dl->AddText(font, fs, ImVec2(x0 + 22 * u, y - ts.y * 0.5f), IM_COL32(255, 245, 225, 255), ch);
     } else {  // a hint that the grid's cursor reaches it: an arrow on the card's right edge
         float y = (a.y + b.y) * 0.5f;
         dl->AddTriangleFilled(ImVec2(b.x - 4 * u, y - 7 * u), ImVec2(b.x - 4 * u, y + 7 * u), ImVec2(b.x - 12 * u, y),
@@ -346,7 +350,7 @@ static void tunics_draw(ImDrawList *dl, ImFont *font, float ox, float oy, float 
     float cx = (a.x + b.x) * 0.5f;
     dl->AddRectFilled(a, b, IM_COL32(52, 38, 20, 215), 12 * u);
     dl->AddRect(a, b, IM_COL32(214, 176, 92, 230), 12 * u, 0, 2 * u);
-    const char *t = "Tunics";
+    const char *t = L("Tunics");
     float fs = 15 * u;
     ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
     dl->AddText(font, fs, ImVec2(cx - ts.x * 0.5f, a.y + 6 * u), IM_COL32(240, 206, 110, 255), t);
@@ -389,8 +393,8 @@ static void triforce_box(ImDrawList *dl, ImFont *font, float ox, float oy, float
 
 struct Dungeon { const char *label; int index; };
 // record = 2 x (dungeon number - 1); the Color Dungeon is record 18 (verified from the in-dungeon key HUD)
-static const Dungeon kDungeons[] = {{"D1", 0}, {"D2", 2}, {"D3", 4}, {"D4", 6}, {"D5", 8},
-                                    {"D6", 10}, {"D7", 12}, {"D8", 14}, {"D0", 18}};
+static const Dungeon kDungeons[] = {{LN("D1"), 0}, {LN("D2"), 2}, {LN("D3"), 4}, {LN("D4"), 6}, {LN("D5"), 8},
+                                    {LN("D6"), 10}, {LN("D7"), 12}, {LN("D8"), 14}, {LN("D0"), 18}};
 
 static bool record(int i, int *keys, int *bits) {
     uint64_t p = DUNGEON_RECORDS + 0x10ull * i;
@@ -427,9 +431,9 @@ static void soul_icon(ImDrawList *dl, ImVec2 c, float s, bool owned, bool mini =
 // Souls (boss / mini-boss soul options): a column right of the item grid, one row per dungeon - its label, the
 // boss's wisp, then its mini-bosses' wisps (each mini-boss kind under the dungeon it first appears in), lit = found.
 static const struct { int dn; const char *label; const char *minis[2]; } kSoulRows[] = {
-    {1, "D1", {"Rolling Bones"}}, {2, "D2", {"Hinox"}}, {3, "D3", {"Dodongo Snakes"}}, {4, "D4", {"Cue Ball"}},
-    {5, "D5", {"Master Stalfos", "Gohma"}}, {6, "D6", {"Smasher"}}, {7, "D7", {"Grim Creeper"}}, {8, "D8", {"Blaino"}},
-    {0, "D0", {"Avalaunch", "Giant Buzz Blob"}}};
+    {1, LN("D1"), {"Rolling Bones"}}, {2, LN("D2"), {"Hinox"}}, {3, LN("D3"), {"Dodongo Snakes"}}, {4, LN("D4"), {"Cue Ball"}},
+    {5, LN("D5"), {"Master Stalfos", "Gohma"}}, {6, LN("D6"), {"Smasher"}}, {7, LN("D7"), {"Grim Creeper"}}, {8, LN("D8"), {"Blaino"}},
+    {0, LN("D0"), {"Avalaunch", "Giant Buzz Blob"}}};
 
 static int mini_soul(const char *name) {  // -1 not in this seed, 0 missing, 1 found
     int kind;
@@ -453,7 +457,7 @@ static void souls_column(ImDrawList *dl, ImFont *font, float ox, float oy, float
     float rh = (b.y - a.y - 8 * u) / n, fs = 19 * u;
     for (int i = 0; i < n; i++) {
         float cy = a.y + 4 * u + rh * (i + 0.5f);
-        dl->AddText(font, fs, ImVec2(a.x + 8 * u, cy - fs * 0.5f), IM_COL32(255, 245, 225, 255), kSoulRows[i].label);
+        dl->AddText(font, fs, ImVec2(a.x + 8 * u, cy - fs * 0.5f), IM_COL32(255, 245, 225, 255), L(kSoulRows[i].label));
         float x = a.x + 46 * u;
         int boss = souls_owned(kSoulRows[i].dn);
         if (boss >= 0) soul_icon(dl, ImVec2(x, cy + 4 * u), 24 * u, boss > 0);
@@ -483,14 +487,14 @@ extern "C" void inventory_overlay_draw(ImVec2 display, ImFont *font) {
     dl->AddRectFilled(p0, p1, IM_COL32(52, 38, 20, 205), 14 * u);
     dl->AddRect(p0, p1, IM_COL32(214, 176, 92, 230), 14 * u, 0, 2.5f * u);
     int n = keys ? (int)(sizeof kDungeons / sizeof kDungeons[0]) : 0;
-    float cw = (p1.x - p0.x) / n;
+    float cw = (p1.x - p0.x) / (n ? n : 1);
     float fs = 30 * u;
     for (int k = 0; k < n; k++) {
         int keys = 0, bits = 0;
         bool ok = record(kDungeons[k].index, &keys, &bits);
         float cx = p0.x + cw * (k + 0.5f);
         ImU32 gold = IM_COL32(240, 206, 110, 255), dim = IM_COL32(150, 128, 90, 255);
-        const char *lbl = kDungeons[k].label;
+        const char *lbl = L(kDungeons[k].label);
         ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, lbl);
         dl->AddText(font, fs, ImVec2(cx - ts.x * 0.5f, p0.y + 4 * u), IM_COL32(255, 245, 225, 255), lbl);
         // small keys
@@ -518,9 +522,10 @@ extern "C" void inventory_overlay_draw(ImVec2 display, ImFont *font) {
         dl->AddRectFilled(a, b, got ? IM_COL32(120, 92, 40, 235) : done ? IM_COL32(48, 40, 28, 200) : IM_COL32(70, 54, 30, 160),
                           6 * u);
         if (held == i + 1) dl->AddRect(a, b, IM_COL32(255, 220, 120, 255), 6 * u, 0, 2.2f * u);
-        ImVec2 ts = font->CalcTextSizeA(tfs, FLT_MAX, 0, kTrade[i].name);
+        const char *nm = L(kTrade[i].name);
+        ImVec2 ts = font->CalcTextSizeA(tfs, FLT_MAX, 0, nm);
         ImU32 tc = got ? IM_COL32(255, 240, 200, 255) : done ? IM_COL32(120, 160, 100, 220) : IM_COL32(150, 130, 100, 200);
-        dl->AddText(font, tfs, ImVec2((a.x + b.x - ts.x) * 0.5f, (a.y + b.y - ts.y) * 0.5f), tc, kTrade[i].name);
+        dl->AddText(font, tfs, ImVec2((a.x + b.x - ts.x) * 0.5f, (a.y + b.y - ts.y) * 0.5f), tc, nm);
         if (done) {  // a small tick in the corner: given to its NPC
             ImVec2 k(b.x - 9 * u, a.y + 3 * u);
             ImVec2 pts[3] = {ImVec2(k.x, k.y + 4 * u), ImVec2(k.x + 2.5f * u, k.y + 6.5f * u), ImVec2(k.x + 7 * u, k.y)};

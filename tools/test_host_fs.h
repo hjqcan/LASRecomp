@@ -66,6 +66,10 @@ void enemy_random_filter(const char *p, uint64_t off, uint8_t *d, uint64_t n) {}
 void rt_fatal_msg(const char *fmt, ...) { abort(); }
 void rt_fatal_trace(void) { abort(); }
 void save_editor_file_read(const char *p, uint64_t a, int64_t o, int64_t n) {}
+void weather_cycle_save_read(const char *p, uint64_t a, int64_t o, int64_t n) {}  // (runtime/nvn/weather_cycle.c)
+void weather_cycle_save_written(const char *p, uint64_t a, int64_t o, int64_t n) {}
+void dpad_items_save_read(const char *p, uint64_t a, int64_t o, int64_t n) {}  // (runtime/hle/dpad_items.c)
+void dpad_items_save_written(const char *p, uint64_t a, int64_t o, int64_t n) {}
 void pace_hitch(const char *why) {}  // (runtime/nvn/pace.c: a save commit is a stall)
 static int notices;  // save-failed warnings shown (fs.c tells the player once per run)
 void plat_notice(const char *text) { notices++; }
@@ -84,7 +88,10 @@ const GameAddrs *g_ga = &test_ga;
 const GameVersion *game_version(void) { return NULL; }
 uint64_t game_romfs_bytes(const GameVersion *v) { return 0; }
 GameRomfsCheck *game_romfs_check_begin(const GameVersion *v) { return NULL; }
-bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size) { return true; }
+bool game_romfs_check_file(GameRomfsCheck *c, const char *rel, uint64_t size, uint64_t *bytes) {
+    if (bytes) *bytes += size;
+    return true;
+}
 int game_romfs_check_end(GameRomfsCheck *c) { return 0; }
 bool game_romfs_exefs_copy(const char *game_dir, const char *rel, uint64_t size) { return false; }
 __attribute__((constructor)) static void test_ga_init(void) { test_ga.LIVE_SAVE = (uintptr_t)live_save; }

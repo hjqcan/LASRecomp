@@ -86,12 +86,12 @@ The gameplay and randomizer options below apply to Link's Awakening. Other games
 - Higher resolutions, a "match your display" option and dynamic resolution, with MetalFX (Mac) or FSR 1 (Windows and Linux) upscaling and SMAA anti-aliasing.
 - Shaders are prepared ahead of time, so new areas don't stutter.
 - A start screen where you pick vanilla or a randomizer seed, set up your game files and choose your settings.
-- In-game menu: F1, or Minus + Plus on a controller.
+- In-game menu: F1, or Home or Minus + Plus on a controller. The controller buttons can be changed in Controls.
 - Switch between vanilla and any randomizer seed without restarting.
 - Keyboard and controller support, with every button remappable. Button prompts match your controller (Xbox, PlayStation or Nintendo).
 - Controller rumble, and the light bar on PlayStation controllers shows Link's health.
 - Controllers that aren't recognised can be added with a mapping file (see [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB)).
-- Play in English, Japanese, Spanish, French, German, Italian, Dutch, Russian, Korean or Chinese (Simplified or Traditional).
+- Play in English, Japanese, Spanish, French, German, Italian, Dutch, Russian, Korean or Chinese (Simplified or Traditional). The menus, randomizer, tracker and spoiler log are in your language too, and Auto follows your system language.
 - Optional extras: 360-degree movement, blur removal, mirror mode, faster walking and hiding the Hero Mode icon.
 - Cosmetics: change Link's tunic, hair, skin and shield colours, the colour of the grass, leaves and sand (with season presets), the water, fences, walls and houses, give enemies random colours, or play with a Game Boy, Game Boy Color or grayscale filter.
 - [Photo mode](docs/photo-mode.md) (F2): freeze the scene, adjust framing/color and save a PNG (F12).
@@ -125,7 +125,6 @@ The gameplay and randomizer options below apply to Link's Awakening. Other games
 - Dungeon Room Shuffle: every dungeon is rebuilt from its own rooms each seed.
   - Coupled: going back through a door takes you back where you came from.
   - Decoupled: going back through a door takes you somewhere else.
-  - Labyrinth (planned): doors can lead into other dungeons.
   - The map can show how rooms connect as you explore.
 - A tracker on the pause menu's map shows how many checks are left in each area and whether you can reach them.
 - The inventory screen shows your keys, dungeon items, trade items and souls for each dungeon.
@@ -161,7 +160,8 @@ Python 3.12.
 ### Windows
 
 Requirements: Windows 10+ x86-64, a CPU with AVX2 and a GPU with Vulkan 1.3. More detail in
-[docs/BUILD-windows.md](docs/BUILD-windows.md).
+[docs/BUILD-windows.md](docs/BUILD-windows.md). Windows on ARM (experimental) builds with the same setup script; see
+that page.
 
 1. One-time setup, in PowerShell from the repo root: `powershell -ExecutionPolicy Bypass -File tools\setup_windows.ps1`.
    It installs MSYS2 (UCRT64: clang, make, SDL3, FFmpeg, libopus, Vulkan, shaderc), Python 3.12 for the tools and the
@@ -241,13 +241,21 @@ cancelled builds keep the previous installed library until a replacement is read
 - **[@gitarre1234rr5](https://github.com/gitarre1234rr5)** - controller rumble (#104) and a regression test (#88)
 - **[@rkammoun](https://github.com/rkammoun)** - the fix for the black walls in the Ukuku Prairie cave on Mac (#215, #216)
 - **[@NevesHenry](https://github.com/NevesHenry)** - a clear message on Linux when no file window can open (#298),
-  the rumble test running in CI (#299), and Linux builds finding their own SDL3 (#437)
-- **[@ky1vstar](https://github.com/ky1vstar)** - a much faster Linux ARM release build (#319)
+  the rumble test running in CI (#299), Linux builds finding their own SDL3 (#437), font re-imports that no longer
+  empty the font (#490), a message box on Linux for a CPU without AVX2 (#491), the build and system in the log bot's
+  summary (#582), an FFmpeg licence check that really checks (#583), the GPU driver in the log bot's summary (#588),
+  each attached log counted once (#589), the game files check in the log bot's summary (#600), summaries for
+  logs attached by editing a comment (#601), and a Linux AppImage build that stops when its container fails (#653)
+- **[@ky1vstar](https://github.com/ky1vstar)** - a much faster Linux ARM release build (#319), and touch menus and on-screen controls for phones (#634)
 - **[@theb0rg](https://github.com/theb0rg)** - the fix for AMD integrated graphics on Windows (#335)
 - **[@gtf-dot](https://github.com/gtf-dot)** - the game-text font on Linux (#330)
 - **[@cfcosta](https://github.com/cfcosta)** - full speed on Linux AMD handhelds like the Steam Deck and ROG Ally (#392)
-- **[@gsel001](https://github.com/gsel001)** - a check in CI that the Mac app starts (#420)
+- **[@gsel001](https://github.com/gsel001)** - a check in CI that the Mac app starts (#420), and rupees up to 9,999 in the
+  cheats and save editor (#453)
 - **[@wimw85](https://github.com/wimw85)** - much faster game code setup on the Steam Deck and other PCs (#434)
+- **[@missionfloyd](https://github.com/missionfloyd)** - a much smaller game code build, without debug info (#487)
+- **[@wolfchimneyrock](https://github.com/wolfchimneyrock)** - full speed on ARM Mali graphics (#527), the CPU and GPU working in parallel on Mali (#529), and faster render passes on Mali (#528, #534), a cheaper FSR upscale (#532), the game on the big cores of ARM and Intel hybrid CPUs on Linux (#533), no more flickering grass and shadows on Mali (#546), the game starting on Snapdragon (Adreno) devices (#561), much faster shaders on Mali and Adreno (#562, #563, #579), faster graphics memory on Mali with Mesa (#564), GPU tuning tools for Vulkan (#565), no more memory leak on Arm's Mali driver (#607), and smaller shader stacks that keep 4 GB Mali boards from running out of memory (#645)
+- **[@mamcjr](https://github.com/mamcjr)** - the Android port ([LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)), which we are bringing in piece by piece, starting with a guest window that can move
 
 Thanks also to everyone who reports issues and tests builds. Your logs and screenshots find most of the bugs.
 
@@ -265,6 +273,10 @@ none of their files are used):
 - **XBOX UI** by fellow_demo - Xbox button prompts (https://gamebanana.com/mods/540069)
 - **PS4 UI Buttons** by messiahgov - PlayStation button prompts (https://gamebanana.com/mods/324458)
 - **No Hero Mode Indicator** by Boo/Calla - hide the Hero Mode icon (https://gamebanana.com/mods/441172)
+
+**Art**
+- **[Kenney](https://kenney.nl)** - the D-pad on the HUD for D-pad items, from the Input Prompts pack (CC0,
+  `third_party/kenney`)
 
 **Libraries and tools**
 - [SDL 3](https://libsdl.org) - windowing, input, audio (zlib license)
@@ -289,6 +301,14 @@ none of their files are used):
   [Capstone](https://www.capstone-engine.org) (BSD 3-clause; disassembly), [Unicorn](https://www.unicorn-engine.org)
   (GPL 2.0; Python bindings BSD; runs small pieces of code to resolve jump tables) and
   [python-lz4](https://github.com/python-lz4/python-lz4) (BSD 3-clause, with the LZ4 library: BSD 2-clause)
+- [shaderc](https://github.com/google/shaderc) - compiles the translated shaders for Vulkan on Windows, Linux and
+  Android (Apache 2.0; with glslang and SPIRV-Tools)
+- The Android app, ported from [LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid) by mamcjr (MIT), also
+  ships [Python](https://www.python.org) 3.14 for Android (PSF License) to run the game code generator on the device,
+  [volk](https://github.com/zeux/volk) by Arseny Kapoulkine (MIT) to load Vulkan, and
+  [libadrenotools](https://github.com/bylaws/libadrenotools) and
+  [liblinkernsbypass](https://github.com/bylaws/liblinkernsbypass), Copyright (c) 2021, Billy Laws (BSD 2-Clause; their
+  licence text ships in the app), to load a custom Vulkan driver such as Turnip (not included)
 - [envytools](https://github.com/envytools/envytools) - NVIDIA GPU documentation used for the shader translator
 - An MIT-licensed open-source project's audio renderer and shader instruction decoders (license and copyright notice:
   `third_party/ryujinx/LICENSE.txt`) - the audio renderer's reverb is a port of its reverb code and the mixer is

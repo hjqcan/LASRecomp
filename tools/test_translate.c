@@ -220,6 +220,10 @@ int main(int argc, char **argv) {
     maxwell_gmem_lazy = getenv("TT_GMEM_LAZY") && atoi(getenv("TT_GMEM_LAZY")) != 0;
     // TT_GMEM_FS_MISS=1: every fragment shader counts misses, no early tests (LARECOMP_VK_GMEM_FS_MISS)
     maxwell_gmem_fs_miss = maxwell_gmem_lazy && getenv("TT_GMEM_FS_MISS") && atoi(getenv("TT_GMEM_FS_MISS")) != 0;
+    // TT_STACK_ARRAYS=1: the branch stacks as arrays (the runtime's default off Intel), else variables
+    maxwell_glsl_stack_vars = !(getenv("TT_STACK_ARRAYS") && atoi(getenv("TT_STACK_ARRAYS")) != 0);
+    // TT_GMEM_MIRROR=1: every stage through the address table, no heap behind it (no host import: exec.c gmir_)
+    maxwell_gmem_mirror = getenv("TT_GMEM_MIRROR") && atoi(getenv("TT_GMEM_MIRROR")) != 0;
 #ifdef WITH_GLSL
     shaderc_compiler_t comp = shaderc_compiler_initialize();
     shaderc_compile_options_t opt = shaderc_compile_options_initialize();

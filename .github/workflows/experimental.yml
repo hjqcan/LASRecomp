@@ -1,0 +1,258 @@
+# Experimental builds, a rolling pre-release for experimental platforms: ones that aren't official but are available
+# for testing (Linux aarch64, Windows on ARM). From 1.0.0 they are never on the normal releases. Each build goes on the rolling pre-release "experimental", replacing that platform's previous file,
+# or, for a reporter testing a fix, on a test build of its own. None of the files holds game code or game files.
+# Run by pushing a tag at the commit to build (from any branch that has this file):
+#   experimental-<anything>  -> the rolling "experimental" release; the pushed tag is deleted after the upload
+#   test-arm-<name>          -> a pre-release "test-arm-<name>" (start its notes with the test build warning after)
+# or, once this file is on main: gh workflow run experimental.yml -f ref=<branch or commit> [-f test=<name>]
+# The build's version is set here, not in runtime/ui/launcher.mm: experimental-<YYYYMMDDHHMM>-<commit> (or the
+# test-arm-<name> tag), with LARECOMP_EXPERIMENTAL_STAMP = that time, so its update check only offers a newer
+# experimental build of the same platform (runtime/ui/update_tags.h, newest_experimental).
+name: Experimental
+on:
+  push:
+    tags: ['experimental-*', 'test-arm-*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or commit to build'
+        required: true
+      test:
+        description: 'Test build name (test-arm-<name>); empty: the rolling experimental release'
+        required: false
+        default: ''
+permissions:
+  contents: read
+concurrency:  # (one upload to the rolling release at a time)
+  group: experimental-${{ startsWith(github.ref_name, 'test-arm-') && github.ref_name || inputs.test || 'rolling' }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.v.outputs.sha }}
+      version: ${{ steps.v.outputs.version }}
+      stamp: ${{ steps.v.outputs.stamp }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Version
+        id: v
+        env:
+          EVENT: ${{ github.event_name }}
+          PUSHED: ${{ github.ref_name }}
+          TEST: ${{ inputs.test }}
+        run: |
+          SHA=$(git rev-parse HEAD)
+          STAMP=$(date -u +%Y%m%d%H%M)
+          if [ "$EVENT" = push ]; then
+            case $PUSHED in test-arm-*) TEST=${PUSHED#test-arm-} ;; *) TEST= ;; esac
+          fi
+          if [ -n "$TEST" ]; then
+            [[ $TEST =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::test name '$TEST': letters, digits, . _ - only"; exit 1; }
+            VERSION=test-arm-$TEST; RELEASE=$VERSION
+          else
+            VERSION=experimental-$STAMP-${SHA::7}; RELEASE=experimental
+          fi
+          { echo "sha=$SHA"; echo "version=$VERSION"; echo "stamp=$STAMP"; echo "release=$RELEASE"; } >> "$GITHUB_OUTPUT"
+          echo "$VERSION ($RELEASE): $SHA"
+
+  # the same build as release.yml's Linux job, on an arm64 runner
+  linux:
+    needs: check
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - name: Experimental version
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          STAMP: ${{ needs.check.outputs.stamp }}
+        run: |
+          F=runtime/ui/launcher.mm
+          sed -i "s/^#define LARECOMP_VERSION \".*\"/#define LARECOMP_VERSION \"$VERSION\"/; s/^#define LARECOMP_EXPERIMENTAL_STAMP .*/#define LARECOMP_EXPERIMENTAL_STAMP ${STAMP}LL/" $F
+          grep -q "^#define LARECOMP_VERSION \"$VERSION\"" $F && grep -q "^#define LARECOMP_EXPERIMENTAL_STAMP ${STAMP}LL" $F ||
+            { echo "::error::$F: LARECOMP_VERSION / LARECOMP_EXPERIMENTAL_STAMP not set"; exit 1; }
+      - name: Deps cache
+        id: deps
+        uses: actions/cache/restore@v4
+        with:
+          path: build/linux/${{ matrix.arch }}/deps
+          key: deps-linux-${{ matrix.arch }}-${{ hashFiles('tools/linux/build_deps.sh', 'tools/linux/Containerfile') }}
+      - name: Wheels cache
+        id: wheels
+        uses: actions/cache/restore@v4
+        with:
+          path: build/linux/${{ matrix.arch }}/wheels
+          key: wheels-linux-${{ matrix.arch }}-${{ hashFiles('third_party/LAS-Randomizer/requirements.txt', 'tools/linux/rando_helper.sh', 'tools/linux/Containerfile') }}
+      - name: AppImage
+        run: make appimage ARCH=${{ matrix.arch }}
+      - uses: actions/cache/save@v4
+        if: always() && steps.deps.outputs.cache-hit != 'true' && hashFiles(format('build/linux/{0}/deps/lib/libshaderc_shared.so*', matrix.arch)) != ''
+        with:
+          path: build/linux/${{ matrix.arch }}/deps
+          key: ${{ steps.deps.outputs.cache-primary-key }}
+      - uses: actions/cache/save@v4
+        if: always() && steps.wheels.outputs.cache-hit != 'true' && hashFiles(format('build/linux/{0}/rando-venv/.ok', matrix.arch)) != ''
+        with:
+          path: build/linux/${{ matrix.arch }}/wheels
+          key: ${{ steps.wheels.outputs.cache-primary-key }}
+      - name: No game code
+        run: |
+          A=build/linux/${{ matrix.arch }}/AppDir
+          bad=$(find "$A" -type d \( -name extracted -o -name 'generated*' -o -name exefs -o -name romfs \);
+                find "$A" -name '*.c' ! -path '*/zig/lib/*' ! -path '*/gamelib-src/gamelib_entry.c'; find "$A" -name 'lasgame*')
+          [ -z "$bad" ] || { echo "::error::must not ship: $bad"; exit 1; }
+          find "$A" -type f \( -perm /111 -o -name '*.so*' \) | while read -r f; do
+            if readelf -Ws --wide "$f" 2>/dev/null | grep ' f_70' >/dev/null; then echo "::error::game code in $f"; exit 1; fi
+          done
+          ls -la build/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: build/dist/*.AppImage
+          if-no-files-found: error
+          compression-level: 0
+
+  # the same build as release.yml's Windows job, natively on an arm64 runner (MSYS2 CLANGARM64); the generator
+  # helpers are built with an x64 Python and run under emulation (capstone / unicorn have no ARM64 Windows wheels)
+  windows:
+    needs: check
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: LF line endings, as tools/setup_windows.ps1 sets for clones
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: actions/setup-python@v5
+        id: py
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: make git curl tar xz diffutils zip unzip
+          pacboy: clang:p lld:p sdl3:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p vulkan-memory-allocator:p
+      - name: Experimental version
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          STAMP: ${{ needs.check.outputs.stamp }}
+        run: |
+          F=runtime/ui/launcher.mm
+          sed -i "s/^#define LARECOMP_VERSION \".*\"/#define LARECOMP_VERSION \"$VERSION\"/; s/^#define LARECOMP_EXPERIMENTAL_STAMP .*/#define LARECOMP_EXPERIMENTAL_STAMP ${STAMP}LL/" $F
+          grep -q "^#define LARECOMP_VERSION \"$VERSION\"" $F && grep -q "^#define LARECOMP_EXPERIMENTAL_STAMP ${STAMP}LL" $F ||
+            { echo "::error::$F: LARECOMP_VERSION / LARECOMP_EXPERIMENTAL_STAMP not set"; exit 1; }
+      - name: Deps cache
+        id: deps
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/deps-win
+            !build/deps-win/src
+          key: deps-windows-arm64-${{ hashFiles('tools/build_deps_windows.sh') }}
+      - name: Deps (LGPL FFmpeg)
+        run: make deps-windows
+      - uses: actions/cache/save@v4
+        if: steps.deps.outputs.cache-hit != 'true'
+        with:
+          path: |
+            build/deps-win
+            !build/deps-win/src
+          key: ${{ steps.deps.outputs.cache-primary-key }}
+      - name: Generator helpers
+        run: |
+          PY=$(cygpath -u '${{ steps.py.outputs.python-path }}')
+          make rando-helper RANDO_PY="$PY" && make gen-helper RANDO_PY="$PY"
+      - name: Compiler for the player's machine
+        run: tools/fetch_zig.sh
+      - name: Zip
+        run: make -j"$(nproc)" dist
+      - name: No game files or generated C
+        run: |
+          D="build/dist/LAS Recomp"
+          bad=$(find "$D" -type d \( -name extracted -o -name 'generated*' -o -name exefs -o -name romfs \);
+                find "$D" -name '*.c' ! -path '*/zig/lib/*' ! -path '*/gamelib-src/gamelib_entry.c'; find "$D" -name 'lasgame*')
+          [ -z "$bad" ] || { echo "::error::must not ship: $bad"; exit 1; }
+          ls -la build/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64
+          path: build/dist/*.zip
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    needs: [check, linux, windows]
+    # (a platform whose build failed keeps its previous file; the others still go up)
+    if: always() && needs.check.result == 'success' && (needs.linux.result == 'success' || needs.windows.result == 'success')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write  # (only here: the experimental / test-arm release)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE: ${{ needs.check.outputs.release }}
+          VERSION: ${{ needs.check.outputs.version }}
+          SHA: ${{ needs.check.outputs.sha }}
+          EVENT: ${{ github.event_name }}
+          PUSHED: ${{ github.ref_name }}
+        run: |
+          ls -la dist
+          URL=https://github.com/$GH_REPO
+          if ! gh release view "$RELEASE" >/dev/null 2>&1; then
+            if [ "$RELEASE" = experimental ]; then
+              TITLE="Experimental builds"
+              printf '%s\n' \
+                "> [!WARNING]" \
+                "> **These builds are experimental.** They are for platforms that aren't official but are available for testing, so expect problems. For everything else, use the **[latest release]($URL/releases/latest)**." \
+                "" \
+                "The latest build for each platform is below. Each new build replaces the old one, and the game tells you on its start screen when a newer one is here." \
+                "" \
+                "- Linux aarch64 (ARM): \`linux-aarch64.AppImage\`" \
+                "- Windows on ARM: \`windows-arm64.zip\`" \
+                "" \
+                "## Help us make these better" \
+                "" \
+                "We really want to hear how these builds run on your device, good or bad. We don't have most of this hardware ourselves, so your reports are how these platforms get better. When something doesn't work, we'll work through it with you on the issue, make test builds for you to try, and fix what we can." \
+                "" \
+                "To report, open an issue on the [issues page]($URL/issues) with your device, its graphics driver, screenshots of anything that looks wrong, and the log (\`lasrecomp.log\` in the data folder)." > notes.md
+            else
+              TITLE="Test build: ${RELEASE#test-}"
+              echo "ARM test build from $SHA." > notes.md
+            fi
+            gh release create "$RELEASE" --prerelease --title "$TITLE" --notes-file notes.md --target "$SHA"
+          fi
+          # this platform's previous file(s) out, the new one in
+          for f in dist/*; do
+            plat=${f##*/}; plat=${plat#*"$VERSION"-}
+            gh release view "$RELEASE" --json assets -q '.assets[].name' | while read -r old; do
+              case $old in *"-$plat") [ "$old" = "$(basename "$f" | tr ' ' .)" ] || gh release delete-asset "$RELEASE" "$old" -y ;; esac
+            done
+            gh release upload "$RELEASE" "$f" --clobber
+          done
+          # the rolling release's tag follows its newest build (its page shows that commit)
+          if [ "$RELEASE" = experimental ]; then gh api -X PATCH "repos/$GH_REPO/git/refs/tags/experimental" -f sha="$SHA" -F force=true >/dev/null; fi
+          # (the pushed experimental-* tag only started this run)
+          if [ "$EVENT" = push ] && [ "$RELEASE" = experimental ]; then gh api -X DELETE "repos/$GH_REPO/git/refs/tags/$PUSHED" || true; fi

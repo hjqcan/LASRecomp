@@ -5,12 +5,41 @@
 static TitleProfile selected;
 static bool no_profile, gpu_fault, guest_fault;
 static bool las;
+static const char *module_name;
+static const char *const drivers[] = {
+    "/usr/lib/x86_64-linux-gnu/libvulkan_radeon.so",
+    "/usr/lib/aarch64-linux-gnu/libvulkan_panfrost.so",
+    "/usr/lib/aarch64-linux-gnu/libvulkan_freedreno.so",
+    "/usr/lib/aarch64-linux-gnu/libvulkan_broadcom.so",
+    "/usr/lib/aarch64-linux-gnu/libvulkan_asahi.so",
+    "/usr/lib/aarch64-linux-gnu/libmali.so",
+    "/vendor/lib64/egl/libGLES_mali.so",
+    "/vendor/lib64/hw/vulkan.adreno.so",
+    "/vendor/lib64/hw/vulkan.mali.so",
+    "C:\\Windows\\System32\\DriverStore\\FileRepository\\iigd_dch.inf_amd64\\igd12umd64.dll",
+    "C:\\Windows\\System32\\nvoglv64.dll",
+    "/System/Library/Extensions/AGXMetalG13X.bundle/Contents/MacOS/AGXMetalG13X",
+};
+static const char *const not_drivers[] = {
+    "C:\\Users\\Rigdon\\Desktop\\LAS Recomp\\extracted\\lasgame.dll",
+    "D:\\Games\\BigDrive\\LAS Recomp\\extracted\\lasgame.dll",
+    "/home/rigdon/libvulkan_builds/lasgame.so",
+    "/mnt/vulkan.games/lasgame.so",
+    "C:\\Users\\Sam\\Desktop\\LAS Recomp\\extracted\\lasgame.dll",
+    "/home/rigdon/LAS Recomp/lasrecomp",
+    "/usr/lib/libvulkan.so.1",           // the Vulkan loader, not a driver
+    "/system/lib64/libvulkan.so",
+    "C:\\Windows\\System32\\vulkan-1.dll",
+};
+
+
 bool title_is_las(void) { return las; }
 static GameVersion version={.key="v1_0_0"};
 const GameVersion *game_version(void) { return las ? &version : NULL; }
 uint64_t game_romfs_bytes(const GameVersion *v) { return v ? 100 : 0; }
 const TitleProfile *title_profile_current(void) { return no_profile ? NULL : &selected; }
 bool plat_module_name(uint64_t pc, char *out, size_t n) {
+    if (module_name) { snprintf(out, n, "%s", module_name); return true; }
     if (!gpu_fault) return false;
     snprintf(out, n, "igc64.dll");
     return true;
@@ -61,5 +90,18 @@ int main(void) {
     check(22, 22, "no function at 7001234000", "Game code is not supported yet");
     rt_romfs_missing = 0;
     puts("PASS: adapter-aware crash explanations and existing failure categories");
+    for (unsigned i = 0; i < sizeof drivers / sizeof *drivers; i++) {
+        module_name = drivers[i];
+        g_line[0] = 0; g_pc = 0;
+        rt_crash_fault("signal 11", 0x10, 0x1234);
+        assert(rt_fatal_is_driver());
+    }
+    for (unsigned i = 0; i < sizeof not_drivers / sizeof *not_drivers; i++) {
+        module_name = not_drivers[i];
+        g_line[0] = 0; g_pc = 0;
+        rt_crash_fault("signal 11", 0x10, 0x1234);
+        assert(!rt_fatal_is_driver());
+    }
+    module_name = NULL;
     return 0;
 }

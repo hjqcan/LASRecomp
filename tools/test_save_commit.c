@@ -200,3 +200,8 @@ int main(int argc, char **argv) {
     free_mount(mount);
     puts("Save commit: staged reads, LAS-only flags/editor, backup order, abandoned writes, failed-save suppression, sidecar recovery, close and SD isolation passed");
 }
+
+void dpad_items_save_read(const char *path, uint64_t addr, int64_t off, int64_t size) {}
+void dpad_items_save_written(const char *path, uint64_t addr, int64_t off, int64_t size) {}
+void weather_cycle_save_read(const char *path, uint64_t addr, int64_t off, int64_t size) {}
+void weather_cycle_save_written(const char *path, uint64_t addr, int64_t off, int64_t size) {}

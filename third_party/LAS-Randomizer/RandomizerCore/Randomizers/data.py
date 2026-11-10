@@ -563,3 +563,11 @@ HIGH_JUMP = """
 20000000
 """
 # BGM_ADDRESSES = {}
+
+def start_dungeon_items(settings):
+    """[LAS Recomp] the dungeon items given at the start, as item name prefixes: each kind on its own
+    ('dungeon-items-start', the Randomizer tab's three toggles), else from the LAS 'dungeon-items' setting"""
+    if 'dungeon-items-start' in settings:
+        return tuple(settings['dungeon-items-start'])
+    return {'mc': ('map', 'compass'), 'mcb': ('map', 'compass', 'stone-beak'),
+            'stone-beak': ('stone-beak',)}.get(settings['dungeon-items'], ())

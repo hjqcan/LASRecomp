@@ -83,6 +83,31 @@ def complete_text(wait):
     return b"You've completed the " + _COLOR_ON + b'Triforce' + _COLOR_OFF + b'!' + wait + b'\0'
 
 
+def egg_text(wait):
+    return (b'The egg stays silent...' + wait + _PAGE + b'This dream ends only when the\n' + _COLOR_ON + b'Triforce' +
+            _COLOR_OFF + b' is whole.' + wait + b'\0')
+
+
+def _egg_shut(event_tools, fc):
+    """The egg's Ballad never opens it: every HasAllInstruments switch takes its "not all" case, and after the song
+    (Event30, the HUD coming back) a message. Returns the switches changed."""
+    n = 0
+    for ev in fc.events:
+        d = ev.data
+        if getattr(d, 'actor_query', None) and d.actor_query.v.v == 'HasAllInstruments':
+            if 0 in d.cases:
+                event_tools.setSwitchEventCase(fc, ev.name, 1, d.cases[0].v.name)
+            else:
+                del d.cases[1]
+            n += 1
+    back = event_tools.findEvent(fc, 'Event30')
+    assert back.data.actor_action.v.v == 'PlayInAnim', 'WindFishsEgg.bfevfl: Event30 is not the HUD coming back'
+    msg = event_tools.createActionEvent(fc, 'Dialog', 'Show', {'message': 'System:TriforceEggShut'},
+                                        back.data.nxt.v.name)
+    event_tools.insertEventAfter(fc, 'Event30', msg)
+    return n
+
+
 def _flow_entries(event_tools, fc, needed):
     """Item.bfevfl entries the get sequence shows (one message each): TriforcePiece (no count), TriforcePiece<n>
     (n still needed), TriforceComplete. The giving flows pick the entry (LAS item_get.insertTriforceGet)."""
@@ -127,6 +152,11 @@ def apply(out_dir, romfs, oead_tools, event_tools, msbt, settings):
     n_leaves = _flow_entries(event_tools, flow.flowchart, needed)
     event_tools.writeFlow(dst(rel), flow)
 
+    rel = 'region_common/event/WindFishsEgg.bfevfl'
+    flow = event_tools.readFlow(src(rel))
+    n_egg = _egg_shut(event_tools, flow.flowchart)
+    event_tools.writeFlow(dst(rel), flow)
+
     import keysanity_text as kt
     n_msg = 0
     for f in glob.glob(os.path.join(romfs, 'region*', '*', 'message', 'System.msbt')):
@@ -137,6 +167,7 @@ def apply(out_dir, romfs, oead_tools, event_tools, msbt, settings):
         for n in range(1, needed):
             m.set(f'TriforcePiece{n}', pieces_text(n, wait))
         m.set('TriforceComplete', complete_text(wait))
+        m.set('TriforceEggShut', egg_text(wait))
         with open(dst(rel), 'wb') as fh:
             fh.write(m.pack())
         n_msg += 1
@@ -145,7 +176,7 @@ def apply(out_dir, romfs, oead_tools, event_tools, msbt, settings):
         f.write(f'needed\t{needed}\nplaced\t{placed}\nitem\t{ITEM_ID}\nbits\t{flags["TriforceBit00"]}\n'
                 f'remain\t{flags["TriforceRemain0"]}\ndone\t{flags["TriforceDone"]}\n')
     return (f'{placed} pieces, {needed} needed (flags {min(flags.values())}-{max(flags.values())}), '
-            f'{n_leaves} message entries, {n_msg} message files')
+            f'{n_leaves} message entries, {n_msg} message files, egg shut ({n_egg} switches)')
 
 
 def write_spots(out_dir, leb, placements):

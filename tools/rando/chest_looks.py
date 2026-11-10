@@ -4,7 +4,7 @@
 Three looks, colour only (every chest keeps its size):
   - vanilla chest: anything that helps progression at some point (progression items, pets, souls, Triforce pieces,
     trade items / seashells when they are in logic)
-  - key chest (blue with silver trim): small keys, key rings, Nightmare Keys
+  - key chest (blue with silver trim): small keys, Nightmare Keys
   - plain chest (dull brown): everything else (rupees, hearts, refills, maps, ...)
 Traps copy the look of a random real item from the seed's pool.
 
@@ -31,7 +31,7 @@ VANILLA = 'ObjTreasureBox.bfres'
 FILES = {'key': 'ObjTreasureBoxKey.bfres', 'plain': 'ObjTreasureBoxPlain.bfres'}
 # look: (body (hue 0-255 or None = keep, saturation factor, value factor), gold trim (same))
 LOOKS = {'key': ((150, 1.0, 1.25), (None, 0.08, 0.85)), 'plain': ((16, 0.6, 0.62), (22, 0.45, 0.48))}
-KEYS = ('key-', 'keyring-', 'nightmare-key-')
+KEYS = ('key-', 'nightmare-key-')
 
 
 def _clamp(x):

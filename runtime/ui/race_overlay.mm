@@ -13,6 +13,7 @@
 #include <string>
 
 #include "imgui.h"
+#include "i18n.h"
 #include "seed_hash.h"
 #ifdef __APPLE__
 #import <Metal/Metal.h>
@@ -174,16 +175,17 @@ extern "C" void race_overlay_draw(ImVec2 display, ImFont *font, float scale) {
         load_icons(g_hash, 5);  // with their names
         float icon = 64 * scale, row = 76 * scale, pad = 18 * scale, label = 30 * scale, name = 34 * scale, gap = 14 * scale;
         float namew = 0;
-        for (int i = 0; i < 5; i++) namew = fmaxf(namew, font->CalcTextSizeA(name, FLT_MAX, 0, kSeedHashIcons[g_hash[i]].name).x);
-        float w = fmaxf(pad + icon + gap + namew + pad, pad + font->CalcTextSizeA(label, FLT_MAX, 0, "SEED HASH").x + pad);
+        const char *title = L("SEED HASH");
+        for (int i = 0; i < 5; i++) namew = fmaxf(namew, font->CalcTextSizeA(name, FLT_MAX, 0, L(kSeedHashIcons[g_hash[i]].name)).x);
+        float w = fmaxf(pad + icon + gap + namew + pad, pad + font->CalcTextSizeA(label, FLT_MAX, 0, title).x + pad);
         float h = pad + label + 8 * scale + 5 * row + pad * 0.5f;
         ImVec2 a(display.x - 24 * scale - w, (display.y - h) * 0.5f), b(a.x + w, a.y + h);
         dl->AddRectFilled(a, b, IM_COL32(12, 20, 16, 205), 14 * scale);
         dl->AddRect(a, b, IM_COL32(236, 194, 84, 200), 14 * scale, 0, fmaxf(1.0f, 2 * scale));
-        dl->AddText(font, label, ImVec2(a.x + pad, a.y + pad * 0.6f), IM_COL32(236, 194, 84, 255), "SEED HASH");
+        dl->AddText(font, label, ImVec2(a.x + pad, a.y + pad * 0.6f), IM_COL32(236, 194, 84, 255), title);
         for (int i = 0; i < 5; i++) {
             const Icon &ic = g_icons[g_hash[i]];
-            const char *nm = kSeedHashIcons[g_hash[i]].name;
+            const char *nm = L(kSeedHashIcons[g_hash[i]].name);
             ImVec2 p(a.x + pad, a.y + pad + label + 8 * scale + i * row + (row - icon) * 0.5f);
             if (ic.state == 1) {
                 float k = icon / (float)(ic.w > ic.h ? ic.w : ic.h);

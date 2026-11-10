@@ -32,7 +32,7 @@ with tempfile.TemporaryDirectory() as temporary:
     exe = Path(temporary) / ('ui-test.exe' if os.name == 'nt' else 'ui-test')
     cxx = shlex.split(os.environ.get('CXX', 'clang++'))
     imgui = root / 'third_party/imgui'
-    sources = ['runtime/ui/localization.mm', 'tools/test_ui_localization.cpp']
+    sources = ['runtime/ui/i18n.mm', 'runtime/ui/localization.mm', 'tools/test_ui_localization.cpp']
     sources += [str(imgui / f'{name}.cpp') for name in ('imgui', 'imgui_draw', 'imgui_tables', 'imgui_widgets')]
     subprocess.run(cxx + ['-x', 'c++', '-std=c++17', '-Iruntime', '-I' + str(imgui),
                           *sources, '-o', str(exe)], cwd=root, check=True)

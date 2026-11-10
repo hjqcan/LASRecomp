@@ -32,6 +32,30 @@ static inline std::string tag_label(const std::string &t, bool with_word) {
     if (sscanf(t.c_str(), "v%d.%d.%d%c", &a, &n, &m, &end) == 3 && a == 0 && n > 0)
         return "Beta " + std::to_string(n) + (m > 0 ? "." + std::to_string(m) : std::string());
     if (!t.compare(0, 5, "test-")) return "Test build " + t.substr(5);
+    if (t == "experimental") return "Experimental build";
+    if (!t.compare(0, 13, "experimental-") && t.size() >= 21)  // experimental-<YYYYMMDDHHMM>-<commit>
+        return "Experimental build " + t.substr(13, 4) + "-" + t.substr(17, 2) + "-" + t.substr(19, 2);
     std::string v = t.size() > 1 && t[0] == 'v' ? t.substr(1) : t;
     return with_word ? "Version " + v : v;
+}
+
+// Experimental builds (Linux aarch64, later Windows on ARM: .github/workflows/experimental.yml) are never on the normal
+// releases: they sit on one rolling pre-release, "experimental", named LAS.Recomp-experimental-<YYYYMMDDHHMM>-<commit>-
+// <platform>.<ext>. The newest stamp there for this platform (e.g. "linux-aarch64"), found in the releases JSON; 0: none.
+static inline long long newest_experimental(const std::string &body, const std::string &platform) {
+    static const char key[] = "LAS.Recomp-experimental-";
+    long long best = 0;
+    for (size_t at = 0; (at = body.find(key, at)) != std::string::npos;) {
+        at += sizeof key - 1;
+        long long stamp = 0;
+        size_t i = at;
+        for (; i < body.size() && i - at < 12 && body[i] >= '0' && body[i] <= '9'; i++) stamp = stamp * 10 + (body[i] - '0');
+        if (i - at != 12 || i >= body.size() || body[i] != '-') continue;
+        size_t dash = body.find('-', i + 1);  // (after the commit)
+        if (dash == std::string::npos || body.compare(dash + 1, platform.size(), platform) ||
+            dash + 1 + platform.size() >= body.size() || body[dash + 1 + platform.size()] != '.')
+            continue;
+        if (stamp > best) best = stamp;
+    }
+    return best;
 }

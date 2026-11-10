@@ -23,6 +23,7 @@ void input_handle_event(const SDL_Event *e);
 void input_rumble_poll(void);
 void input_rumble_stop(void);
 void input_led_poll(void);  // controller light: UI thread, after input_rumble_poll
+void input_pad_poll(void);  // the controller read again after the menu let go of it: UI thread (input_reset)
 void input_led_stop(void);
 bool input_user_blocked(const SDL_Event *e);
 void input_cursor_event(const SDL_Event *e);  // hide the mouse cursor on pad / key play, show it on mouse use

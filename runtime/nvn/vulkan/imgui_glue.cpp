@@ -44,6 +44,16 @@ extern "C" bool vk_imgui_backend_init(void) {
     return ok;
 }
 
+// The fonts were added again (the menus' language changed, runtime/ui/i18n.mm): a new font texture, with the queue
+// idle as above (the old one may still be in a frame in flight)
+extern "C" void vk_imgui_fonts_rebuild(void) {
+    if (!ImGui::GetIO().BackendRendererUserData) return;
+    rec_drain();
+    vkDeviceWaitIdle(g_vk.dev);
+    ImGui_ImplVulkan_DestroyFontsTexture();
+    ImGui_ImplVulkan_CreateFontsTexture();
+}
+
 extern "C" void vk_imgui_backend_shutdown(void) {
     if (!ImGui::GetIO().BackendRendererUserData) return;
     rec_drain();  // (the queue is the recorder's: idle for the wait below)

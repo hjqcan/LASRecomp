@@ -39,7 +39,8 @@ cp $Z/lib/std/std.zig $O/lib/std/
 printf 'LIBRARY lasrecomp.exe\nEXPORTS\nprobe_host\n' > $W/host.def
 printf 'void probe_host(void);\n__declspec(dllexport) void probe(void) { probe_host(); }\n' > $W/dll.c
 ZA=$PWD/$Z/zig.exe
-(cd $W && $ZA dlltool -d host.def -l host.a -m i386:x86-64 && $ZA cc "${flags[@]}" -c dll.c -o dll.o &&
+case "${MSYSTEM_CARCH:-x86_64}" in aarch64) MACHINE=arm64;; *) MACHINE=i386:x86-64;; esac
+(cd $W && $ZA dlltool -d host.def -l host.a -m $MACHINE && $ZA cc "${flags[@]}" -c dll.c -o dll.o &&
     $ZA cc -shared -s -o probe.dll dll.o host.a -v 2> link.log) || { echo "tools/zig_slim.sh: probe link failed ($W/link.log)"; exit 1; }
 line=$(grep '^lld-link ' $W/link.log | tail -1 | tr -d '\r')
 [ -n "$line" ] || { echo "tools/zig_slim.sh: no lld-link line in $W/link.log"; exit 1; }

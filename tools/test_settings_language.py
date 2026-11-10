@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory() as directory:
              ('zh-Hans', '', 'zh-Hans', 'Chinese (Simplified)'),
              ('zh-Hant', '', 'zh-Hant', 'Chinese (Traditional)'),
              ('en-US', '', 'en-US', 'English'), ('ja', '', 'ja', 'Japanese'),
-             ('unknown', '', 'en-US', 'English')]
+             ('unknown', '', 'auto', 'Auto')]
     if sys.platform.startswith('linux'):
         for locale in ('zh_CN.UTF-8', 'zh_SG.UTF-8', 'zh-Hans-CN'):
             cases.append(('auto', locale, 'zh-Hans', 'Chinese (Simplified)'))

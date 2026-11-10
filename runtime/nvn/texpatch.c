@@ -29,6 +29,7 @@
 #include "../hle.h"
 #include "../input_bind.h"
 #include "../paths.h"
+#include "../platform.h"
 #include "../rando.h"
 #include "../settings.h"
 #include "../mods.h"
@@ -41,10 +42,10 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "../../third_party/imgui/imstb_truetype.h"
 
-enum { K_BC5, K_BC3, K_ASTC4, K_RGBA8, K_BC1 };
+enum { K_BC5, K_BC3, K_ASTC4, K_RGBA8, K_BC1, K_OTHER /* identified only */ };
 enum { R_A = 1, R_B, R_X, R_Y, R_L, R_R, R_ZL, R_ZR, R_PLUS, R_MINUS, R_HERO, R_SHEET, R_BOTTLE, R_BOTTLE_MODEL, R_FAIRY_MODEL,
        R_ITEM_CURSOR, R_TUNIC, R_TUNIC_RED, R_TUNIC_BLUE, R_HEART, R_POWDER_MODEL, R_DGN_MAP, R_MAP_MODEL, R_POWER_PIECE_MODEL,
-       R_SKIN };
+       R_SKIN, R_TITLE_LOGO, R_FILE_FRAME };
 enum { STYLE_NINTENDO, STYLE_XBOX, STYLE_PS };
 // labels: R_A..R_MINUS = the button that role is on by default; or these
 enum { L_LS = 32, L_RS, L_DUP, L_DDOWN, L_DLEFT, L_DRIGHT, L_OTHER };
@@ -119,6 +120,8 @@ static int role_of(const char *name) {
         {"Hp_00^w", R_HEART}, {"Hp_01^w", R_HEART}, {"Hp_02^w", R_HEART}, {"HeartUp^w", R_HEART},
         // the Items page's cursor brackets: identified only (hidden while the companion card has the cursor, pets.c)
         {"ItemCursor_", R_ITEM_CURSOR},
+        // the title's logo (Tl_Title) and the file select's frame (Cm_FileOperate): which of them is on screen
+        {"Logo_00^f", R_TITLE_LOGO}, {"Logo_01^f", R_TITLE_LOGO}, {"MainFrameLT_03^w", R_FILE_FRAME},
     };
     for (unsigned i = 0; i < sizeof m / sizeof *m; i++)
         if (!strncmp(name, m[i].prefix, strlen(m[i].prefix))) return m[i].role;
@@ -159,6 +162,7 @@ static void scan_bntx(const uint8_t *b, size_t len, bool sheet) {
         if (data + size > len) continue;
         int kind = (fmt >> 8) == 0x1e ? K_BC5 : (fmt >> 8) == 0x1c ? K_BC3 : (fmt >> 8) == 0x2d ? K_ASTC4 :
                    (fmt >> 8) == 0x0b ? K_RGBA8 : (fmt >> 8) == 0x1a ? K_BC1 : -1;
+        if (kind < 0 && (role == R_TITLE_LOGO || role == R_FILE_FRAME)) kind = K_OTHER;  // (the logo: 0x09, never decoded)
         if (kind < 0 || (sheet && kind != K_RGBA8)) continue;
         add_ref(role, kind, (fmt & 0xff) == 6, w, h, levels, b + data, size, name, rd32(t + 36) & 7);
     }
@@ -262,6 +266,19 @@ static TexLayout g_tunic_layout;  // (the game's tunic texture: its levels' plac
 static bool g_tunic_layout_ok;
 bool texpatch_is_item_cursor(int id) { return id >= 0 && id < g_nrefs && g_refs[id].role == R_ITEM_CURSOR; }
 
+static _Atomic uint64_t g_screen_seen[2];  // when the title's logo / the file select's frame was last drawn
+void texpatch_note_draw(int id) {
+    if (id < 0 || id >= g_nrefs) return;
+    int r = g_refs[id].role;
+    if (r == R_TITLE_LOGO || r == R_FILE_FRAME) g_screen_seen[r == R_FILE_FRAME] = plat_now_ns();
+}
+int texpatch_title_screen(void) {
+    uint64_t now = plat_now_ns(), recent = 300000000ull;  // (the render thread is a frame or two behind)
+    if (now - g_screen_seen[1] < recent) return 2;
+    if (now - g_screen_seen[0] < recent) return 1;
+    return 0;
+}
+
 int texpatch_identify(const NvnTexture *t) {
     if (!title_is_las()) return -1;
     pthread_once(&g_once, load_refs);
@@ -312,6 +329,11 @@ static int prompt_style(void) {
     if (p == PROMPTS_XBOX) return STYLE_XBOX;
     if (p == PROMPTS_PLAYSTATION) return STYLE_PS;
     if (p == PROMPTS_NINTENDO) return STYLE_NINTENDO;
+#if PLAT_TOUCH
+    // (Auto: while the on-screen controls are up the player presses those - Switch letters - not the controller's)
+    extern bool touch_visible(void);  // runtime/ui/mobile/touch_controls.mm
+    if (touch_visible()) return STYLE_NINTENDO;
+#endif
     extern int input_pad_family(void);  // runtime/hle/input.c: the controller SDL reports
     int f = input_pad_family();
     return f == 1 ? STYLE_XBOX : f == 2 ? STYLE_PS : STYLE_NINTENDO;
@@ -479,6 +501,7 @@ static void astc_encode4(const uint8_t px[16][4], bool srgb, uint8_t *b) {
 // Level data <-> RGBA8 image (BC5: red, green -> R, G; alpha = green, the glyph's shape)
 static void decode_image(const Ref *r, const uint8_t *src, uint32_t row, uint8_t *img) {
     uint32_t W = r->w, H = r->h, bw = (W + 3) / 4, bh = (H + 3) / 4;
+    if (r->kind == K_OTHER) return;  // (identified only: its format isn't one of these)
     if (r->kind == K_RGBA8) { for (uint32_t y = 0; y < H; y++) memcpy(img + y * W * 4, src + y * row, W * 4); return; }
     if (r->kind == K_ASTC4) {
         uint8_t *blocks = malloc((size_t)bw * bh * 16);
@@ -507,6 +530,7 @@ static void decode_image(const Ref *r, const uint8_t *src, uint32_t row, uint8_t
 
 static void encode_image(const Ref *r, const uint8_t *img, const uint8_t *dirty, uint8_t *dst, uint32_t row) {
     uint32_t W = r->w, H = r->h, bw = (W + 3) / 4, bh = (H + 3) / 4;
+    if (r->kind == K_OTHER) return;
     if (r->kind == K_RGBA8) { for (uint32_t y = 0; y < H; y++) memcpy(dst + y * row, img + y * W * 4, W * 4); return; }
     for (uint32_t by = 0; by < bh; by++)
         for (uint32_t bx = 0; bx < bw; bx++) {
@@ -1043,14 +1067,16 @@ static uint32_t skin_rgb(void) {  // (+1: 0 = Default)
     return col_target(&g_settings.skin, COL_SLOT_SKIN, &rgb) ? rgb + 1 : 0;
 }
 
-// body: the tunic map (arms, hands), recoloured block by block; else a face map, recoloured as a whole level
-// (skin_face: with a very dark colour its details are told apart by shape). mouth: one of the mouth maps.
+// body: the tunic map (arms, hands), recoloured block by block, the skin told on `orig` (the map as uploaded: a
+// tunic recoloured to a peach hue would read as skin; NULL: on the blocks themselves); else a face map, recoloured as
+// a whole level (skin_face: with a very dark colour its details are told apart by shape). mouth: one of the mouth maps.
 // The face maps' smaller mip levels are made from the recoloured full-size level (box filter), as the game's own are
 // from its: recoloured on their own, the details' shapes are too few pixels to tell apart (an open mouth's outline
 // would fill it). The levels of one upload come in order, on one thread: the full-size result is kept per thread.
 static __thread struct { int id; uint32_t c, w, h; uint8_t *img; } t_face;
 
-static void skin_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h, uint32_t row, bool body, bool mouth) {
+static void skin_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h, uint32_t row, bool body, bool mouth,
+                       const uint8_t *orig) {
     uint32_t c = skin_rgb();
     if (!c) return;
     float sh, ts, tv;
@@ -1068,12 +1094,13 @@ static void skin_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_
     if (body) {
         for (uint32_t by = 0; by < bh; by++)
             for (uint32_t bx = 0; bx < bw; bx++) {
-                uint8_t *b = blocks + by * row + bx * 8, px[16][4];
+                uint8_t *b = blocks + by * row + bx * 8, px[16][4], ox[16][4];
                 bc1_decode(b, px);
+                bc1_decode(orig ? orig + by * row + bx * 8 : b, ox);
                 bool any = false, holes = false;
                 for (int i = 0; i < 16; i++) {
                     if (!px[i][3]) { holes = true; continue; }
-                    float m = skin_weight(px[i], true, false);
+                    float m = skin_weight(ox[i], true, false);
                     if (m < 0.004f) continue;
                     any = true;
                     skin_recolour(px[i], m, &k);
@@ -1136,15 +1163,19 @@ void texpatch_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h
     if (id < 0 || id >= g_nrefs) return;
     const Ref *r = &g_refs[id];
     if (r->role == R_TUNIC || r->role == R_TUNIC_RED || r->role == R_TUNIC_BLUE) {
+        size_t n = (size_t)((h + 3) / 4 - 1) * row + (w + 3) / 4 * 8;  // (the level's blocks)
+        uint8_t *orig = tunic_rgb() && skin_rgb() && row >= (w + 3) / 4 * 8 ? malloc(n) : NULL;
+        if (orig) memcpy(orig, blocks, n);
         tunic_apply(lv, blocks, w, h, row);
-        skin_apply(id, lv, blocks, w, h, row, true, false);  // (the arms and hands)
+        skin_apply(id, lv, blocks, w, h, row, true, false, orig);  // (the arms and hands)
+        free(orig);
         return;
     }
-    if (r->role == R_SKIN) { skin_apply(id, lv, blocks, w, h, row, false, !strncmp(r->name, "MI_mouth_alb", 12)); return; }
+    if (r->role == R_SKIN) { skin_apply(id, lv, blocks, w, h, row, false, !strncmp(r->name, "MI_mouth_alb", 12), NULL); return; }
     if (lv || r->w != w || r->h != h) return;
     if (r->role == R_BOTTLE || r->role == R_BOTTLE_MODEL || r->role == R_FAIRY_MODEL || r->role == R_POWDER_MODEL ||
         r->role == R_ITEM_CURSOR || r->role == R_DGN_MAP || r->role == R_MAP_MODEL || r->role == R_POWER_PIECE_MODEL ||
-        r->role == R_HEART) return;
+        r->role == R_HEART || r->role == R_TITLE_LOGO || r->role == R_FILE_FRAME) return;
     if (r->role == R_HERO) {  // fully transparent (BC5 blocks of zeros)
         if (hide_hero()) for (uint32_t y = 0; y < (h + 3) / 4; y++) memset(blocks + y * row, 0, (w + 3) / 4 * 16);
         return;

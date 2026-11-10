@@ -11,7 +11,8 @@
            tick (EighthClear). His house visit is skipped (Ghost2/3 flags). The Surf Harp no longer finishes the
            Ghost's quest, and he no longer appears by himself after the Harp (GhostJoinCheck).
   Marin    (open-desert off): the Walrus sleeps in front of Yarna Desert until Marin sings to him (vanilla event),
-           so the desert needs Marin found. With open-desert on (LAS default: WalrusAwaked from the start) Marin
+           so the desert needs Marin found. She stays with Link after the song (settings.json "marin-stays") instead
+           of leaving for the Animal Village. With open-desert on (LAS default: WalrusAwaked from the start) Marin
            isn't in the pool.
 
 A pet item is a dummy Items.gsheet entry (the companion's model on the chest / in Link's hands) that reaches the
@@ -124,6 +125,21 @@ def apply(out_dir, romfs, pets, oead_tools, event_tools):
         e12 = event_tools.findEvent(flow.flowchart, 'Event12')
         assert e12.data.params.data['symbol'] == 'WalrusTalked'
         event_tools.insertEventAfter(flow.flowchart, 'Event123', 'Event58')
+        # Marin stays with Link after her song (settings.json "marin-stays", runtime/hle/pets.c): she isn't sent away
+        # before it (Event36 Link.LeaveCompanion), doesn't say she's off to the Animal Village (Event7 / Event8) and
+        # doesn't walk off and vanish (Event17 -> Event20 Destroy); only the rabbit hops away
+        fc = flow.flowchart
+        e36 = event_tools.findEvent(fc, 'Event36')
+        assert e36.data.actor_action.v.v == 'LeaveCompanion' and e36.data.nxt.v.name == 'Event93'
+        event_tools.insertEventAfter(fc, 'Event71', 'Event93')
+        assert event_tools.findEvent(fc, 'Event8').data.params.data['message'] == 'Scenario:Lv4ClearQuestWalrus2'
+        event_tools.insertEventAfter(fc, 'Event85', 'Event63')
+        fork = event_tools.findEvent(fc, 'Event18').data.forks
+        i = next(i for i, f in enumerate(fork) if f.v.name == 'Event17')
+        fork[i].v = event_tools.findEvent(fc, 'Event14')  # (Link's ResetAim, which led on to Marin's Destroy)
+        fork[i].set_index(event_tools.invertList(fc.events))
+        assert event_tools.findEvent(fc, 'Event14').data.nxt.v.name == 'Event20'
+        event_tools.removeEventAfter(fc, 'Event14')
         event_tools.writeFlow(os.path.join(ev, 'Walrus.bfevfl'), flow)
     # the get message: GenericItemGetSequenceByKey runs the Item.bfevfl entry named messageEntry - the item key for
     # constant gives (item_get) and for chests / presents ('' = the key) - so one entry per pet covers every source

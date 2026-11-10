@@ -9,12 +9,14 @@
 
 #include "../rqueue.h"
 #include "../../title_profile.h"
+#include "../interp.h"
 #include "vk.h"
 #include "record.h"
 #include "../astc.h"
 #include "../tex_hash.h"
 #include "../renderer.h"
 #include "../texpatch.h"
+#include "../output_scale.h"
 
 // ================================================================== formats
 typedef struct { VkFormat vf; uint8_t expand_rgb, alpha_one; } VkFmt;
@@ -187,6 +189,11 @@ static float g_al_x = 1, g_al_y = 1;   // the allocation scale: the size of scal
 void renderer_get_scale(float *sx, float *sy) { *sx = g_rs_x; *sy = g_rs_y; }
 void renderer_set_scale(float sx, float sy) { g_rs_x = sx; g_rs_y = sy; }
 void renderer_set_alloc_scale(float ax, float ay) { g_al_x = ax; g_al_y = ay; }
+// The tap scale of the ambient occlusion's own blurs: see metal.m renderer_ao_blur_scale.
+float renderer_ao_blur_scale(NvnTexture *t) {
+    TexBackend *b = t ? (TexBackend *)t->backend : NULL;
+    return b && b->ao && t->format == 0x1 && t->width == 480 ? b->sx : 0;
+}
 // The part of a scalable texture its contents occupy (Dynamic: the render scale over the allocation scale; 1 otherwise).
 void renderer_texture_fraction(NvnTexture *t, float *fx, float *fy) {
     TexBackend *b = t ? (TexBackend *)t->backend : NULL;
@@ -195,12 +202,10 @@ void renderer_texture_fraction(NvnTexture *t, float *fx, float *fy) {
 }
 uint64_t renderer_present_count(void);
 
-// The game's ambient occlusion stays at the Switch's size (issue #356): see metal.m tex_guest_sized_ao.
-static bool tex_guest_sized_ao(const NvnTexture *t) {
+// The game's ambient occlusion has a scale of its own (issue #356, #602): see metal.m tex_ao.
+static bool tex_ao(const NvnTexture *t) {
     if (!title_is_las()) return false;
-    static int off = -1;
-    if (off < 0) off = getenv("LARECOMP_AO_SCALED") != NULL;
-    if (off) return false;
+    if (output_scale_ao(1) <= 0) return false;
     return t->format == 0x1 || (t->format == 0x35 && t->width <= 480);  // R8 unorm / D24S8, 16:9 (checked by the caller)
 }
 
@@ -213,9 +218,12 @@ static bool tex_scalable(const NvnTexture *t, bool render_target) {
     // pass to a smaller rectangle, which then becomes a visible lighting/occlusion boundary.
     if (t->target != 1 || t->samples > 1 || (!(t->flags & 8) && !render_target) || t->width < 32 || t->height < 16) return false;
     float a = (float)t->width / (float)t->height;
-    if (!(a > 1.74f && a < 1.81f)) return false;  // 16:9 (1920x1080 and its fractions, 704x396, 60x33...)
-    return !tex_guest_sized_ao(t);
+    return a > 1.74f && a < 1.81f;  // 16:9 (1920x1080 and its fractions, 704x396, 60x33...)
 }
+// The scale a scalable texture is allocated and drawn at: the ambient occlusion's own, else the frame's
+// (the AO: uniform, by the height's)
+static float tex_alloc_x(const TexBackend *b) { return b->ao ? output_scale_ao(g_al_y) : g_al_x; }
+static float tex_alloc_y(const TexBackend *b) { return b->ao ? output_scale_ao(g_al_y) : g_al_y; }
 
 bool renderer_texture_first_write(NvnTexture *t) {
     TexBackend *b = t ? (TexBackend *)t->backend : NULL;
@@ -344,10 +352,10 @@ VkFormat vk_view_format(TexBackend *b, VkFormat want) {
 
 static void create_image(NvnTexture *t, TexBackend *b) {
     VkFmt mf = fmt_of(t->format);
-    b->ax = b->scalable ? g_al_x : 1;
-    b->ay = b->scalable ? g_al_y : 1;
-    b->sx = b->scalable ? g_rs_x : 1;
-    b->sy = b->scalable ? g_rs_y : 1;
+    b->ax = b->scalable ? tex_alloc_x(b) : 1;
+    b->ay = b->scalable ? tex_alloc_y(b) : 1;
+    b->sx = b->scalable ? (b->ao ? b->ax : g_rs_x) : 1;
+    b->sy = b->scalable ? (b->ao ? b->ay : g_rs_y) : 1;
     uint32_t tw = t->width ? t->width : 1, th = t->height ? t->height : 1;
     if (b->scalable) {
         tw = (uint32_t)lroundf(tw * b->ax); th = (uint32_t)lroundf(th * b->ay);
@@ -377,7 +385,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     VkFormat vf = mf.vf;
     VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     b->astc_bw = b->astc_bh = 0;
-    if (!format_supports(vf, need)) {
+    if (!format_supports(vf, need) || (g_vk.cpu_astc && vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK)) {
         bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
         const FormatInfo *fi = t->layout.fmt;
         if (astc && fi && fi->bpb == 16) {  // desktop GPUs: decoded on the CPU into an RGBA8 image of the same colour space
@@ -536,7 +544,7 @@ static TexBackend *tex_backend_for_usage(NvnTexture *t, bool render_target) {
     if (b) {
         bool promoted = !b->scalable && render_target && tex_scalable(t, true);
         if (promoted) b->scalable = true;
-        if (b->scalable && (b->ax != g_al_x || b->ay != g_al_y)) {  // output resolution changed: reallocate
+        if (b->scalable && (b->ax != tex_alloc_x(b) || b->ay != tex_alloc_y(b))) {  // output resolution changed: reallocate
             TexBackend old = *b;
             destroy_image(b);
             create_image(t, b);
@@ -566,6 +574,7 @@ static TexBackend *tex_backend_for_usage(NvnTexture *t, bool render_target) {
     vk_collect_dead();
     b = calloc(1, sizeof *b);
     b->scalable = tex_scalable(t, render_target);
+    b->ao = b->scalable && tex_ao(t);
     create_image(t, b);
     t->backend = b;
     live_add(t, b);
@@ -578,6 +587,8 @@ void vk_mark_render_target(NvnTexture *t) { tex_backend_for_usage(t, true)->gpu_
 
 void backend_texture_destroyed(NvnTexture *t) {
     TexBackend *b = t->backend;
+    extern void interp_texture_destroyed(void);
+    interp_texture_destroyed();  // (frame interpolation: a texture the frame may have drawn with went away)
     if (b) {
         extern void vk_alias_texture_destroyed(NvnTexture *t);  // (exec.c copy aliases: a source's contents handed over)
         vk_alias_texture_destroyed(t);
@@ -652,6 +663,9 @@ static void upload_pending(TexBackend *b) {
 uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn, prof_tex_watch_skips;
 static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (!t->addr || t->target == 10) return;
+    // (a frame interpolation replay shows the frame's textures as it uploaded them: checked again there, it uploaded
+    // what the game had meanwhile written for the next frame - renderer.m upload_texture)
+    if (b->uploaded && g_interp_replaying) return;
     uint64_t frame = vk_frame_counter();
     if (b->uploaded && b->checked_frame == frame) return;
     if (b->uploaded && !b->dynamic && ((frame + ((uintptr_t)b >> 6)) & 7)) return;
@@ -793,7 +807,7 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
 void renderer_mark_gpu_owned(NvnTexture *t) {
     TexBackend *b = tex_backend(t);
     b->gpu_owned = true;
-    if (b->scalable) { b->sx = g_rs_x; b->sy = g_rs_y; }
+    if (b->scalable && !b->ao) { b->sx = g_rs_x; b->sy = g_rs_y; }
 }
 bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
 void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size; }

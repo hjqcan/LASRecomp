@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Log triage for GitHub issues: a short summary of the lasrecomp.log files attached to an issue.
 
-.github/workflows/log_triage.yml runs it when an issue is opened / edited or a comment is added. It reads the issue
+.github/workflows/log_triage.yml runs it when an issue or a comment is added or edited. It reads the issue
 and its comments through the GitHub API, downloads the attached logs (github.com/user-attachments/files/... links
 whose file name starts with "lasrecomp", at most MAX_BYTES each), and keeps ONE bot comment per issue up to date
 with a summary of the newest logs, plus a "log: crash" / "log: device-lost" / "log: ok" label for the newest one.
+Shader variants the shipped list lacks ("[shader] record ..." lines) are listed in the comment, folded, and the issue
+gets the "log: new shaders" label, so they can be merged into runtime/nvn/shader_variants.txt
+(tools/shader_list_merge.py).
 
 Everything in an issue and in a log is untrusted data: it is only ever parsed here, never run or handed to a shell.
 Excerpts quoted in the comment are cut short, put in code spans, and have file paths reduced to their last part.
@@ -30,6 +33,8 @@ MAX_LOGS = 3                  # newest logs summarised per comment
 LABELS = {"crash": ("log: crash", "b60205", "Newest attached log ends in a crash or hang"),
           "device-lost": ("log: device-lost", "d93f0b", "Newest attached log ends with the GPU device lost"),
           "ok": ("log: ok", "0e8a16", "Newest attached log ends with a clean exit")}
+SHADER_LABEL = ("log: new shaders", "5319e7", "Attached log has shader variants the shipped list lacks")
+MAX_RECORDS = 500             # shader records listed per comment
 ATTACH_RE = re.compile(r"https://github\.com/user-attachments/files/\d+/[A-Za-z0-9._%+-]+")
 REDIRECT_HOSTS = ("objects.githubusercontent.com",)  # (where github.com/user-attachments/files/... redirects)
 
@@ -51,7 +56,18 @@ def code(s, n=160):
 FPS_RE = re.compile(r"^\[(vk|metal)\] t=([\d.]+) frame (\d+) ([\d.]+) fps max (\d+)ms level (\S+)")
 BUILD_RE = re.compile(r"LAS[ ._-]?Recomp[ ._-]((?:beta_\d+(?:[._-]\d+)?)|(?:v\d+\.\d+\.\d+)|(?:test-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*?))"
                       r"(?:-(windows|macos|linux|android)\b|[\\/\s]|$)", re.I)
+# runtime/main.c log_startup_info: "[info] LAS Recomp beta_5.4, Windows 11 (10.0.26300, x64), AMD Ryzen 5 7500F
+# 6-Core Processor 6 cores / 12 threads, 31.7 GB RAM, zip" - the build; the OS, CPU and RAM; the package when known
+INFO_RE = re.compile(r"^\[info\] LAS Recomp ([^\s,]+), (.+?(?:GB RAM|RAM unknown))(?:, (.+))?$")
 MS_RE = re.compile(r"([\d.]+)\s*ms")
+# runtime/nvn/shader_seen.c shader_seen_note: "[shader] record G vs=... fs=... f=1 ..." (hashes and pipeline state only)
+RECORD_RE = re.compile(r"^\[shader\] record ([GC] [A-Za-z0-9=,:./+ -]{1,400})$")
+# The game files check (runtime/ui/launcher.mm on the start screen, runtime/services/fs.c when the game starts; the
+# same check, so a run logs it twice): files that aren't the game's (the first 20 named), the game's files missing or
+# of another size, and a byte total other than the version's (issues #391, #553)
+ROMFS_RE = re.compile(r"^\[(launcher|fs)\] romfs: (?:not one of the game's files: (.+) \(\d+ bytes\)|(\d+) more files "
+                      r"that aren't the game's|(\d+) of the game's files missing or changed|(\d+) bytes in \d+ files, "
+                      r"this version's are (\d+): damaged or changed game files)$")
 
 # notable lines: (label, regex); each is reported once, with its count and first line
 NOTABLE = [
@@ -60,7 +76,7 @@ NOTABLE = [
     ("guest heap imported in chunks (not enough GPU memory for one import)", re.compile(r"\[vk\] guest heap: .*(ran out of memory|imported in chunks)")),
     ("no BC texture formats", re.compile(r"no BC texture formats")),
     ("GPU device fault", re.compile(r"\[vk\] device fault")),
-    ("shaders not found or failed in preparation", re.compile(r"\[shader\] prepared \d+, not found [1-9]|\[shader\] prepared .*\(([1-9]\d*) failed")),
+    ("shaders not found or failed in preparation", re.compile(r"\[shader\] prepared \d+ \+ \d+ seen before, not found [1-9]|\[shader\] prepared .*\(([1-9]\d*) failed")),
     ("shader translation failed", re.compile(r"translate failed|pipeline failed|\[shader\] stale program")),
     ("frame pacing switched to the game's 30 fps mode", re.compile(r"\[pace\] frames don't fit")),
     ("slow shader builds (stutter)", re.compile(r"\[shader\] slow build")),
@@ -74,18 +90,22 @@ NOTABLE = [
 def parse(text):
     lines = text.splitlines()
     r = {"backend": None, "gpu": None, "gpus": [], "api": None, "driver": None, "os": None, "cpu": None,
-         "build": None, "settings": None, "swapchain": None, "integrated": False, "fps": [], "slow": [],
-         "notable": {}, "seed": None, "end": None, "end_line": None, "lines": len(lines)}
+         "system": None, "build": None, "settings": None, "swapchain": None, "integrated": False, "fps": [], "slow": [],
+         "notable": {}, "records": [], "seed": None, "end": None, "end_line": None, "lines": len(lines), "romfs": None}
+    romfs = {}  # per check ("launcher" / "fs"): what it found (each file once: a check can run again)
     fatal = exc = crash_head = None
     devlost = hang = closed = False
     for i, ln in enumerate(lines):
-        if ln.startswith("[paths] data: "):
+        if m := INFO_RE.match(ln):  # (the build's own name: wins over a folder name in the data path)
+            r["build"] = m.group(1) + (f" ({m.group(3)})" if m.group(3) else "")
+            r["system"] = m.group(2)
+        elif ln.startswith("[paths] data: "):
             p = ln[14:]
             r["os"] = ("Windows" if re.match(r"[A-Za-z]:\\", p) else "Android" if p.startswith("/storage/")
                        else "macOS" if p.startswith("/Users/") or "Library/Application Support" in p
                        else "Linux" if p.startswith("/") else None)
             m = BUILD_RE.search(p)
-            if m: r["build"] = m.group(1) + (f" ({m.group(2).lower()})" if m.group(2) else "")
+            if m and not r["build"]: r["build"] = m.group(1) + (f" ({m.group(2).lower()})" if m.group(2) else "")
         elif ln.startswith("ANDROID:"):
             r["os"] = "Android"
         elif not r["build"] and re.match(r"^\[(version|build)\] ", ln):
@@ -99,8 +119,8 @@ def parse(text):
             for g in lines[:i]:
                 mm = re.match(r"^\[vk\] gpu \d+: (.+) \(api ([\d.]+)\)", g)
                 if mm and mm.group(1) == r["gpu"]: r["api"] = mm.group(2)
-        elif m := re.match(r"^\[vk\] device: driver (\S+) \(([^)]*)\)", ln):
-            r["driver"] = f"{m.group(2)} {m.group(1)}"
+        elif m := re.match(r"^\[vk\] driver (.+?)(?:; |$)", ln):  # ("[vk] driver NVIDIA 617.42; graphics pipeline library: ...")
+            r["driver"] = m.group(1)
         elif m := re.match(r"^\[metal\] (.+), heap buffer \d+ MB", ln):
             r["gpu"], r["backend"] = m.group(1), "Metal"
         elif ln.startswith("[settings] ") and " GPU: upscaler " in ln:
@@ -129,12 +149,22 @@ def parse(text):
             hang = True
         elif m := re.match(r'^\[rando\] seed "([^"]+)" active(?:, seed ID (\S+))?', ln):
             r["seed"] = m.group(1) + (f" (seed ID {m.group(2)})" if m.group(2) else "")
+        elif m := RECORD_RE.match(ln.rstrip()):
+            r["records"].append(m.group(1).strip())
         elif ln.strip() == "window closed":
             closed = True
+        elif m := ROMFS_RE.match(ln.rstrip()):
+            c = romfs.setdefault(m.group(1), {"odd": [], "more": 0, "missing": 0, "bytes": None})
+            if m.group(2) is not None:
+                if m.group(2) not in c["odd"]: c["odd"].append(m.group(2))
+            elif m.group(3): c["more"] = int(m.group(3))
+            elif m.group(4): c["missing"] = int(m.group(4))
+            else: c["bytes"] = (int(m.group(5)), int(m.group(6)))
         for label, rx in NOTABLE:
             if rx.search(ln):
                 n, first = r["notable"].get(label, (0, ln))
                 r["notable"][label] = (n + 1, first)
+    r["romfs"] = romfs.get("fs") or romfs.get("launcher")  # (the game's own check when it got that far)
     if r["integrated"] or any("integrated GPU" in x and "not an integrated GPU" not in x for x in lines[:200]):
         r["integrated"] = True
     if devlost:
@@ -171,7 +201,7 @@ def summarise(r):
     out.append(f"- **Build:** {code(r['build']) if r['build'] else 'not in the log'}")
     sysl = [r["os"] or "OS not in the log"]
     if r["cpu"]: sysl.append(r["cpu"])
-    out.append("- **System:** " + ", ".join(sysl))
+    out.append("- **System:** " + (code(r["system"]) if r["system"] else ", ".join(sysl)))
     if r["gpu"]:
         g = code(r["gpu"], 80) + (" (integrated)" if r["integrated"] else "")
         if r["api"]: g += f", Vulkan {r['api']}"
@@ -182,6 +212,16 @@ def summarise(r):
         out.append("- **GPU:** not in the log")
     out.append(f"- **Backend:** {r['backend'] or 'not in the log'}")
     if r["seed"]: out.append(f"- **Randomizer seed:** {code(r['seed'], 120)}")
+    if r["romfs"]:
+        c, gf = r["romfs"], []
+        if c["missing"]: gf.append(f"{c['missing']} of the game's files missing or changed")
+        odd = len(c["odd"]) + c["more"]
+        if odd:
+            gf.append(f"{odd} file{' that isn' if odd == 1 else 's that aren'}'t the game's"
+                      + (f" ({'first: ' if odd > 1 else ''}{code(c['odd'][0], 80)})" if c["odd"] else ""))
+        if c["bytes"]: gf.append(f"{c['bytes'][0]} bytes, this version's are {c['bytes'][1]}")
+        # (only extra files: not a damaged copy, the start screen doesn't warn about them since #553)
+        out.append("- **Game files:** " + ("damaged or changed: " if c["missing"] or c["bytes"] else "") + "; ".join(gf))
     st = []
     if r["settings"]: st.append(code(r["settings"], 120))
     if r["swapchain"]: st.append(f"window {r['swapchain']}")
@@ -200,11 +240,20 @@ def summarise(r):
             return float(m.group(1)) if m else 0.0
         worst = max(r["slow"], key=ms)
         out.append(f"- **Slow frames:** {len(r['slow'])} `[slow]` lines; worst: {code(worst, 140)}")
+    if r["records"]:
+        g = sum(1 for x in r["records"] if x[0] == "G")
+        out.append(f"- **New shader variants:** {len(r['records'])} the shipped list lacks ({g} pipelines, "
+                   f"{len(r['records']) - g} compute)")
     if r["notable"]:
         out.append("- **Notable lines:**")
         for label, (n, first) in r["notable"].items():
             out.append(f"  - {label}{f' ({n}x)' if n > 1 else ''}: {code(first, 140)}")
     return "\n".join(out)
+
+
+def shader_records(entries):
+    """every shader record in the summarised logs, once, sorted (the shipped list's order)"""
+    return sorted({x for _, r in entries if isinstance(r, dict) for x in r["records"]})
 
 
 def render(entries, total):
@@ -218,6 +267,12 @@ def render(entries, total):
     for k, (src, r) in enumerate(entries):
         out += ["", f"#### {'Newest log' if k == 0 else 'Earlier log'}: {src}"]
         out.append(summarise(r) if isinstance(r, dict) else f"- Could not read this log: {clean(r, 120)}")
+    recs = shader_records(entries)
+    if recs:
+        out += ["", "<details><summary>Shader variants the shipped list lacks (" + str(len(recs)) + ")</summary>", "",
+                "```"] + recs[:MAX_RECORDS] + ["```", ""]
+        if len(recs) > MAX_RECORDS: out.append(f"({len(recs) - MAX_RECORDS} more in the logs.)")
+        out.append("</details>")
     if total > len(entries):
         out += ["", f"({total - len(entries)} earlier log{'s' if total - len(entries) > 1 else ''} on this issue not summarised.)"]
     return "\n".join(out) + "\n"
@@ -296,6 +351,8 @@ def run_issue():
             if MARKER in (c.get("body") or "") and c["user"]["login"] == "github-actions[bot]": mine = c
             continue
         found += [(u, f"comment from {c['created_at'][:10]}", c["html_url"]) for u in attachments(c.get("body"))]
+    seen = set()  # (a quote reply repeats the quoted comment's links: each log once, where it was attached)
+    found = [f for f in found if f[0] not in seen and not seen.add(f[0])]
     if not found: print("no lasrecomp log attached: nothing to do"); return
     newest = list(reversed(found))[:MAX_LOGS]
     entries = []
@@ -313,6 +370,7 @@ def run_issue():
         label = LABELS["crash"][0] if first["end"] in ("crash", "hang") else LABELS["device-lost"][0] if first["end"] == "device-lost" \
             else LABELS["ok"][0] if first["end"] == "ok" else None
     print(body)
+    if shader_records(entries): print(f"label: {SHADER_LABEL[0]}")
     print(f"label: {label or '(none)'}; existing bot comment: {mine['html_url'] if mine else '(none)'}")
     if dry:
         print("dry run: nothing posted")
@@ -330,12 +388,18 @@ def run_issue():
         if name in have and name != label:
             api.call("DELETE", f"issues/{num}/labels/{urllib.parse.quote(name)}")
     if label and label not in have:
-        try:
-            name, color, desc = next(v for v in LABELS.values() if v[0] == label)
-            api.call("POST", "labels", {"name": name, "color": color, "description": desc})
-        except urllib.error.HTTPError as e:
-            if e.code != 422: raise  # (422: it exists already)
-        api.call("POST", f"issues/{num}/labels", {"labels": [label]})
+        add_label(api, num, next(v for v in LABELS.values() if v[0] == label))
+    if shader_records(entries) and SHADER_LABEL[0] not in have:  # (only added, never removed: the issue watch keys on it)
+        add_label(api, num, SHADER_LABEL)
+
+
+def add_label(api, num, spec):
+    name, color, desc = spec
+    try:
+        api.call("POST", "labels", {"name": name, "color": color, "description": desc})
+    except urllib.error.HTTPError as e:
+        if e.code != 422: raise  # (422: it exists already)
+    api.call("POST", f"issues/{num}/labels", {"labels": [name]})
 
 
 def main():
@@ -345,6 +409,7 @@ def main():
             with open(p, encoding="utf-8", errors="replace") as f:
                 entries.append((os.path.basename(p), parse(f.read())))
         sys.stdout.write(render(entries[:MAX_LOGS], len(entries)))
+        if shader_records(entries[:MAX_LOGS]): print("label:", SHADER_LABEL[0])
         print("label:", {"crash": "log: crash", "hang": "log: crash", "device-lost": "log: device-lost", "ok": "log: ok"}
               .get(entries[0][1]["end"], "(none)"))
     elif len(sys.argv) == 2 and sys.argv[1] == "issue":

@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "imgui.h"
+#include "i18n.h"
 #ifdef __APPLE__
 #import <Metal/Metal.h>
 #endif
@@ -172,6 +173,8 @@ static void image(ImDrawList *dl, int which, ImVec2 p, float s, ImU32 tint) {
     dl->AddImage(ic.id, q, ImVec2(q.x + iw, q.y + ih), ic.uv0, ic.uv1, tint);
 }
 
+extern "C" float hud_corners_left(void);  // (phones: the HUD at the screen corners, runtime/hle/hud_corners.c)
+
 extern "C" void pickup_flyin_draw(ImVec2 display, ImFont *font, float scale) {
     if (!g_card.on || inventory_items_page_shown()) return;
     load_icons();
@@ -187,15 +190,15 @@ extern "C" void pickup_flyin_draw(ImVec2 display, ImFont *font, float scale) {
     if (it == IT_HEART_PIECE) {
         int n = g_card.held % 4;
         quarters = n ? n : 4;
-        snprintf(title, sizeof title, "Piece of Heart");
+        snprintf(title, sizeof title, "%s", L("Piece of Heart"));
         if (n) snprintf(value, sizeof value, "%d / 4", n);
-        else snprintf(value, sizeof value, "4 / 4   +1 Heart");
+        else snprintf(value, sizeof value, "%s", L("4 / 4   +1 Heart"));
     } else if (it == IT_HEART_CONTAINER) {
-        snprintf(title, sizeof title, g_card.amount > 1 ? "Heart Containers" : "Heart Container");
-        if (g_card.amount > 1) snprintf(value, sizeof value, "+%d Hearts", g_card.amount);
-        else snprintf(value, sizeof value, "+1 Heart");
+        snprintf(title, sizeof title, "%s", g_card.amount > 1 ? L("Heart Containers") : L("Heart Container"));
+        if (g_card.amount > 1) snprintf(value, sizeof value, L("+%d Hearts"), g_card.amount);
+        else snprintf(value, sizeof value, "%s", L("+1 Heart"));
     } else if (it == IT_SEASHELL) {
-        snprintf(title, sizeof title, "Secret Seashells");
+        snprintf(title, sizeof title, "%s", L("Secret Seashells"));
         snprintf(value, sizeof value, "%d / %d", g_card.held, silent_seashell_total());
     } else {
         return;
@@ -210,7 +213,7 @@ extern "C" void pickup_flyin_draw(ImVec2 display, ImFont *font, float scale) {
     float h = fmaxf(icon, texth) + 2 * pad, w = pad + icon + gap + textw + pad * 1.4f;
     // the HUD's 16:9 box: the card's resting place is its left edge, below the hearts (3 rows at 20 hearts)
     float bw = fminf(display.x, display.y * 16 / 9), bx = (display.x - bw) * 0.5f;
-    float rest = bx + 28 * scale, x = -w - 8 * scale + (rest + w + 8 * scale) * e;
+    float rest = bx - hud_corners_left() * bw / 1280 + 28 * scale, x = -w - 8 * scale + (rest + w + 8 * scale) * e;
     float y = display.y * 0.215f;
     ImDrawList *dl = ImGui::GetBackgroundDrawList();
     ImVec2 a(roundf(x), roundf(y)), z(roundf(x + w), roundf(y + h));

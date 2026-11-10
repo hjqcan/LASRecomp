@@ -17,14 +17,184 @@
 #include "render_control.h"
 #include "renderer.h"
 #include "pace.h"
+#include "interp.h"
 #include "shader_prep.h"
 #include "../title_profile.h"
 #include "recolour.h"
 #include "slowframe.h"
+#include "weather.h"
+#include "../settings.h"
 
 static id<MTLDevice> dev;
 static id<MTLCommandBuffer> cmdbuf;
 static id<MTLRenderCommandEncoder> enc;
+
+// ---- frame interpolation's tape (runtime/nvn/interp.c): while a frame is logged, its render work is recorded as the
+// Metal calls it made, and an in-between plays them back with the blended uniform copies bound in place of the
+// frame's - instead of translating the frame's command lists again, which was most of an in-between's CPU time
+// (texture pool lookups, state hashing, uniform copies: 4-9 ms an image in the field, the game held back to 20-30 fps).
+// Copies between textures are recorded as blocks that encode them again. Calls on `enc` go through the E_* wrappers.
+// LARECOMP_INTERP_TAPE=0: replays translate the lists again (the old path).
+enum { TP_PASS, TP_END, TP_PIPE, TP_DSS, TP_STREF, TP_STREF2, TP_BLENDC, TP_CULL, TP_WIND, TP_FILL, TP_BIAS,
+       TP_VIEWPORT, TP_SCISSOR, TP_BUF, TP_BYTES, TP_TEX, TP_SMP, TP_DRAW, TP_DRAWI, TP_BLOCK };
+typedef struct {
+    uint8_t op, stage; uint16_t idx;
+    int32_t obj, cb;  // tape_objs index (-1: nil); the uniform copy a TP_BUF binds (interp.c's, -1: none)
+    uint64_t a, b, c, d;
+    float f[6];
+} TapeOp;
+static TapeOp *tape; static uint32_t tape_n, tape_cap;
+static NSMutableArray *tape_objs;
+static uint8_t *tape_bytes; static uint64_t tape_nbytes, tape_capbytes;
+static bool tape_rec, tape_ok;  // recording now; the tape holds the whole frame
+static int tape_mute;           // (encodes the replays don't make: a readback's downscale)
+static uint64_t ring_gen, tape_ring_gen;  // ring_reset's count (a reset rewrites the ring the tape binds)
+// The frame's copy of dynamic geometry it reads in place (iv_geometry): the next buffer bind / indexed draw is recorded
+// with it - by the time an in-between is made the game has rewritten that memory (the torches' flames in Tail Cave
+// drawn with the next frame's particles: 2% of the image)
+static id<MTLBuffer> iv_sub_buf;
+static uint64_t iv_sub_off;
+// LARECOMP_INTERP_INPLACE_CHECK=1 (debug): game memory the tape reads in place (vertex / index buffers), with a hash
+// of it at the frame - checked when an in-between is made and when the next frame starts: rewritten by then, the
+// in-between drew with the game's newer data
+typedef struct { uint64_t addr, size, hash; } InPlace;
+static InPlace *ip_list; static uint32_t ip_n, ip_cap;
+static int ip_check = -1;
+static uint64_t range_hash(uint64_t addr, uint64_t size);
+static void tape_note_inplace(uint64_t addr, uint64_t size);
+
+static TapeOp *tp_push(int op) {
+    if (tape_n == tape_cap) {
+        if (tape_cap >= (4u << 20)) { tape_ok = false; tape_n = 0; }  // (a runaway frame: no tape)
+        else { tape_cap = tape_cap ? tape_cap * 2 : 16384; tape = realloc(tape, sizeof *tape * tape_cap); }
+    }
+    TapeOp *o = &tape[tape_n++];
+    memset(o, 0, sizeof *o);
+    o->op = (uint8_t)op, o->obj = o->cb = -1;
+    return o;
+}
+static int32_t tp_obj(id o) {
+    if (!o) return -1;
+    [tape_objs addObject:o];
+    return (int32_t)tape_objs.count - 1;
+}
+static bool tp_on(void) { return tape_rec && !tape_mute; }
+static void inplace_check(const char *when) {
+    if (ip_check <= 0 || !ip_n) return;
+    static uint64_t checks[2], changed[2], bytes[2], binds[2];
+    static double last;
+    int k = when[0] == 'n';
+    uint32_t n = 0; uint64_t b = 0;
+    for (uint32_t i = 0; i < ip_n; i++)
+        if (range_hash(ip_list[i].addr, ip_list[i].size) != ip_list[i].hash) {
+            if (n < 3 && changed[k] < 40) LOG("[inplace] %s: %llx+%llu rewritten since the frame\n", when, (unsigned long long)ip_list[i].addr, (unsigned long long)ip_list[i].size);
+            n++, b += ip_list[i].size;
+        }
+    checks[k]++, binds[k] += ip_n;
+    if (n) changed[k]++, bytes[k] += b;
+    extern uint64_t plat_now_ns(void);
+    double now = plat_now_ns() / 1e9;
+    if (now - last > 2) {
+        last = now;
+        LOG("[inplace] at the in-between: %llu of %llu checks found rewritten data (%.0f binds/frame); at the next frame: %llu of %llu\n",
+            (unsigned long long)changed[0], (unsigned long long)checks[0], checks[0] ? (double)binds[0] / checks[0] : 0,
+            (unsigned long long)changed[1], (unsigned long long)checks[1]);
+        memset(checks, 0, sizeof checks), memset(changed, 0, sizeof changed), memset(bytes, 0, sizeof bytes), memset(binds, 0, sizeof binds);
+    }
+}
+static void tape_note_inplace(uint64_t addr, uint64_t size) {
+    if (ip_check < 0) ip_check = getenv("LARECOMP_INTERP_INPLACE_CHECK") && atoi(getenv("LARECOMP_INTERP_INPLACE_CHECK"));
+    if (ip_check <= 0 || !tp_on() || !size) return;
+    if (ip_n == ip_cap) { ip_cap = ip_cap ? ip_cap * 2 : 4096; ip_list = realloc(ip_list, sizeof *ip_list * ip_cap); }
+    ip_list[ip_n++] = (InPlace){addr, size & ~7ull, range_hash(addr, size & ~7ull)};
+}
+static void tape_begin(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("LARECOMP_INTERP_TAPE"); on = !e || atoi(e); }
+    inplace_check("next frame");
+    ip_n = 0;
+    tape_n = 0, tape_nbytes = 0;
+    if (!tape_objs) tape_objs = [NSMutableArray new];
+    [tape_objs removeAllObjects];
+    tape_rec = tape_ok = on;
+    iv_sub_buf = nil;
+    tape_ring_gen = ring_gen;
+}
+void renderer_tape_close(void) { tape_rec = false; }  // (the present: the frame is complete)
+static void tape_block(void (^b)(void)) { if (tp_on()) tp_push(TP_BLOCK)->obj = tp_obj(b); }
+
+static void E_pipe(id<MTLRenderPipelineState> p) { [enc setRenderPipelineState:p]; if (tp_on()) tp_push(TP_PIPE)->obj = tp_obj(p); }
+static void E_dss(id<MTLDepthStencilState> d) { [enc setDepthStencilState:d]; if (tp_on()) tp_push(TP_DSS)->obj = tp_obj(d); }
+static void E_stref(uint32_t v) { [enc setStencilReferenceValue:v]; if (tp_on()) tp_push(TP_STREF)->a = v; }
+static void E_stref2(uint32_t f, uint32_t b) {
+    [enc setStencilFrontReferenceValue:f backReferenceValue:b];
+    if (tp_on()) { TapeOp *o = tp_push(TP_STREF2); o->a = f, o->b = b; }
+}
+static void E_blendc(const float *c) {
+    [enc setBlendColorRed:c[0] green:c[1] blue:c[2] alpha:c[3]];
+    if (tp_on()) memcpy(tp_push(TP_BLENDC)->f, c, 16);
+}
+static void E_cull(MTLCullMode m) { [enc setCullMode:m]; if (tp_on()) tp_push(TP_CULL)->a = m; }
+static void E_wind(MTLWinding w) { [enc setFrontFacingWinding:w]; if (tp_on()) tp_push(TP_WIND)->a = w; }
+static void E_fill(MTLTriangleFillMode m) { [enc setTriangleFillMode:m]; if (tp_on()) tp_push(TP_FILL)->a = m; }
+static void E_bias(float bias, float slope, float clamp) {
+    [enc setDepthBias:bias slopeScale:slope clamp:clamp];
+    if (tp_on()) { TapeOp *o = tp_push(TP_BIAS); o->f[0] = bias, o->f[1] = slope, o->f[2] = clamp; }
+}
+static void E_viewport(MTLViewport v) {
+    [enc setViewport:v];
+    if (tp_on()) { TapeOp *o = tp_push(TP_VIEWPORT); o->f[0] = (float)v.originX, o->f[1] = (float)v.originY, o->f[2] = (float)v.width,
+                   o->f[3] = (float)v.height, o->f[4] = (float)v.znear, o->f[5] = (float)v.zfar; }
+}
+static void E_scissor(MTLScissorRect r) {
+    [enc setScissorRect:r];
+    if (tp_on()) { TapeOp *o = tp_push(TP_SCISSOR); o->a = r.x, o->b = r.y, o->c = r.width, o->d = r.height; }
+}
+// cb: the uniform copy it binds (interp_last_cb), size its length - a replay binds the blended copy instead
+static void E_cbuf(int stage, id<MTLBuffer> b, uint64_t off, int idx, int32_t cbi, uint64_t size) {
+    if (stage == 0) [enc setVertexBuffer:b offset:off atIndex:idx];
+    else [enc setFragmentBuffer:b offset:off atIndex:idx];
+    if (tp_on()) {
+        if (iv_sub_buf) b = iv_sub_buf, off = iv_sub_off, iv_sub_buf = nil;
+        TapeOp *o = tp_push(TP_BUF); o->stage = (uint8_t)stage, o->idx = (uint16_t)idx, o->obj = tp_obj(b), o->a = off, o->cb = cbi, o->b = size;
+    }
+}
+static void E_buf(int stage, id<MTLBuffer> b, uint64_t off, int idx) { E_cbuf(stage, b, off, idx, -1, 0); }
+static void E_bytes(int stage, const void *p, uint64_t len, int idx) {
+    if (stage == 0) [enc setVertexBytes:p length:len atIndex:idx];
+    else [enc setFragmentBytes:p length:len atIndex:idx];
+    if (!tp_on()) return;
+    if (tape_nbytes + len > tape_capbytes) { tape_capbytes = (tape_nbytes + len) * 2 + 65536; tape_bytes = realloc(tape_bytes, tape_capbytes); }
+    memcpy(tape_bytes + tape_nbytes, p, len);
+    TapeOp *o = tp_push(TP_BYTES);
+    o->stage = (uint8_t)stage, o->idx = (uint16_t)idx, o->a = tape_nbytes, o->b = len;
+    tape_nbytes += len;
+}
+static void E_tex(int stage, id<MTLTexture> t, int idx) {
+    if (stage == 0) [enc setVertexTexture:t atIndex:idx];
+    else [enc setFragmentTexture:t atIndex:idx];
+    if (tp_on()) { TapeOp *o = tp_push(TP_TEX); o->stage = (uint8_t)stage, o->idx = (uint16_t)idx, o->obj = tp_obj(t); }
+}
+static void E_smp(int stage, id<MTLSamplerState> sm, int idx) {
+    if (stage == 0) [enc setVertexSamplerState:sm atIndex:idx];
+    else [enc setFragmentSamplerState:sm atIndex:idx];
+    if (tp_on()) { TapeOp *o = tp_push(TP_SMP); o->stage = (uint8_t)stage, o->idx = (uint16_t)idx, o->obj = tp_obj(sm); }
+}
+static void E_draw(MTLPrimitiveType pt, uint32_t first, uint32_t count, uint32_t inst, uint32_t base_inst) {
+    [enc drawPrimitives:pt vertexStart:first vertexCount:count instanceCount:inst baseInstance:base_inst];
+    if (tp_on()) { TapeOp *o = tp_push(TP_DRAW); o->idx = (uint16_t)pt, o->a = first, o->b = count, o->c = inst, o->d = base_inst; }
+}
+static void E_drawi(MTLPrimitiveType pt, uint32_t count, MTLIndexType it, id<MTLBuffer> ib, uint64_t ioff, uint32_t inst,
+                    int32_t base_vertex, uint32_t base_inst) {
+    [enc drawIndexedPrimitives:pt indexCount:count indexType:it indexBuffer:ib indexBufferOffset:ioff instanceCount:inst
+                    baseVertex:base_vertex baseInstance:base_inst];
+    if (tp_on()) {
+        if (iv_sub_buf) ib = iv_sub_buf, ioff = iv_sub_off, iv_sub_buf = nil;
+        TapeOp *o = tp_push(TP_DRAWI);
+        o->idx = (uint16_t)pt, o->stage = (uint8_t)it, o->obj = tp_obj(ib), o->a = count, o->b = ioff, o->c = inst,
+        o->d = (uint64_t)(uint32_t)base_vertex | (uint64_t)base_inst << 32;
+    }
+}
 static id<MTLRenderPipelineState> clear_pipes[64];
 static NSMutableDictionary<NSString *, id> *cache;
 // (stats) GPU wait time by cause: 0 = guest fence (nvnSyncWait), 1 = full flush (CPU reads GPU results / ring), 2 = sync all
@@ -36,9 +206,12 @@ static double stat_gpu_s;
 // GPU busy time (dynamic resolution: output_scale.c; the "gpu" of the [metal] stats line), ns so far: the game's
 // command buffers, the window image's (metal.m backend_present), and the plain sum of their spans (diagnostics)
 uint64_t g_gpu_total_ns, g_gpu_win_ns, g_gpu_sum_ns;
-// Frame pacing (pace.c): the GPU's busy time so far, the game's command buffers and the window image's (renderer_gpu_busy).
+uint64_t g_gpu_interp_ns;  // (the part of both that made frame interpolation's in-betweens: replays and their composes)
+// Frame pacing (pace.c): the GPU's busy time so far, the game's command buffers and the window image's (renderer_gpu_busy)
+// - without the in-betweens': they give way to the game's frames (metal.m ip_present), so they must not hold it at 30.
 int64_t pace_gpu_ns(void) {
-    return (int64_t)(__atomic_load_n(&g_gpu_total_ns, __ATOMIC_RELAXED) + __atomic_load_n(&g_gpu_win_ns, __ATOMIC_RELAXED));
+    return (int64_t)(__atomic_load_n(&g_gpu_total_ns, __ATOMIC_RELAXED) + __atomic_load_n(&g_gpu_win_ns, __ATOMIC_RELAXED) -
+                     __atomic_load_n(&g_gpu_interp_ns, __ATOMIC_RELAXED));
 }
 // (forward: texture-lifetime cleanup and stats, defined further down)
 static int g_views_live;
@@ -292,6 +465,7 @@ static void end_pass(void) {
     if (enc) {
         [enc endEncoding];
         enc = nil;
+        if (tp_on()) tp_push(TP_END);
         if (g_debug_frame && st.rt.ncolor && st.rt.color[0] && st.rt.color[0]->backend) {
             id<MTLTexture> t = renderer_texture(st.rt.color[0], nil, true);
             id<MTLCommandBuffer> c = cmdbuf;
@@ -484,8 +658,12 @@ void renderer_submit(void) {
     if (cmdbuf) {
         id<MTLCommandBuffer> c = cmdbuf;
         cmdbuf = nil;
+        bool replay = g_interp_replaying;
         [c addCompletedHandler:^(id<MTLCommandBuffer> done) {
-            stat_gpu_s += renderer_gpu_busy(done, false) / 1e9;
+            // (frame interpolation's replays count as the game's work: Dynamic budgets the frame and its in-betweens)
+            uint64_t ns = renderer_gpu_busy(done, false);
+            stat_gpu_s += ns / 1e9;
+            if (replay) { interp_replay_gpu((done.GPUEndTime - done.GPUStartTime) * 1e3); __atomic_add_fetch(&g_gpu_interp_ns, ns, __ATOMIC_RELAXED); }
             if (done.error) LOG("[metal] command buffer error: %s\n", done.error.localizedDescription.UTF8String);
         }];
         [c commit];
@@ -877,6 +1055,7 @@ static void begin_pass(void) {
     if (chunk < 0) { const char *e = ENV("LARECOMP_CHUNK_PASSES"); chunk = e ? atoi(e) : 8; }
     if (chunk > 0 && cmdbuf && ++g_passes_in_cb >= chunk) renderer_submit();
     enc = [cb() renderCommandEncoderWithDescriptor:rp];
+    if (tp_on()) tp_push(TP_PASS)->obj = tp_obj(rp);
     opening_pass = false;
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
     stat_passes++;
@@ -915,7 +1094,7 @@ static void apply_scissor(void) {
     if (pass_rt_h && y + sh > pass_rt_h) sh = pass_rt_h - y;
     if (sw < 0) sw = 0;
     if (sh < 0) sh = 0;
-    [enc setScissorRect:(MTLScissorRect){(NSUInteger)x, (NSUInteger)y, (NSUInteger)sw, (NSUInteger)sh}];
+    E_scissor((MTLScissorRect){(NSUInteger)x, (NSUInteger)y, (NSUInteger)sw, (NSUInteger)sh});
 }
 
 // ------------------------------------------------------------------ clears (full-screen triangle)
@@ -1050,19 +1229,19 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
         dd.frontFaceStencil = sd;
         dd.backFaceStencil = sd;
     }
-    [enc setRenderPipelineState:pipe];
-    [enc setDepthStencilState:[dev newDepthStencilStateWithDescriptor:dd]];
-    [enc setStencilReferenceValue:sval];
-    [enc setCullMode:MTLCullModeNone];
+    E_pipe(pipe);
+    E_dss([dev newDepthStencilStateWithDescriptor:dd]);
+    E_stref(sval);
+    E_cull(MTLCullModeNone);
     int w, h;
     pass_size(&w, &h);
-    [enc setViewport:(MTLViewport){0, 0, w, h, 0, 1}];
+    E_viewport((MTLViewport){0, 0, w, h, 0, 1});
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
     apply_scissor();
     float d4[4] = {dval, 0, 0, 0};
-    [enc setVertexBytes:d4 length:16 atIndex:0];
-    if (index >= 0) [enc setFragmentBytes:color length:16 atIndex:0];
-    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    E_bytes(0, d4, 16, 0);
+    if (index >= 0) E_bytes(1, color, 16, 0);
+    E_draw(MTLPrimitiveTypeTriangle, 0, 3, 1, 0);
 }
 
 // ------------------------------------------------------------------ shaders (debug dump)
@@ -1119,7 +1298,7 @@ static uint64_t ring_alloc(const void *data, uint64_t size) {
     return aligned;
 }
 
-static void ring_reset(void) { ring_off = 0; }
+static void ring_reset(void) { ring_off = 0; ring_gen++; }
 
 // (debug) LARECOMP_LOG_BINDS=1: guest memory the GPU reads in place, per frame (bytes bound; distinct ranges once),
 // and the ranges of the previous frame whose contents the game rewrote by the time this frame is translated: with
@@ -1199,19 +1378,100 @@ static bool dyn_copy(uint64_t addr, uint64_t size) {
     stat_vcopy++; stat_vcopy_bytes += size;
     return true;
 }
+// Frame interpolation: the per-frame geometry above as the frame drew it, for its replays (letsgo-recomp 0.6.0: a
+// replay's draw binds the vertex and index data frame N's same draw had). In place, a replay - encoded after the
+// frame and run later still on a busy GPU - reads whatever the game has written there for its next frames by then
+// (the ring is reused once the frame's fence passed), and its depth pre-pass and colour pass could read different
+// data. The frame copies each such range at its bind (~25 KB a frame); a replay binds the copies in bind order.
+// (The stats line "replay geometry" counts them, and those the game had already rewritten when the replay was
+// encoded - none in the beach runs; the GPU reads later still.) LARECOMP_INTERP_GEO_COPY=0: in place (research).
+typedef struct { uint64_t addr, size, off; __unsafe_unretained id<MTLBuffer> buf; } IvRec;
+static IvRec *iv_log; static uint32_t iv_n, iv_cap, iv_rp;
+static uint64_t iv_serial = ~0ull, iv_off, iv_binds, iv_differed, iv_missed;
+static NSMutableArray *iv_bufs;  // (holds the frame's chunks until the next frame's first copy)
+static __unsafe_unretained id<MTLBuffer> iv_chunk;
+#define IV_CHUNK (1u << 20)
+void renderer_interp_geo_stats(uint64_t *binds, uint64_t *differed, uint64_t *missed) {
+    *binds = iv_binds, *differed = iv_differed, *missed = iv_missed;
+    iv_binds = iv_differed = iv_missed = 0;
+}
+static bool iv_geometry(uint64_t addr, uint64_t size, id<MTLBuffer> __strong *buf, uint64_t *off) {
+    static int on = -1;
+    if (on < 0) { const char *x = ENV("LARECOMP_INTERP_GEO_COPY"); on = !x || atoi(x) != 0; }
+    if (!on || !g_interp_log || size > IV_CHUNK) return false;
+    extern int nvn_pool_flags_at(uint64_t addr);
+    if ((nvn_pool_flags_at(addr) & 0x13) != 0x12) return false;  // (static meshes: cached pools, in place)
+    if (!g_interp_replaying) {
+        if (interp_frame_serial() != iv_serial) {
+            iv_serial = interp_frame_serial();
+            iv_n = 0, iv_off = IV_CHUNK, iv_bufs = [NSMutableArray array], iv_chunk = nil;
+        }
+        uint64_t o = (iv_off + 255) & ~255ull;
+        if (!iv_chunk || o + size > IV_CHUNK) {
+            id<MTLBuffer> c = [dev newBufferWithLength:IV_CHUNK options:MTLResourceStorageModeShared];
+            [iv_bufs addObject:c];
+            iv_chunk = c, o = 0;
+        }
+        memcpy((uint8_t *)iv_chunk.contents + o, (const void *)(uintptr_t)addr, size);
+        iv_off = o + size;
+        if (iv_n == iv_cap) { iv_cap = iv_cap ? iv_cap * 2 : 1024; iv_log = realloc(iv_log, sizeof *iv_log * iv_cap); }
+        iv_log[iv_n++] = (IvRec){addr, size, o, iv_chunk};
+        if (tp_on()) iv_sub_buf = iv_chunk, iv_sub_off = o;  // (the tape binds the copy)
+        return false;  // (the frame itself reads in place, as before)
+    }
+    if (interp_frame_serial() != iv_serial) { iv_missed++; return false; }
+    for (uint32_t j = iv_rp; j < iv_n && j < iv_rp + 32; j++)
+        if (iv_log[j].addr == addr && iv_log[j].size == size) {
+            iv_rp = j + 1;
+            iv_binds++;
+            if (memcmp((uint8_t *)iv_log[j].buf.contents + iv_log[j].off, (const void *)(uintptr_t)addr, size)) iv_differed++;
+            *buf = iv_log[j].buf, *off = iv_log[j].off;
+            return true;
+        }
+    iv_missed++;
+    return false;
+}
+// The tape's copy of small vertex / index data the frame reads in place from cached pools too: the game rewrites
+// some of it for its next frame by the time an in-between runs (quads of 16 to 224 bytes, at 80-100 of 120
+// in-betweens a second): drawn with half-written corners, a quad became a thin black line across the screen now and
+// then, at full speed only. Big ranges are static meshes. LARECOMP_INTERP_TAPE_COPY=<bytes>: the largest copied (0: none).
+static void tape_copy_small(uint64_t addr, uint64_t size) {
+    static int64_t max = -1;
+    if (max < 0) { const char *x = ENV("LARECOMP_INTERP_TAPE_COPY"); max = x ? atoll(x) : 65536; }
+    if (!tp_on() || g_interp_replaying || !size || size > (uint64_t)max) return;
+    if (interp_frame_serial() != iv_serial) {
+        iv_serial = interp_frame_serial();
+        iv_n = 0, iv_off = IV_CHUNK, iv_bufs = [NSMutableArray array], iv_chunk = nil;
+    }
+    uint64_t o = (iv_off + 255) & ~255ull;
+    if (!iv_chunk || o + size > IV_CHUNK) {
+        id<MTLBuffer> c = [dev newBufferWithLength:IV_CHUNK options:MTLResourceStorageModeShared];
+        [iv_bufs addObject:c];
+        iv_chunk = c, o = 0;
+    }
+    memcpy((uint8_t *)iv_chunk.contents + o, (const void *)(uintptr_t)addr, size);
+    iv_off = o + size;
+    iv_sub_buf = iv_chunk, iv_sub_off = o;  // (the tape binds the copy)
+}
+
 static void bind_guest(id<MTLRenderCommandEncoder> e, bool vertex_stage, uint64_t addr, uint64_t size, int index) {
     if (addr >= HEAP_BASE && addr + size <= HEAP_BASE + HEAP_MAX && (addr & 3) == 0) {
         bind_note(0, addr, size);  // (LARECOMP_LOG_BINDS: the race detector still reports the rewrites; copied, they are harmless)
         snap_note_vertex_bind(addr, size);
+        id<MTLBuffer> ivb; uint64_t ivo;
+        if (iv_geometry(addr, size, &ivb, &ivo)) {
+            E_buf(vertex_stage ? 0 : 1, ivb, ivo, index);
+            return;
+        }
         if (!dyn_copy(addr, size)) {
-            if (vertex_stage) [e setVertexBuffer:g_guest_buffer offset:addr - HEAP_BASE atIndex:index];
-            else [e setFragmentBuffer:g_guest_buffer offset:addr - HEAP_BASE atIndex:index];
+            tape_copy_small(addr, size);
+            if (!iv_sub_buf) tape_note_inplace(addr, size);
+            E_buf(vertex_stage ? 0 : 1, g_guest_buffer, addr - HEAP_BASE, index);
             return;
         }
     }
     uint64_t off = ring_alloc((void *)(uintptr_t)addr, size);
-    if (vertex_stage) [e setVertexBuffer:ring offset:off atIndex:index];
-    else [e setFragmentBuffer:ring offset:off atIndex:index];
+    E_buf(vertex_stage ? 0 : 1, ring, off, index);
 }
 
 static int attr_kind(uint32_t fmt) {
@@ -1986,11 +2246,15 @@ static void resolve_feedback(Prog *pr) {
                 dst = [dev newTextureWithDescriptor:d];
                 copies[key] = dst;
             }
-            id<MTLBlitCommandEncoder> b = [cb() blitCommandEncoder];
-            [b copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
-                    sourceSize:MTLSizeMake(src.width, src.height, 1) toTexture:dst destinationSlice:0 destinationLevel:0
-             destinationOrigin:MTLOriginMake(0, 0, 0)];
-            [b endEncoding];
+            void (^copy)(void) = ^{
+                id<MTLBlitCommandEncoder> b = [cb() blitCommandEncoder];
+                [b copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+                        sourceSize:MTLSizeMake(src.width, src.height, 1) toTexture:dst destinationSlice:0 destinationLevel:0
+                 destinationOrigin:MTLOriginMake(0, 0, 0)];
+                [b endEncoding];
+            };
+            copy();
+            tape_block(copy);
             feedback_tex[nfeedback] = t;
             feedback_copy[nfeedback++] = dst;
             if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
@@ -2045,6 +2309,7 @@ static void bind_textures(int stage, ShaderInfo *si) {
         if (i < 64) { tex_wh[stage][i][0] = tex_wh[stage][i][1] = 0; tex_fr[stage][i][0] = tex_fr[stage][i][1] = 1; }
         if (h && st.tpool && tic < (uint32_t)st.tpool->count) {
             NvnTexEntry *e = &((NvnTexEntry *)st.tpool->entries)[tic];
+            if (g_interp_log) e = (NvnTexEntry *)interp_texentry(stage, i, e, sizeof *e);  // (frame interpolation: the frame's entry)
             if (e->tex) tex = sampled_texture(e->tex, &e->view, e->has_view, st_->type);
             else if (e->dead_format) nvn_dead_slot_sampled(e, tic);
             if (e->tex && stage == 1) {
@@ -2053,6 +2318,8 @@ static void bind_textures(int stage, ShaderInfo *si) {
                 extern int texpatch_heart_kind(int id);
                 extern bool texpatch_is_item_cursor(int id);
                 int id = renderer_texpatch_of(e->tex);
+                extern void texpatch_note_draw(int id);
+                texpatch_note_draw(id);
                 if (!draw_bottle) draw_bottle = texpatch_bottle_kind(id);
                 if (texpatch_bottle_kind(id) == 1) {  // the Hint Sheet: the dungeon map's icon in place (hint_sheet.c)
                     extern bool hint_sheet_icon_draw(const float *ui, uint32_t ui_size);
@@ -2146,16 +2413,16 @@ static void bind_textures(int stage, ShaderInfo *si) {
             if (gt) renderer_save_game_texture(gt, tex, path, apath);
             else { renderer_save_texture(tex, path); renderer_save_texture_alpha(tex, apath); }
         }
-        if (stage == 0) { [enc setVertexTexture:tex atIndex:i]; [enc setVertexSamplerState:smp atIndex:i]; }
-        else if (mapped) { [enc setFragmentTexture:tex atIndex:i]; msmp[i] = smp; mdesc[i] = sd; }
-        else { [enc setFragmentTexture:tex atIndex:i]; [enc setFragmentSamplerState:smp atIndex:i]; }
+        if (stage == 0) { E_tex(0, tex, i); E_smp(0, smp, i); }
+        else if (mapped) { E_tex(1, tex, i); msmp[i] = smp; mdesc[i] = sd; }
+        else { E_tex(1, tex, i); E_smp(1, smp, i); }
     }
     if (mapped && stage == 1) {
         __strong id<MTLSamplerState> slot[MSL_MAX_SAMPLERS];
         uint32_t map[64];
         int ns = sampler_slots(si->ntex, msmp, mdesc, slot, map);
-        for (int k = 0; k < MSL_MAX_SAMPLERS; k++) [enc setFragmentSamplerState:k < ns ? slot[k] : default_sampler() atIndex:k];
-        [enc setFragmentBytes:map length:(NSUInteger)si->ntex * 4 atIndex:SMAP_BUFFER_INDEX];
+        for (int k = 0; k < MSL_MAX_SAMPLERS; k++) E_smp(1, k < ns ? slot[k] : default_sampler(), k);
+        E_bytes(1, map, (NSUInteger)si->ntex * 4, SMAP_BUFFER_INDEX);
     }
 }
 
@@ -2296,6 +2563,8 @@ static volatile int rs_cpu_wrote[512];  // (by entry index, set by the fault han
 static uint8_t rs_hit_inside[512];      // (a store was ever seen inside the range itself, not just on its page)
 static uint64_t rs_store_frame[512];    // the frame of the previous counted store (a one-off initialisation store of
                                         // a GPU output - BowWow's skinning buffers at his spawn - must not copy it)
+static volatile uint8_t rs_rewrites[512];  // (copied for stores of its own: the CPU rewrites the range itself; only
+                                           // such a range's stores mark its page-mates, renderer_watch_fault)
 bool renderer_watch_fault(uint64_t fa);
 static bool watch_on(void) {
     static int on = -1;
@@ -2357,14 +2626,19 @@ bool renderer_watch_fault(uint64_t fa) {
     // it says nothing about the buffers beside it, and marking them copied BowWow's skinning output, which the
     // CPU reads back every frame (f_700102d0f4: the body's chain) - read from the frozen original once the dispatch
     // wrote the copy, the body came apart into spikes as a companion indoors. A store outside every range (per-frame
-    // constants next to a buffer) only opens the page. LARECOMP_LOG_BINDS: "[snap] ... never inside" shows what
-    // this marked by neighbourhood.
+    // constants next to a buffer) only opens the page. Nor a one-off store into a range the CPU doesn't rewrite:
+    // BowWow's skinning outputs lie back to back, and his spawn's initialisation stores into one marked the next
+    // ones on its page - two spawns' worth within 8 frames copied them, the same spikes on leaving a house in Mabe
+    // (body one time, the teeth / eyes' 3104-byte outputs another; user 2026-10-27). So the page-mates are marked
+    // only by a range already copied for stores of its own (rs_rewrites: the big list, rewritten every frame, a
+    // frame or two before its neighbours). LARECOMP_LOG_BINDS: "[snap] ... never inside" shows what this marked by
+    // neighbourhood.
     int x = -1;
     for (int k = 0; k < nrs; k++) if (fa >= rs_tab[k].addr && fa < rs_tab[k].addr + rs_tab[k].size) { x = k; break; }
     if (x >= 0) {
         rs_hit_inside[x] = 1;
         rs_cpu_wrote[x] = 2;  // (the store was inside the range itself)
-        if (rs_tab[x].size >= 256)
+        if (rs_tab[x].size >= 256 && rs_rewrites[x])
             for (int k = 0; k < nrs; k++)
                 if (k != x && rs_tab[k].addr < pg + PLAT_PAGE && pg < rs_tab[k].addr + rs_tab[k].size && !rs_cpu_wrote[k]) rs_cpu_wrote[k] = 1;
     }
@@ -2380,8 +2654,18 @@ static void snap_note_vertex_bind(uint64_t addr, uint64_t size) {  // (LARECOMP_
             n++; LOG("[snap] vertex bind %llx+%llu overlaps copied %llx+%llu (%s, frame %llu)\n", (unsigned long long)addr, (unsigned long long)size, (unsigned long long)rs_tab[i].addr, (unsigned long long)rs_tab[i].size, addr < rs_tab[i].addr ? "from outside" : "inside", (unsigned long long)renderer_exec_frame());
         }
 }
+// The table's current address for a range, read only (a replay whose draw wasn't found in the log): its copy, or the
+// original when it has none (in place, or a per-frame block copied without an entry).
+static uint64_t snap_lookup(uint64_t addr, uint64_t size) {
+    if (!snap_on()) return addr;
+    for (int i = 0; i < nrs; i++)
+        if (rs_tab[i].addr == addr && rs_tab[i].size == size) return rs_tab[i].mode != RS_PLACE && rs_tab[i].copy ? rs_tab[i].copy : addr;
+    return addr;
+}
+static uint64_t g_bound_sbuf[2][16];  // the storage addresses the current draw's stages bound (copy or original)
 // The address a binder of [addr, addr+size) uses: the original or its copy (cs_slot: bound by a compute dispatch)
 static uint64_t snap_storage(uint64_t addr, uint64_t size, bool cs_slot) {
+    if (g_interp_replaying) return snap_lookup(addr, size);  // (replays never create, age, release or remake entries)
     if (!snap_on() || !addr || !size || size > SNAP_RING / 8 || addr < HEAP_BASE || addr + size > snap_ring_base) return addr;
     extern int nvn_pool_flags_at(uint64_t addr);
     int pf = nvn_pool_flags_at(addr);
@@ -2418,6 +2702,7 @@ static uint64_t snap_storage(uint64_t addr, uint64_t size, bool cs_slot) {
         e->addr = addr, e->size = size, e->mode = RS_PROBE, e->level = rs_level_gen, e->frame = f;
         e->cs_bound = cs_slot;
         rs_cpu_wrote[e - rs_tab] = 0, rs_store_frame[e - rs_tab] = 0, rs_hit_inside[e - rs_tab] = 0;
+        rs_rewrites[e - rs_tab] = 0;
         {   // (debug) LARECOMP_WATCH_SIZE=<size>,<frame>,<page>,<frames>: the data watchpoint (dispatch.c, any access, the
             // GPU stalls on the protected page) on page <page> of the first range of that size bound from <frame>, for <frames> frames
             static long ws = -1, wf, wp, wn; static bool armed; static uint64_t at;
@@ -2442,6 +2727,7 @@ static uint64_t snap_storage(uint64_t addr, uint64_t size, bool cs_slot) {
         rs_cpu_wrote[k] = 0;
         if (rs_store_frame[k] && f - rs_store_frame[k] <= 8) {  // stores keep coming: the CPU rewrites it - copied from now on
             e->mode = RS_COPY;
+            if (inside) rs_rewrites[k] = 1;
             rs_log(e, inside ? "-> copy (CPU stores keep hitting it)" : rs_hit_inside[k] ? "-> copy (CPU stores keep hitting its page; one was inside)" : "-> copy (CPU stores keep hitting its page, never inside)", cs_slot, f);
             e->frame = f;
             return rs_copy_make(e, range_hash(addr, size));
@@ -2489,6 +2775,7 @@ static uint64_t snap_storage(uint64_t addr, uint64_t size, bool cs_slot) {
 }
 
 static void bind_cbufs(int stage, ShaderInfo *si) {
+    for (int i = 0; i < 16; i++) g_bound_sbuf[stage][i] = st.sbuf[stage][i].addr;  // (no driver constants: read in place)
     for (int k = 0; k < 18; k++) {
         if (!(si->cbuf_mask & (1u << k))) continue;
         if (k == 0) {
@@ -2496,18 +2783,38 @@ static void bind_cbufs(int stage, ShaderInfo *si) {
             // per hardware stage at 0x110 + 0x100 * stage (vertex 0, fragment 4)
             uint32_t drv[0x800 / 4] = {0};
             uint32_t base = 0x110 + 0x100 * (stage == 1 ? 4 : 0);
+            // The storage addresses the draw reads: the real frame takes them from the snapshot table (copies of what
+            // the CPU rewrites) and logs them with the draw; a replay binds the frame's own (its copies, made when it
+            // ran) and never touches the table - running it there (a "frame" 2^40 ahead) released every copy and
+            // remade them from live memory: the in-betweens 44% darker, the beach sand teal (2026-10-26).
+            uint64_t sav[16];
+            bool reads = false;
+            for (int i = 0; i < 16; i++) { sav[i] = st.sbuf[stage][i].addr; reads |= sav[i] && (si->ssbo_read & (1u << i)); }
+            if (reads && g_interp_replaying) {
+                const uint64_t *lg = interp_cbuf(4 + stage, 0, 0, sav, sizeof sav, 0);
+                if (lg != sav) memcpy(sav, lg, sizeof sav);
+                else for (int i = 0; i < 16; i++) if (sav[i] && (si->ssbo_read & (1u << i))) sav[i] = snap_lookup(sav[i], st.sbuf[stage][i].size);
+            } else if (reads) {
+                for (int i = 0; i < 16; i++)
+                    if (sav[i] && (si->ssbo_read & (1u << i))) {
+                        bind_note(2, sav[i], st.sbuf[stage][i].size);
+                        uint64_t orig = sav[i];
+                        sav[i] = snap_storage(sav[i], st.sbuf[stage][i].size, false);
+                        if (sav[i] == orig) tape_note_inplace(orig, st.sbuf[stage][i].size < (1u << 20) ? st.sbuf[stage][i].size : (1u << 20));  // (the check, LARECOMP_INTERP_INPLACE_CHECK)
+                    }
+                if (g_interp_log) interp_cbuf(4 + stage, 0, 0, sav, sizeof sav, 0);
+            }
+            memcpy(g_bound_sbuf[stage], sav, sizeof sav);
             for (int i = 0; i < 16; i++) {
                 uint32_t *e = &drv[(base + 16 * i) / 4];
-                uint64_t sa = st.sbuf[stage][i].addr;
-                if (sa && (si->ssbo_read & (1u << i))) { bind_note(2, sa, st.sbuf[stage][i].size); sa = snap_storage(sa, st.sbuf[stage][i].size, false); }
+                uint64_t sa = sav[i];
                 e[0] = (uint32_t)sa;
                 e[1] = (uint32_t)(sa >> 32);
                 e[2] = (uint32_t)st.sbuf[stage][i].size;
             }
             uint64_t size = si->cbuf_size[0] > sizeof drv ? sizeof drv : (si->cbuf_size[0] ? si->cbuf_size[0] : 256);
             uint64_t off = ring_alloc(drv, size);
-            if (stage == 0) [enc setVertexBuffer:ring offset:off atIndex:0];
-            else [enc setFragmentBuffer:ring offset:off atIndex:0];
+            E_buf(stage, ring, off, 0);
             continue;
         }
         if (k == 1) {  // compiler constants stored after the shader code
@@ -2515,8 +2822,7 @@ static void bind_cbufs(int stage, ShaderInfo *si) {
             uint64_t size = ss->const_size ? ss->const_size : 16;
             if (size < si->cbuf_size[1]) size = si->cbuf_size[1];
             uint64_t off = ring_alloc((void *)(uintptr_t)(ss->code_addr + ss->const_offset), size);
-            if (stage == 0) [enc setVertexBuffer:ring offset:off atIndex:1];
-            else [enc setFragmentBuffer:ring offset:off atIndex:1];
+            E_buf(stage, ring, off, 1);
             continue;
         }
         int idx = k - cbuf_base;
@@ -2525,16 +2831,21 @@ static void bind_cbufs(int stage, ShaderInfo *si) {
         if (!r.addr) {
             static const uint8_t zeros[0x10000];
             uint64_t off = ring_alloc(zeros, size ? size : 256);
-            if (stage == 0) [enc setVertexBuffer:ring offset:off atIndex:k];
-            else [enc setFragmentBuffer:ring offset:off atIndex:k];
+            E_buf(stage, ring, off, k);
             continue;
         }
         if ((si->cbuf_dynamic & (1u << k)) && r.size) size = r.size > 0x10000 ? 0x10000 : r.size;  // indexed: whole buffer
         if (size > r.size && r.size) size = r.size;
         if (size < 16) size = 16;
-        uint64_t off = ring_alloc((void *)(uintptr_t)r.addr, size);  // snapshot, as later CPU writes must not leak in
-        if (stage == 0) [enc setVertexBuffer:ring offset:off atIndex:k];
-        else [enc setFragmentBuffer:ring offset:off atIndex:k];
+        const void *src = (const void *)(uintptr_t)r.addr;
+        int32_t cbi = -1;
+        if (g_interp_log) {  // (frame interpolation: logged / blended copy; compared over the bytes the shader reads)
+            uint64_t used = si->cbuf_used[k] && si->cbuf_used[k] < size ? si->cbuf_used[k] : size;
+            src = interp_cbuf(stage, k, idx, src, size, used);
+            cbi = interp_last_cb();
+        }
+        uint64_t off = ring_alloc(src, size);  // snapshot, as later CPU writes must not leak in
+        E_cbuf(stage, ring, off, k, cbi, size);
     }
 }
 
@@ -2914,7 +3225,7 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
     LOG(" | fubo0:");
     for (int i = 0; i < 6; i++)
         if (st.ubuf[1][i].addr) { const float *f = (const float *)(uintptr_t)st.ubuf[1][i].addr; LOG(" f%d=[%g %g %g %g]", i, f[0], f[1], f[2], f[3]); }
-    LOG(" | ssbo:");
+    LOG(" | gmem v%d f%d ssbo_read v%#x f%#x ssbo:", pr->vi->uses_gmem, pr->fi->uses_gmem, pr->vi->ssbo_read, pr->fi->ssbo_read);
     for (int sg = 0; sg < 2; sg++)
         for (int i = 0; i < 16; i++)
             if (st.sbuf[sg][i].addr) LOG(" %c%d(%llx,%llu)", sg ? 'f' : 'v', i, st.sbuf[sg][i].addr, st.sbuf[sg][i].size);
@@ -3104,7 +3415,758 @@ static id prep_find_pipe(NSString *body) {
     return p;
 }
 
-static void draw(CmdRec *r, bool indexed) {
+static bool wx_composite, wx_mirror;  // (draw_one: this draw is the scene composite - the weather goes on right after it)
+static NvnTexture *wx_depth;  // the frame's scene depth (the latest scene-camera draw's depth attachment)
+static uint64_t wx_depth_frame = ~0ull;
+static float wx_zn, wx_zf = 1;  // (its depth range: the viewport's)
+static bool wx_dm1;  // (its depth mode: -1..1)
+// ------------------------------------------------------------------ snow on the ground (runtime/nvn/weather.h)
+// The overworld's scene pass draws its opaque things first - the level's model (vertex constant slot 4 of 912 / 928
+// bytes, one instance), the characters (Link, enemies, NPCs, animals: slot 4 of 1056 / 1072 bytes), grass tufts
+// (instanced), and the neighbouring rooms' models after them - then the blended things: blob shadows, water,
+// effects. Its depth comes from a depth-only pre-pass of most of the opaque draws (not Link's), which uses stencil bit
+// 0 (and only that): while there is snow every opaque draw, in the pre-pass and in the colour pass, also writes bit
+// 7 where it passes - clear for the level's model, set for anything else and for the water (part of the level's
+// model, told by its maps); bit 6 marks grass and bushes, both bits a character - so each pixel ends up telling
+// whether what shows there takes snow, and how. The cover goes on in
+// a pass of its own on the scene's colour target right before the first blended draw: from the scene depth, its
+// stencil (bit 7: left alone) and the camera (vertex constant slot 1, 1024 bytes: the view-projection first). One
+// full-screen triangle (reading the colour under it: Apple GPUs' framebuffer fetch); the footprints come from a
+// world-anchored trail map (1024 x 1024 texels over 32 x 32 units, wrapping; each texel the time a print was made
+// there, its height and its 32-unit cell), stamped first (a quad per new print).
+static const char *sc_src =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct SF { float4 vp[4]; float4 ivp[4]; float4 screen, flags, zr, trail, tone; float shake[8]; };\n"
+    "struct SP { float4 a; float4 b; };\n"  // (SnowPrint: x y z t, ang side len wid)
+    "static float3 world_at(constant SF &w, float2 uv, float d) {\n"  // the world point of the scene depth d at uv
+    "  float2 m = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);\n"
+    "  if (w.flags.x > 0.5) m.y = -m.y;\n"
+    "  float z = (d - w.zr.x) / w.zr.y;\n"
+    "  if (w.flags.y > 0.5) z = z * 2.0 - 1.0;\n"
+    "  float4 q = float4(m, z, 1.0);\n"
+    "  float4 wp = float4(dot(w.ivp[0], q), dot(w.ivp[1], q), dot(w.ivp[2], q), dot(w.ivp[3], q));\n"
+    "  return wp.xyz / wp.w;\n"
+    "}\n"
+    "static float hash2(float2 p) { return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453); }\n"
+    "static float vnoise(float2 p) {\n"
+    "  float2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);\n"
+    "  return mix(mix(hash2(i), hash2(i + float2(1.0, 0.0)), u.x), mix(hash2(i + float2(0.0, 1.0)), hash2(i + float2(1.0, 1.0)), u.x), u.y);\n"
+    "}\n"
+    // a new footprint into the trail map: 4 copies of its quad (the map wraps: a print over its edge goes on at the
+    // far side too); its shape a sole and a heel
+    "struct TO { float4 pos [[position]]; float2 u; float3 wp; float t; };\n"
+    "vertex TO sc_stamp_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant SF &w [[buffer(0)]],\n"
+    "                      constant SP *pr [[buffer(1)]]) {\n"
+    "  SP s = pr[iid >> 2u];\n"
+    "  uint c = iid & 3u;\n"
+    "  float2 corner = float2((vid & 1u) ? 1.0 : -1.0, (vid & 2u) ? 1.0 : -1.0) * 1.2;\n"
+    "  float2 fwd = float2(sin(s.b.x), cos(s.b.x)), rt = float2(fwd.y, -fwd.x);\n"
+    "  float2 wxz = s.a.xz + corner.x * rt * s.b.w * 0.5 + corner.y * fwd * s.b.z * 0.5;\n"
+    "  float N = w.zr.w, P = w.zr.z;\n"
+    "  float2 ctr = (s.a.xz / P - floor(s.a.xz / P)) * N;\n"
+    "  float2 sh = float2((c & 1u) ? (ctr.x > 0.5 * N ? -N : N) : 0.0, (c & 2u) ? (ctr.y > 0.5 * N ? -N : N) : 0.0);\n"
+    "  float2 tx = (wxz / P - floor(s.a.xz / P)) * N + sh;\n"
+    "  TO o;\n"
+    "  o.pos = float4(tx.x / N * 2.0 - 1.0, 1.0 - tx.y / N * 2.0, 0.0, 1.0);\n"
+    "  o.u = corner; o.wp = float3(wxz.x, s.a.y, wxz.y); o.t = s.a.w;\n"
+    "  return o;\n"
+    "}\n"
+    "fragment float4 sc_stamp_fs(TO in [[stage_in]], constant SF &w [[buffer(0)]]) {\n"
+    "  float2 a = (in.u - float2(0.0, 0.3)) / float2(0.95, 0.7), b = (in.u - float2(0.0, -0.6)) / float2(0.75, 0.42);\n"
+    "  if (dot(a, a) > 1.0 && dot(b, b) > 1.0) discard_fragment();\n"
+    "  return float4(in.t, in.wp.y, floor(in.wp.xz / w.zr.z));\n"
+    "}\n"
+    "struct VO { float4 pos [[position]]; };\n"
+    "vertex VO sc_vs(uint vid [[vertex_id]]) {\n"
+    "  VO o; o.pos = float4(vid == 1u ? 3.0 : -1.0, vid == 2u ? 3.0 : -1.0, 0.0, 1.0); return o;\n"
+    "}\n"
+    // how fresh a footprint is at world point p (1 just made .. 0 filled in again / none): the trail map's 4 texels
+    // around it (bilinear), each counted only if made at that height in p's own cell
+    "static float sc_print(constant SF &w, texture2d<float> tr, float3 p) {\n"
+    "  float N = w.zr.w, P = w.zr.z;\n"
+    "  float2 a = p.xz / P * N - 0.5, i0 = floor(a), f = a - i0;\n"
+    "  float s = 0.0;\n"
+    "  for (int k = 0; k < 4; k++) {\n"
+    "    float2 A = i0 + float2(float(k & 1), float(k >> 1));\n"
+    "    float2 cell = floor(A / N), t = A - cell * N;\n"
+    "    float4 v = tr.read(uint2(t));\n"
+    "    float wt = ((k & 1) ? f.x : 1.0 - f.x) * ((k >> 1) ? f.y : 1.0 - f.y);\n"
+    "    if (v.x > 0.0 && all(v.zw == cell) && abs(v.y - p.y) < 0.6) s += wt * exp(-max(w.flags.w - v.x, 0.0) / w.trail.x);\n"
+    "  }\n"
+    "  return s;\n"
+    "}\n"
+    // the height of the wide flat ground `step` pixels at a time along the screen's y from q (1e9: none) - the first
+    // two samples at the same height, then the same height again two and four times as far on (sc_fs: drifts)
+    // the analysis' far samples (sc_flat, the rings in sc_half_fs) from the prep pass: per cell, its world point and
+    // what it is (w: 0 the level's model, 1 a character / grass, 2 sky) - the cell nearest the depth pixel qq
+    "static float4 sc_at(constant SF &w, texture2d<float> pp, int2 qq) {\n"
+    "  int2 g = int2(round(float2(qq) * w.screen.xy / w.screen.zw / w.trail.z));\n"
+    "  return pp.read(uint2(clamp(g, int2(0), int2(pp.get_width(), pp.get_height()) - 1)));\n"
+    "}\n"
+    "static float sc_flat(constant SF &w, texture2d<float> pp, int2 q, int2 mx, int step) {\n"
+    "  float yl = 1e9, yp = 1e9;\n"
+    "  int jl = 0;\n"
+    "  for (int j = 1; j <= 4 && yl > 1e8; j++) {\n"
+    "    float4 a = sc_at(w, pp, clamp(q + int2(0, step * j), int2(0), mx));\n"
+    "    float y = a.w < 0.5 ? a.y : 1e9;\n"
+    "    if (y < 1e8 && abs(y - yp) < 0.03) yl = min(y, yp), jl = j;\n"
+    "    yp = y;\n"
+    "  }\n"
+    "  if (yl > 1e8) return 1e9;\n"
+    "  for (int j = 2; j <= 4; j += 2) {\n"
+    "    float4 a = sc_at(w, pp, clamp(q + int2(0, step * jl * j), int2(0), mx));\n"
+    "    float y = a.w < 1.5 ? a.y : 1e9;\n"
+    "    if (abs(y - yl) > 0.07) return 1e9;\n"
+    "  }\n"
+    "  return yl;\n"
+    "}\n"
+    "static float sc_eye(constant SF &w, float2 uv, float d) {\n"  // the eye depth of the scene depth d at uv
+    "  float2 m = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);\n"
+    "  if (w.flags.x > 0.5) m.y = -m.y;\n"
+    "  float z = (d - w.zr.x) / w.zr.y;\n"
+    "  if (w.flags.y > 0.5) z = z * 2.0 - 1.0;\n"
+    "  return 1.0 / dot(w.ivp[3], float4(m, z, 1.0));\n"
+    "}\n"
+    "constant float2 sc_hex[6] = {float2(1.0, 0.0), float2(0.5, 0.866), float2(-0.5, 0.866), float2(-1.0, 0.0), float2(-0.5, -0.866), float2(0.5, -0.866)};\n"
+    "constant float2 sc_ring[8] = {float2(0.924, 0.383), float2(0.383, 0.924), float2(-0.383, 0.924), float2(-0.924, 0.383),\n"
+    "                              float2(-0.924, -0.383), float2(-0.383, -0.924), float2(0.383, -0.924), float2(0.924, -0.383)};\n"
+    // the half-resolution pass: per 2x2 pixels, the snow's amount there before footprints (x), its surface's n.y
+    // (y) and bumpiness (z), and its eye depth (w: sc_fs only takes texels at its own depth - edges stay sharp)
+    "fragment float4 sc_prep_fs(VO in [[stage_in]], constant SF &w [[buffer(0)]], depth2d<float> dt [[texture(0)]],\n"
+    "                           texture2d<uint> sv [[texture(2)]]) {\n"
+    "  int2 q = clamp(int2(floor(in.pos.xy) * w.trail.z * w.screen.zw / w.screen.xy), int2(0), int2(w.screen.zw) - 1);\n"
+    "  float d = dt.read(uint2(q));\n"
+    "  if (d >= 0.99999) return float4(0.0, 1e9, 0.0, 2.0);\n"
+    "  uint m = sv.read(uint2(q)).r;\n"  // (a character or grass - or a face tree, stencil slot 7: not a wall)
+    "  return float4(world_at(w, (float2(q) + 0.5) / w.screen.zw, d), ((m & 0xC0u) || ((m >> 1) & 7u) == 7u) ? 1.0 : 0.0);\n"
+    "}\n"
+    "fragment float4 sc_half_fs(VO in [[stage_in]], constant SF &w [[buffer(0)]], depth2d<float> dt [[texture(0)]],\n"
+    "                           texture2d<uint> sv [[texture(2)]], texture2d<float> ct [[texture(3)]],\n"
+    "                           texture2d<float> pp [[texture(5)]]) {\n"
+    "  int2 mx = int2(w.screen.zw) - 1;\n"
+    "  int2 q = clamp(int2(floor(in.pos.xy) * w.trail.z * w.screen.zw / w.screen.xy), int2(0), mx);\n"
+    "  float2 e = 1.0 / w.screen.zw;\n"
+    "  float d = dt.read(uint2(q));\n"
+    "  float4 none = float4(0.0, 1.0, 0.0, d < 0.99999 ? sc_eye(w, (float2(q) + 0.5) * e, d) : 1e6);\n"
+    "  if (d >= 0.99999 || (sv.read(uint2(q)).r & 0xC0u)) return none;\n"
+    // the surface's normal over a ring of 6 depth samples ~6 pixels (at 1080p) around it: the cross products of
+    // neighbouring samples, summed (a plane fit). Samples across a depth gap (further than 3x the ring's own size at
+    // this depth) are left out: no normals across edges, and seams, one-pixel steps and leaves average out - stable
+    // as the view moves. flat: how alike the pieces were (1 a plane, lower on leaves and bumpy models)
+    "  float rad = max(2.0, round(6.0 * w.screen.w / 1080.0));\n"
+    "  float3 p = world_at(w, (float2(q) + 0.5) * e, d), v[6];\n"  // (on the depth's own grid, as the ring)
+    "  float lim = 3.0 * length(world_at(w, (float2(q) + float2(0.5 + rad, 0.5)) * e, d) - p);\n"
+    "  bool ok[6];\n"
+    "  int nok = 0;\n"
+    "  for (int i = 0; i < 6; i++) {\n"
+    "    int2 o = int2(round(sc_hex[i] * rad));\n"
+    "    int2 qq = clamp(q + o, int2(0), mx);\n"
+    "    float dk = dt.read(uint2(qq));\n"
+    "    v[i] = world_at(w, (float2(qq) + 0.5) * e, dk) - p;\n"
+    "    ok[i] = dk < 0.99999 && length(v[i]) < lim && any(o != int2(0));\n"
+    "    nok += ok[i] ? 1 : 0;\n"
+    "  }\n"
+    "  float3 ns = float3(0.0);\n"
+    "  float nl = 0.0;\n"
+    "  for (int i = 0; i < 6; i++) {\n"
+    "    int j = i == 5 ? 0 : i + 1;\n"
+    "    if (!ok[i] || !ok[j]) continue;\n"
+    "    float3 c = cross(v[i], v[j]);\n"
+    "    ns += c; nl += length(c);\n"
+    "  }\n"
+    "  if (nok < 2 || nl <= 0.0 || length(ns) < 1e-9) return none;\n"
+    "  float3 n = normalize(ns);\n"
+    "  float flat = length(ns) / nl;\n"
+    "  float4 cq = float4(w.ivp[0].z * -1.0 + w.ivp[0].w, w.ivp[1].z * -1.0 + w.ivp[1].w, w.ivp[2].z * -1.0 + w.ivp[2].w, w.ivp[3].z * -1.0 + w.ivp[3].w);\n"
+    "  if (dot(n, cq.xyz / cq.w - p) < 0.0) n = -n;\n"  // (facing the camera)
+    // how much faces up (soft), less on bumpy models, faded out near depth edges (where the ring is cut)
+    "  float rough = saturate((0.9 - flat) / 0.6);\n"
+    "  float up = smoothstep(0.35, 0.85, n.y) * (1.0 - 0.45 * rough) * mix(0.6, 1.0, smoothstep(2.0, 4.5, float(nok)));\n"
+    // drifts: the foot of anything upright (walls, rocks, tree trunks, the grass fringes along their bases) is
+    // buried - a pixel 0-0.15 above the flat ground just in front of it takes snow whatever way it faces (never one
+    // below it: the inside of a well). The ground: down the screen from it (sc_flat: the level's model only), and only
+    // a wide flat - not the narrow top of a well's rim, a fence rail or a roof's slats (no drifts on those). Nothing
+    // here depends on the weather's probes: the same wherever the view is
+    "  int down = int(rad * 1.5) * (w.flags.x > 0.5 ? -1 : 1);\n"  // (the depth's rows run up the screen when flipped)
+    "  if (up < 0.999) {\n"  // (already all up: nothing to add)
+    "    float dh = p.y - sc_flat(w, pp, q, mx, down);\n"
+    "    up = max(up, smoothstep(-0.06, -0.02, dh) * (1.0 - smoothstep(0.05, 0.15, dh)));\n"
+    "  }\n"
+    // and their caps: the grass fringe along the top edge of a cliff or a wall, just under the flat top behind it
+    // (up the screen), is buried too (0-0.12 under it; the top wide flat again: not a well's rim)
+    "  if (up < 0.999) {\n"
+    "    float dt2 = sc_flat(w, pp, q, mx, -down) - p.y;\n"
+    "    up = max(up, smoothstep(-0.04, 0.0, dt2) * (1.0 - smoothstep(0.06, 0.12, dt2)));\n"
+    "  }\n"
+
+    "  float3 c = ct.read(uint2(clamp(int2(float2(q) * w.screen.xy / w.screen.zw), int2(0), int2(w.screen.xy) - 1))).rgb;\n"
+    "  float mc = max(c.r, max(c.g, c.b));\n"
+    // patchy at first (where the noise is low), then everywhere; thin at first, then thick
+    "  float cover = w.flags.z;\n"
+    "  float2 pr = float2(p.x * 0.8 + p.z * 0.6, p.z * 0.8 - p.x * 0.6);\n"  // (turned: no grid-aligned patches)
+    "  float nz = vnoise(pr * 0.4) * 0.65 + vnoise(pr * 1.3) * 0.35;\n"
+    "  float patch = smoothstep(0.0, 1.0, saturate((cover * 1.45 - nz) / 0.25));\n"
+    "  float dust = 0.35 * smoothstep(0.0, 0.4, cover) * (0.6 + 0.4 * vnoise(pr * 2.5));\n"  // (a light dusting first)
+    "  float k = up * max(patch * (0.45 + 0.55 * smoothstep(0.0, 0.85, cover)), dust);\n"
+    "  if (k <= 0.0) return none;\n"
+    // openings - doorways, windows, holes: none in there. What shows through one is hemmed in: most of a wider ring
+    // (~48 pixels: a doorway is ~100 wide, a window ~40) rises above its surface's plane (ground by a wall has the
+    // wall on one side only). Only the level's model counts, not a character or a fence post standing by (Link in a
+    // doorway). That cuts only a dark recess (shadows on the ground are as dark as a doorway, but not hemmed in);
+    // lit ground goes only when nearly all the ring rises well above it in world height (0.5-0.9: a roof's tiles,
+    // ridges and its slope never count - a plane-relative test there flipped roof snow on and off as the view moved)
+    "  float above = 0.0, rise = 0.0;\n"
+    "  int valid = 0;\n"
+    "  for (int i = 0; i < 8; i++) {\n"
+    "    float4 a = sc_at(w, pp, clamp(q + int2(round(sc_ring[i] * rad * 8.0)), int2(0), mx));\n"
+    "    if (a.w > 0.5) continue;\n"
+    "    valid++;\n"
+    "    float3 vq = a.xyz - p;\n"
+    "    above += smoothstep(0.2, 0.4, dot(vq, n));\n"
+    "    rise += smoothstep(0.5, 0.9, vq.y);\n"
+    "  }\n"
+    "  if (valid >= 3) {\n"
+    "    float hem = above / float(valid);\n"
+    "    k *= 1.0 - max(smoothstep(0.45, 0.62, hem) * (1.0 - smoothstep(0.03, 0.05, mc)), smoothstep(0.75, 0.9, rise / float(valid)));\n"
+    "  }\n"
+    "  if (k <= 0.0) return none;\n"
+    // alcoves - a doorstep inside a doorway's arch, lit or not: walls rise close by on the left, the right and behind
+    // (up the screen) all three (ground by a wall or in a corner has two at most), and the doorway's dark opening is
+    // right behind it. Each side: the highest of a few samples out to ~90 pixels (at 1080p: a doorway is ~100 wide),
+    // the level's model only - not the face trees by Crazy Tracy's (stencil slot 7, the prep: ground among them is
+    // open ground) - ramped over 0.4-0.7 in world height. The opening: the darkest of the samples behind, near black.
+    // (Without it the dead end of a walkway between two walls, a lit wall behind it, went bare - and back, frame by
+    // frame, as the samples moved with the camera: issue #575, by the well in Mabe Village)
+    "  float side[3], dark = 0.0;\n"
+    "  int2 dirs[3] = {int2(-1, 0), int2(1, 0), int2(0, w.flags.x > 0.5 ? 1 : -1)};\n"
+    "  for (int d = 0; d < 3; d++) {\n"
+    "    side[d] = 0.0;\n"
+    "    for (int j = 3; j <= 15; j += 4) {\n"
+    "      int2 qq = clamp(q + dirs[d] * int(rad * float(j)), int2(0), mx);\n"
+    "      if (d == 2) {\n"
+    "        float3 cb = ct.read(uint2(clamp(int2(float2(qq) * w.screen.xy / w.screen.zw), int2(0), int2(w.screen.xy) - 1))).rgb;\n"
+    "        dark = max(dark, 1.0 - smoothstep(0.02, 0.03, max(cb.r, max(cb.g, cb.b))));\n"
+    "      }\n"
+    "      float4 a = sc_at(w, pp, qq);\n"
+    "      if (a.w > 0.5) continue;\n"
+    "      side[d] = max(side[d], smoothstep(0.4, 0.7, a.y - p.y));\n"
+    "    }\n"
+    "  }\n"
+    "  k *= 1.0 - min(side[0], min(side[1], side[2])) * dark;\n"
+    "  if (k <= 0.0) return none;\n"
+    "  return float4(k, n.y, rough, sc_eye(w, (float2(q) + 0.5) * e, d));\n"
+    "}\n"
+    // the cover at full resolution: the half-resolution pass' amount from its texels at this pixel's depth (bilinear,
+    // weighed by how alike their depths are: no blur across an edge), then the exact per-pixel parts - characters
+    // left alone, near-black pixels left alone, the footprints, the snow's light
+    "fragment half4 sc_fs(VO in [[stage_in]], constant SF &w [[buffer(0)]], depth2d<float> dt [[texture(0)]],\n"
+    "                     texture2d<float> tr [[texture(1)]], texture2d<uint> sv [[texture(2)]],\n"
+    "                     texture2d<float> hf [[texture(4)]], half4 dst [[color(0)]]) {\n"
+    "  float2 uv = in.pos.xy / w.screen.xy;\n"
+    "  int2 mx = int2(w.screen.zw) - 1;\n"
+    "  int2 q = clamp(int2(uv * w.screen.zw), int2(0), mx);\n"
+    "  uint4 sm = sv.read(uint2(q));\n"
+    "  if (abs(w.trail.y - 2.0) < 0.5) return half4((sm.r & 0x80u) ? 1.0h : 0.0h, (sm.r & 1u) ? 1.0h : 0.0h, (sm.r & 0x40u) ? 1.0h : 0.0h, 1.0h);\n"  // (test)
+    "  if ((sm.r & 0xC0u) == 0x80u) return dst;\n"  // (the water, or anything else that isn't the level's: no snow on it)
+    "  float d = dt.read(uint2(q));\n"
+    "  if (d >= 0.99999) return dst;\n"
+    "  float3 c = float3(dst.rgb);\n"
+    "  float mc = max(c.r, max(c.g, c.b));\n"
+    // characters: a dusting on what faces up - the top of a head, shoulders, an animal's back (issue #574). The
+    // normal from the depth a few pixels around, on the same character only (no normals across its outline: per axis
+    // the nearer side); no world-anchored patches (they would slide over a walking character), the picture's own light
+    "  if ((sm.r & 0xC0u) == 0xC0u) {\n"
+    "    float2 e = 1.0 / w.screen.zw;\n"
+    "    int r = int(max(1.0, round(2.0 * w.screen.w / 1080.0)));\n"
+    "    float3 p = world_at(w, (float2(q) + 0.5) * e, d), ax[2];\n"
+    "    float ez = sc_eye(w, (float2(q) + 0.5) * e, d);\n"
+    "    float lim = 2.5 * length(world_at(w, (float2(q) + float2(0.5 + float(r), 0.5)) * e, d) - p);\n"  // (a step of r pixels at this depth, facing the camera: 2.5x)
+    "    int nax = 0;\n"
+    "    for (int a = 0; a < 2; a++) {\n"
+    "      float best = 1e9;\n"
+    "      for (int sgn = -1; sgn <= 1; sgn += 2) {\n"
+    "        int2 qq = clamp(q + (a == 0 ? int2(sgn * r, 0) : int2(0, sgn * r)), int2(0), mx);\n"
+    "        float dk = dt.read(uint2(qq));\n"
+    "        if (all(qq == q) || (sv.read(uint2(qq)).r & 0xC0u) != 0xC0u || dk >= 0.99999) continue;\n"
+    "        float3 v = world_at(w, (float2(qq) + 0.5) * e, dk) - p;\n"
+    "        float dz = abs(sc_eye(w, (float2(qq) + 0.5) * e, dk) - ez);\n"
+    "        if (length(v) > lim || dz >= best) continue;\n"
+    "        best = dz, ax[a] = v * float(sgn);\n"
+    "      }\n"
+    "      nax += best < 1e8 ? 1 : 0;\n"
+    "    }\n"
+    "    if (nax < 2) return dst;\n"
+    "    float3 n = cross(ax[0], ax[1]);\n"
+    "    if (length(n) < 1e-12) return dst;\n"
+    "    n = normalize(n);\n"
+    "    float4 cq = float4(w.ivp[0].z * -1.0 + w.ivp[0].w, w.ivp[1].z * -1.0 + w.ivp[1].w, w.ivp[2].z * -1.0 + w.ivp[2].w, w.ivp[3].z * -1.0 + w.ivp[3].w);\n"
+    "    if (dot(n, cq.xyz / cq.w - p) < 0.0) n = -n;\n"  // (facing the camera)
+    "    float k = smoothstep(0.72, 0.95, n.y) * 0.35 * smoothstep(0.1, 0.8, w.flags.z);\n"
+    "    if (k <= 0.0) return dst;\n"
+    "    if (w.trail.y > 0.5) return half4(mix(dst, half4(1.0, 0.0, 0.0, 1.0), half(k)));\n"
+    "    float3 col = w.tone.rgb * (0.3 + 0.7 * saturate(mc / w.tone.w));\n"
+    "    return half4(half3(mix(c, col, k)), dst.a);\n"
+    "  }\n"
+    // grass and bushes: a dusting - patches in the world (low frequency: they don't crawl as the blades sway), more
+    // on the lit tips and tops than in the shaded depths of a tuft (by the picture's own brightness, which moves
+    // with the blades; no normals from the depth of thin blades), a third at most, in patches over a few percent - still clearly grass
+    "  if (sm.r & 0x40u) {\n"
+    "    float3 p = world_at(w, (float2(q) + 0.5) / w.screen.zw, d);\n"
+    "    float2 pr = float2(p.x * 0.8 + p.z * 0.6, p.z * 0.8 - p.x * 0.6);\n"
+    "    float cover = w.flags.z;\n"
+    "    float nz = vnoise(pr * 0.7) * 0.55 + vnoise(pr * 2.6) * 0.45;\n"
+    "    float patch = smoothstep(0.62 - 0.22 * cover, 0.78 - 0.22 * cover, nz);\n"  // (never all of it: ~1/3 at most)
+    "    float tip = smoothstep(0.03, 0.25, mc / w.tone.w);\n"
+    "    float k = (0.06 + 0.3 * patch) * tip * smoothstep(0.1, 0.8, cover);\n"
+    "    if (w.trail.y > 0.5) return half4(mix(dst, half4(1.0, 0.0, 0.0, 1.0), half(k)));\n"
+    "    float3 col = w.tone.rgb * (0.55 + 0.45 * saturate(mc / w.tone.w));\n"
+    "    return half4(half3(mix(c, col, k)), dst.a);\n"
+    "  }\n"
+    "  float2 e = 1.0 / w.screen.zw;\n"
+    "  float ez = sc_eye(w, (float2(q) + 0.5) * e, d);\n"
+    "  float2 hp = in.pos.xy / w.trail.z - 0.5;\n"
+    "  int2 h0 = int2(floor(hp)), hm = int2(hf.get_width(), hf.get_height()) - 1;\n"
+    "  float2 f = hp - float2(h0);\n"
+    "  float4 acc = float4(0.0);\n"
+    "  float wsum = 0.0, best = 1e9;\n"
+    "  float4 near = float4(0.0, 1.0, 0.0, 0.0);\n"
+    "  for (int i = 0; i < 4; i++) {\n"
+    "    int2 o = int2(i & 1, i >> 1);\n"
+    "    float4 t = hf.read(uint2(clamp(h0 + o, int2(0), hm)));\n"
+    "    float dz = abs(t.w - ez) / ez;\n"
+    "    float wt = (o.x ? f.x : 1.0 - f.x) * (o.y ? f.y : 1.0 - f.y) * (1.0 - smoothstep(0.005, 0.02, dz));\n"
+    "    acc += t * wt, wsum += wt;\n"
+    "    if (dz < best) best = dz, near = t;\n"
+    "  }\n"
+    "  float4 hv = wsum > 1e-4 ? acc / wsum : near;\n"
+    // near black - the insides of doorways, windows, the gaps under eaves (~0.02 here; ground in a shadow is 0.03 and
+    // up): left exactly as the game drew it. Not open flat ground, though: a character's or a statue's shadow there is
+    // as dark, and its middle stayed bare - dark smudges under the animals (issue #574; a dark recess is the half
+    // pass' hem test)
+    "  float open = smoothstep(0.95, 0.99, hv.y) * (1.0 - hv.z);\n"
+    "  float k = hv.x * mix(smoothstep(0.018, 0.03, mc), 1.0, open);\n"
+    "  uint ts = (sm.r >> 1) & 7u;\n"  // (a tree shaken bare by a bonk: its snow growing back)
+    "  if (ts != 0u) k *= w.shake[ts];\n"
+    "  if (k <= 0.0) return dst;\n"
+    "  float cover = w.flags.z, rough = hv.z;\n"
+    "  float3 p = world_at(w, (float2(q) + 0.5) * e, d);\n"
+    "  float2 pr = float2(p.x * 0.8 + p.z * 0.6, p.z * 0.8 - p.x * 0.6);\n"
+    "  float fp = sc_print(w, tr, p);\n"
+    "  if (w.trail.y > 0.5) return half4(mix(dst, half4(1.0, 0.0, 0.0, 1.0), half(k)));\n"
+    "  k *= 1.0 - saturate(fp) * (0.9 - 0.45 * cover);\n"  // (a dent in deep snow, the ground through a thin layer)
+    // the snow's light: the picture's own (its shadows stay; evened out on bumpy models, whose pixels flicker
+    // between leaf and gap), the slope, a soft unevenness
+    "  float lit = mix(saturate(mc / w.tone.w), 0.8, rough * 0.7);\n"
+    "  float3 col = w.tone.rgb * (0.45 + 0.55 * lit) * (0.85 + 0.15 * hv.y) * (0.96 + 0.06 * vnoise(pr * 3.0));\n"
+    // near black: as drawn, or on open ground (a cast shadow, the shade under trees) snow as dark as the shadow - its
+    // shape kept, the dark stones' colours under it gone. Never the lit snow's colour there: where the half pass' open
+    // ground estimate is partial (the edge of a tree's shade) that left single grey pixels
+    "  col = mix(col, mix(c, w.tone.rgb / w.tone.w * dot(c, float3(0.2126, 0.7152, 0.0722)), open), 1.0 - smoothstep(0.018, 0.03, mc));\n"
+    "  col *= float3(1.0 - 0.5 * saturate(fp), 1.0 - 0.42 * saturate(fp), 1.0 - 0.28 * saturate(fp));\n"  // (its shade: blue-grey)
+    "  return half4(half3(mix(c, col, k)), dst.a);\n"
+    "}\n";
+
+static NvnTexture *sc_color, *sc_depth;  // the scene pass's targets this frame (while its opaque things are drawn)
+static float sc_vp[16], sc_zn, sc_zf;
+static bool sc_dm1;
+static int sc_tree;  // this draw: a tree shaken bare, its slot 1..6 (stencil bits 1-3), 7 a face tree (Crazy
+                     // Tracy's, the Tabahl Wasteland: no wall for the alcoves' test), 0: none
+static int sc_mark;  // this draw: 0 as the game has it, 1 the level's model (stencil bit 7 clear), 2 anything else (set),
+                     // 3 grass and bushes (bit 6: a light dusting), 4 a character (bits 6 and 7: a dusting on top)
+static uint64_t sc_frame = ~0ull, sc_done = ~0ull;
+static uint32_t wx_scene_w, wx_scene_h;  // (the scene image the composite read: the scene pass's target size)
+
+static void snow_cover_encode(void) {
+    static long off = -1;  // (LARECOMP_SNOW_SKIP=1: the cover not drawn. Its GPU cost: ~0.2 ms at 1920x1080 on an M3
+    // Max, offline bench; a command buffer of its own mid-scene, as the weather's LARECOMP_WEATHER_TIME does, measures
+    // the scene's queued work too)
+    if (off < 0) off = getenv("LARECOMP_SNOW_SKIP") ? atol(getenv("LARECOMP_SNOW_SKIP")) : 0;
+    SnowFrame sf;
+    memset(&sf, 0, sizeof sf);
+    if (off || !sc_color || !sc_depth || fabsf(sc_zf - sc_zn) < 1e-6f || !weather_snow_cover(&sf, sc_vp)) return;
+    float sx, sy, dsx, dsy;
+    renderer_texture_scale(sc_color, &sx, &sy);
+    renderer_texture_scale(sc_depth, &dsx, &dsy);
+    id<MTLTexture> ct = renderer_texture(sc_color, nil, true), dt = renderer_texture(sc_depth, nil, true);
+    static int nlog;  // LARECOMP_LOG_SNOW: why the cover isn't drawn (first few)
+    if ((!ct || !dt || dt.pixelFormat != MTLPixelFormatDepth32Float_Stencil8) && nlog++ < 5 && getenv("LARECOMP_LOG_SNOW"))
+        LOG("[snow] no cover: colour %p depth %p format %lu\n", (__bridge void *)ct, (__bridge void *)dt, (unsigned long)dt.pixelFormat);
+    if (!ct || !dt || dt.pixelFormat != MTLPixelFormatDepth32Float_Stencil8) return;
+    static __unsafe_unretained id<MTLTexture> sv_of;  // (its stencil, read as a texture: a view)
+    static id<MTLTexture> sv;
+    if (sv_of != dt) sv = [dt newTextureViewWithPixelFormat:MTLPixelFormatX32_Stencil8], sv_of = dt;
+    if (!sv && nlog++ < 5 && getenv("LARECOMP_LOG_SNOW")) LOG("[snow] no stencil view (usage %#lx)\n", (unsigned long)dt.usage);
+    if (!sv) return;
+    int cw = (int)lroundf(sc_color->width * sx), ch = (int)lroundf(sc_color->height * sy);
+    if (cw > (int)ct.width) cw = (int)ct.width;
+    if (ch > (int)ct.height) ch = (int)ct.height;
+    sf.screen[0] = (float)cw, sf.screen[1] = (float)ch;
+    sf.screen[2] = fminf((float)lroundf(sc_depth->width * dsx), (float)dt.width);
+    sf.screen[3] = fminf((float)lroundf(sc_depth->height * dsy), (float)dt.height);
+    sf.flags[0] = nvn_window_origin() == 0, sf.flags[1] = sc_dm1;
+    sf.zr[0] = sc_zn, sf.zr[1] = sc_zf - sc_zn;
+
+    static id<MTLLibrary> lib;
+    static id<MTLRenderPipelineState> cover, stamp;
+    static MTLPixelFormat cover_fmt;
+    static id<MTLTexture> trail;
+    if (!lib) {
+        NSError *err = nil;
+        lib = TIMED_COMPILE([dev newLibraryWithSource:@(sc_src) options:nil error:&err]);
+        if (!lib) { LOG("[snow] shaders: %s\n", err.localizedDescription.UTF8String); off = 1; return; }
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+        pd.vertexFunction = [lib newFunctionWithName:@"sc_stamp_vs"];
+        pd.fragmentFunction = [lib newFunctionWithName:@"sc_stamp_fs"];
+        pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA32Float;
+        stamp = TIMED_COMPILE([dev newRenderPipelineStateWithDescriptor:pd error:&err]);
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+                                                                                      width:1024 height:1024 mipmapped:NO];
+        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        td.storageMode = MTLStorageModePrivate;
+        trail = [dev newTextureWithDescriptor:td];
+        if (!stamp || !trail) { LOG("[snow] trail map: %s\n", err.localizedDescription.UTF8String); off = 1; return; }
+    }
+    static id<MTLRenderPipelineState> half_pipe, prep_pipe;
+    if (!prep_pipe) {
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+        pd.vertexFunction = [lib newFunctionWithName:@"sc_vs"];
+        pd.fragmentFunction = [lib newFunctionWithName:@"sc_prep_fs"];
+        pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA32Float;
+        NSError *err = nil;
+        prep_pipe = TIMED_COMPILE([dev newRenderPipelineStateWithDescriptor:pd error:&err]);
+        if (!prep_pipe) { LOG("[snow] prep pipeline: %s\n", err.localizedDescription.UTF8String); off = 1; return; }
+    }
+    if (!half_pipe) {
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+        pd.vertexFunction = [lib newFunctionWithName:@"sc_vs"];
+        pd.fragmentFunction = [lib newFunctionWithName:@"sc_half_fs"];
+        pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+        NSError *err = nil;
+        half_pipe = TIMED_COMPILE([dev newRenderPipelineStateWithDescriptor:pd error:&err]);
+        if (!half_pipe) { LOG("[snow] half pipeline: %s\n", err.localizedDescription.UTF8String); off = 1; return; }
+    }
+    if (cover_fmt != ct.pixelFormat) {
+        cover_fmt = ct.pixelFormat;
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+        pd.vertexFunction = [lib newFunctionWithName:@"sc_vs"];
+        pd.fragmentFunction = [lib newFunctionWithName:@"sc_fs"];
+        pd.colorAttachments[0].pixelFormat = ct.pixelFormat;
+        NSError *err = nil;
+        cover = TIMED_COMPILE([dev newRenderPipelineStateWithDescriptor:pd error:&err]);
+        if (!cover) { LOG("[snow] cover pipeline: %s\n", err.localizedDescription.UTF8String); off = 1; return; }
+    }
+    end_pass();
+    st.rt_dirty = true;  // (the game's next draw opens its pass again: loads what this left)
+    // new footprints into the trail map (cleared the first time)
+    static bool trail_clear = true;
+    SnowPrint pr[64];
+    int np = weather_snow_prints(pr, 64);
+    if (np || trail_clear) {
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        rp.colorAttachments[0].texture = trail;
+        rp.colorAttachments[0].loadAction = trail_clear ? MTLLoadActionClear : MTLLoadActionLoad;
+        rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        trail_clear = false;
+        id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:rp];
+        e.label = @"snow prints";
+        if (np) {
+            [e setRenderPipelineState:stamp];
+            [e setVertexBytes:&sf length:sizeof sf atIndex:0];
+            [e setFragmentBytes:&sf length:sizeof sf atIndex:0];
+            [e setVertexBytes:pr length:np * sizeof pr[0] atIndex:1];
+            [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:np * 4];
+        }
+        [e endEncoding];
+        stat_passes++;
+    }
+    // LARECOMP_SNOW_TIME=1 (test): the cover's GPU time (its two passes) from timestamps at their fragment stages' start and end (in place: the
+    // frame's command buffer as always), and the CPU time of the snow's hooks, logged as means every 120 frames
+    static int timing = -1;
+    static id<MTLCounterSampleBuffer> tsb;
+    if (timing < 0) {
+        timing = getenv("LARECOMP_SNOW_TIME") != NULL;
+        if (timing) {
+            id<MTLCounterSet> ts = nil;
+            for (id<MTLCounterSet> c in dev.counterSets) if ([c.name isEqualToString:MTLCommonCounterSetTimestamp]) ts = c;
+            MTLCounterSampleBufferDescriptor *d = [MTLCounterSampleBufferDescriptor new];
+            d.counterSet = ts, d.storageMode = MTLStorageModeShared, d.sampleCount = 4 * 64;
+            NSError *err = nil;
+            tsb = ts && [dev supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary] ? [dev newCounterSampleBufferWithDescriptor:d error:&err] : nil;
+            LOG("[snow] timing: GPU timestamps %s\n", tsb ? "on" : "not available");
+        }
+    }
+    static uint32_t ts_slot;
+    uint32_t slot = ts_slot++ % 64;
+    // the analysis (sc_half_fs) into a small texture of its own: a texel per 2x2 pixels at 1080p - per 3x3 at 1440p,
+    // 4x4 at 4K (the same detail at any resolution: its rings are sized to the screen too, and the cover takes its
+    // texels by depth - sharp at edges). LARECOMP_SNOW_HALF=<n> (test): n x n pixels a texel
+    static int fixed_s = -1;
+    if (fixed_s < 0) fixed_s = getenv("LARECOMP_SNOW_HALF") ? atoi(getenv("LARECOMP_SNOW_HALF")) : 0;
+    int hs = fixed_s > 0 ? fixed_s : (int)fmaxf(2, roundf(2.0f * ch / 1080));
+    sf.trail[2] = (float)hs;
+    int hw = (cw + hs - 1) / hs, hh = (ch + hs - 1) / hs;
+    static id<MTLTexture> half;
+    if (!half || (int)half.width < hw || (int)half.height < hh) {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                                                                      width:(NSUInteger)hw height:(NSUInteger)hh mipmapped:NO];
+        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        td.storageMode = MTLStorageModePrivate;
+        half = [dev newTextureWithDescriptor:td];
+        if (!half) { off = 1; return; }
+    }
+    // its far samples' prep (sc_prep_fs): per cell the world point and what is there, read by the rings and the drift
+    // search instead of the full-size depth and stencil (exactly the grid's size: sc_at clamps to it)
+    static id<MTLTexture> prep;
+    if (!prep || (int)prep.width != hw || (int)prep.height != hh) {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+                                                                                      width:(NSUInteger)hw height:(NSUInteger)hh mipmapped:NO];
+        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        td.storageMode = MTLStorageModePrivate;
+        prep = [dev newTextureWithDescriptor:td];
+        if (!prep) { off = 1; return; }
+    }
+    {
+        MTLRenderPassDescriptor *pp = [MTLRenderPassDescriptor renderPassDescriptor];
+        pp.colorAttachments[0].texture = prep;
+        pp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+        pp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:pp];
+        e.label = @"snow cover (prep)";
+        [e setViewport:(MTLViewport){0, 0, (double)hw, (double)hh, 0, 1}];
+        [e setRenderPipelineState:prep_pipe];
+        [e setFragmentBytes:&sf length:sizeof sf atIndex:0];
+        [e setFragmentTexture:dt atIndex:0];
+        [e setFragmentTexture:sv atIndex:2];
+        [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [e endEncoding];
+        stat_passes++;
+    }
+    {
+        MTLRenderPassDescriptor *hp = [MTLRenderPassDescriptor renderPassDescriptor];
+        hp.colorAttachments[0].texture = half;
+        hp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+        hp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        hp.renderTargetWidth = (NSUInteger)hw, hp.renderTargetHeight = (NSUInteger)hh;
+        if (tsb) {
+            MTLRenderPassSampleBufferAttachmentDescriptor *sa = hp.sampleBufferAttachments[0];
+            sa.sampleBuffer = tsb;
+            sa.startOfVertexSampleIndex = sa.endOfVertexSampleIndex = MTLCounterDontSample;
+            sa.startOfFragmentSampleIndex = slot * 4, sa.endOfFragmentSampleIndex = slot * 4 + 1;
+        }
+        id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:hp];
+        e.label = @"snow cover (half)";
+        [e setViewport:(MTLViewport){0, 0, (double)hw, (double)hh, 0, 1}];
+        [e setRenderPipelineState:half_pipe];
+        [e setFragmentBytes:&sf length:sizeof sf atIndex:0];
+        [e setFragmentTexture:dt atIndex:0];
+        [e setFragmentTexture:sv atIndex:2];
+        [e setFragmentTexture:ct atIndex:3];
+        [e setFragmentTexture:prep atIndex:5];
+        [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [e endEncoding];
+        stat_passes++;
+    }
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = ct;
+    rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    rp.renderTargetWidth = (NSUInteger)cw, rp.renderTargetHeight = (NSUInteger)ch;
+    if (tsb) {  // (the cover's fragments' start and end; the half pass': above)
+        MTLRenderPassSampleBufferAttachmentDescriptor *sa = rp.sampleBufferAttachments[0];
+        sa.sampleBuffer = tsb;
+        sa.startOfVertexSampleIndex = sa.endOfVertexSampleIndex = MTLCounterDontSample;
+        sa.startOfFragmentSampleIndex = slot * 4 + 2, sa.endOfFragmentSampleIndex = slot * 4 + 3;
+    }
+    id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:rp];
+    e.label = @"snow cover";
+    [e setViewport:(MTLViewport){0, 0, (double)cw, (double)ch, 0, 1}];
+    [e setRenderPipelineState:cover];
+    [e setFragmentBytes:&sf length:sizeof sf atIndex:0];
+    [e setFragmentTexture:dt atIndex:0];
+    [e setFragmentTexture:trail atIndex:1];
+    [e setFragmentTexture:sv atIndex:2];
+    [e setFragmentTexture:half atIndex:4];
+    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [e endEncoding];
+    stat_passes++;
+    snapshots_invalidate(sc_color);
+    if (tsb) {
+        static double sum, sh, sc;
+        static int n;
+        static uint64_t cpu0, gpu0;
+        if (!cpu0) [dev sampleTimestamps:&cpu0 gpuTimestamp:&gpu0];
+        id<MTLCounterSampleBuffer> b = tsb;
+        [cmdbuf addCompletedHandler:^(id<MTLCommandBuffer> c) {
+            (void)c;
+            NSData *d = [b resolveCounterRange:NSMakeRange(slot * 4, 4)];
+            if (!d || d.length < 32) return;
+            const uint64_t *t = d.bytes;
+            if (t[3] <= t[0] || t[1] < t[0] || t[3] < t[2] || t[0] == MTLCounterErrorValue || t[2] == MTLCounterErrorValue) return;
+            uint64_t c1, g1;
+            [dev sampleTimestamps:&c1 gpuTimestamp:&g1];
+            // (GPU ticks -> ns: against the CPU's timestamps - ns - over the run so far; 1 on Apple GPUs)
+            double per = g1 > gpu0 ? (double)(c1 - cpu0) / (double)(g1 - gpu0) : 1.0;
+            sum += (double)(t[3] - t[0]) * per, sh += (double)(t[1] - t[0]) * per, sc += (double)(t[3] - t[2]) * per;
+            if (++n == 120)
+                LOG("[snow] cover pass GPU %.3f ms (half %.3f, cover %.3f; mean of 120)\n", sum / n / 1e6, sh / n / 1e6, sc / n / 1e6),
+                    sum = sh = sc = 0, n = 0;
+        }];
+    }
+}
+
+// Before each draw: while there is snow, the scene's opaque draws (depth pre-pass and colour pass) write stencil bit 7
+// (sc_mark); the cover goes on right before the colour pass's first blended draw (or the next pass, if none)
+static void snow_cover_check(CmdRec *r, bool indexed, Prog *pr) {
+    sc_mark = sc_tree = 0;
+    uint64_t frame = renderer_exec_frame();
+    if (sc_done == frame || !st.rt.depth) return;
+    bool scene = st.rt.ncolor && st.rt.color[0] && st.rt.color[0]->width == wx_scene_w &&
+                 st.rt.color[0]->height == wx_scene_h && st.rt.depth->format == 0x35;
+    bool blended = st.rt.ncolor && (st.color_state[0] & 1);
+    if (sc_frame == frame && (!scene || st.rt.color[0] != sc_color || blended || !st.ds[0])) {
+        static int nlog;
+        if (nlog++ < 5 && getenv("LARECOMP_LOG_SNOW"))
+            LOG("[snow] cover at frame %llu (scene %d, blended %d, depth test %d)\n", (unsigned long long)frame, scene, blended, st.ds[0]);
+        sc_done = frame;
+        snow_cover_encode();
+        return;
+    }
+    if (!weather_snow_on()) return;
+    uint64_t s4 = st.ubuf[0][4].addr ? st.ubuf[0][4].size : 0, inst = indexed ? r->x[6] : r->x[4];
+    bool level = (s4 == 912 || s4 == 928) && inst <= 1 && st.ubuf[0][1].addr && st.ubuf[0][1].size == 1024;
+    if (level && st.rt.ncolor) {  // (the water is part of the level's model: told by its maps, recolour_water.c -
+        // looked up once per program and mesh, then remembered: a mesh keeps its maps)
+        enum { WC = 1024 };
+        static struct { uint64_t key; bool water, face; } wc[WC];
+        uint64_t key = ((uint64_t)(uintptr_t)pr * 0x9E3779B97F4A7C15ull ^ st.vbuf[0].addr) | 1;
+        uint32_t k = (uint32_t)(key ^ key >> 29) & (WC - 1);
+        if (wc[k].key != key) {
+            extern int renderer_texpatch_of(NvnTexture *t);
+            bool water = false, face = false;
+            for (int i = 0; i < pr->fi->ntex && !water; i++) {
+                NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
+                int c = t ? recolour_class_of(renderer_texpatch_of(t)) : 0;
+                water |= c == 32, face |= c == 26;  // (W_WATER; S_FACE: the face trees)
+            }
+            wc[k].key = key, wc[k].water = water, wc[k].face = face;
+        }
+        level = !wc[k].water;
+        if (wc[k].face) sc_tree = 7;  // (a face tree: no wall for the alcoves' test - stencil slot 7, sc_prep_fs)
+    }
+    // the depth pre-pass and the colour pass' opaque draws (Link and the water are only in that one)
+    if (st.ds[0] && (st.ds[1] || (st.rt.ncolor && !blended)) && st.rt.depth->width == wx_scene_w &&
+        st.rt.depth->height == wx_scene_h && st.rt.depth->format == 0x35) {
+        // A level draw the pre-pass left out takes no snow: its depth isn't in the scene depth (what shows there has
+        // the depth of whatever is behind it) - the floor decals seen through the houses' doorways. Told by the draw's
+        // arguments and vertex buffer: the same in both passes. (The colour pass' marks win where it draws: it writes
+        // the stencil wherever it passes the depth test, so the pre-pass' own guess - its slot 4 is stale - only
+        // stands where nothing else is drawn)
+        enum { SIGS = 4096 };
+        static uint64_t sig[SIGS], sig_at[SIGS];
+        uint64_t h = st.vbuf[0].addr * 0x9E3779B97F4A7C15ull;
+        for (int i = 0; i < 7; i++) h = (h ^ r->x[i]) * 0xBF58476D1CE4E5B9ull, h ^= h >> 31;
+        h |= 1;
+        uint32_t k = (uint32_t)(h ^ h >> 32) & (SIGS - 1);
+        if (!st.rt.ncolor) {  // (every pre-pass draw: its slot 4 is a leftover - the depth-only shaders don't read it)
+            for (int n = 0; n < 16 && sig_at[k] == frame && sig[k] != h; n++) k = (k + 1) & (SIGS - 1);
+            sig[k] = h, sig_at[k] = frame;
+        } else if (level) {
+            bool found = false;
+            for (int n = 0; n < 16 && sig_at[k] == frame && !found; n++) found = sig[k] == h, k = (k + 1) & (SIGS - 1);
+            level = found;
+        }
+        sc_mark = level ? 1 : 2;
+        // Scenery drawn as actors - bonkable and apple trees, palms, Kiki's tree, props - takes snow like the level:
+        // they are drawn with the level's own fragment shaders (characters, enemies, animals, items never are). Told
+        // by the shaders the level's model has used so far (colour pass: the pre-pass' depth-only shaders say nothing)
+        static uint64_t lvl_fs[64];
+        static int nlvl;
+        if (st.rt.ncolor && g_cur_fs_hash) {
+            int i = 0;
+            while (i < nlvl && lvl_fs[i] != g_cur_fs_hash) i++;
+            if (level && i == nlvl && nlvl < 64) lvl_fs[nlvl++] = g_cur_fs_hash;
+            else if (!level && i < nlvl && st.ubuf[0][4].addr && (st.ubuf[0][4].size == 1056 || st.ubuf[0][4].size == 1072))
+                sc_mark = 1;
+        }
+        // Characters - Link, NPCs, enemies, animals, items - get a dusting on what faces up (stencil bits 6 and 7 both,
+        // sc_fs). The animals drawn with the level's shaders (the fox, the cuccos) are told from the scenery actors
+        // drawn with them (rocks, statues, signs, flower plants) by moving: their vertex data is posed anew each frame
+        // (weather.c). Their shaders and constant buffers are the props' own. Issue #574: they took the props' dusting
+        bool actor = st.rt.ncolor && !level && st.ubuf[0][4].addr && (st.ubuf[0][4].size == 1056 || st.ubuf[0][4].size == 1072);
+        bool promoted = actor && sc_mark == 1;
+        bool animated = promoted && weather_snow_animated(st.vbuf[0].addr, (const void *)(uintptr_t)st.vbuf[0].addr, st.vbuf[0].size, frame);
+        if (actor && (sc_mark == 2 || animated)) sc_mark = 4;
+        // Grass and bushes - the tall grass tufts (instanced), cuttable / liftable bushes, flowers and small plants -
+        // get a light dusting of their own (stencil bit 6, sc_fs): told by their maps (runtime/nvn/recolour_seasons.c's
+        // tall grass, bush and lime-foliage maps), looked up once per program and mesh. Not the level's own ground
+        // grass (a level draw), and only in the colour pass (the pre-pass has no maps)
+        if (st.rt.ncolor && !level) {
+            enum { FC = 1024 };
+            static struct { uint64_t key; bool fol, tree, rock, face; } fc[FC];
+            uint64_t key = ((uint64_t)(uintptr_t)pr * 0x9E3779B97F4A7C15ull ^ st.vbuf[0].addr) | 1;
+            uint32_t k = (uint32_t)(key ^ key >> 29) & (FC - 1);
+            if (fc[k].key != key) {
+                extern int renderer_texpatch_of(NvnTexture *t);
+                bool fol = false, tree = false, rock = false, face = false;
+                for (int i = 0; i < pr->fi->ntex; i++) {
+                    NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
+                    int c = t ? recolour_class_of(renderer_texpatch_of(t)) : 0;
+                    fol |= c == 18 || c == 23 || c == 24;  // (S_BUSH, S_LIME, S_LAWN)
+                    tree |= c == 16 || c == 17 || c == 22;  // (S_TREE, S_PALM, S_MYST: canopies)
+                    rock |= c == 27, face |= c == 26;  // (S_ROCK, S_FACE)
+                }
+                fc[k].key = key, fc[k].fol = fol, fc[k].tree = tree, fc[k].rock = rock, fc[k].face = face;
+            }
+            // (and the scenery actors the rule above gives full snow unless they are trees: the village's big flower
+            // plants and props carry no maps the recolours know - a dusting suits them better than a white blanket.
+            // Rocks take it like the ground: a cap on top; the face trees as the level's own, slot 7)
+            if (promoted && sc_mark == 4 && (fc[k].tree || fc[k].rock || fc[k].face)) sc_mark = 1;  // (scenery by its maps, even moving)
+            if (fc[k].fol || (sc_mark == 1 && !fc[k].tree && !fc[k].rock && !fc[k].face)) sc_mark = 3;
+            else if (sc_mark == 1 && fc[k].face) sc_tree = 7;
+            else if (sc_mark == 1 && fc[k].tree && st.ubuf[0][3].addr && st.ubuf[0][3].size == 144) {
+                // (a tree: its world position - an actor's transform is vertex constant slot 3, 3x4 rows - for the
+                // bonk that shakes its snow off, weather.c; a shaken one's slot goes to stencil bits 1-3)
+                const float *m = (const float *)(uintptr_t)st.ubuf[0][3].addr;
+                float pos[3] = {m[3], m[7], m[11]};
+                sc_tree = weather_snow_tree(pos);
+            }
+        }
+    }
+    if (!scene || !level || blended || !st.ds[0]) return;
+    sc_color = st.rt.color[0], sc_depth = st.rt.depth, sc_frame = frame;
+    memcpy(sc_vp, (const float *)(uintptr_t)st.ubuf[0][1].addr, sizeof sc_vp);
+    sc_zn = st.depth_range[0][0], sc_zf = st.depth_range[0][1], sc_dm1 = nvn_depth_mode() == 0;
+}
+
+// LARECOMP_SNOW_TIME=1 (test): snow_cover_check's CPU time (render thread: its marks, the cover's encoding), the
+// mean per frame logged every 120 frames
+static void snow_cover_check_timed(CmdRec *r, bool indexed, Prog *pr) {
+    static int tm = -1;
+    if (tm < 0) tm = getenv("LARECOMP_SNOW_TIME") != NULL;
+    if (!tm) { snow_cover_check(r, indexed, pr); return; }
+    static uint64_t last = ~0ull, sum, ndraws;
+    static int n;
+    uint64_t f = renderer_exec_frame();
+    if (f != last) {
+        if (last != ~0ull && weather_snow_on() && ++n == 120)
+            LOG("[snow] render thread CPU %.1f us a frame (%llu draws checked a frame)\n", sum / 120 / 1e3, (unsigned long long)(ndraws / 120)), sum = ndraws = 0, n = 0;
+        last = f;
+    }
+    uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), done = sc_done;
+    snow_cover_check(r, indexed, pr);
+    uint64_t dtn = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0;
+    sum += dtn, ndraws++;
+    if (sc_done != done) {  // (this call encoded the cover)
+        static uint64_t esum;
+        static int en;
+        esum += dtn;
+        if (++en == 120) LOG("[snow] encoding the cover %.1f us a frame\n", esum / 120 / 1e3), esum = 0, en = 0;
+    }
+}
+
+static void draw_one(CmdRec *r, bool indexed) {
     if (!st.program) { stat_skipped++; return; }
     static bool logged_modes;
     if (!logged_modes) {
@@ -3131,6 +4193,7 @@ static void draw(CmdRec *r, bool indexed) {
             st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height && pr->fi->ntex) {
             NvnTexture *t0 = shader_texture_object(1, &pr->fi->tex[0]);
             composite = t0 && mirror_scene_size(t0->width, t0->height, st.rt.color[0]->width, st.rt.color[0]->height);
+            if (composite) wx_scene_w = t0->width, wx_scene_h = t0->height;  // (the snow cover: the scene pass's size)
             extern void scene_size_log(bool composite, uint32_t sw, uint32_t sh, uint32_t w, uint32_t h);
             if (t0) scene_size_log(composite, t0->width, t0->height, st.rt.color[0]->width, st.rt.color[0]->height);
         }
@@ -3146,8 +4209,10 @@ static void draw(CmdRec *r, bool indexed) {
             if (photo_mode_skip_draw(renderer_present_count(), st.rt.ncolor && st.rt.color[0] &&
                                      renderer_texture_presented(st.rt.color[0]), photo_composite)) { stat_skipped++; return; }
         }
+        wx_composite = composite;
         if (mirror_draw(composite)) {  // (the vertex flip mirrors a composite drawn with uvs, the fragment one a
             vkey.flip_x = fkey.flip_x = true;  // composite reading pixel positions; get_program keys on vkey)
+            wx_mirror = true;
             pr = get_program(st.program, &vkey, &fkey);
             if (!pr || !pr->ready) { stat_skipped++; return; }
         }
@@ -3182,6 +4247,19 @@ static void draw(CmdRec *r, bool indexed) {
         if (last_hash) widescreen_backdrop_seen(last_hash);
         extern void widescreen_scene_ubo(const float *u, uint64_t size);  // (the camera's view-projection)
         if (st.ubuf[0][5].addr) widescreen_scene_ubo((const float *)(uintptr_t)st.ubuf[0][5].addr, st.ubuf[0][5].size);
+        // (the weather: the camera, and the depth it draws into) The scene's draws carry the camera block in vertex
+        // constant slot 5 (320 bytes: view, projection, view-projection) - but on some frames none does (Field_11E,
+        // for seconds at a time, standing still): then the level model's view-projection (its slot 1, the same matrix)
+        bool into_scene = st.rt.ncolor && st.rt.color[0] && st.rt.depth && st.rt.depth->width >= 640 &&
+                          st.rt.color[0]->width == st.rt.depth->width && renderer_format_is_depth(st.rt.depth->format);
+        uint64_t s4 = st.ubuf[0][4].addr ? st.ubuf[0][4].size : 0;
+        bool cam = st.ubuf[0][5].addr && st.ubuf[0][5].size == 320,
+             level = !cam && into_scene && (s4 == 912 || s4 == 928) && st.ubuf[0][1].addr && st.ubuf[0][1].size == 1024;
+        if (cam) weather_scene_camera((const float *)(uintptr_t)st.ubuf[0][5].addr, st.ubuf[0][5].size, renderer_exec_frame());
+        if (level) weather_scene_vp((const float *)(uintptr_t)st.ubuf[0][1].addr, renderer_exec_frame());
+        if ((cam && st.rt.depth && st.rt.depth->width >= 640 && renderer_format_is_depth(st.rt.depth->format)) || level)
+            wx_depth = st.rt.depth, wx_depth_frame = renderer_exec_frame(), wx_zn = st.depth_range[0][0], wx_zf = st.depth_range[0][1],
+            wx_dm1 = nvn_depth_mode() == 0;
         if (last_hash == 0x71fe31bbf03c3515ull && getenv("LARECOMP_LOG_INDOOR")) {
             static uint64_t lf;
             extern uint64_t renderer_present_count(void);
@@ -3208,6 +4286,7 @@ static void draw(CmdRec *r, bool indexed) {
     if (td_pending) { td_flush_shader_textures(0, pr->vi); td_flush_shader_textures(1, pr->fi); }
     resolve_feedback(pr);
     // this draw's writes make snapshots of its attachments stale
+    snow_cover_check_timed(r, indexed, pr);  // (the snow on the ground: its stencil marks, the cover after the opaque draws)
     snap_reason = "draw-depthwrite";
     if (st.rt.depth && st.ds[0] && st.ds[1]) snapshots_invalidate(st.rt.depth);  // stencil-only writes: shaders sample depth
     snap_reason = "draw-colorwrite";
@@ -3287,7 +4366,7 @@ static void draw(CmdRec *r, bool indexed) {
     pipe_tab[pslot].key = phash;
     pipe_tab[pslot].pipe = (__bridge void *)pipe;  // retained by the cache dictionary
     }
-    [enc setRenderPipelineState:pipe];
+    E_pipe(pipe);
 
     // Decal colour passes (issue #52): the game draws floor decals twice with the same negative polygon offset - a
     // depth pre-pass, then the colour pass with depth test EQUAL and no depth writes. An M4 (macOS 26.4) lands the two
@@ -3308,13 +4387,14 @@ static void draw(CmdRec *r, bool indexed) {
     // depth / stencil
     static uint64_t last_dsk;
     static id<MTLDepthStencilState> last_dss;
-    uint64_t dsk = hmix(hmix(hmix(0xcbf29ce484222325ull, st.ds, 8), st.stencil_mask, sizeof st.stencil_mask), st.stencil_vmask, sizeof st.stencil_vmask) ^ decal_le;
+    uint64_t dsk = hmix(hmix(hmix(0xcbf29ce484222325ull, st.ds, 8), st.stencil_mask, sizeof st.stencil_mask), st.stencil_vmask, sizeof st.stencil_vmask) ^ decal_le ^
+                   (uint64_t)(sc_mark != 0) << 40;  // (snow: the stencil marks, snow_cover_check)
     id<MTLDepthStencilState> dss = dsk == last_dsk ? last_dss : nil;
     NSString *dk = nil;
     if (!dss) {
-        dk = [NSString stringWithFormat:@"ds %02x%02x%02x%02x%02x%02x%02x%02x %x %x %x %x%s", st.ds[0], st.ds[1], st.ds[2], st.ds[3],
+        dk = [NSString stringWithFormat:@"ds %02x%02x%02x%02x%02x%02x%02x%02x %x %x %x %x%s%s", st.ds[0], st.ds[1], st.ds[2], st.ds[3],
                     st.ds[4], st.ds[5], st.ds[6], st.ds[7], st.stencil_mask[0], st.stencil_vmask[0], st.stencil_mask[1], st.stencil_vmask[1],
-                    decal_le ? " le" : ""];
+                    decal_le ? " le" : "", sc_mark ? " snow" : ""];
         dss = cache[dk];
     }
     if (!dss) {
@@ -3326,36 +4406,51 @@ static void draw(CmdRec *r, bool indexed) {
             dd.depthWriteEnabled = st.ds[1] != 0;
         }
         else { dd.depthCompareFunction = MTLCompareFunctionAlways; dd.depthWriteEnabled = NO; }
-        if (st.ds[3]) {
+        if (st.ds[3] || sc_mark) {
             uint32_t ops = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16;
             for (int f = 0; f < 2; f++) {
                 MTLStencilDescriptor *sd = [MTLStencilDescriptor new];
-                sd.stencilCompareFunction = compare_fn(f ? st.ds[4] >> 4 : st.ds[4] & 0xF);
-                uint32_t o = f ? ops >> 12 : ops;
-                sd.stencilFailureOperation = stencil_op(o & 0xF);
-                sd.depthFailureOperation = stencil_op((o >> 4) & 0xF);
-                sd.depthStencilPassOperation = stencil_op((o >> 8) & 0xF);
-                sd.readMask = st.stencil_vmask[f] & 0xFF;
-                sd.writeMask = st.stencil_mask[f] & 0xFF;
+                if (st.ds[3]) {
+                    sd.stencilCompareFunction = compare_fn(f ? st.ds[4] >> 4 : st.ds[4] & 0xF);
+                    uint32_t o = f ? ops >> 12 : ops;
+                    sd.stencilFailureOperation = stencil_op(o & 0xF);
+                    sd.depthFailureOperation = stencil_op((o >> 4) & 0xF);
+                    sd.depthStencilPassOperation = stencil_op((o >> 8) & 0xF);
+                    sd.readMask = st.stencil_vmask[f] & 0xFF;
+                    sd.writeMask = st.stencil_mask[f] & 0xFF;
+                } else sd.writeMask = 0;
+                if (sc_mark) {  // (snow: bit 7 too where it passes - the game's keep / zero / replace become a replace,
+                    // the reference keeps the game's bits: snow_cover_check)
+                    MTLStencilOperation p = sd.depthStencilPassOperation;
+                    if (p == MTLStencilOperationKeep) sd.writeMask = 0xCE;
+                    else if (p == MTLStencilOperationZero || p == MTLStencilOperationReplace) sd.writeMask |= 0xCE;
+                    if (p == MTLStencilOperationKeep || p == MTLStencilOperationZero || p == MTLStencilOperationReplace)
+                        sd.depthStencilPassOperation = MTLStencilOperationReplace;
+                }
                 if (f) dd.backFaceStencil = sd; else dd.frontFaceStencil = sd;
             }
         }
         dss = [dev newDepthStencilStateWithDescriptor:dd];
         cache[dk] = dss;
     }
-    [enc setDepthStencilState:dss];
+    E_dss(dss);
     last_dsk = dsk;
     last_dss = dss;
-    [enc setStencilFrontReferenceValue:st.stencil_ref[0] backReferenceValue:st.stencil_ref[1]];
-    [enc setBlendColorRed:st.blend_color[0] green:st.blend_color[1] blue:st.blend_color[2] alpha:st.blend_color[3]];
+    if (sc_mark) {  // (the game's reference where its pass op was a replace, 0 for a zero; bits 6-7 the mark, 1-3 a shaken tree)
+        uint32_t ops = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16, ref[2];
+        for (int f = 0; f < 2; f++)
+            ref[f] = (st.ds[3] && ((f ? ops >> 20 : ops >> 8) & 0xF) == 3 ? st.stencil_ref[f] & 0x31 : 0) | (sc_mark == 2 ? 0x80 : sc_mark == 3 ? 0x40 : sc_mark == 4 ? 0xC0 : 0) | (uint32_t)sc_tree << 1;
+        E_stref2(ref[0], ref[1]);
+    } else E_stref2(st.stencil_ref[0], st.stencil_ref[1]);
+    E_blendc(st.blend_color);
 
     // rasterizer
     uint8_t cull = st.poly[0];
     if (vkey.flip_x) cull = 0;  // (mirror mode's composite: one full-screen quad, either winding)
-    [enc setCullMode:cull == 1 ? MTLCullModeFront : cull == 2 ? MTLCullModeBack : MTLCullModeNone];
+    E_cull(cull == 1 ? MTLCullModeFront : cull == 2 ? MTLCullModeBack : MTLCullModeNone);
     bool ccw = st.poly[1] == 1;
-    [enc setFrontFacingWinding:(ccw != vkey.flip_y) ? MTLWindingCounterClockwise : MTLWindingClockwise];
-    [enc setTriangleFillMode:st.poly[2] == 1 ? MTLTriangleFillModeLines : MTLTriangleFillModeFill];
+    E_wind((ccw != vkey.flip_y) ? MTLWindingCounterClockwise : MTLWindingClockwise);
+    E_fill(st.poly[2] == 1 ? MTLTriangleFillModeLines : MTLTriangleFillModeFill);
     {   // polygon offset (decals on floors: without it they z-fight). Enables: bit 2 = fill (NVN PolygonOffsetEnable)
         static float last[3] = {0, 0, 0};
         float f[3] = {0, 0, 0};
@@ -3368,7 +4463,7 @@ static void draw(CmdRec *r, bool indexed) {
         static int nlog;
         if ((st.poly[3] & 4) && nlog < 3 && getenv("LARECOMP_LOG_BIAS")) { nlog++; LOG("[bias] factor %g units %g clamp %g\n", st.poly_offset[0], st.poly_offset[1], st.poly_offset[2]); }
         if (memcmp(f, last, sizeof f) || enc != last_bias_enc) {
-            [enc setDepthBias:f[1] slopeScale:f[0] clamp:f[2]];
+            E_bias(f[1], f[0], f[2]);
             memcpy(last, f, sizeof f);
             last_bias_enc = enc;
         }
@@ -3377,6 +4472,42 @@ static void draw(CmdRec *r, bool indexed) {
     float zn = st.depth_range[0][0], zf = st.depth_range[0][1];
 
     // resources
+    if (g_interp_log) {  // (frame interpolation, runtime/nvn/interp.c: the draw's identity across frames)
+        // LARECOMP_INTERP_KEY=<mask> (research): 1 draw arguments, 2 index buffer address, 4 programs, 8 vertex buffer 0
+        // address, 16 target object, 32 target class (format, depth-only, aspect: not the size - Dynamic resolution
+        // changes the targets' size between frames, and keyed by size every draw of such a frame went unmatched: a
+        // cut, an interval without in-betweens; Dusklight keys by the object, never by a target). Default 37: the
+        // game's render-target objects and its dynamic geometry's buffers change from frame to frame (measured: 44%
+        // matched with them, 100% without, Mabe Village).
+        static int kmask = -1;
+        if (kmask < 0) kmask = getenv("LARECOMP_INTERP_KEY") ? atoi(getenv("LARECOMP_INTERP_KEY")) : 37;
+        uint64_t args[7];
+        memcpy(args, r->x, sizeof args);
+        if (indexed && !(kmask & 2)) args[3] = 0;
+        NvnTexture *kt = st.rt.ncolor ? st.rt.color[0] : st.rt.depth;
+        uint64_t key = (kmask & 1) ? hmix(1469598103934665603ull, args, sizeof args) : 1469598103934665603ull;
+        uint64_t ids[5] = {(kmask & 4) ? st.program->stages[0].code_addr : 0, (kmask & 4) ? st.program->stages[1].code_addr : 0,
+                           (kmask & 8) ? st.vbuf[0].addr : 0, (kmask & 16) ? (uint64_t)(uintptr_t)kt : 0,
+                           (kmask & 32) && kt ? (uint64_t)kt->format << 32 | (st.rt.ncolor ? 0 : 1u << 31) | (kt->height ? kt->width * 16 / kt->height : 0) : 0};
+        uint64_t fkey = hmix(key, ids, sizeof ids);
+        {   // LARECOMP_INTERP_LOG_KEYS=1 (research): each key's components once
+            static int on = -1; static uint64_t seen[4096]; static int nseen;
+            if (on < 0) on = getenv("LARECOMP_INTERP_LOG_KEYS") != NULL;
+            if (on) {
+                bool known = false;
+                for (int i = 0; i < nseen; i++) if (seen[i] == fkey) { known = true; break; }
+                if (!known && nseen < 4096) {
+                    seen[nseen++] = fkey;
+                    LOG("[interp-key] %016llx vs %llx fs %llx fshash %016llx mode %llu count %llu inst %llu rt %ux%u ncolor %d fmt %#x depth %p dswrite %d ub0 %u ub1 %u ub2 %u ub3 %u ntex %d\n",
+                        (unsigned long long)fkey, st.program->stages[0].code_addr, st.program->stages[1].code_addr, (unsigned long long)g_cur_fs_hash,
+                        r->x[0], r->x[2], indexed ? r->x[6] : r->x[4], kt ? kt->width : 0, kt ? kt->height : 0, st.rt.ncolor,
+                        kt ? kt->format : 0, (void *)st.rt.depth, st.ds[0] && st.ds[1], (unsigned)st.ubuf[0][0].size, (unsigned)st.ubuf[0][1].size,
+                        (unsigned)st.ubuf[0][2].size, (unsigned)st.ubuf[0][3].size, pr->fi->ntex);
+                }
+            }
+        }
+        interp_draw(fkey, st.rt.ncolor == 0);
+    }
     bind_cbufs(0, pr->vi);
     bind_cbufs(1, pr->fi);
     // (debug, LARECOMP_LOG_BINDS) shaders loading global memory read through pointers in their uniform buffers: note
@@ -3400,20 +4531,33 @@ static void draw(CmdRec *r, bool indexed) {
             }
         }
     }
-    if (pr->vi->uses_gmem) [enc setVertexBuffer:g_guest_buffer offset:0 atIndex:GMEM_BUFFER_INDEX];
+    if (g_interp_log && !g_interp_replaying && (pr->vi->uses_gmem || pr->fi->uses_gmem))  // (frame interpolation: the storage read live)
+        for (int s_ = 0; s_ < 2; s_++) {
+            ShaderInfo *si = s_ ? pr->fi : pr->vi;
+            if (!si->uses_gmem) continue;
+            // (only what the draw read in place: a snapshot copy is the frame's own, and the replays bind that copy, so
+            // the game rewriting the original meanwhile - the tiled light lists, rewritten for the next frame while
+            // this one is drawn - can't reach them; checked, it cut the in-betweens for seconds at a time)
+            for (int i = 0; i < 16; i++)
+                if ((si->ssbo_read & (1u << i)) && st.sbuf[s_][i].addr && g_bound_sbuf[s_][i] == st.sbuf[s_][i].addr)
+                    interp_storage(st.sbuf[s_][i].addr, st.sbuf[s_][i].size);
+        }
+    if (pr->vi->uses_gmem) E_buf(0, g_guest_buffer, 0, GMEM_BUFFER_INDEX);
     static id<MTLBuffer> dbgvs;
     bool dbg_this = maxwell_dbg_vs && (const uint8_t *)(uintptr_t)st.program->stages[0].code_addr == maxwell_dbg_vs;
     if (dbg_this) {
         if (!dbgvs) dbgvs = [dev newBufferWithLength:2 * 64 * 8 * 16 options:MTLResourceStorageModeShared];
         memset(dbgvs.contents, 0xff, 2 * 64 * 8 * 16);
-        [enc setVertexBuffer:dbgvs offset:0 atIndex:DBG_VS_BUFFER_INDEX];
+        E_buf(0, dbgvs, 0, DBG_VS_BUFFER_INDEX);
     }
-    if (pr->fi->uses_gmem) [enc setFragmentBuffer:g_guest_buffer offset:0 atIndex:GMEM_BUFFER_INDEX];
+    if (pr->fi->uses_gmem) E_buf(1, g_guest_buffer, 0, GMEM_BUFFER_INDEX);
     bind_textures(0, pr->vi);
     bind_textures(1, pr->fi);
     extern bool pets_hide_item_cursor(void);  // (the cursor is on the companion card: runtime/hle/pets.c)
     if (draw_item_cursor && pets_hide_item_cursor()) { stat_skipped++; return; }
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
+    const void *hud_u = NULL;  // (runtime/hle/hud_corners.c: the window-wide uniforms of a UI draw)
+    float hud_k = 1, hud_ky = 1;
     if (fabsf(pass_sx - pass_sy) > 0.01f * pass_sy && st.rt.ncolor && renderer_texture_presented(st.rt.color[0])) {
         // Draws into the swapchain image: draws that sample the full-size reshaped scene (the final
         // composite, blurred menu backgrounds) and untextured full-screen fades fill the window; everything
@@ -3477,22 +4621,51 @@ static void draw(CmdRec *r, bool indexed) {
             vp_ox = (pw - st.rt.color[0]->width * u) * 0.5f;
             vp_oy = (ph - st.rt.color[0]->height * u) * 0.5f;
         }
+
+        // (phones: the HUD at the screen corners, runtime/hle/hud_corners.c) UI in the box gets the window-wide viewport
+        // and rescaled uniforms; a scissor covering the target stays open for the bars
+        if (!composite && st.ubuf[0][0].addr) {
+            int pw_, ph_;
+            pass_size(&pw_, &ph_);
+            hud_k = (float)pw_ / (st.rt.color[0]->width * vp_sx), hud_ky = (float)ph_ / (st.rt.color[0]->height * vp_sy);
+            extern const void *hud_corners_ubo(const float *u, uint64_t size, float k, float ky);
+            hud_u = hud_corners_ubo((const float *)(uintptr_t)st.ubuf[0][0].addr, st.ubuf[0][0].size, hud_k, hud_ky);
+        }
     }
     {   // camera-attached effects sized for 16:9 are widened with the view (runtime/hle/widescreen.c)
         extern float widescreen_effect_stretch(uint64_t fs_hash);
-        float k = widescreen_effect_stretch(g_cur_fs_hash);
+        float k = hud_u ? hud_k : widescreen_effect_stretch(g_cur_fs_hash);
         double vx = vp[0] * vp_sx + vp_ox, vw = vp[2] * vp_sx;
         if (k > 1.0f) { vx -= vw * (k - 1) / 2; vw *= k; }
-        [enc setViewport:(MTLViewport){vx, vp[1] * vp_sy + vp_oy, vw, vp[3] * vp_sy, zn, zf}];
+        double vy = vp[1] * vp_sy + vp_oy, vh = vp[3] * vp_sy;
+        if (hud_u && hud_ky > 1) { vy -= vh * (hud_ky - 1) / 2; vh *= hud_ky; }
+        E_viewport((MTLViewport){vx, vy, vw, vh, zn, zf});
+    }
+    int32_t hud_sc[4];
+    bool hud_open = hud_u && st.scissor[0][0] <= 0 && st.scissor[0][0] + st.scissor[0][2] >= (int32_t)st.rt.color[0]->width &&
+                    st.scissor[0][1] <= 0 && st.scissor[0][1] + st.scissor[0][3] >= (int32_t)st.rt.color[0]->height;
+    if (hud_open) {
+        memcpy(hud_sc, st.scissor[0], sizeof hud_sc);
+        st.scissor[0][0] = st.scissor[0][1] = -16384, st.scissor[0][2] = st.scissor[0][3] = 65536;
     }
     apply_scissor();
+    if (hud_open) memcpy(st.scissor[0], hud_sc, sizeof hud_sc);
+    if (hud_u) {  // (the uniforms were bound before the decision: slot 0 again, from the copy)
+        uint64_t hud_size = pr->vi->cbuf_size[cbuf_base] && pr->vi->cbuf_size[cbuf_base] < st.ubuf[0][0].size ? pr->vi->cbuf_size[cbuf_base] : st.ubuf[0][0].size;
+        E_cbuf(0, ring, ring_alloc(hud_u, hud_size), cbuf_base, -1, hud_size);
+    }
     if (pr->fi->uses_rscale) {  // [0] = render target scale, [1 + i] = scale of texture i
         float rs[66][4] = {{vp_sx, vp_sy, vp_ox, vp_oy}};  // [1 + i] = scale x, y, content part x, y of texture i
         for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
             rs[1 + i][0] = tex_sc[1][i][0]; rs[1 + i][1] = tex_sc[1][i][1]; rs[1 + i][2] = tex_fr[1][i][0]; rs[1 + i][3] = tex_fr[1][i][1];
         }
         if (fkey.flip_x) rs[65][0] = (float)st.rt.color[0]->width;  // (mirror mode: the composite's width, guest pixels)
-        [enc setFragmentBytes:rs length:(NSUInteger)(fkey.flip_x ? 66 : 1 + pr->fi->ntex) * 16 atIndex:RSCALE_BUFFER_INDEX];
+        extern float renderer_ao_blur_scale(NvnTexture *t);
+        if (pr->fi->uses_ao_taps) {  // (the AO's blurs; the AO pass at Off: translate.c ao_grid_fix)
+            rs[65][1] = renderer_ao_blur_scale(st.rt.color[0]);
+            rs[65][2] = g_settings.ao_quality == AO_OFF;
+        }
+        E_bytes(1, rs, (NSUInteger)(fkey.flip_x || pr->fi->uses_ao_taps ? 66 : 1 + pr->fi->ntex) * 16, RSCALE_BUFFER_INDEX);
     }
     // (uniform buffer 2 = the model matrix - only when the vertex shader reads it: a binding left from an earlier draw
     // is another object's matrix)
@@ -3570,15 +4743,15 @@ static void draw(CmdRec *r, bool indexed) {
             escape_bottle_tint(draw_bottle, (const float *)(uintptr_t)st.ubuf[0][u].addr, (uint32_t)st.ubuf[0][u].size, tint);
         }
         if (draw_heart) { extern void texpatch_heart_tint(int kind, float tint[8]); texpatch_heart_tint(draw_heart, tint); }
-        [enc setFragmentBytes:tint length:sizeof tint atIndex:19];
+        E_bytes(1, tint, sizeof tint, 19);
     }
     for (int s = 0; s < 12; s++) {
         if (!(used_streams & (1u << s))) continue;
         Range v = st.vbuf[s];
         if (v.addr) bind_guest(enc, true, v.addr, v.size ? v.size : 16, 18 + s);
-        else { static const float zero[4]; [enc setVertexBytes:zero length:16 atIndex:18 + s]; }
+        else { static const float zero[4]; E_bytes(0, zero, 16, 18 + s); }
     }
-    if (used_streams & (1u << 31)) { static const float zero[4] = {0, 0, 0, 1}; [enc setVertexBytes:zero length:16 atIndex:30]; }
+    if (used_streams & (1u << 31)) { static const float zero[4] = {0, 0, 0, 1}; E_bytes(0, zero, 16, 30); }
 
     // Instanced draws with item spots among their instances (bushsanity: bushes are drawn in batches, each instance's
     // model matrix in vertex storage buffer 0, indexed by instance id): drawn as runs of instances, gold runs tinted.
@@ -3615,7 +4788,7 @@ static void draw(CmdRec *r, bool indexed) {
         extern void pot_gold_tint(float tint[8]);
         if (run_gold[ri]) pot_gold_tint(tint);
         else recolour_tint_draw(draw_recolour, tint);
-        [enc setFragmentBytes:tint length:sizeof tint atIndex:19];
+        E_bytes(1, tint, sizeof tint, 19);
     }
     // draw
     bool native;
@@ -3624,12 +4797,11 @@ static void draw(CmdRec *r, bool indexed) {
     if (!indexed) {
         uint32_t first = (uint32_t)r->x[1], count = (uint32_t)r->x[2], base_inst = base_all + run_at[ri], inst = run_n[ri];
         if (native) {
-            [enc drawPrimitives:pt vertexStart:first vertexCount:count instanceCount:inst baseInstance:base_inst];
+            E_draw(pt, first, count, inst, base_inst);
         } else if (mode == 6 || mode == 7 || mode == 9) {
             uint32_t n;
             id<MTLBuffer> ib = expand_indices(mode, count, NULL, 0, first, &n);
-            [enc drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:n indexType:MTLIndexTypeUInt32 indexBuffer:ib
-                     indexBufferOffset:0 instanceCount:inst baseVertex:0 baseInstance:base_inst];
+            E_drawi(MTLPrimitiveTypeTriangle, n, MTLIndexTypeUInt32, ib, 0, inst, 0, base_inst);
         } else { stat_skipped++; return; }
     } else {
         uint32_t itype = (uint32_t)r->x[1], count = (uint32_t)r->x[2];
@@ -3643,13 +4815,17 @@ static void draw(CmdRec *r, bool indexed) {
             uint64_t ioff;
             bool in_heap = iaddr >= HEAP_BASE && iaddr + (uint64_t)count * isz <= HEAP_BASE + HEAP_MAX && (iaddr % isz) == 0;
             if (in_heap) { bind_note(1, iaddr, (uint64_t)count * isz); snap_note_vertex_bind(iaddr, (uint64_t)count * isz); }
-            if (in_heap && !dyn_copy(iaddr, (uint64_t)count * isz)) {
+            id<MTLBuffer> ivb; uint64_t ivo;
+            if (in_heap && iv_geometry(iaddr, (uint64_t)count * isz, &ivb, &ivo)) {
+                ib = ivb; ioff = ivo;
+            } else if (in_heap && !dyn_copy(iaddr, (uint64_t)count * isz)) {
                 ib = g_guest_buffer; ioff = iaddr - HEAP_BASE;
+                tape_copy_small(iaddr, (uint64_t)count * isz);
+                if (!iv_sub_buf) tape_note_inplace(iaddr, (uint64_t)count * isz);
             } else {
                 ioff = ring_alloc((void *)(uintptr_t)iaddr, (uint64_t)count * isz); ib = ring;
             }
-            [enc drawIndexedPrimitives:pt indexCount:count indexType:it indexBuffer:ib indexBufferOffset:ioff
-                         instanceCount:inst baseVertex:base_vertex baseInstance:base_inst];
+            E_drawi(pt, count, it, ib, ioff, inst, base_vertex, base_inst);
         } else {
             uint32_t n;
             id<MTLBuffer> ib;
@@ -3663,8 +4839,7 @@ static void draw(CmdRec *r, bool indexed) {
                 ib = expand_indices(mode, count, (const void *)(uintptr_t)iaddr, (int)itype, 0, &n);
                 pt = MTLPrimitiveTypeTriangle;
             }
-            [enc drawIndexedPrimitives:pt indexCount:n indexType:MTLIndexTypeUInt32 indexBuffer:ib indexBufferOffset:0
-                         instanceCount:inst baseVertex:base_vertex baseInstance:base_inst];
+            E_drawi(pt, n, MTLIndexTypeUInt32, ib, 0, inst, base_vertex, base_inst);
         }
     }
     }  // runs
@@ -3681,6 +4856,630 @@ static void draw(CmdRec *r, bool indexed) {
             LOG("\n");
         }
     }
+}
+
+// ------------------------------------------------------------------ weather (runtime/nvn/weather.h)
+// Drawn into the window image right after the game's scene composite (before the HUD), at the internal resolution:
+// the upscaler and anything after it treat it as part of the game's picture. One pass of its own on the window image
+// (load / store; the game's next draw opens its pass again): the overcast / lightning fill, the rain streaks or snow
+// flakes (instanced quads; each fragment compared with the scene depth at its pixel: behind it, dropped; where a
+// drop's column meets the scene, by the scene depth, it ends - a flake lies there a while), the splashes (a ring
+// where a drop landed). The scene
+// depth is read as a texture, never bound as an attachment. Shaders kept plain (a GLSL port: the same math).
+static const char *wx_src =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct WF { float4 vp[4]; float4 ivp[4]; float4 origin, box, shape, color, screen, flags, fill, zr, cam, wind, leaf; uint count, splashes; int kind; };\n"
+    "struct VO { float4 pos [[position]]; float2 uv; float a; };\n"
+    "static uint pcg(uint v) { uint s = v * 747796405u + 2891336453u; uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u; return (w >> 22u) ^ w; }\n"
+    "static float h1(uint v) { return float(pcg(v)) * (1.0 / 4294967296.0); }\n"
+    "static float4 game_clip(constant WF &w, float3 p) {\n"  // the game's clip space
+    "  float4 q = float4(p, 1.0);\n"
+    "  return float4(dot(w.vp[0], q), dot(w.vp[1], q), dot(w.vp[2], q), dot(w.vp[3], q));\n"
+    "}\n"
+    "static float4 clip_of(constant WF &w, float3 p) {\n"  // the game's clip space, then as the game's draws reach Metal
+    "  float4 c = game_clip(w, p);\n"
+    "  if (w.flags.x > 0.5) c.y = -c.y;\n"
+    "  if (w.flags.y > 0.5) c.z = (c.z + c.w) * 0.5;\n"
+    "  c.z = w.zr.x * c.w + w.zr.y * c.z;\n"  // (the scene's depth range)
+    "  if (w.flags.z > 0.5) c.x = -c.x;\n"
+    "  return c;\n"
+    "}\n"
+    "static float3 world_at(constant WF &w, float2 uv, float d) {\n"  // the world point of the scene depth d at uv
+    "  float2 m = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);\n"  // (back to the game's clip space)
+    "  if (w.flags.x > 0.5) m.y = -m.y;\n"
+    "  float z = (d - w.zr.x) / w.zr.y;\n"
+    "  if (w.flags.y > 0.5) z = z * 2.0 - 1.0;\n"
+    "  float4 q = float4(m, z, 1.0);\n"
+    "  float4 wp = float4(dot(w.ivp[0], q), dot(w.ivp[1], q), dot(w.ivp[2], q), dot(w.ivp[3], q));\n"
+    "  return wp.xyz / wp.w;\n"
+    "}\n"
+    // a drop / flake at time tt: instance i at a hashed spot, moving through the world at its own fall speed (and
+    // the wind); the volume wraps around its centre on all three axes, so a drop keeps its world position as the
+    // volume follows the view (only one that leaves it comes back on the far side). age: since it came in at the top
+    "static float3 wx_drop(constant WF &w, uint iid, float tt, thread float &speed, thread float &age) {\n"
+    "  float3 sz = float3(w.box.x, w.box.y, w.box.x);\n"
+    "  float3 r = float3(h1(iid * 3u + 1u), h1(iid * 3u + 2u), h1(iid * 3u + 3u));\n"
+    "  speed = w.shape.z * (0.8 + 0.4 * h1(iid * 7u + 5u));\n"
+    "  float3 lo = w.origin.xyz - 0.5 * sz;\n"
+    "  float back = w.box.z - tt;\n"  // (the wind's drift then: now's, less its velocity since - gusts change slowly)
+    "  float3 f = fract((r * sz + float3(w.wind.x - w.wind.z * back, -speed * tt, w.wind.y - w.wind.w * back) - lo) / sz);\n"
+    "  age = (1.0 - f.y) * sz.y / speed;\n"
+    "  float3 p = lo + f * sz;\n"
+    "  if (abs(w.flags.w - 2.0) < 0.5) {\n"  // snow: a gentle sway
+    "    float ph = r.x * 40.0 + r.z * 17.0;\n"
+    "    p.x += w.shape.w * sin(tt * 1.3 + ph);\n"
+    "    p.z += w.shape.w * cos(tt * 1.1 + ph * 1.7);\n"
+    "  }\n"
+    "  return p;\n"
+    "}\n"
+    // what the scene shows under a world point: where its column shows on screen at the ground's height, the scene
+    // depth there back in the world; again from that point's height until it settles (a roof, a slope). false: sky,
+    // off screen, or not under it (a wall in front of the column, still climbing: what the drop meets is hidden), or
+    // no floor (a wall: its normal from the depth beside it)
+    "static bool wx_surface(constant WF &w, depth2d<float> dt, float3 p, thread float3 &s) {\n"
+    "  float y = w.origin.w, dy = 1e9;\n"
+    "  float2 uv;\n"
+    "  for (int k = 0; k < 4 && dy > 0.05; k++) {\n"
+    "    float4 c = game_clip(w, float3(p.x, y, p.z));\n"
+    "    if (c.w <= 0.0) return false;\n"
+    "    float2 m = c.xy / c.w;\n"
+    "    if (any(abs(m) > 1.0)) return false;\n"
+    "    if (w.flags.x > 0.5) m.y = -m.y;\n"
+    "    uv = float2(m.x * 0.5 + 0.5, 0.5 - m.y * 0.5);\n"
+    "    float d = dt.read(uint2(uv * (w.screen.zw - 1.0)));\n"
+    "    if (d >= 0.99999) return false;\n"
+    "    s = world_at(w, uv, d);\n"
+    "    dy = abs(s.y - y);\n"
+    "    y = s.y;\n"
+    "  }\n"
+    "  if (dy > 0.5 || distance(s.xz, p.xz) > 1.0) return false;\n"
+    "  float2 e = 2.0 / w.screen.zw;\n"
+    "  uint2 q = uint2(uv * (w.screen.zw - 1.0));\n"
+    "  float3 a = world_at(w, uv + float2(e.x, 0.0), dt.read(min(q + uint2(2u, 0u), uint2(w.screen.zw - 1.0))));\n"
+    "  float3 b = world_at(w, uv + float2(0.0, e.y), dt.read(min(q + uint2(0u, 2u), uint2(w.screen.zw - 1.0))));\n"
+    "  float3 n = cross(a - s, b - s);\n"
+    "  return abs(n.y) > 0.6 * length(n);\n"
+    "}\n"
+    // has drop i met the scene under it, in this fall or at the end of the last one (it came in at the top since)?
+    // since: how long ago, s: where (the column as it was then: what it left there stays put while the wind and the
+    // sway go on). A drop that landed in this fall: since <= age
+    "static bool wx_landed(constant WF &w, depth2d<float> dt, uint iid, float3 p, float speed, float age,\n"
+    "                      thread float &since, thread float3 &s) {\n"
+    "  float sp, ag;\n"
+    "  if (wx_surface(w, dt, p, s) && p.y < s.y) since = (s.y - p.y) / speed;\n"
+    "  else {\n"
+    "    if (age > w.cam.w) return false;\n"
+    "    float3 q = wx_drop(w, iid, w.box.z - age - 1e-3, sp, ag);\n"  // (its last moment in the last fall: the bottom)
+    "    if (!wx_surface(w, dt, q, s) || q.y >= s.y) return false;\n"
+    "    since = age + 1e-3 + (s.y - q.y) / speed;\n"
+    "  }\n"
+    "  float3 q = wx_drop(w, iid, w.box.z - since, sp, ag), s0 = s;\n"
+    "  if (!wx_surface(w, dt, q, s)) s = float3(q.x, s0.y, q.z);\n"  // (gone from view since: where it would be)
+    "  return true;\n"
+    "}\n"
+    "static float wx_fade(constant WF &w, float3 p) {\n"  // (near the volume's top and sides: drops come and go there)
+    "  float2 e = 0.5 * w.box.x - abs(p.xz - w.origin.xz);\n"
+    "  return saturate((w.origin.y + 0.5 * w.box.y - p.y) / 1.5) * saturate(min(e.x, e.y) / 2.0);\n"
+    "}\n"
+    "static float4 wx_flake(constant WF &w, uint iid, float3 p, float2 corner) {\n"  // a flake's corner (clip space)
+    "  float4 c = clip_of(w, p), ref = clip_of(w, w.origin.xyz);\n"
+    "  float size = w.shape.y * (0.6 + 0.8 * h1(iid * 11u + 3u)) * w.screen.y / 1080.0 * clamp(ref.w / c.w, 0.5, 2.0);\n"
+    "  c.xy += corner * size / w.screen.xy * c.w;\n"
+    "  return c;\n"
+    "}\n"
+    // rain streaks / snow flakes, up to where they meet the scene (what they leave there: wx_splash_vs)
+    "vertex VO wx_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant WF &w [[buffer(0)]],\n"
+    "                depth2d<float> dt [[texture(0)]], device float *probe [[buffer(1)]]) {\n"
+    "  VO o;\n"
+    "  if (iid == 0u && vid == 0u) {\n"  // (the scene depth at the probe points: the ground's height, weather.c)
+    "    const float2 pu[5] = {float2(0.5, 0.5), float2(0.3, 0.35), float2(0.7, 0.35), float2(0.3, 0.65), float2(0.7, 0.65)};\n"
+    "    for (uint k = 0u; k < 5u; k++) probe[k] = dt.read(uint2(pu[k] * (w.screen.zw - 1.0)));\n"
+    "  }\n"
+    "  float speed, age;\n"
+    "  float3 p = wx_drop(w, iid, w.box.z, speed, age), s;\n"
+    "  bool test = w.flags.w > 2.5;\n"  // (test: poles)
+    "  o.uv = float2(0.0); o.a = 0.0;\n"
+    "  if (!test && wx_surface(w, dt, p, s) && p.y < s.y) { o.pos = float4(0.0, 0.0, -2.0, 1.0); return o; }\n"
+    "  float a = w.color.a * wx_fade(w, p);\n"
+    "  float px = w.screen.y / 1080.0;\n"  // (sizes in pixels at 1080p)
+    "  float2 corner = float2((vid & 1u) ? 1.0 : -1.0, (vid & 2u) ? 1.0 : -1.0);\n"
+    "  if (abs(w.flags.w - 2.0) < 0.5) {\n"  // snow: a round flake, nearer ones bigger
+    "    float ws = length(w.wind.zw);\n"
+    "    if (ws < 3.0) { o.pos = wx_flake(w, iid, p, corner); o.uv = corner; o.a = a; return o; }\n"
+    // in a strong wind (a blizzard's gusts) a streak along its flight, as wide as the flake
+    "    float4 fc = wx_flake(w, iid, p, float2(1.0, 0.0)), f0 = clip_of(w, p);\n"
+    "    float hw = abs(fc.x / fc.w - f0.x / f0.w) * 0.5 * w.screen.x;\n"  // (the flake's half size in pixels)
+    "    float3 tail = p - float3(w.wind.z, -speed, w.wind.w) * 0.035 * saturate((ws - 3.0) / 5.0);\n"
+    "    float4 ch = clip_of(w, p), ct = clip_of(w, tail);\n"
+    "    float2 d = ch.xy / ch.w * w.screen.xy - ct.xy / ct.w * w.screen.xy;\n"
+    "    d = length(d) > 1e-3 ? normalize(d) : float2(0.0, 1.0);\n"
+    "    float2 n = float2(-d.y, d.x) * hw;\n"
+    "    float4 c = corner.y > 0.0 ? ch : ct;\n"
+    "    c.xy += (corner.x * n + corner.y * d * hw) / w.screen.xy * c.w;\n"
+    "    o.pos = c; o.uv = float2(corner.x, corner.y * 0.6); o.a = a;\n"
+    "    return o;\n"
+    "  }\n"
+    "  float3 dir = normalize(float3(w.wind.z, -speed, w.wind.w));\n"  // rain: a streak along its fall
+    "  float3 tail = p - dir * w.shape.x * (0.7 + 0.6 * h1(iid * 13u + 7u));\n"
+    "  if (test) { p.y = w.origin.w; tail = p + float3(0.0, 6.0, 0.0); }\n"
+    "  float4 ch = clip_of(w, p), ct = clip_of(w, tail);\n"
+    "  float2 sh = ch.xy / ch.w * w.screen.xy, st = ct.xy / ct.w * w.screen.xy;\n"
+    "  float2 d = sh - st;\n"
+    "  d = length(d) > 1e-3 ? normalize(d) : float2(0.0, 1.0);\n"
+    "  float2 n = float2(-d.y, d.x) * w.shape.y * px;\n"
+    "  float4 c = corner.y > 0.0 ? ch : ct;\n"
+    "  c.xy += corner.x * n / w.screen.xy * c.w;\n"
+    "  o.pos = c; o.uv = corner; o.a = corner.y > 0.0 ? a : 0.0;\n"
+    "  return o;\n"
+    "}\n"
+    "static bool wx_hidden(constant WF &w, depth2d<float> dt, float4 pos) {\n"  // behind the scene at this pixel?
+    "  float2 p = pos.xy;\n"
+    "  if (w.flags.z > 0.5) p.x = w.screen.x - p.x;\n"
+    "  uint2 q = uint2(clamp(p * w.screen.zw / w.screen.xy, float2(0.0), w.screen.zw - 1.0));\n"
+    "  return pos.z > dt.read(q) + 1e-6;\n"
+    "}\n"
+    "fragment float4 wx_fs(VO in [[stage_in]], constant WF &w [[buffer(0)]], depth2d<float> dt [[texture(0)]]) {\n"
+    "  if (wx_hidden(w, dt, in.pos)) discard_fragment();\n"
+    "  float a;\n"
+    "  if (abs(w.flags.w - 2.0) < 0.5) { float r = length(in.uv); a = in.a * (1.0 - smoothstep(0.5, 1.0, r)); }\n"
+    "  else a = in.a * (1.0 - in.uv.x * in.uv.x);\n"
+    "  return float4(w.color.rgb, a);\n"
+    "}\n"
+    // what a drop leaves where it landed, for cam.w s (splash k: drop k * (count / splashes)'s): rain a small ring
+    // opening on the level plane, snow the flake lying there (moved a little toward the camera, so the scene depth
+    // there doesn't hide it), fading
+    "vertex VO wx_splash_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant WF &w [[buffer(0)]],\n"
+    "                       depth2d<float> dt [[texture(0)]]) {\n"
+    "  VO o;\n"
+    "  uint i = iid * max(w.count / max(w.splashes, 1u), 1u);\n"
+    "  float speed, age, since;\n"
+    "  float3 p = wx_drop(w, i, w.box.z, speed, age), s;\n"
+    "  o.uv = float2(0.0); o.a = 0.0;\n"
+    "  if (!wx_landed(w, dt, i, p, speed, age, since, s) || since > w.cam.w) { o.pos = float4(0.0, 0.0, -2.0, 1.0); return o; }\n"
+    "  float k = since / w.cam.w;\n"
+    "  float2 corner = float2((vid & 1u) ? 1.0 : -1.0, (vid & 2u) ? 1.0 : -1.0);\n"
+    "  o.uv = corner;\n"
+    "  if (abs(w.flags.w - 2.0) < 0.5) {\n"
+    "    o.pos = wx_flake(w, i, s + normalize(w.cam.xyz - s) * 0.3, corner); o.a = w.color.a * (1.0 - k);\n"
+    "    return o;\n"
+    "  }\n"
+    "  float rad = w.shape.x * 0.12 * (0.3 + k);\n"
+    "  o.pos = clip_of(w, s + float3(corner.x, 0.0, corner.y) * rad);\n"
+    "  o.a = w.color.a * 1.4 * (1.0 - k);\n"
+    "  return o;\n"
+    "}\n"
+    "fragment float4 wx_splash_fs(VO in [[stage_in]], constant WF &w [[buffer(0)]], depth2d<float> dt [[texture(0)]]) {\n"
+    "  float r = length(in.uv);\n"
+    "  if (abs(w.flags.w - 2.0) < 0.5) {\n"  // (a lying flake: behind something now - Link walking over it - hidden)
+    "    if (wx_hidden(w, dt, in.pos)) discard_fragment();\n"
+    "    return float4(w.color.rgb, in.a * (1.0 - smoothstep(0.5, 1.0, r)));\n"
+    "  }\n"
+    "  float ring = smoothstep(0.45, 0.75, r) * (1.0 - smoothstep(0.8, 1.0, r));\n"
+    "  return float4(w.color.rgb, in.a * ring);\n"
+    "}\n"
+    // snow Link kicked up (weather_snow_puffs): pf[0].p.x the time now, then the ring - each flies off his feet,
+    // falls back and fades
+    "struct PF { float4 p; float4 v; float4 g; };\n"
+    "vertex VO wx_puff_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant WF &w [[buffer(0)]],\n"
+    "                     constant PF *pf [[buffer(2)]]) {\n"
+    "  VO o;\n"
+    "  PF q = pf[iid + 1u];\n"
+    "  float age = pf[0].p.x - q.p.w, life = q.g.y;\n"
+    "  o.uv = float2(0.0); o.a = 0.0;\n"
+    "  if (q.p.w <= 0.0 || age < 0.0 || age > life) { o.pos = float4(0.0, 0.0, -2.0, 1.0); return o; }\n"
+    "  float3 p = q.p.xyz + q.v.xyz * age + float3(0.0, -q.g.z, 0.0) * age * age;\n"
+    "  p.y = max(p.y, q.g.x - 0.05);\n"
+    "  p += normalize(w.cam.xyz - p) * 0.3;\n"  // (as a lying flake: the ground's depth doesn't hide it)
+    "  float2 corner = float2((vid & 1u) ? 1.0 : -1.0, (vid & 2u) ? 1.0 : -1.0);\n"
+    "  float4 c = clip_of(w, p);\n"
+    "  float size = q.v.w * (0.7 + 0.8 * age / life) * w.screen.y / 1080.0;\n"
+    "  c.xy += corner * size / w.screen.xy * c.w;\n"
+    "  o.pos = c; o.uv = corner; o.a = 0.9 * (1.0 - age / life);\n"
+    "  return o;\n"
+    "}\n"
+    "fragment float4 wx_puff_fs(VO in [[stage_in]], constant WF &w [[buffer(0)]], depth2d<float> dt [[texture(0)]]) {\n"
+    "  if (wx_hidden(w, dt, in.pos)) discard_fragment();\n"
+    "  float r = length(in.uv);\n"  // (a soft ball: shaded blue-grey at its edge, so it shows against the snow)
+    "  float3 c = mix(float3(0.62, 0.68, 0.8), w.color.rgb, saturate(1.2 - r * r));\n"
+    "  return float4(c, in.a * (1.0 - smoothstep(0.55, 1.0, r)));\n"
+    "}\n"
+    // a storm's leaves: each blows in from a hashed spot of the volume (in the world: it wraps like the drops), 2.5-4
+    // above the ground, along the wind with gusts of its own, tumbling (spin, and a flip: the quad narrows), down to
+    // the ground's height (weather.c's probes) where it lies 1.5 s and fades; then the next from somewhere else
+    "struct LO { float4 pos [[position]]; float2 uv; float a; };\n"
+    "vertex LO wx_leaf_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant WF &w [[buffer(0)]]) {\n"
+    "  LO o;\n"
+    "  float fall = 0.7 + 0.4 * h1(iid * 5u + 1u), hgt = 2.5 + 1.5 * h1(iid * 5u + 2u), rest = 1.5;\n"
+    "  float life = hgt / fall + rest, tt = w.box.z + h1(iid * 5u + 3u) * life;\n"
+    "  float cyc = floor(tt / life), a = tt - cyc * life;\n"
+    "  uint seed = iid * 7919u + uint(cyc) * 104729u;\n"
+    "  float fly = min(a, hgt / fall);\n"  // (time in the air: it lies still after)
+    "  float gust = 1.0 + 0.6 * sin(w.box.z * 0.9 + h1(seed) * 6.28) + 0.4 * sin(w.box.z * 2.3 + h1(seed + 1u) * 6.28);\n"
+    "  float2 drift = w.wind.zw * 0.55 * gust * fly;\n"
+    "  float sw = sin(fly * 3.1 + h1(seed + 2u) * 6.28) * 0.5;\n"  // (side to side)
+    "  float2 wd = length(w.wind.zw) > 0.01 ? normalize(w.wind.zw) : float2(1.0, 0.0);\n"
+    "  float3 sz = float3(w.box.x, 0.0, w.box.x);\n"
+    "  float3 lo = w.origin.xyz - 0.5 * sz;\n"
+    "  float2 xz = float2(h1(seed + 3u), h1(seed + 4u)) * w.box.x + drift + float2(-wd.y, wd.x) * sw;\n"
+    "  xz = lo.xz + fract((xz - lo.xz) / w.box.x) * w.box.x;\n"
+    "  float3 p = float3(xz.x, w.origin.w + hgt - fall * fly, xz.y);\n"
+    "  float ang = h1(seed + 5u) * 6.28 + fly * (3.0 + 4.0 * h1(seed + 6u)) * (h1(seed + 7u) > 0.5 ? 1.0 : -1.0);\n"
+    "  float flip = a < hgt / fall ? cos(fly * (4.0 + 3.0 * h1(seed + 8u))) : 1.0;\n"
+    "  float2 corner = float2((vid & 1u) ? 1.0 : -1.0, (vid & 2u) ? 1.0 : -1.0);\n"
+    "  float2 cr = float2(corner.x * max(abs(flip), 0.15), corner.y);\n"
+    "  cr = float2(cr.x * cos(ang) - cr.y * sin(ang), cr.x * sin(ang) + cr.y * cos(ang));\n"
+    "  float4 c = clip_of(w, p), ref = clip_of(w, w.origin.xyz);\n"
+    "  float size = 30.0 * (0.8 + 0.4 * h1(seed + 9u)) * w.screen.y / 1080.0 * clamp(ref.w / c.w, 0.5, 2.0);\n"
+    "  c.xy += cr * size / w.screen.xy * c.w;\n"
+    "  o.pos = c; o.uv = corner * 0.5 + 0.5;\n"
+    "  o.a = (1.0 - smoothstep(life - rest, life, a)) * smoothstep(0.0, 0.4, a) * wx_fade(w, p);\n"
+    "  return o;\n"
+    "}\n"
+    // a leaf drawn here (the game's cut-bush debris is a square sheet of clippings, not one leaf): a pointed
+    // ellipse - round at the stalk, a point at the tip - with a soft edge, a midrib, the two halves shaded apart
+    // (the light from one side) and a short stalk; its flip (wx_leaf_vs: the quad narrows) shows its thin edge
+    "fragment float4 wx_leaf_fs(LO in [[stage_in]], constant WF &w [[buffer(0)]], depth2d<float> dt [[texture(0)]]) {\n"
+    "  if (wx_hidden(w, dt, in.pos)) discard_fragment();\n"
+    "  float2 q = in.uv * 2.0 - 1.0;\n"  // (y: stalk -1 .. tip 1)
+    "  float y = q.y * 1.1 + 0.05;\n"
+    "  float hw = 0.62 * sqrt(saturate(1.0 - y * y)) * (1.0 - 0.45 * saturate(y));\n"  // (wider at the base, a point at the tip)
+    "  float edge = hw - abs(q.x);\n"
+    "  float px = fwidth(q.x) * 1.5;\n"
+    "  float a = smoothstep(-px, px, edge);\n"
+    "  a = max(a, (1.0 - smoothstep(0.03, 0.03 + px, abs(q.x))) * step(-1.0, q.y) * step(q.y, -0.85));\n"  // (the stalk)
+    "  if (a <= 0.0) discard_fragment();\n"
+    "  float3 col = w.leaf.r < 0.0 ? float3(0.30, 0.55, 0.16) : w.leaf.rgb;\n"
+    "  float side = q.x > 0.0 ? 1.0 : 0.72;\n"  // (two-tone: the halves catch the light apart)
+    "  float rib = 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.05 + px, abs(q.x))) * step(q.y, 0.85);\n"
+    "  float veins = 1.0 - 0.12 * smoothstep(0.85, 1.0, sin((q.y - abs(q.x) * 1.2) * 18.0)) * step(0.06, abs(q.x));\n"
+    "  float rim = mix(0.8, 1.0, smoothstep(0.0, 0.18, edge));\n"  // (a darker rim)
+    "  return float4(col * side * rib * veins * rim, a * in.a);\n"
+    "}\n"
+    // a storm's lightning strike (weather_strike): the ground under the target (the scene's, else the target's own
+    // height), a glow and crackling sparks there until the bolt, then the bolt, a burst of sparks and a scorch mark.
+    // Premultiplied: rgb added, the picture times 1 - a
+    "struct SK { float4 at; float4 tm; float4 pts[40]; };\n"
+    "struct KO { float4 pos [[position]]; float2 uv; float a; float3 g; };\n"
+    "static float3 sk_ground(constant WF &w, depth2d<float> dt, constant SK &k) {\n"
+    "  float3 s;\n"
+    "  if (wx_surface(w, dt, k.at.xyz, s) && abs(s.y - k.at.y) < 3.0) return float3(k.at.x, s.y, k.at.z);\n"
+    "  return k.at.xyz;\n"
+    "}\n"
+    // the mark on the ground: a square around the target, each pixel the scene's own point there (by its depth)
+    "vertex KO wx_mark_vs(uint vid [[vertex_id]], constant WF &w [[buffer(0)]], depth2d<float> dt [[texture(0)]],\n"
+    "                     constant SK &k [[buffer(3)]]) {\n"
+    "  KO o;\n"
+    "  o.g = sk_ground(w, dt, k);\n"
+    "  float2 corner = float2((vid & 1u) ? 1.0 : -1.0, (vid & 2u) ? 1.0 : -1.0);\n"
+    "  o.pos = clip_of(w, o.g + float3(corner.x, 0.0, corner.y) * 2.2);\n"
+    "  o.uv = corner; o.a = 1.0;\n"
+    "  return o;\n"
+    "}\n"
+    "fragment float4 wx_mark_fs(KO in [[stage_in]], constant WF &w [[buffer(0)]], depth2d<float> dt [[texture(0)]],\n"
+    "                           constant SK &k [[buffer(3)]]) {\n"
+    "  float2 p = in.pos.xy;\n"
+    "  if (w.flags.z > 0.5) p.x = w.screen.x - p.x;\n"
+    "  uint2 q = uint2(clamp(p * w.screen.zw / w.screen.xy, float2(0.0), w.screen.zw - 1.0));\n"
+    "  float d = dt.read(q);\n"
+    "  if (d >= 0.99999) discard_fragment();\n"
+    "  float3 s = world_at(w, p / w.screen.xy, d);\n"
+    "  float dy = s.y - in.g.y;\n"
+    "  if (dy > 0.4 || dy < -1.2) discard_fragment();\n"  // (Link standing on it, a bush, a cliff below: not the ground)
+    "  float2 v = s.xz - in.g.xz;\n"
+    "  float r = length(v), an = atan2(v.y, v.x), now = k.at.w;\n"
+    "  float3 rgb = float3(0.0); float a = 0.0, keep = 1.0 - smoothstep(0.15, 0.4, dy) * 1.0;\n"
+    "  if (now < k.tm.y) {\n"  // the warning: a flickering glow, growing, with sparks of light running out from it
+    "    float ph = saturate((now - k.tm.x) / max(k.tm.y - k.tm.x, 1e-3));\n"
+    "    float fl = 0.6 + 0.4 * h1(uint(now * 40.0) + 7u);\n"
+    "    float g = (1.0 - smoothstep(0.0, 0.25 + 0.65 * ph, r)) * (0.25 + 0.75 * ph) * fl;\n"
+    "    float arc = pow(saturate(sin(an * 5.0 + h1(uint(now * 12.0)) * 40.0)), 24.0) * (1.0 - smoothstep(0.2, 0.6 + ph, r));\n"
+    "    rgb = float3(0.55, 0.75, 1.0) * (g * 1.5 + arc * 1.0 * fl);\n"
+    "  } else {\n"  // the strike: a white-blue blaze, embers, then a scorch mark fading over ~12 s
+    "    float age = now - k.tm.y;\n"
+    "    float ab = (an + 3.1416) * 2.0, af = fract(ab);\n"  // (a ragged edge: 13 bumps round it, blended)
+    "    uint ai = uint(ab) % 13u, aj = (ai + 1u) % 13u;\n"
+    "    float jag = 0.8 + 0.4 * mix(h1(ai + uint(k.tm.z)), h1(aj + uint(k.tm.z)), smoothstep(0.0, 1.0, af));\n"
+    "    float rr = r / (1.45 * jag);\n"
+    "    a = (1.0 - smoothstep(0.35, 1.0, rr)) * 0.85 * (1.0 - smoothstep(5.0, 12.0, age));\n"
+    "    rgb = float3(0.03, 0.025, 0.02) * a;\n"
+    "    rgb += float3(1.0, 0.5, 0.15) * (1.0 - smoothstep(0.0, 0.45, rr)) * exp(-age * 2.0) * (0.7 + 0.3 * h1(uint(now * 20.0)));\n"
+    "    rgb += float3(0.75, 0.85, 1.0) * (1.0 - smoothstep(0.0, 1.6, r)) * exp(-age * 9.0);\n"
+    "  }\n"
+    "  return float4(rgb, a) * keep;\n"
+    "}\n"
+    // sparks: the first 16 crackle on the ground around the target until the bolt (each pops up and is gone, again
+    // somewhere else), the rest fly out from it when it strikes and fall
+    "vertex VO wx_spark_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant WF &w [[buffer(0)]],\n"
+    "                      depth2d<float> dt [[texture(0)]], constant SK &k [[buffer(3)]]) {\n"
+    "  VO o;\n"
+    "  o.uv = float2(0.0); o.a = 0.0; o.pos = float4(0.0, 0.0, -2.0, 1.0);\n"
+    "  float3 g = sk_ground(w, dt, k), p;\n"
+    "  float now = k.at.w, size;\n"
+    "  uint sd = uint(k.tm.z) + iid * 977u;\n"
+    "  if (iid < 16u) {\n"
+    "    if (now >= k.tm.y) return o;\n"
+    "    float c = (now - k.tm.x) * 9.0 + h1(sd);\n"
+    "    uint n = uint(c);\n"
+    "    float f = fract(c), an = h1(sd + n * 31u) * 6.2832, r = 0.15 + 0.8 * h1(sd + n * 17u);\n"
+    "    p = g + float3(cos(an) * r, 0.05 + 0.3 * f * h1(sd + n * 5u), sin(an) * r);\n"
+    "    o.a = (1.0 - f) * saturate((now - k.tm.x) * 3.0);\n"
+    "    size = 3.0;\n"
+    "  } else {\n"
+    "    float age = now - k.tm.y, life = 0.4 + 0.5 * h1(sd + 1u);\n"
+    "    if (age < 0.0 || age > life) return o;\n"
+    "    float an = h1(sd + 2u) * 6.2832, sp = 2.0 + 4.0 * h1(sd + 3u);\n"
+    "    float3 v = float3(cos(an) * sp, 2.0 + 4.0 * h1(sd + 4u), sin(an) * sp);\n"
+    "    p = g + v * age + float3(0.0, -7.0, 0.0) * age * age;\n"
+    "    p.y = max(p.y, g.y + 0.03);\n"
+    "    o.a = 1.0 - age / life;\n"
+    "    size = 4.0;\n"
+    "  }\n"
+    "  p += normalize(w.cam.xyz - p) * 0.3;\n"  // (above the ground's depth)
+    "  float2 corner = float2((vid & 1u) ? 1.0 : -1.0, (vid & 2u) ? 1.0 : -1.0);\n"
+    "  float4 c = clip_of(w, p);\n"
+    "  c.xy += corner * size * w.screen.y / 1080.0 / w.screen.xy * c.w;\n"
+    "  o.pos = c; o.uv = corner;\n"
+    "  return o;\n"
+    "}\n"
+    "fragment float4 wx_spark_fs(VO in [[stage_in]]) {\n"
+    "  float r = length(in.uv), e = (1.0 - smoothstep(0.2, 1.0, r)) * in.a;\n"
+    "  return float4(mix(float3(1.0, 0.6, 0.25), float3(1.0, 0.95, 0.85), saturate(1.0 - r * 1.5)) * e, 0.0);\n"
+    "}\n"
+    // the bolt: segment i from point i to i + 1 (none across a break), a ribbon facing the screen: a white core in a
+    // blue glow; it flickers (struck twice) and fades in ~0.4 s
+    "vertex VO wx_bolt_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant WF &w [[buffer(0)]],\n"
+    "                     depth2d<float> dt [[texture(0)]], constant SK &k [[buffer(3)]]) {\n"
+    "  VO o;\n"
+    "  o.uv = float2(0.0); o.a = 0.0; o.pos = float4(0.0, 0.0, -2.0, 1.0);\n"
+    "  float age = k.at.w - k.tm.y;\n"
+    "  if (age < 0.0 || age > 0.6 || float(iid + 1u) >= k.tm.w) return o;\n"
+    "  float4 p0 = k.pts[iid], p1 = k.pts[iid + 1u];\n"
+    "  if (p0.w <= 0.0 || p1.w <= 0.0) return o;\n"
+    "  float3 g = sk_ground(w, dt, k);\n"
+    "  float4 c0 = clip_of(w, g + p0.xyz), c1 = clip_of(w, g + p1.xyz);\n"
+    "  if (c0.w <= 0.0 || c1.w <= 0.0) return o;\n"
+    "  float2 s0 = c0.xy / c0.w * w.screen.xy, s1 = c1.xy / c1.w * w.screen.xy;\n"
+    "  float2 dir = normalize(s1 - s0 + float2(1e-4, 0.0)), nrm = float2(-dir.y, dir.x);\n"
+    "  bool end = (vid & 1u) != 0u;\n"
+    "  float4 c = end ? c1 : c0;\n"
+    "  float wd = (end ? p1.w : p0.w) * 6.0 * w.screen.y / 1080.0;\n"  // (core and glow: 3x the core's width)
+    "  float side = (vid & 2u) ? 1.0 : -1.0;\n"
+    "  c.xy += (nrm * side * wd + dir * (end ? wd : -wd) * 0.5) / w.screen.xy * c.w;\n"  // (a little past the ends: joins)
+    "  o.pos = c; o.uv = float2(side, 0.0);\n"
+    "  o.a = age < 0.07 ? 1.0 : age < 0.12 ? 0.25 : age < 0.2 ? 1.0 : exp(-(age - 0.2) * 9.0);\n"
+    "  return o;\n"
+    "}\n"
+    "fragment float4 wx_bolt_fs(VO in [[stage_in]]) {\n"
+    "  float x = abs(in.uv.x);\n"
+    "  float core = 1.0 - smoothstep(0.18, 0.33, x), glow = exp(-x * x * 9.0);\n"
+    "  return float4((float3(1.0) * core + float3(0.45, 0.6, 1.0) * glow * 0.8) * in.a, 0.0);\n"
+    "}\n"
+    // the fill: out = rgb + picture * a (overcast, lightning)
+    "vertex float4 wx_fill_vs(uint vid [[vertex_id]]) {\n"
+    "  return float4(vid == 1u ? 3.0 : -1.0, vid == 2u ? 3.0 : -1.0, 0.0, 1.0);\n"
+    "}\n"
+    "fragment float4 wx_fill_fs(constant WF &w [[buffer(0)]]) { return w.fill; }\n";
+
+static void weather_encode(void) {
+    static long off = -1;  // (LARECOMP_WEATHER_SKIP=1: the weather computed but not drawn - GPU cost A/B)
+    if (off < 0) off = getenv("LARECOMP_WEATHER_SKIP") ? atol(getenv("LARECOMP_WEATHER_SKIP")) : 0;
+    uint64_t frame = renderer_exec_frame();
+    weather_cycle_scene();  // (the weather cycle's clock runs while the game draws its scene)
+    NvnTexture *win = st.rt.ncolor ? st.rt.color[0] : NULL, *dep = wx_depth;
+    extern bool mirror_scene_size(uint32_t sw, uint32_t sh, uint32_t w, uint32_t h);
+    int why = off ? 1 : !win ? 2 : !dep ? 3 : wx_depth_frame != frame ? 4 : fabsf(wx_zf - wx_zn) < 1e-6f ? 5 :
+              !mirror_scene_size(dep->width, dep->height, win->width, win->height) ? 6 : 0;
+    static int wlog = -1, wlast = -1;  // LARECOMP_LOG_WEATHER=1 (test): why the renderer skips the weather, as that changes
+    if (wlog < 0) wlog = getenv("LARECOMP_LOG_WEATHER") != NULL;
+    if (wlog && why != wlast)
+        LOG("[weather] frame %llu renderer: %s (depth %ux%u window %ux%u)\n", (unsigned long long)frame,
+            (const char *const[]){"ok", "skip", "no window", "no depth", "depth from another frame", "depth range", "depth size"}[why],
+            dep ? dep->width : 0, dep ? dep->height : 0, win ? win->width : 0, win ? win->height : 0);
+    wlast = why;
+    if (why) return;
+    float wsx, wsy, dsx, dsy;
+    renderer_texture_scale(win, &wsx, &wsy);
+    renderer_texture_scale(dep, &dsx, &dsy);
+    id<MTLTexture> dt = renderer_texture(dep, nil, true);
+    if (!dt) return;
+    WeatherFrame wf;
+    memset(&wf, 0, sizeof wf);
+    int cw = (int)lroundf(win->width * wsx), ch = (int)lroundf(win->height * wsy);
+    wf.screen[0] = (float)cw, wf.screen[1] = (float)ch;
+    wf.screen[2] = fminf((float)lroundf(dep->width * dsx), (float)dt.width);
+    wf.screen[3] = fminf((float)lroundf(dep->height * dsy), (float)dt.height);
+    wf.flags[0] = nvn_window_origin() == 0, wf.flags[1] = wx_dm1;
+    wf.flags[2] = wx_mirror;  // (the composite was drawn mirrored: mirror_draw)
+    wf.zr[0] = wx_zn, wf.zr[1] = wx_zf - wx_zn;
+    // the scene depth at the probe points, as last frame's particle draw read it (shared memory: a frame late)
+    static id<MTLBuffer> probe;
+    static uint64_t probe_frame;
+    if (!probe) probe = [dev newBufferWithLength:64 options:MTLResourceStorageModeShared];
+    float pd[WEATHER_PROBES];
+    memcpy(pd, probe.contents, sizeof pd);
+    bool have = probe_frame && frame - probe_frame < 4;
+    if (!weather_frame(&wf, frame, have ? pd : NULL)) return;
+    static int dbg = -1;  // LARECOMP_WEATHER_DEBUG (test): 1 opaque red particles, 2 red poles standing on the ground
+    if (dbg < 0) dbg = getenv("LARECOMP_WEATHER_DEBUG") ? atoi(getenv("LARECOMP_WEATHER_DEBUG")) : 0;
+    if (dbg) {
+        wf.color[0] = 1, wf.color[1] = wf.color[2] = 0, wf.color[3] = 1, wf.shape[1] = 4;
+        if (dbg == 2) wf.flags[3] = 3, wf.count = 400, wf.splashes = 0;
+    }
+
+    // pipelines: by the window image's format
+    static id<MTLLibrary> lib;
+    static id<MTLRenderPipelineState> pipe[8];  // particles, splashes, fill, kicked-up snow, leaves; lightning: mark, sparks, bolt
+    static MTLPixelFormat pipe_fmt;
+    id<MTLTexture> ct = view_texture(win, &st.rt.cview[0], st.rt.has_cview[0], true, nil);
+    if (!ct) return;
+    if (!lib) {
+        NSError *err = nil;
+        lib = TIMED_COMPILE([dev newLibraryWithSource:@(wx_src) options:nil error:&err]);
+        if (!lib) { LOG("[weather] shaders: %s\n", err.localizedDescription.UTF8String); off = 1; return; }
+    }
+    if (pipe_fmt != ct.pixelFormat) {
+        pipe_fmt = ct.pixelFormat;
+        static const char *const fn[8][2] = {{"wx_vs", "wx_fs"}, {"wx_splash_vs", "wx_splash_fs"}, {"wx_fill_vs", "wx_fill_fs"},
+                                             {"wx_puff_vs", "wx_puff_fs"}, {"wx_leaf_vs", "wx_leaf_fs"},
+                                             {"wx_mark_vs", "wx_mark_fs"}, {"wx_spark_vs", "wx_spark_fs"}, {"wx_bolt_vs", "wx_bolt_fs"}};
+        for (int i = 0; i < 8; i++) {
+            MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+            pd.vertexFunction = [lib newFunctionWithName:@(fn[i][0])];
+            pd.fragmentFunction = [lib newFunctionWithName:@(fn[i][1])];
+            MTLRenderPipelineColorAttachmentDescriptor *ca = pd.colorAttachments[0];
+            ca.pixelFormat = ct.pixelFormat;
+            ca.blendingEnabled = YES;
+            ca.alphaBlendOperation = ca.rgbBlendOperation = MTLBlendOperationAdd;
+            ca.sourceAlphaBlendFactor = MTLBlendFactorZero, ca.destinationAlphaBlendFactor = MTLBlendFactorOne;  // (alpha kept)
+            ca.sourceRGBBlendFactor = i == 2 || i >= 5 ? MTLBlendFactorOne : MTLBlendFactorSourceAlpha;  // (5-7: premultiplied)
+            ca.destinationRGBBlendFactor = i == 2 ? MTLBlendFactorSourceAlpha : MTLBlendFactorOneMinusSourceAlpha;
+            NSError *err = nil;
+            pipe[i] = TIMED_COMPILE([dev newRenderPipelineStateWithDescriptor:pd error:&err]);
+            if (!pipe[i]) { LOG("[weather] pipeline %d: %s\n", i, err.localizedDescription.UTF8String); off = 1; return; }
+        }
+    }
+    end_pass();
+    st.rt_dirty = true;  // (the game's next draw opens its pass again)
+    // LARECOMP_WEATHER_TIME=1 (test): the pass' GPU time from timestamps at its vertex stage's start and its fragment
+    // stage's end (in place, in the frame's command buffer), logged as means every 120 frames. In game that includes
+    // waiting on the work before it and the GPU's low clocks at an easy 60 fps (~1.5 ms with nothing drawn at 4K):
+    // compare runs with LARECOMP_WEATHER_PARTS, not absolute numbers. Offline at full clocks the whole pass is ~0.1 ms
+    // at 4K (storm, blizzard)
+    static int timing = -1;
+    static id<MTLCounterSampleBuffer> tsb;
+    if (timing < 0) {
+        timing = getenv("LARECOMP_WEATHER_TIME") != NULL;
+        id<MTLCounterSet> ts = nil;
+        for (id<MTLCounterSet> c in timing ? dev.counterSets : @[]) if ([c.name isEqualToString:MTLCommonCounterSetTimestamp]) ts = c;
+        if (ts && [dev supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) {
+            MTLCounterSampleBufferDescriptor *d = [MTLCounterSampleBufferDescriptor new];
+            d.counterSet = ts, d.storageMode = MTLStorageModeShared, d.sampleCount = 2 * 64;
+            tsb = [dev newCounterSampleBufferWithDescriptor:d error:nil];
+        }
+        if (timing) LOG("[weather] timing: GPU timestamps %s\n", tsb ? "on" : "not available");
+    }
+    static uint32_t ts_slot;
+    uint32_t slot = ts_slot++ % 64;
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    if (tsb) {
+        MTLRenderPassSampleBufferAttachmentDescriptor *sa = rp.sampleBufferAttachments[0];
+        sa.sampleBuffer = tsb;
+        sa.endOfVertexSampleIndex = sa.startOfFragmentSampleIndex = MTLCounterDontSample;
+        sa.startOfVertexSampleIndex = slot * 2, sa.endOfFragmentSampleIndex = slot * 2 + 1;
+    }
+    rp.colorAttachments[0].texture = ct;
+    rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    rp.renderTargetWidth = (NSUInteger)(cw < (int)ct.width ? cw : (int)ct.width);
+    rp.renderTargetHeight = (NSUInteger)(ch < (int)ct.height ? ch : (int)ct.height);
+    id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:rp];
+    e.label = @"weather";
+    [e setViewport:(MTLViewport){0, 0, (double)rp.renderTargetWidth, (double)rp.renderTargetHeight, 0, 1}];
+    [e setVertexBytes:&wf length:sizeof wf atIndex:0];
+    [e setFragmentBytes:&wf length:sizeof wf atIndex:0];
+    [e setVertexBuffer:probe offset:0 atIndex:1];
+    [e setVertexTexture:dt atIndex:0];
+    [e setFragmentTexture:dt atIndex:0];
+    static int parts = -1;  // LARECOMP_WEATHER_PARTS=<mask> (test, GPU cost A/B): 1 overcast, 2 drops / flakes,
+    // 4 splashes / lying flakes, 8 leaves, 16 kicked-up snow, 32 a lightning strike (default: all)
+    if (parts < 0) parts = getenv("LARECOMP_WEATHER_PARTS") ? atoi(getenv("LARECOMP_WEATHER_PARTS")) : 63;
+    if ((parts & 1) && (wf.fill[3] < 1 || wf.fill[0] > 0)) {  // (overcast, lightning)
+        [e setRenderPipelineState:pipe[2]];
+        [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    }
+    [e setRenderPipelineState:pipe[0]];
+    [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:(parts & 2) ? wf.count : 1];
+    probe_frame = frame;  // (one drop at least: its first vertex reads the probes)
+    if (wf.splashes && (parts & 4)) {
+        [e setRenderPipelineState:pipe[1]];
+        [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:wf.splashes];
+    }
+    if (wf.leaf[3] > 0 && !dbg && (parts & 8)) {  // (a storm's leaves)
+        [e setRenderPipelineState:pipe[4]];
+        [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:(NSUInteger)wf.leaf[3]];
+    }
+    StrikeFrame sk;
+    if (wf.kind == WEATHER_STORM && !dbg && (parts & 32) && weather_strike(&sk)) {  // (a lightning strike: its mark, sparks, the bolt)
+        [e setVertexBytes:&sk length:sizeof sk atIndex:3];
+        [e setFragmentBytes:&sk length:sizeof sk atIndex:3];
+        [e setRenderPipelineState:pipe[5]];
+        [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+        [e setRenderPipelineState:pipe[6]];
+        [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:48];
+        [e setRenderPipelineState:pipe[7]];
+        [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:STRIKE_PTS - 1];
+    }
+    if ((wf.kind == WEATHER_SNOW || wf.kind == WEATHER_BLIZZARD) && !dbg && (parts & 16)) {  // (the snow Link kicked up)
+        // (past setVertexBytes' 4 KB: a small shared buffer per frame in flight, 4 of them in turn)
+        static id<MTLBuffer> pbuf[4];
+        static int pnext;
+        id<MTLBuffer> b = pbuf[pnext];
+        if (!b) b = pbuf[pnext] = [dev newBufferWithLength:sizeof(SnowPuff) * (SNOW_PUFFS + 1) options:MTLResourceStorageModeShared];
+        pnext = (pnext + 1) & 3;
+        SnowPuff *pf = b.contents;
+        weather_snow_puffs(pf + 1);
+        memset(&pf[0], 0, sizeof pf[0]);
+        pf[0].p[0] = weather_snow_now();
+        [e setRenderPipelineState:pipe[3]];
+        [e setVertexBuffer:b offset:0 atIndex:2];
+        [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:SNOW_PUFFS];
+    }
+    [e endEncoding];
+    stat_passes++;
+    if (tsb) {
+        static double sum;
+        static int n;
+        id<MTLCounterSampleBuffer> b = tsb;
+        [cmdbuf addCompletedHandler:^(id<MTLCommandBuffer> c) {
+            (void)c;
+            NSData *d = [b resolveCounterRange:NSMakeRange(slot * 2, 2)];
+            const uint64_t *t = d.length >= 16 ? d.bytes : NULL;
+            if (!t || t[1] <= t[0] || t[0] == MTLCounterErrorValue) return;
+            sum += (double)(t[1] - t[0]);  // (ns on Apple GPUs)
+            if (++n == 120) LOG("[weather] pass GPU time %.3f ms (mean of 120)\n", sum / n / 1e6), sum = 0, n = 0;
+        }];
+    }
+}
+
+// (phones: the HUD at the screen corners, runtime/hle/hud_corners.c) a boxed room's bars, black after the scene composite
+static bool hud_bars_clear(void) {  // (false: not at the window's image yet, e.g. the dungeon title's offscreen text)
+    extern bool hud_corners_bars(uint64_t frame, int w, int h, int bar[4]);
+    extern uint64_t renderer_exec_frame(void);
+    if (!st.rt.ncolor || !st.rt.color[0] || !renderer_texture_presented(st.rt.color[0])) return false;
+    int w = (int)st.rt.color[0]->width, h = (int)st.rt.color[0]->height, bar[4];
+    if (!hud_corners_bars(renderer_exec_frame(), w, h, bar)) return true;
+    int32_t sc[4];
+    memcpy(sc, st.scissor[0], sizeof sc);
+    static const float black[4] = {0, 0, 0, 1};
+    if (bar[0] > 0) {
+        st.scissor[0][0] = 0, st.scissor[0][1] = 0, st.scissor[0][2] = bar[0], st.scissor[0][3] = h;
+        clear(0, 0, black, 0xF, false, 0, false, 0, 0);
+    }
+    if (bar[1] < w) {
+        st.scissor[0][0] = bar[1], st.scissor[0][1] = 0, st.scissor[0][2] = w - bar[1], st.scissor[0][3] = h;
+        clear(0, 0, black, 0xF, false, 0, false, 0, 0);
+    }
+    if (bar[2] > 0) {
+        st.scissor[0][0] = 0, st.scissor[0][1] = 0, st.scissor[0][2] = w, st.scissor[0][3] = bar[2];
+        clear(0, 0, black, 0xF, false, 0, false, 0, 0);
+    }
+    if (bar[3] < h) {
+        st.scissor[0][0] = 0, st.scissor[0][1] = bar[3], st.scissor[0][2] = w, st.scissor[0][3] = h - bar[3];
+        clear(0, 0, black, 0xF, false, 0, false, 0, 0);
+    }
+    memcpy(st.scissor[0], sc, sizeof sc);
+    return true;
+}
+
+static void draw(CmdRec *r, bool indexed) {
+    static bool hud_bars;  // (the scene composite was drawn, its bars not cleared yet)
+    extern bool hud_corners_active(void);
+    if (hud_bars && hud_bars_clear()) hud_bars = false;
+    wx_composite = wx_mirror = false;
+    draw_one(r, indexed);
+    hud_bars = (hud_bars || wx_composite) && hud_corners_active();
+    if (wx_composite) weather_encode();
 }
 
 // ------------------------------------------------------------------ texture copies
@@ -3773,7 +5572,7 @@ static id<MTLTexture> copy_raw_view(id<MTLTexture> t) {
 }
 
 static void draw_copy(id<MTLTexture> s, int sx0, int sy0, int sw, int sh, id<MTLTexture> d, int dx0, int dy0, int dw, int dh,
-                      bool linear) {
+                      bool linear, bool mirror_y) {
     static int raw = -1;  // LARECOMP_COPY_RAW_SRGB: copies move values unchanged (no sRGB decode/encode on either side)
     if (raw < 0) raw = getenv("LARECOMP_COPY_RAW_SRGB") != NULL;
     if (raw) { s = copy_raw_view(s); d = copy_raw_view(d); }
@@ -3781,7 +5580,6 @@ static void draw_copy(id<MTLTexture> s, int sx0, int sy0, int sw, int sh, id<MTL
     rp.colorAttachments[0].texture = d;
     rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
-    id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:rp];
     NSString *key = [NSString stringWithFormat:@"copy %lu", (unsigned long)d.pixelFormat];
     id<MTLRenderPipelineState> pipe = cache[key];
     if (!pipe) {
@@ -3801,15 +5599,21 @@ static void draw_copy(id<MTLTexture> s, int sx0, int sy0, int sw, int sh, id<MTL
         sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
         lin = [dev newSamplerStateWithDescriptor:sd];
     }
-    float r[4] = {(float)sx0 / s.width, (float)sy0 / s.height, (float)sw / s.width, (float)sh / s.height};
-    [e setRenderPipelineState:pipe];
-    [e setViewport:(MTLViewport){dx0, dy0, dw, dh, 0, 1}];
-    [e setVertexBytes:r length:16 atIndex:0];
-    [e setFragmentTexture:s atIndex:0];
-    [e setFragmentSamplerState:linear ? lin : near atIndex:0];
-    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    [e endEncoding];
-    stat_passes++;
+    id<MTLSamplerState> smp = linear ? lin : near;
+    void (^copy)(void) = ^{
+        float r[4] = {(float)sx0 / s.width, (float)(mirror_y ? sy0 + sh : sy0) / s.height, (float)sw / s.width, (float)(mirror_y ? -sh : sh) / s.height};
+        id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:rp];
+        [e setRenderPipelineState:pipe];
+        [e setViewport:(MTLViewport){dx0, dy0, dw, dh, 0, 1}];
+        [e setVertexBytes:r length:16 atIndex:0];
+        [e setFragmentTexture:s atIndex:0];
+        [e setFragmentSamplerState:smp atIndex:0];
+        [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [e endEncoding];
+        stat_passes++;
+    };
+    copy();
+    tape_block(copy);
 }
 
 static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
@@ -3839,7 +5643,9 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
         td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
         td.storageMode = MTLStorageModePrivate;
         id<MTLTexture> small = [dev newTextureWithDescriptor:td];
-        draw_copy(tex, 0, 0, (int)lroundf(t->width * tsx), (int)lroundf(t->height * tsy), small, 0, 0, t->width, t->height, true);
+        tape_mute++;  // (replays make no readbacks)
+        draw_copy(tex, 0, 0, (int)lroundf(t->width * tsx), (int)lroundf(t->height * tsy), small, 0, 0, t->width, t->height, true, false);
+        tape_mute--;
         tex = small;
     }
     id<MTLBlitCommandEncoder> b = [cb() blitCommandEncoder];
@@ -3901,7 +5707,6 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
             drp.stencilAttachment.loadAction = MTLLoadActionLoad;
             drp.stencilAttachment.storeAction = MTLStoreActionStore;
         }
-        id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:drp];
         NSString *key = [NSString stringWithFormat:@"copydepth %lu", (unsigned long)d.pixelFormat];
         id<MTLRenderPipelineState> pipe = cache[key];
         if (!pipe) {
@@ -3927,7 +5732,7 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
             always = [dev newDepthStencilStateWithDescriptor:dd];
         }
         // An upsampling copy (a source of lower resolution, as the guest-sized AO depth gets from the scaled pyramid
-        // below 0.5x: runtime/nvn/metal.m tex_guest_sized_ao) interpolates: nearest made stairs of the ground's
+        // below 0.5x: runtime/nvn/metal.m tex_ao) interpolates: nearest made stairs of the ground's
         // slope that the ambient occlusion shaded as dark horizontal lines (issue #356, 25% in a window).
         // Downsampling stays nearest (the game's own choice of samples). LARECOMP_DEPTH_UP_NEAREST=1 (A/B): nearest.
         static id<MTLSamplerState> dnear, dlin;
@@ -3943,16 +5748,23 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
         id<MTLTexture> sdepth = s;
         if (s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 || s.pixelFormat == MTLPixelFormatDepth24Unorm_Stencil8)
             sdepth = [s newTextureViewWithPixelFormat:s.pixelFormat];
-        float r[4] = {(float)sx0 / s.width, (float)sy0 / s.height, (float)sw / s.width, (float)sh / s.height};
-        [e setRenderPipelineState:pipe];
-        [e setDepthStencilState:always];
-        [e setViewport:(MTLViewport){dx0, dy0, dw, dh, 0, 1}];
-        [e setVertexBytes:r length:16 atIndex:0];
-        [e setFragmentTexture:sdepth atIndex:0];
-        [e setFragmentSamplerState:up ? dlin : dnear atIndex:0];
-        [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-        [e endEncoding];
-        stat_passes++;
+        id<MTLSamplerState> smp = up ? dlin : dnear;
+        id<MTLDepthStencilState> dss = always;
+        void (^copy)(void) = ^{
+            float r[4] = {(float)sx0 / s.width, (float)sy0 / s.height, (float)sw / s.width, (float)sh / s.height};
+            id<MTLRenderCommandEncoder> e = [cb() renderCommandEncoderWithDescriptor:drp];
+            [e setRenderPipelineState:pipe];
+            [e setDepthStencilState:dss];
+            [e setViewport:(MTLViewport){dx0, dy0, dw, dh, 0, 1}];
+            [e setVertexBytes:r length:16 atIndex:0];
+            [e setFragmentTexture:sdepth atIndex:0];
+            [e setFragmentSamplerState:smp atIndex:0];
+            [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            [e endEncoding];
+            stat_passes++;
+        };
+        copy();
+        tape_block(copy);
         static int dbgc = -1;
         if (dbgc < 0) dbgc = getenv("LARECOMP_DEBUG_DEPTHCOPY") != NULL;
         if (dbgc) {
@@ -3975,15 +5787,22 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
         }
         return;
     }
-    if (renderer_format_is_depth(dt->format) || (s.pixelFormat == d.pixelFormat && sw == dw && sh == dh && s.sampleCount == d.sampleCount)) {
-        id<MTLBlitCommandEncoder> b = [cb() blitCommandEncoder];
-        [b copyFromTexture:s sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(sx0, sy0, 0)
-                sourceSize:MTLSizeMake(MIN(sw, dw), MIN(sh, dh), 1) toTexture:d destinationSlice:0 destinationLevel:0
-         destinationOrigin:MTLOriginMake(dx0, dy0, 0)];
-        [b endEncoding];
+    // NVN's copy flag 8 mirrors the copy vertically. The game sets it when it grabs the world for a blurred background
+    // (Items screen, Game Over) and its shaders then read the grab upside down.
+    bool mirror_y = (flags & 8) && !renderer_format_is_depth(dt->format);
+    if (renderer_format_is_depth(dt->format) || (!mirror_y && s.pixelFormat == d.pixelFormat && sw == dw && sh == dh && s.sampleCount == d.sampleCount)) {
+        void (^copy)(void) = ^{
+            id<MTLBlitCommandEncoder> b = [cb() blitCommandEncoder];
+            [b copyFromTexture:s sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(sx0, sy0, 0)
+                    sourceSize:MTLSizeMake(MIN(sw, dw), MIN(sh, dh), 1) toTexture:d destinationSlice:0 destinationLevel:0
+             destinationOrigin:MTLOriginMake(dx0, dy0, 0)];
+            [b endEncoding];
+        };
+        copy();
+        tape_block(copy);
         return;
     }
-    draw_copy(s, sx0, sy0, sw, sh, d, dx0, dy0, dw, dh, flags & 1);
+    draw_copy(s, sx0, sy0, sw, sh, d, dx0, dy0, dw, dh, flags & 1, mirror_y);
 }
 
 // ------------------------------------------------------------------ executor
@@ -4166,6 +5985,8 @@ static void exec_list(uint64_t handle, int depth) {
             }
             break;
         case CMD_DISPATCH:
+            if (g_interp_replaying) break;  // (a replayed frame: the frame's compute results are already there)
+            if (g_interp_log) for (int i = 0; i < 16; i++) if (st.sbuf[5][i].addr) interp_dispatch_output(st.sbuf[5][i].addr, st.sbuf[5][i].size);
             dispatch_compute((uint32_t)r->x[0], (uint32_t)r->x[1], (uint32_t)r->x[2]);
             if (st.program) {
                 static uint64_t seen[16];
@@ -4209,9 +6030,11 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_DRAW_ELEMENTS: draw(r, true); break;
         case CMD_UPDATE_UNIFORM_BUFFER:
             // (buffer, size, offset, dataSize, data): apply the update in command order
+            if (g_interp_replaying) break;  // (replay: the draws read their logged uniform copies)
             memcpy((void *)(uintptr_t)(r->x[0] + r->x[2]), x, r->x[3]);
             break;
         case CMD_FENCE_SYNC: {
+            if (g_interp_replaying) break;  // (replays leave the game's fences, counters and memory alone)
             // The CPU may read GPU-written memory (compute results) once the fence is signaled.
             static int fence_flush = -1;
             if (fence_flush < 0) fence_flush = getenv("LARECOMP_FENCE_FLUSH") ? 1 : 0;
@@ -4221,6 +6044,7 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         }
         case CMD_REPORT_COUNTER: {
+            if (g_interp_replaying) break;
             uint64_t *out = (uint64_t *)(uintptr_t)r->x[1];
             static uint32_t seen;
             uint32_t type = (uint32_t)r->x[0];
@@ -4263,7 +6087,7 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         }
         case CMD_COPY_BUFFER_TO_TEXTURE: copy_buffer_to_texture(r->x[0], x); break;
-        case CMD_COPY_TEXTURE_TO_BUFFER: copy_texture_to_buffer(x, r->x[3]); break;
+        case CMD_COPY_TEXTURE_TO_BUFFER: if (!g_interp_replaying) copy_texture_to_buffer(x, r->x[3]); break;
         case CMD_SET_RENDER_ENABLE:
             if (r->x[6]) {
                 if (r->x[0] > 1 || !r->x[1]) FATAL("nvn: invalid conditional rendering arguments\n");
@@ -4277,6 +6101,7 @@ static void exec_list(uint64_t handle, int depth) {
                 (uint64_t)((unsigned __int128)plat_now_ns() * 384 / 625));
             break;
         case CMD_COPY_BUFFER_TO_BUFFER:
+            if (g_interp_replaying) break;
             { static int nlog; if (nlog++ < 40 && ENV("LARECOMP_LOG_BINDS")) LOG("[copybuf] frame %llu %llx -> %llx %llu bytes\n", (unsigned long long)renderer_exec_frame(), r->x[0], r->x[1], r->x[2]); }
             renderer_flush();
             memmove((void *)(uintptr_t)r->x[1], (void *)(uintptr_t)r->x[0], r->x[2]);
@@ -4423,6 +6248,7 @@ void renderer_reset(void) {
     memset((void *)rs_cpu_wrote, 0, sizeof rs_cpu_wrote);
     memset(rs_hit_inside, 0, sizeof rs_hit_inside);
     memset(rs_store_frame, 0, sizeof rs_store_frame);
+    memset((void *)rs_rewrites, 0, sizeof rs_rewrites);
     memset(snap_tex, 0, sizeof snap_tex);
     memset(snap_ok, 0, sizeof snap_ok);
     for (int i = 0; i < 4; i++) { feedback_tex[i] = NULL; feedback_copy[i] = nil; }
@@ -4439,7 +6265,95 @@ void renderer_reset(void) {
     st_defaults();
 }
 
+// Frame interpolation (runtime/nvn/interp.c): the bound state at the frame's first list, and a replay of the frame's
+// lists with the logged (blended) uniforms - the game's own state is restored after it. The caller holds
+// interp_replay_lock and has set the render scale the frame was drawn at.
+static __typeof__(st) st_frame_begin;
+void renderer_interp_replay(void) {
+    const uint64_t *h;
+    uint32_t n = interp_handles(&h);
+    __typeof__(st) st_end = st;
+    bool log = g_interp_log;
+    st = st_frame_begin;
+    g_interp_log = true;
+    iv_rp = 0;
+    interp_replay_begin();
+    @autoreleasepool {
+        for (uint32_t i = 0; i < n; i++) exec_list(h[i], 0);
+        renderer_submit();
+    }
+    interp_replay_end();
+    g_interp_log = log;
+    st = st_end;
+}
+
+// An in-between from the frame's tape (above, E_*): false when there is none (the setting came on mid-frame, a runaway
+// frame, a full flush reset the ring it binds) - the caller translates the lists again.
+bool renderer_interp_tape_replay(void) {
+    if (!tape_ok || !tape_n || tape_rec || tape_ring_gen != ring_gen) return false;
+    inplace_check("in-between");
+    interp_replay_begin();
+    @autoreleasepool {
+        id<MTLRenderCommandEncoder> e = nil;
+        NSArray *objs = tape_objs;
+        #define OBJ(o) ((o)->obj >= 0 ? objs[(NSUInteger)(o)->obj] : nil)
+        for (uint32_t i = 0; i < tape_n; i++) {
+            const TapeOp *o = &tape[i];
+            switch (o->op) {
+            case TP_PASS: e = [cb() renderCommandEncoderWithDescriptor:OBJ(o)]; break;
+            case TP_END: [e endEncoding]; e = nil; break;
+            case TP_BLOCK: ((void (^)(void))OBJ(o))(); break;
+            case TP_PIPE: [e setRenderPipelineState:OBJ(o)]; break;
+            case TP_DSS: [e setDepthStencilState:OBJ(o)]; break;
+            case TP_STREF: [e setStencilReferenceValue:(uint32_t)o->a]; break;
+            case TP_STREF2: [e setStencilFrontReferenceValue:(uint32_t)o->a backReferenceValue:(uint32_t)o->b]; break;
+            case TP_BLENDC: [e setBlendColorRed:o->f[0] green:o->f[1] blue:o->f[2] alpha:o->f[3]]; break;
+            case TP_CULL: [e setCullMode:(MTLCullMode)o->a]; break;
+            case TP_WIND: [e setFrontFacingWinding:(MTLWinding)o->a]; break;
+            case TP_FILL: [e setTriangleFillMode:(MTLTriangleFillMode)o->a]; break;
+            case TP_BIAS: [e setDepthBias:o->f[0] slopeScale:o->f[1] clamp:o->f[2]]; break;
+            case TP_VIEWPORT: [e setViewport:(MTLViewport){o->f[0], o->f[1], o->f[2], o->f[3], o->f[4], o->f[5]}]; break;
+            case TP_SCISSOR: [e setScissorRect:(MTLScissorRect){(NSUInteger)o->a, (NSUInteger)o->b, (NSUInteger)o->c, (NSUInteger)o->d}]; break;
+            case TP_BUF: {
+                id<MTLBuffer> b = OBJ(o);
+                uint64_t off = o->a;
+                const void *bl = o->cb >= 0 ? interp_tape_cb(o->cb) : NULL;  // (the blended copy, NULL: the frame's own)
+                if (bl) { off = ring_alloc(bl, o->b); b = ring; }
+                if (o->stage == 0) [e setVertexBuffer:b offset:off atIndex:o->idx];
+                else [e setFragmentBuffer:b offset:off atIndex:o->idx];
+                break;
+            }
+            case TP_BYTES:
+                if (o->stage == 0) [e setVertexBytes:tape_bytes + o->a length:o->b atIndex:o->idx];
+                else [e setFragmentBytes:tape_bytes + o->a length:o->b atIndex:o->idx];
+                break;
+            case TP_TEX:
+                if (o->stage == 0) [e setVertexTexture:OBJ(o) atIndex:o->idx];
+                else [e setFragmentTexture:OBJ(o) atIndex:o->idx];
+                break;
+            case TP_SMP:
+                if (o->stage == 0) [e setVertexSamplerState:OBJ(o) atIndex:o->idx];
+                else [e setFragmentSamplerState:OBJ(o) atIndex:o->idx];
+                break;
+            case TP_DRAW:
+                [e drawPrimitives:(MTLPrimitiveType)o->idx vertexStart:o->a vertexCount:o->b instanceCount:o->c baseInstance:o->d];
+                break;
+            case TP_DRAWI:
+                [e drawIndexedPrimitives:(MTLPrimitiveType)o->idx indexCount:o->a indexType:(MTLIndexType)o->stage indexBuffer:OBJ(o)
+                       indexBufferOffset:o->b instanceCount:o->c baseVertex:(int32_t)(uint32_t)o->d baseInstance:(uint32_t)(o->d >> 32)];
+                break;
+            }
+        }
+        #undef OBJ
+        if (e) [e endEncoding];
+        renderer_submit();
+    }
+    interp_replay_end();
+    return true;
+}
+
 void backend_execute(uint64_t handle) {
+    if (interp_list_submitted(handle)) { st_frame_begin = st; tape_begin(); }
     @autoreleasepool {
         exec_list(handle, 0);
         static int sync_submit = -1;

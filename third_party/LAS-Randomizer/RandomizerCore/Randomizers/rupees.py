@@ -9,8 +9,7 @@ def makeEventChanges(flowchart, rup_index, item_key, item_index):
     event_tools.addEntryPoint(flowchart, f'Lv10Rupee_{rup_index + 1}')
 
     # If item is SmallKey/NightmareKey/Map/Compass/Beak/Rupee, add to inventory without any pickup animation
-    # [LAS Recomp] a key ring (index 100+, tools/rando/key_rings.py) shows its get and message
-    if item_key[:3] in ['Sma', 'Nig', 'Dun', 'Com', 'Sto', 'Rup'] and not (isinstance(item_index, int) and 100 <= item_index < 110):
+    if item_key[:3] in ['Sma', 'Nig', 'Dun', 'Com', 'Sto', 'Rup']:
         get_anim = event_tools.createActionEvent(flowchart, 'Inventory', 'AddItemByKey',
         {'itemKey': item_key, 'count': 1, 'index': item_index, 'autoEquip': False})
     else:

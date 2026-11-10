@@ -11829,8 +11829,9 @@ void ImGui::EndPopup()
     IM_ASSERT(g.BeginPopupStack.Size > 0);
 
     // Make all menus and popups wrap around for now, may need to expose that policy (e.g. focus scope could include wrap/loop policy flags used by new move requests)
-    if (g.NavWindow == window)
-        NavMoveRequestTryWrapping(window, ImGuiNavMoveFlags_LoopY);
+    // (LAS Recomp: our popups and the on-screen keyboard stop at the top / bottom instead)
+    //if (g.NavWindow == window)
+    //    NavMoveRequestTryWrapping(window, ImGuiNavMoveFlags_LoopY);
 
     // Child-popups don't need to be laid out
     const ImGuiID backup_within_end_child_id = g.WithinEndChildID;

@@ -11,6 +11,7 @@ def main():
     parser.add_argument('--game-dir',type=Path,default=Path('extracted'))
     parser.add_argument('--outdir',type=Path,default=Path('generated'))
     parser.add_argument('--simd',choices=('asm','c'))
+    parser.add_argument('--dyn-base', action='store_true')
     parser.add_argument('--metadata-only',action='store_true')
     args=parser.parse_args()
     plan=inspect_exefs(args.game_dir/'exefs')
@@ -26,6 +27,8 @@ def main():
                  '--adapter',plan['game_id'],'--release',plan['version'],'--adapter-id',plan['code_identity']]
         if module['hle']:
             command+=['--hle',str(tools.parent/'runtime/hle/hle_symbols.txt')]
+        if args.dyn_base:
+            command += ['--dyn-base']
         if args.simd:
             command+=['--simd',args.simd]
         subprocess.run(command,check=True)

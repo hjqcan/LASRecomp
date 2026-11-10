@@ -13,6 +13,9 @@ source = r'''
 #include <initializer_list>
 #include "ui/pad_nav.mm"
 Settings g_settings = {};
+const char *L(const char *s) { return s; }
+void ImGuiIO::ClearEventsQueue() {}
+void ImGuiIO::ClearInputKeys() {}
 int input_menu_family(uint32_t which) { return which % 3; }
 const char *bind_pad_label(int button, int family) {
     static const char *south[] = {"B", "A", "Cross"}, *east[] = {"A", "B", "Circle"};

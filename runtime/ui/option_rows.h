@@ -11,11 +11,17 @@
 #include <string>
 #include <vector>
 
-void opt_begin(const char *id, float scale);
+// split: the page ends with opt_split (a right pane of its own): phones then keep the two panes instead of cards
+void opt_begin(const char *id, float scale, bool split = false);
 void opt_section(const char *title);
 bool opt_toggle(const char *label, bool *v, bool def, const char *desc);
-// wrap: past the last value back to the first (and the other way); false: stops at the ends
+// left / right stop at the ends; A / a click on the row steps on, past the last value back to the first (wrap: false,
+// it stops there too)
 bool opt_choice(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap = true);
+// opt_choice for a setting you need to see (live_preview.h): the value with a chevron - A / a click (or Right) opens the
+// live preview, the game behind a small panel with this row, where it changes. True when the value changed there.
+bool opt_preview(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap = true,
+                 bool preview = true);
 // steps of `step` between lo and hi; fmt formats the value (e.g. "%gx")
 bool opt_slider(const char *label, float *v, float lo, float hi, float step, float def, const char *fmt, const char *desc);
 // whole numbers lo..hi in steps of `step` (holding left / right speeds up); fmt formats it (e.g. "%d rupees"), lo_name
@@ -25,7 +31,8 @@ bool opt_int(const char *label, int *v, int lo, int hi, int step, int def, const
 // a Cosmetics colour row (the shared palette, runtime/cosmetic_colour.h): Default, the named colours, Random, Custom;
 // with Custom, a row under it shows the colour and opens a colour picker. True when the colour changed.
 struct CosColour;
-// slot: the row (COL_SLOT_*): on Default it shows the randomizer seed's colour as "Seed: <colour>" when it has one.
+// slot: the row (COL_SLOT_*): when the randomizer seed has its own colour, the row shows it as "Seed: <colour>",
+// greyed out.
 bool opt_colour(const char *label, CosColour *c, int slot, const char *desc);
 // an action: true when activated
 bool opt_button(const char *label, const char *desc);
@@ -51,6 +58,11 @@ void opt_mark_next(void);
 void opt_warn_next(void);
 void opt_button_next(void);  // the next row (one with a value too, or a text row) as a button
 void opt_own_next(void);  // the next row is the player's own setting, not part of a seed: the summary leaves it out
+// the next row's label and value are already in the menus' language (i18n.h: put together with L_line, or the
+// player's own text): shown as they are
+void opt_shown_next(void);
+// the last row's value: its left edge and the middle of its line (screen coordinates; x 0: it had none)
+void opt_last_value_pos(float *x, float *cy);
 // rows after this sit one step in (+1) or back out (-1): options that belong to the row above
 void opt_indent(int step);
 void opt_end(void);

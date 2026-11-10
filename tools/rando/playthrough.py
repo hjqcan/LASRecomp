@@ -10,7 +10,6 @@ with the seed's logic level bound in).
 """
 import re
 
-KEY_RINGS = {}  # key rings: 'keyring-Dn' -> that dungeon's keys, counted as key-Dn (key_rings.py)
 INSTRUMENTS = ['full-moon-cello', 'conch-horn', 'sea-lilys-bell', 'surf-harp', 'wind-marimba', 'coral-triangle',
                'evening-calm-organ', 'thunder-drum']
 
@@ -69,6 +68,4 @@ def spheres(logic_defs, placements, access, check):
             b = base_item(item)
             if b != item:
                 access[b] = access.get(b, 0) + 1
-            if item in KEY_RINGS:
-                access['key-' + item[8:]] = access.get('key-' + item[8:], 0) + KEY_RINGS[item]
     return out, access, seen

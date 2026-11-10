@@ -114,7 +114,7 @@ static bool kwait(int64_t timeout_ns, const struct timespec *ts) {
 }
 
 // TLS allocation is independent of the page mapping model.
-static uint64_t tls_next = TLS_BASE;
+static uint64_t tls_used;
 
 // ------------------------------------------------------------------ threads
 static uint64_t next_thread_id = 0x50;
@@ -187,8 +187,8 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
     t->cpu.thread = t;
     pthread_mutex_lock(&g_klock);  // (two guest threads may create threads at once: one id and TLS slot each)
     t->id = next_thread_id++;
-    t->tlr = tls_next;
-    tls_next += 0x200;
+    t->tlr = TLS_BASE + tls_used;
+    tls_used += 0x200;
     t->cpu.tpidrro = t->tlr;
     t->anext = g_threads;
     g_threads = t;
@@ -1035,7 +1035,7 @@ void kernel_reset(void) {
     g_syncwaiters = NULL;
     memset(handles, 0, sizeof handles);
     kernel_memory_reset();
-    tls_next = TLS_BASE;
+    tls_used = 0;
     next_thread_id = 0x50;
     g_rt_unwind = 0;
     pthread_mutex_unlock(&g_klock);

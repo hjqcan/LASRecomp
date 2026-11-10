@@ -12,8 +12,9 @@ void bind_settings_save(FILE *file) { (void)file; }
 int main(int argc, char **argv) {
     assert(argc == 3 || argc == 4);
     settings_load();
-    assert(!strcmp(settings_language(), argv[1]));
-    assert(!strcmp(settings_language_name(), argv[2]));
+    if (!strcmp(argv[1], "auto")) assert(g_settings.language == LANG_AUTO);
+    else assert(!strcmp(settings_language(), argv[1]));
+    if (strcmp(argv[1], "auto")) assert(!strcmp(settings_language_name(), argv[2]));
     if (argc == 4) assert(g_settings.game_profile == atoi(argv[3]));
     settings_save();
     return 0;

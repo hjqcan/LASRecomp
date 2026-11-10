@@ -6,18 +6,20 @@
 #include <ctype.h>
 #include <stdint.h>
 
+#include "../i18n_mark.h"
+
 static const struct { const char *tex, *name; } kSeedHashIcons[32] = {
-    {"ItemBomb_00^w", "Bomb"},           {"ItemBoomerang_00^w", "Boomerang"},  {"ItemBottle_00^w", "Bottle"},
-    {"ItemBow_00^w", "Bow"},             {"ItemFookShot_00^w", "Hookshot"},     {"ItemMagicPowder_00^w", "Powder"},
-    {"ItemMagicRod_00^w", "Fire Rod"},   {"ItemOcarina_03^w", "Ocarina"},       {"ItemRocsFeather_00^w", "Feather"},
-    {"ItemShovel_00^w", "Shovel"},       {"CollectInst_00^w", "Cello"},         {"CollectInst_01^w", "Conch"},
-    {"CollectInst_02^w", "Bell"},        {"CollectInst_03^w", "Harp"},          {"CollectInst_04^w", "Marimba"},
-    {"CollectInst_05^w", "Triangle"},    {"CollectInst_06^w", "Organ"},         {"CollectInst_07^w", "Drum"},
-    {"CollectSecretSeashell_00^w", "Seashell"}, {"EqPegasusBoots_00^q", "Boots"}, {"EqPowerBracelet_00^q", "Bracelet"},
-    {"EqShield_00^q", "Shield"},         {"EqSword_01^q", "Sword"},             {"Eqflippers_00^q", "Flippers"},
-    {"TrdYoshiDoll_00^q", "Doll"},       {"TrdRibbon_00^q", "Ribbon"},          {"TrdBananas_00^q", "Bananas"},
-    {"TrdPineapple_00^q", "Pineapple"},  {"TrdHibiscus_00^q", "Hibiscus"},      {"TrdBroom_00^q", "Broom"},
-    {"TrdNecklace_00^q", "Necklace"},    {"TrdLens_00^q", "Lens"},
+    {"ItemBomb_00^w", LN("Bomb")},           {"ItemBoomerang_00^w", LN("Boomerang")},  {"ItemBottle_00^w", LN("Bottle")},
+    {"ItemBow_00^w", LN("Bow")},             {"ItemFookShot_00^w", LN("Hookshot")},     {"ItemMagicPowder_00^w", LN("Powder")},
+    {"ItemMagicRod_00^w", LN("Magic Rod")},  {"ItemOcarina_03^w", LN("Ocarina")},       {"ItemRocsFeather_00^w", LN("Feather")},
+    {"ItemShovel_00^w", LN("Shovel")},       {"CollectInst_00^w", LN("Cello")},         {"CollectInst_01^w", LN("Conch")},
+    {"CollectInst_02^w", LN("Bell")},        {"CollectInst_03^w", LN("Harp")},          {"CollectInst_04^w", LN("Marimba")},
+    {"CollectInst_05^w", LN("Triangle")},    {"CollectInst_06^w", LN("Organ")},         {"CollectInst_07^w", LN("Drum")},
+    {"CollectSecretSeashell_00^w", LN("Seashell")}, {"EqPegasusBoots_00^q", LN("Boots")}, {"EqPowerBracelet_00^q", LN("Bracelet")},
+    {"EqShield_00^q", LN("Shield")},         {"EqSword_01^q", LN("Sword")},             {"Eqflippers_00^q", LN("Flippers")},
+    {"TrdYoshiDoll_00^q", LN("Doll")},       {"TrdRibbon_00^q", LN("Ribbon")},          {"TrdBananas_00^q", LN("Bananas")},
+    {"TrdPineapple_00^q", LN("Pineapple")},  {"TrdHibiscus_00^q", LN("Hibiscus")},      {"TrdBroom_00^q", LN("Broom")},
+    {"TrdNecklace_00^q", LN("Necklace")},    {"TrdLens_00^q", LN("Lens")},
 };
 
 // The five icons (indices into kSeedHashIcons) of a seed ID: FNV-1a over its characters (dashes, spaces and case

@@ -1,0 +1,186 @@
+04B Q1 grey block top: No, just a wall top
+04B Q2 chest boxed by orange/blue blocks: a crystal switch, it can be anywhere in the dungeon
+04B Q3 corridor(1) <-> right floor(2): 1->2 only IF red/orange blocks down and blue up; never 2->1
+04C Q1 steps onto platform: Yes, free
+04H Q1 stairs -> locked door: Yes, free walk
+03C Q1 reach stairs: 4 key blocks in total, the pathway wraps around into the room above (02x)
+03C Q2 hooded figure: just an enemy, blocks nothing
+06C Q1 west doorway: ordinary, walk in and out
+06C Q2 chest: blue blocks must be down
+06G Q1 south door: ordinary doorway from the boss room; in vanilla you kill the boss, walk through, it closes behind you
+KC stairs 03C<->08H: pretty sure feather both ways. For side-view passage questions, send one screenshot of the side room
+KC stairs 04G<->04B: free both ways
+01A: one area, free walk S one-way door <-> E steps
+AT passage 04C<->06C (Thwomp, 07A/07B): feather both ways
+AT passage 05C<->05D (water, 08A/08B): just the flippers (play-tested)
+CM passage 01C<->08E (08A/08B): feather both ways
+CM passage 02E<->03F (05A/05B): water room, needs flippers
+CM passage 03B<->05G (07A/07B): feather both ways
+CM passage 03E<->05E (06A/06B): feather AND hookshot
+FS passage 04B<->04H (01E/01F): feather both ways
+FS passage 04F<->05D (01C/01D): feather both ways
+FS passage 05C<->08B (01A/01B): feather both ways
+ET passage 04C<->04G (08G): crystal switch; red blocks must be down (or able to be put down) to get from the stairs into the rest of the room
+TR passage 01E<->05G (02F/02G): feather + hookshot
+TR passage 02H<->04E (02B/02C): feather both ways
+TR passage 03B<->06E (01A/01B): feather + magic rod
+TR passage 03D<->06F (01G/01H): feather + magic rod
+TR passage 05D<->08H (08F/08G): feather both ways
+TR passage 06H<->08E (08B/08C): feather both ways
+02C chest: reached freely only from the doorway immediately left of it (W upper, from 02B); no other way to it in this room
+03B: west door, steps, north door all free (one area)
+03D: 2/3 bombable walls; 1 (north steps) <-> 2/3 only with pegasus boots AND feather (long jump) or rooster + companions inside (= rs-long-jump), either way
+03G crystal switch: sword, boomerang, hookshot, bombs, arrows hit it; it flips blocks for the entire dungeon
+07B: one area, all free
+07G: boss room (Slime Eye); north shutter to 06G instrument opens after the boss
+08G: east door -> Nightmare door free with the Nightmare Key
+AT 04B stairs -> 04AU = boss room (Angler Fish in the water): boss needs flippers + sword; killing it opens 04B's north shutter (to the instrument)
+AT 04E: right (floor one area, water needs flippers)
+AT 04F chest pen: only from the south path; the ledge above is railed off, no jump down either way (logic's B->A drop is wrong)
+AT 04F stairs: from the south needs the key block; also a path from the left (above the chest pen, under the ledge) walks in freely if you come from that side (W doorway)
+AT side room 06B (under 04F stairs): the room a key falls into from above; retrieved later with feather + flippers
+AT 04G: right (shallow walkable incl. north opening, deep needs flippers)
+AT 05B: right (platform+upper path one area, lower strip separate)
+AT 05C: right (top-left pocket cut off, chest on open floor)
+AT 05D: stairs behind key block, needs a small key from the SW doorway
+AT 05D chest on water ledge: flippers OR rooster
+AT 05E: east walkway railed off, no jump down into the shallow water (logic's B->A wrong). PATTERN: post rails block ledge drops
+AT 05F: pit splits it. Rooster moves freely; feather+boots long jump crosses N<->S or E<->W but not both (blocks force a straight run one direction). Logic's one-area is wrong
+AT 05G chest: bombs (blow the cracked block below it)
+AT 06C: stairs pen (2) -> top floor (1) jump down one way; no way from 1 to 2
+AT 06D: rules right; the small ledge (2, Link's spot, west) needs flippers
+AT 06E: raised floor (1) free walking (from the shallow water); east walkway (3) railed off entirely
+AT 06F chest: flippers OR rooster (hookshot onto the pot does NOT work). PATTERN: pots aren't hookshot routes (see BG 02D)
+AT 07D/07E/07F: right (shallow corridor walkable, joins walkway only at steps in 07D and 07F)
+AT 08E chest: flippers NOT needed; break crystals with sword or bombs
+AT 08D: right (entrance free both ways, light water to north free)
+CM 01C: doorway -> stairs needs crystals broken (sword/bombs)
+CM 02E: hookshot onto the post makes a bridge from the ledge -> both ways once made; rooster also works (both ways)
+CM 02G chest: hookshot to the post below it OR rooster (from below across the pit); logic's one-area is wrong
+CM 03G: pit 2 (to S doorway) feather or rooster; pit 3 (east) feather/rooster/hookshot; chest also by hookshot from the left
+CM 03H: chest needs hookshot; from ledge 3 you can hookshot across the pit (to 2 side)
+CM 04F: right (shallow channel, walk out north)
+CM 05E: key block (3) closes the way to the mini-boss room (05D); after killing it, enter by the NW shutter (4) onto the top floor -> stairs (1). Pot gap is one way: top (1 side) -> lower floor only. From below you must loop through the mini-boss room
+CM 06E: crystal irrelevant. Main floor <-> NE path: hookshot onto post 2, only from the south across the pit, or rooster. Feather / feather+boots do NOT work. Rooster can't get the pot on the ledge (4)
+CM 06D: user: '2 and 4 decorative, feather hookshot or rooster otherwise for rest of room' (statues decorative? -> hookshot target unclear; crossing = feather/hookshot/rooster)
+CM 06C: right (ledge -> floor by hookshot onto chest, one way; chest free from floor)
+CM 08F: right (one area)
+CM 08G: upper-left ledge (2) only from another room; chest from the ledge by hookshot or rooster
+CM 02D: user says this looks like the boss room (Slime Eel arena) - the 'bombable walls' in the logic are probably the eel's wall holes; treat as boss room, not bomb doors
+CM 03B: free
+CM 04G: button (1) opens the east shutter (3); the middle block (2) blocks a path depending on the direction it's pushed
+CM 05G: right (all free)
+CM 08E: right (all free)
+CM 07E: right
+FS 02A, 02H, 03D: right
+FS 03H, 04E: right. FS 04F WRONG: has an upper (north) door, plus a stairwell under an elephant statue, plus the south door (logic only has the south shutter)
+FS 05C: right. FS 05E: right (Nightmare door N, free S). FS 05F: user sees same as 05E (boss key door N, free S) - my 05F shot may actually be 05E; logic says N shutter, S bombable -> recheck 05F shot
+FS 08C: right. FS 06F per picture: east door too, south not key-locked, north key-locked not bombable -> that matches 07F's doors; my 06F shot is probably 07F (placement landed one room off). FS 08B: wrong (details pending)
+FS 08B: stairs inside a ring of blue blocks - free but blue blocks must be down
+FS 08D, 08E, 08F: right
+FS 03A, 07F: right. FS 04A: needs blue blocks down to get to the pots for the north pot door
+FS 05A: east doorway <-> north opening both ways when blue blocks are down (not a one-way drop)
+FS 04H: right (SE corner drop-in only; platform/stairs free via steps)
+FS 07G: chest strip reached from the raised ledge in the room south (vanilla); from the strip jump down into the main room one way (logic right)
+FS 02A (my "06D" shot was really 02A): only way in is the south door (4); the other stairs (top) are an exit; chest by hitting the crystal switch and climbing the steps. NOTE shot may not match logic's 06D
+FS 06E: right (hookshot/feather/rooster/feather+boots across the pit)
+FS 05H: right
+FS 06C: right
+FS 07C: right
+FS 03E: instrument via steps free (logic's unreachable area B is wrong/irrelevant)
+FS 08G: blue blocks down AND feather joins north shutter, east path and lower-left pocket
+FS 04B/04C/04D: all railed - top walkway, middle room, bottom floor separate (no drops; logic's jump-downs wrong). PATTERN again: rails
+FS 03B: elephants (2) can't be lifted. Chest area reached from the W entrance (a single-tile doorway) or from the east strip (4) - so 4 connects to the chest area. Crystal switch doesn't affect this room
+FS 05B: west side <-> east side when orange blocks are down
+FS 05D: side-view room on the grid - needs feather (NOT rooster) between exits and stairs
+FS 06B: right
+FS 07B: steps to both alcoves free; elephants block the north door until thrown (bracelet L2)
+FS water strip 03G-06G: 03G chest needs pots broken: L2 sword, bombs, or bracelet L1. Water channel does NOT need flippers (walkable). Channel reachable by jumping down from the key-block ledge in 05G (if you have the key, e.g. arriving from the north entrance in shuffle). Stairs in 06G free up and down
+ET 01F, 01G, 02A: right
+ET 02H, 03H, 04A: right
+ET 04G: right
+ET 04F: north opening blocked by a pushable block that can only be pushed from the north (southward) -> one way N->S. The other north path (crystal door) is NOT gated on blue up/down: you can jump off the ledge onto the blue blocks to proceed
+ET 05C: a lower area you can leave east from, plus a railed upper ledge with its own W and E passages (two separate areas, not one)
+ET 01C, 08B: right. ET 01B: has two south openings (logic says no doors) - my 01B shot may be 05B's view; check
+ET 02F: jump 2 (right floor) -> 1 (walkway) one way; get to 2 by going up the steps (3) and hookshotting the block across
+ET 02G: instrument room, free walk from S shutter up the steps (logic's unreachable B wrong/irrelevant)
+ET 02D: SE exit needs orange down (right); grey blocks (2) = lever puzzle, easy - treat the west opening as open
+ET 02B: from the W door (3) or the cracked spot (4) you can get to the east strip (2), but not back from 2 to 3/4 (one way)
+ET 02E: left (key block, needs small key) and right (S door) parts joined when blue blocks are down
+ET 03E: right
+ET 04C: crystal in pen hit by L2 sword, boomerang, arrows, bombs (from outside). Key block lets you into the stairs area (2) while orange blocks are up; if orange can't be put down, the key is the only way through the room
+ET 04D: steps (2) up to the platform are blocked by the key block (in both 04C and 04D). North exit (1) NOT open - blocked by rails
+ET 02C: low (down) blocks are walkable, raised ones only if you land on them from an upper floor. Orange down: walk east<->west along the orange row (3); south entrances walk in but get stuck at the raised blue. Blue down: east<->west along the blue row (2) and both north entrances, but orange (up) blocks the way between. Complicated room
+ET 03C: east area -> main floor drop one way (right); to get through the north part with blue blocks UP needs feather or rooster
+ET 03D: stairs connect directly to a lower floor (always reachable from them). Orange down: you can go up (north-east exit). Blue down: get the chest and go south. The switch here is only hittable when blue is down. (West area connection not stated)
+ET 03F: right (raised NE floor -> lower floor one way)
+ET 03G: blocks seal the shutter pocket (3) from the lower floor; reach 3 only by dropping down from 1; 4 can never get to 1 or 3
+ET 03A: 03B is sealed from the 03A floor (doors 1 and 2) by the block columns; the corridor between the columns (3) is reached from other rooms, incl. a north bombable wall
+ET 04B: lower floor (5) can't reach the upper-left pocket (1), north corridor (3) or east tiled pocket (4); those are reached from connecting rooms only
+ET 03B: corridor between the block columns only via the bombable walls (N and S); separate from the pillar area
+ET 05D: drop walkway -> lower floor yes; chest free if you reach the walkway from below (its south end) or land on it from an upper floor
+ET 06D: switch hit by ranged items, or the sword by walking over the spikes and taking damage. You land on the walkway (2) by dropping from upper floors (vanilla); walkway -> floor drop not stated
+ET 05B: blue column splits west from east (blue down to cross); south exits need their colour down
+ET 05A: right (west walkway -> main floor drop one way)
+ET 06A 06B 06C 07A 07B 07C 07D 08A 08C 08D: general ET rules cover them (lowered blocks walkable, raised line splits, side walkways drop one way to the floor, crystals hit with ranged items or L2 sword); no exceptions
+TR 01D, 02A, 02H: right
+TR 03B, 04B: right. TR 03D: not one area - an east<->west path, and the Nightmare (boss) door is reachable only from the stairs (middle path cut off from the E-W path)
+TR 06A, 06B, 06H: right
+TR 07C, 05F: right. TR 06F: mostly right, but going north needs the lava-paving machine (in the neighbouring part of the big lava room)
+TR 02D: right (feather/rooster each gap both ways)
+TR 02E: chest reachable from the bottom block (3) by hookshot; main floor (2) reachable from 3 or the lava strip (4) - rooster only; 3 can never be reached from 2 or 4
+TR 03A: right
+TR 03E: right
+TR 04C: floor/lava crossing right; the room's chest spawns when you stand on block 2 and shoot the statue (3) with an arrow (chest needs arrows)
+TR 05C: west (1) -> east (3) yes; east -> west never (no hookshot/feather back)
+TR 05C: west -> east by feather or rooster
+TR 05D: stairs corridor sealed from the upper floor by the block row (logic's split right)
+TR 06E: the lava-paving machine (3) is what gets you between the areas across the lava; reaching/using it needs nothing (walk to it from the pocket)
+TR 06E (cont): the lava machine (3) there also connects to the other openings on that screen (it paves to several exits, not just one area)
+TR 07B: right
+TR 07D: covered by the RapidBowWow958 fix/test (north tongue <-> floor = feather or rooster)
+TR 07G: crossed only by coming from the east door and using the machine (3) (pit-paving), OR the rooster. Statue hookshot W->E is wrong
+TR 07F: right
+TR 04G, 05G, 06C: right
+TR 06G, 07A, 07H: right. 07A and 07H are mini-boss rooms - their shutters depend on the mini-boss souls when that option is on
+TR 03F: railed off - no drop from upper walkway to floor
+TR 04D: steps free between floor and NE ledge; key block gates the ledge path (logic's feather/rooster wrong)
+TR 04E (complicated): steps 3/4 lead up to torches, but the upper ledge there can't be reached from this room. Key block (1) blocks the stairs (2). Blocks beside the stairs can be hookshotted from the upper ledge (the one the torches at 3/4 sit on). That upper ledge is reached by entering from the room to the west onto its ledge (upper-left, vanilla). So to reach 1 and 2 you must arrive on the upper-left ledge (W ledge doorway), NOT via the west door (5) on the floor
+TR 04F: pit crossed only by feather or rooster (no boots/hookshot needed or usable); key block (4) blocks an opening in the lower left
+TR 08E: stairs appear after killing the room's enemies (rock pile is decoration)
+CD 04C, 04F: right. CD 04B: boss room, its exit gated by defeating the boss (needs the boss soul when souls are on)
+CD 05B, 05C, 05D: right
+CD 05E, 05F, 06C: right
+CD 07D, 07F: right. CD 06E: mini-boss room; west shutter needs the mini-boss killed (or its soul)
+CD 07C, 08D, 08F: right
+CD 06D, 06F, 07E, 08E: walk freely - colour tiles are floor; pits/puzzle don't gate the doors
+TC 03G, 04G, 05G: right
+TC 05F, 06G, 07C: right
+TC 07D, 08B, 08C: right
+TC 04C/04D: one area (right)
+TC 05A, 06A: right
+TC 06C, 06D, 06E: right
+TC 06B, 07E: right. Tail Cave complete
+BG 02B: right. BG 04B: mini-boss room (shutter gated by mini-boss / soul). BG 04G: boss room (gated by boss / soul)
+BG 07B, 07D: right. BG 04F: also has a west door opening (SW corner) and a north door opening (NW corner) besides the east shutter
+BG 07G, 08D: right. BG 07F: blocks separate the west opening's pocket from the rest (S and E openings); nothing crosses. Killing the room's enemies drops a key into the west pocket, which must be reached from the west opening (another room). Two areas
+BG 02C/02E/02F: logic right, BUT pots block some traversal - full traversal within the room needs a way to break/lift pots (L2 sword, bombs, bracelet...)
+BG 07E, 08E: right. BG 07C: only north and south openings (logic's W locked door / E shutter wrong for this shot - check the shot is really 07C); chest on the west side blocked by pots - needs pot breaking
+CM 01E, 04H: right. CM 02F: split by blocks; which directions work needs a quick play test (LIVE CHECK)
+CM 05F, 01F, 01D: right. The tile rooms (01B 01F 04H 05D 05F) are the Master Stalfos mini-boss rooms; vanilla fights him 4 times, in rando only once for his item, in his 4th room (the one with 4 tiles)
+AT 02D, 02E, 03B: right. NOTE AT 02D: the floor-tile puzzle that opens the stairs - if logic requires it, the room showing the solution (same dungeon) must be reachable first
+AT 03D: bottom-left (south-west opening) blocked by a rail. AT 03E: mini-boss room (shutters gated by mini-boss/soul). AT 07C: free traversal EXCEPT the NW corner with steps, which connects to the neighbouring room with real access to the boss door (the SW opening in vanilla only shows it, can't reach)
+KC 05G: openings N/S/E/W, all with keys (locked/key blocks) - logic only has N locked door. KC 02B: no east shutter - it's a bombable wall. ET 01B: stairs plus 2 south openings (logic: no doors)
+FS 06F (real shot), BG 08C: right. FS 05F: right but it's a mini-boss room (shutters gated by mini-boss/soul)
+CM 03D, 06F, 07F: right (07F: no crystals blocking)
+TR 03H: mini-boss room. TR 06D: only traversal is the lava-paving machine (06E) OR rooster - no feather/hookshot. CM 03F: north and south openings reachable without flippers (walk); only the dive spot needs flippers
+TR 03C (drawing): A -> C by hookshot; A and C -> floor B drop one way
+TR 03G (drawing): the 'pit' tiles are CRACKED FLOOR - walkable (turn to pits if you stand too long). B <-> C walk freely. Ledge A: one-way hop down onto the floor; A only reachable from its own doorway. PATTERN: cracked floor tiles read as pits by the logic
+TR 05B (drawing): raised A drops to floor B one way
+TR 07E (play-tested): the 'pits' are lava pockets. South and east shutters open only by pressing the switch under a pot -> needs a way to break/lift pots. West door always open. North ledge A -> floor B one way
+TR 08A: chest free, nothing blocks it (logic right)
+CD 04G: boss room (blob boss); shutters gated by boss/soul
+CD 05G: west shutter opens by killing the 3 enemies (right)
+CM 02F (play-tested): N (1) and E (3) free between each other; 1/3 -> S (2) one way (push blocks); 2 can't reach 1 or 3
+CM 03C: one area; shutters open by killing enemies, sword is enough
+CM 07D: all free (logic right). ALL ROOMS REVIEWED

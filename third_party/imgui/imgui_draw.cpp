@@ -3927,6 +3927,25 @@ static inline const char* CalcWordWrapNextLineStartA(const char* text, const cha
 
 #define ImFontGetCharAdvanceX(_FONT, _CH)  ((int)(_CH) < (_FONT)->IndexAdvanceX.Size ? (_FONT)->IndexAdvanceX.Data[_CH] : (_FONT)->FallbackAdvanceX)
 
+// LAS Recomp: Japanese and Chinese have no spaces between words: a line may break before or after any of their
+// characters, except before closing punctuation (、。」ー small kana...) and after opening punctuation (「（...).
+// (Korean keeps its spaces: it wraps at them, as English does.)
+static bool LasIsCJK(unsigned int c) { return (c >= 0x3000 && c <= 0x30FF) || (c >= 0x3400 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFF00 && c <= 0xFFEF); }
+static bool LasNoBreakBefore(unsigned int c)
+{
+    static const char* closing = "、。，．：；？！）」』】〉》〕ー・…ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ％";
+    if (c < 0x80) return ImCharIsBlankW(c) || strchr(".,:;!?)]}%", (int)c) != NULL;
+    for (const char* p = closing; *p; ) { unsigned int k; p += ImTextCharFromUtf8(&k, p, NULL); if (k == c) return true; }
+    return false;
+}
+static bool LasNoBreakAfter(unsigned int c)
+{
+    static const char* opening = "（「『【〈《〔“‘";
+    if (c < 0x80) return strchr("([{", (int)c) != NULL;
+    for (const char* p = opening; *p; ) { unsigned int k; p += ImTextCharFromUtf8(&k, p, NULL); if (k == c) return true; }
+    return false;
+}
+
 // Simple word-wrapping for English, not full-featured. Please submit failing cases!
 // This will return the next location to wrap from. If no wrapping if necessary, this will fast-forward to e.g. text_end.
 // FIXME: Much possible improvements (don't cut things like "word !", "word!!!" but cut within "word,,,,", more sensible support for punctuations, support for Unicode punctuations, etc.)
@@ -3951,6 +3970,7 @@ const char* ImFont::CalcWordWrapPositionA(float scale, const char* text, const c
     const char* word_end = text;
     const char* prev_word_end = NULL;
     bool inside_word = true;
+    unsigned int prev_c = 0;  // (LAS Recomp: CJK line breaks)
 
     const char* s = text;
     IM_ASSERT(text_end != NULL);
@@ -3993,6 +4013,13 @@ const char* ImFont::CalcWordWrapPositionA(float scale, const char* text, const c
         }
         else
         {
+            // LAS Recomp: a break between two characters when either is Japanese / Chinese (as a new word starting)
+            if (inside_word && word_width > 0.0f && (LasIsCJK(c) || LasIsCJK(prev_c)) && !LasNoBreakBefore(c) && !LasNoBreakAfter(prev_c))
+            {
+                prev_word_end = word_end;
+                line_width += word_width + blank_width;
+                word_width = blank_width = 0.0f;
+            }
             word_width += char_width;
             if (inside_word)
             {
@@ -4008,6 +4035,7 @@ const char* ImFont::CalcWordWrapPositionA(float scale, const char* text, const c
             // Allow wrapping after punctuation.
             inside_word = (c != '.' && c != ',' && c != ';' && c != '!' && c != '?' && c != '\"');
         }
+        prev_c = c;
 
         // We ignore blank width at the end of the line (they can be skipped)
         if (line_width + word_width > wrap_width)

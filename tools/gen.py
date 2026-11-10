@@ -1,6 +1,6 @@
 """Generate C for a whole NSO module.
 
-Usage: gen.py <name> <nso> <base> <outdir> [--hle hle_symbols.txt] [--chunk N] [--simd asm|c]
+Usage: gen.py <name> <nso> <base> <outdir> [--hle hle_symbols.txt] [--chunk N] [--simd asm|c] [--dyn-base]
 
 --simd: FP/SIMD/CRC32 as AArch64 inline asm (default on arm64 hosts) or portable C (default elsewhere).
 """
@@ -26,7 +26,8 @@ import capstone
 from unicorn import arm64_const as A
 
 from analyze import eh_frame_functions
-from lifter import Insn, Lifter, Unsupported, bits, decode_bit_masks, emit_asm_batch, hx, sext
+import lifter
+from lifter import CANON, gaddr, Insn, Lifter, Unsupported, bits, decode_bit_masks, emit_asm_batch, hx, sext
 from nso import Nso, R_AARCH64_RELATIVE
 
 SCRATCH_MEM = 0x7300000000
@@ -90,7 +91,7 @@ class Module:
                 if not self._unsupported[byte] & bit:
                     self._unsupported[byte] |= bit
                     self.stats['unsupported'] += 1
-                ins = Insn('trap', f'rt_udf(c, {hx(a)}); /* {e} */')
+                ins = Insn('trap', f'rt_udf(c, {gaddr(a)}); /* {e} */')
             if len(self.cache) >= self.LIFT_CACHE_LIMIT:
                 self.cache.clear()
             self.cache[a] = ins
@@ -960,10 +961,10 @@ class Module:
             t = ins.target
             if self.in_text(t):
                 refs.add(t)
-                return [f'c->x[30] = {hx(a + 4)}; {fname(t)}(c);']
-            return [f'c->x[30] = {hx(a + 4)}; c->pc = {hx(t)}; rt_dispatch(c);']
+                return [f'c->x[30] = {gaddr(a + 4)}; {fname(t)}(c);']
+            return [f'c->x[30] = {gaddr(a + 4)}; c->pc = {gaddr(t)}; rt_dispatch(c);']
         if k == 'blr':
-            return [f'c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; rt_dispatch(c);']
+            return [f'c->pc = {ins.target}; c->x[30] = {gaddr(a + 4)}; rt_dispatch(c);']
         if k == 'br':
             if keep_frame:
                 return [f'c->pc = {ins.target}; rt_dispatch(c); {return_code}']
@@ -980,7 +981,7 @@ class Module:
             return out
         if tables and (end - entry) // 4 > self.MAX_OPTIMIZED_DISPATCH_INSNS:
             out.insert(0, '__attribute__((optnone))')
-        out.append(f'    FN_ENTER({hx(entry)});')
+        out.append(f'    FN_ENTER({gaddr(entry)});')
         setjmps, longjmps = self.nonlocal_jump_targets()
         checkpoints = {a for a in range(entry, end, 4) if setjmps and
                        self.lift(a).kind == 'bl' and self.lift(a).target in setjmps}
@@ -989,8 +990,8 @@ class Module:
             return_code = 'rt_guest_jump_leave(jump_scope); return;'
             out.append('    RtGuestJumpScope *const jump_scope = rt_guest_jump_enter(c);')
             out.append('    if (setjmp(jump_scope->host)) {')
-            cases = ' '.join(f'case {hx(a+4)}: goto L_{a+4:x};' for a in sorted(checkpoints))
-            out.append(f'        switch (c->pc) {{ {cases} default: rt_udf(c, c->pc); }}')
+            cases = ' '.join(f'case {case_key(a+4)}: goto L_{a+4:x};' for a in sorted(checkpoints))
+            out.append(f'        switch ({switch_on("c->pc")}) {{ {cases} default: rt_udf(c, c->pc); }}')
             out.append('    }')
             labels = set(labels) | {a + 4 for a in checkpoints}
         elif entry in longjmps:
@@ -1008,7 +1009,7 @@ class Module:
             if entry <= t < end:
                 return f'goto L_{t:x};'
             if not self.in_text(t):
-                call = f'c->pc = {hx(t)}; '
+                call = f'c->pc = {gaddr(t)}; '
                 return call + ('rt_dispatch(c); ' + return_code if checkpoints else
                                '__attribute__((musttail)) return rt_dispatch(c);')
             refs.add(t)
@@ -1045,7 +1046,7 @@ class Module:
                 out.append(f'L_{a:x}:;')
             if a - self.base in RANDO_CODE:  # randomizer patch site: the active seed picks the instruction
                 flush()
-                out.append(f'    {{ extern uint32_t rando_word(uint64_t); uint32_t rw = rando_word({hx(a)});')
+                out.append(f'    {{ extern uint32_t rando_word(uint64_t); uint32_t rw = rando_word({gaddr(a)});')
                 first = True
                 for w in RANDO_CODE[a - self.base]:
                     v = self.lifter.lift(w, a)
@@ -1062,13 +1063,13 @@ class Module:
                     raise ValueError(f'hook {a:#x}: instruction {w:#010x}, expected {word:#010x}')
                 body = ' '.join(self.render_single(ins, a, jump, refs, return_code, bool(checkpoints)))
                 jumps = ' '.join(f'else if (h_ == {k + 2}) goto L_{t:x};' for k, t in enumerate(targets))
-                out.append(f'    {{ int h_ = rt_hook(c, {hx(a)}); if (h_ == 0) {{ {body} }} {jumps} }}'
+                out.append(f'    {{ int h_ = rt_hook(c, {gaddr(a)}); if (h_ == 0) {{ {body} }} {jumps} }}'
                            f'  /* {a:#x}: hook (runtime/hle/hooks.c) */')
                 last = 'op'
                 continue
             if a in PATCHES:  # hand-written replacement for one instruction (tools/patches.py)
                 flush()
-                out.append('    ' + PATCHES[a](self, a))
+                out.append('    ' + rebase_patch(PATCHES[a](self, a)))
                 last = 'op'
                 continue
             k = ins.kind
@@ -1094,22 +1095,22 @@ class Module:
             elif k == 'bl':
                 t = ins.target
                 if a in checkpoints:
-                    out.append(f'    rt_guest_jump_mark(jump_scope, c->x[0], c->sp, {hx(a+4)});')
+                    out.append(f'    rt_guest_jump_mark(jump_scope, c->x[0], c->sp, {gaddr(a+4)});')
                 if self.in_text(t):
                     refs.add(t)
-                    out.append(f'    c->x[30] = {hx(a + 4)}; {fname(t)}(c);')
+                    out.append(f'    c->x[30] = {gaddr(a + 4)}; {fname(t)}(c);')
                 else:
-                    out.append(f'    c->x[30] = {hx(a + 4)}; c->pc = {hx(t)}; rt_dispatch(c);')
+                    out.append(f'    c->x[30] = {gaddr(a + 4)}; c->pc = {gaddr(t)}; rt_dispatch(c);')
             elif k == 'blr':
-                out.append(f'    c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; rt_dispatch(c);')
+                out.append(f'    c->pc = {ins.target}; c->x[30] = {gaddr(a + 4)}; rt_dispatch(c);')
             elif k == 'br':
                 jt = tables.get(a)
                 if jt == 'all':
                     out.append(f'    c->pc = {ins.target}; goto L_dispatch;')
                     continue
                 if jt:
-                    cases = ' '.join(f'case {hx(t)}: {jump(t)}' for t in jt)
-                    out.append(f'    switch ({ins.target}) {{ {cases} default: break; }}')
+                    cases = ' '.join(f'case {case_key(t)}: {jump(t)}' for t in jt)
+                    out.append(f'    switch ({switch_on(ins.target)}) {{ {cases} default: break; }}')
                     out.append(f'    c->pc = {ins.target}; goto L_dispatch;')
                     continue
                 tail = 'rt_dispatch(c); ' + return_code if checkpoints else '__attribute__((musttail)) return rt_dispatch(c);'
@@ -1121,13 +1122,15 @@ class Module:
         if end - 4 in checkpoints:
             out.append(f'L_{end:x}:;')
         if last not in ('b', 'br', 'ret', 'trap'):
-            out.append('    ' + jump(end) if end < self.hi else f'    rt_udf(c, {hx(end)});')
+            out.append('    ' + jump(end) if end < self.hi else f'    rt_udf(c, {gaddr(end)});')
         if all_labels:
             out.append('L_dispatch:')
-            cases = ' '.join(f'case {hx(t)}: goto L_{t:x};' for t in range(entry, end, 4))
-            out.append(f'    switch (c->pc) {{ {cases} default: break; }}')
+            cases = ' '.join(f'case {case_key(t)}: goto L_{t:x};' for t in range(entry, end, 4))
+            out.append(f'    switch ({switch_on("c->pc")}) {{ {cases} default: break; }}')
             out.append('    rt_dispatch(c); ' + return_code if checkpoints else '    __attribute__((musttail)) return rt_dispatch(c);')
         out.append('}')
+        if lifter.DYN_BASE and any(GB_USE.search(l) for l in out):
+            out.insert(1, '    const uint64_t GB = lasgame_gb;')
         self._refs = refs
         return out
 
@@ -1136,6 +1139,23 @@ from rando_profiles import validate_catalog
 # tools/patches.py, for the main module only (its sites are main addresses): loaded in main() once the game version
 # is known from the NSO's build ID (tools/game_addresses.py; an unknown build ID stops the generator)
 HOOKS, PATCHES = {}, {}
+
+# --dyn-base (lifter.gaddr): jump table and dispatch switches compare window offsets, so their case labels stay
+# constants; the hand-written patches' code addresses move with the window like the lifted ones.
+GB_USE = re.compile(r'\bGB\b')
+PATCH_ADDR = re.compile(r'\b0x(7[0-3][0-9a-f]{8})ull\b')
+
+
+def case_key(t):
+    return hx(t - CANON) if lifter.DYN_BASE else hx(t)
+
+
+def switch_on(expr):
+    return f'{expr} - GB' if lifter.DYN_BASE else expr
+
+
+def rebase_patch(code):
+    return PATCH_ADDR.sub(lambda m: gaddr(int(m.group(1), 16)), code) if lifter.DYN_BASE else code
 
 import json as _json
 import os as _os
@@ -1178,7 +1198,10 @@ def main():
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--simd', choices=('asm', 'c'),
                     default='asm' if platform.machine().lower() in ('arm64', 'aarch64') else 'c')
+    ap.add_argument('--dyn-base', action='store_true',
+                    help='Android: guest addresses relative to the window the runtime picks (lifter.gaddr)')
     args = ap.parse_args()
+    lifter.DYN_BASE = args.dyn_base
 
     if args.profile == 'generic':
         HOOKS.clear()
@@ -1269,6 +1292,8 @@ def main():
         text = ['#include "cpu.h"\n' + ('#include "simd.h"\n' if m.lifter.sc else '')]
         if any('RtGuestJumpScope' in line for line in body):
             text.append('#include "guest_jump.h"\n')
+        if args.dyn_base:
+            text += ['extern __attribute__((visibility("hidden"))) uint64_t lasgame_gb;\n']
         text += [f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs)]
         text += [f'void {sanitize(hle[a])}(Cpu *c);\n' for a in sorted(set(hle) & set(fns))]
         text += ['\n'.join(body), '\n']
@@ -1294,6 +1319,11 @@ def main():
         f.write(f'const uint64_t {args.name}_fn_count = {len(order)};\n')
         f.write(f'const char {args.name}_build_id[] = "{m.nso.build_id}";\n')
         f.write(f'const char {args.name}_build_id_full[] = "{m.nso.build_id_full}";\n')
+        if args.dyn_base:  # (in each module's table, weak: main and sdk share one; the table keeps CANON addresses)
+            f.write("// the guest window's start (--dyn-base): the runtime sets it before any game code runs\n")
+            f.write(f'__attribute__((weak, visibility("hidden"))) uint64_t lasgame_gb = {hx(CANON)};\n')
+            f.write('__attribute__((weak, visibility("default"))) void lasgame_set_guest_base(uint64_t gb) '
+                    '{ lasgame_gb = gb; }\n')
         write_if_changed(os.path.join(args.outdir, f'{args.name}_table.c'), f.getvalue())
     if args.name == 'main':  # (what this code was generated from: the Makefile's game code library id, GAMELIB_BUILD_ID)
         write_if_changed(os.path.join(args.outdir, 'main_build_id.txt'), game_addresses.VERSIONS[version][1] + '\n')

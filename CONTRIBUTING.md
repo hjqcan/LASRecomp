@@ -8,6 +8,8 @@ contributions are all welcome.
 > anything in between are equally welcome - what matters is that a change works, is tested, and follows the rules
 > below.
 
+If you work with a coding agent, point it at [AGENTS.md](AGENTS.md) too.
+
 ## The one hard rule: no Nintendo files
 
 Nothing owned by Nintendo may ever be committed or attached to an issue or pull request:
@@ -44,6 +46,13 @@ In short: set up your own supported game files on the start screen, `make gen` o
 them, then `make -j10`. The randomizer needs its Python environment in
 `third_party/LAS-Randomizer/venv`.
 
+## More documentation
+
+- [docs/architecture.md](docs/architecture.md): how the parts fit together, from the game files to the renderer
+- [docs/debug-hooks.md](docs/debug-hooks.md): the `LARECOMP_*` environment variables for testing and debugging
+- [docs/vulkan-gpu-defaults.md](docs/vulkan-gpu-defaults.md): Vulkan settings that differ per GPU, and their switches
+- [docs/save-format.md](docs/save-format.md): the save file layout and checksums
+
 ## Project layout
 
 - `tools/gen.py` - the recompiler: translates the game's executables into C (`generated/`, never committed).
@@ -73,10 +82,7 @@ them, then `make -j10`. The randomizer needs its Python environment in
 
 - Build cleanly on your platform (`make -j10`). If you touch shared rendering code, say which backend you tested -
   a Metal change usually needs a Vulkan counterpart and the other way round.
-- NSZ importer/version profiles: `python tools/test_import_game.py -v` uses only synthetic archives and needs
   `zstandard==0.25.0` and `cryptography==50.0.2`. It runs on Windows, Linux and macOS in CI; no game files or keys are needed.
-- Encrypted NSP/NCA: `python tools/test_nsp_import.py -v` checks synthetic AES-XTS/CTR/BKTR content, CNMT hashes, key errors and metadata selection. Fixture keys are arbitrary bytes, never console keys.
-- Gamecards: `python tools/test_xci_import.py -v` checks secure HFS0 selection, XCI/XCZ inputs, hashes, bounds and version-slot rejection using synthetic archives.
 - Compilation: `python tools/test_build_cache.py` checks cache receipts, isolation and atomic library recovery. `python tools/test_gamebuild_resume.py` compiles the actual scheduler and runs a small compiler workload through cancellation, reuse, corruption repair and failure recovery. On Windows, `python tools/test_windows_processes.py` checks that cancellation kills one compiler's descendants without affecting a separate process tree.
 - Two-version gameplay: `python tools/compatibility_smoke.py --exe PATH --base-root PATH --updated-root PATH --output NEW_DIRECTORY` uses isolated saves/settings and captures images plus JSON. Both game roots need compiled libraries. Review the images and report the tested scenes; a smoke test is not full compatibility coverage.
 - Save backups: `python tools/test_save_backups.py` compiles the real store and checks retention, corruption rejection, restore safety, links, limits and empty-save recovery. `--save-copy PATH` roundtrips a temporary copy of a real save and checks source preservation.
@@ -110,6 +116,9 @@ with both revisions, then run `python tools/test_game_addresses.py --compare-gen
 The comparison checks every generated C file byte-for-byte.
 
 ## Tests
+
+New menu text is written in English. Run `python3 tools/menu_strings.py check` to see what each language is missing;
+untranslated text shows in English.
 
 `python tools/test_save.py` exercises the production save handlers against temporary files, without game data.
 

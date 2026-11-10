@@ -5,7 +5,7 @@ inline helpers in runtime/simd.h with constant fields (sizes, lanes, ops), so cl
 switches. Covers ARMv8.0-A + Crypto + CRC32 (the Switch's Cortex-A57); unallocated or later-architecture
 encodings (FP16 arithmetic, RDM, dot product, FCMA, JSCVT, ...) raise Unsupported.
 """
-from lifter import COND_NAMES, Unsupported, W, X, XS, bits, extend_expr, hx, set_reg, sext
+from lifter import COND_NAMES, Unsupported, W, X, XS, bits, extend_expr, gaddr, hx, set_reg, sext
 
 
 def lop(name, u=0):
@@ -1002,7 +1002,7 @@ class SimdC:
             if opc == 3:
                 raise Unsupported('ldr literal opc')
             addr = (pc + sext(bits(w, 5, 19), 19) * 4) & ((1 << 64) - 1)
-            return f'c->v[{rt}] = {("LD32", "LD64", "LD128")[opc]}({hx(addr)});'
+            return f'c->v[{rt}] = {("LD32", "LD64", "LD128")[opc]}({gaddr(addr)});'
         if bits(w, 31, 1) == 0 and bits(w, 24, 6) in (0b001100, 0b001101):
             return self.ldst_struct(w)
         if bits(w, 27, 3) == 0b101:

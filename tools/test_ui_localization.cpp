@@ -3,11 +3,30 @@
 #include <stdio.h>
 #include <string.h>
 #include "ui/localization.h"
+#include "ui/i18n.h"
+extern "C" {
+#include "settings.h"
+Settings g_settings;
+bool rt_resource(const char *, const char *, char *, size_t) { return false; }
+}
+
 #include "imgui.h"
 #include "imgui_internal.h"
 
+extern "C" {
+const char *const g_language_codes[N_LANGUAGES] = {"auto", "ja", "en-US", "es", "fr", "de", "it", "nl", "ru", "ko",
+                                                   "zh-Hans", "zh-Hant", "pt-BR"};
+const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English", "Spanish", "French", "German",
+                                                   "Italian", "Dutch", "Russian", "Korean", "Chinese (Simplified)",
+                                                   "Chinese (Traditional)", "Portuguese (Brazil)"};
+const char *const g_language_endonyms[N_LANGUAGES] = {"Auto", "日本語", "English", "Español", "Français", "Deutsch",
+                                                      "Italiano", "Nederlands", "Русский", "한국어", "简体中文", "繁體中文",
+                                                      "Português (Brasil)"};
+
+}
 static const char *language = "en-US";
-extern "C" const char *settings_language(void) { return language; }
+static void select_language(const char *value) { language = value; for (int i=1; i<N_LANGUAGES; i++) if (!strcmp(value,g_language_codes[i])) g_settings.language=i; }
+extern "C" const char *settings_menu_language(void) { return language; }
 struct Text { const char *en, *hans, *hant; };
 static const Text texts[] = {
 #define UI_TEXT(en, hans, hant) {en, hans, hant},
@@ -15,21 +34,33 @@ static const Text texts[] = {
 #undef UI_TEXT
 };
 
+static const char *official_hans[][2] = {
+#include "ui/lang/zh-Hans.inc"
+};
+static const char *official_hant[][2] = {
+#include "ui/lang/zh-Hant.inc"
+};
+template<size_t N> static const char *expected(const char *en, const char *fallback, const char *(&table)[N][2]) {
+    const char *value = fallback;
+    for (auto &row : table) if (!strcmp(row[0], en) && *row[1]) value = row[1];
+    return value;
+}
+
 int main(int argc, char **) {
     for (const auto &t : texts) {
-        language = "en-US";
+        select_language("en-US");
         assert(!strcmp(ui_tr(t.en), t.en));
         ImGuiID id = ImHashStr(ui_label(t.en).c_str());
-        language = "zh-Hans";
-        assert(!strcmp(ui_tr(t.en), t.hans));
+        select_language("zh-Hans");
+        assert(!strcmp(ui_tr(t.en), expected(t.en, t.hans, official_hans)));
         assert(ImHashStr(ui_label(t.en).c_str()) == id);
-        language = "zh-Hant";
-        assert(!strcmp(ui_tr(t.en), t.hant));
+        select_language("zh-Hant");
+        assert(!strcmp(ui_tr(t.en), expected(t.en, t.hant, official_hant)));
         assert(ImHashStr(ui_label(t.en).c_str()) == id);
-        language = "fr";
-        assert(!strcmp(ui_tr(t.en), t.en));
+        select_language("fr");
+        assert(!strcmp(ui_tr(t.en), L(t.en)));
     }
-    language = "zh-Hans";
+    select_language("zh-Hans");
     assert(!strcmp(ui_tr("user seed name"), "user seed name"));
     assert(!strcmp(ui_tr(nullptr), ""));
     // Already-suffixed labels (remapping buttons) must keep the ID through translated status changes.

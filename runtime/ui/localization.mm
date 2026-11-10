@@ -1,4 +1,5 @@
 #include "localization.h"
+#include "i18n.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,22 +17,11 @@ static const Translation texts[] = {
 };
 
 UiLanguage ui_language() {
-    const char *language = settings_language();
+    const char *language = settings_menu_language();
     return !strcmp(language, "zh-Hans") ? UI_HANS : !strcmp(language, "zh-Hant") ? UI_HANT : UI_ENGLISH;
 }
 
-const char *ui_tr(const char *english) {
-    if (!english) return "";
-    UiLanguage language = ui_language();
-    if (language == UI_ENGLISH) return english;
-    static const auto catalog = [] {
-        std::unordered_map<std::string, const Translation *> result;
-        for (const auto &t : texts) result.emplace(t.english, &t);
-        return result;
-    }();
-    auto it = catalog.find(english);
-    return it == catalog.end() ? english : language == UI_HANS ? it->second->hans : it->second->hant;
-}
+const char *ui_tr(const char *english) { return english ? L(english) : ""; }
 
 std::string ui_label(const char *english) {
     return std::string(ui_tr(english)) + "###" + english;

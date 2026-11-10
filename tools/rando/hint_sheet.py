@@ -130,8 +130,6 @@ def _reach_fn(logic_defs, settings, check):
                 b = base_item(item)
                 if b != item:
                     give(b)
-                if item in playthrough.KEY_RINGS:  # (a key ring: its dungeon's keys)
-                    give('key-' + item[8:], playthrough.KEY_RINGS[item])
         return (frozenset(k for k in seen if logic_defs[k].get('type') == 'item' and k not in junk),
                 min(access.get(TRIFORCE, 0), tri) if tri else sum(1 for g in goal if access.get(g)))
     return reach
@@ -321,7 +319,7 @@ ITEM = {'sword': 'a Sword', 'shield': 'a Shield', 'bracelet': 'a Power Bracelet'
         'bomb': 'the Bombs', 'powder': 'the Magic Powder', 'stalfos-note': "Master Stalfos' Note",
         'rooster': 'the Flying Rooster', 'bow-wow': 'BowWow', 'ghost': 'the Ghost', 'marin-companion': 'Marin'}
 DUNGEON_ITEM = {'key': 'a Small Key', 'nightmare-key': 'the Nightmare Key', 'compass': 'the Compass', 'map': 'the Dungeon Map',
-                'stone-beak': 'the Stone Beak', 'keyring': 'the Key Ring'}
+                'stone-beak': 'the Stone Beak'}
 # whole-location wording: gifts, games and other places the location key doesn't say well
 PLACE = {'tarin': 'with Tarin in Mabe Village', 'marin': 'with Marin in Mabe Village',
          'mamasha': 'with Mamasha in Mabe Village', 'ciao-ciao': 'with Ciao Ciao in Mabe Village',
@@ -356,7 +354,7 @@ def dungeon_name(dn, lang='en', names=None):
 
 
 def item_phrase(item):
-    m = re.match(r'^(key|keyring|nightmare-key|compass|map|stone-beak)-(D\d)$', item)
+    m = re.match(r'^(key|nightmare-key|compass|map|stone-beak)-(D\d)$', item)
     if m:
         return f'{DUNGEON_ITEM[m.group(1)]} for {dungeon_name(m.group(2))}'
     if item.startswith('soul-'):
@@ -618,12 +616,10 @@ def place_parts(step, dungeon_of, names, lang):
 
 def item_name(item, names, lang):
     """Other languages: the item as the game names it (ours where the game has no name)."""
-    import key_rings
     import loc_text as lt
-    m = re.match(r'^(key|keyring|nightmare-key|compass|map|stone-beak)-(D\d)$', item)
+    m = re.match(r'^(key|nightmare-key|compass|map|stone-beak)-(D\d)$', item)
     if m:
-        base = names.item(m.group(1)) or (lt.tr(key_rings.NAME, lang) if m.group(1) == 'keyring' else
-                                          DUNGEON_ITEM[m.group(1)].split(' ', 1)[1]).encode()
+        base = names.item(m.group(1)) or DUNGEON_ITEM[m.group(1)].split(' ', 1)[1].encode()
         dn = dungeon_name(m.group(2), lang, names)
         return base + b' (' + (dn if isinstance(dn, bytes) else dn.encode()) + b')'
     if item.startswith('soul-'):

@@ -17,12 +17,15 @@
 #include "vk.h"
 #include "gpu_watchdog.h"
 #include "shader_jobs.h"
+#include "../../platform.h"
 #include "record.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 #include "../pace.h"
 #include "../shader_prep.h"
+#include "../interp.h"
 #include <pthread.h>
+#include <dirent.h>
 
 VkG g_vk;
 static SDL_Window *window;
@@ -103,13 +106,12 @@ static bool lazy_heap_predicted(bool budget_ext, bool *probe) {
         return true;
 #endif
 #ifdef __linux__
-    // RADV with the dma-buf heap (exec.c guest_heap_dmabuf): no import at all, so whole_import_fits doesn't apply; any
+    // RADV / PanVK with the dma-buf heap (exec.c guest_heap_dmabuf): no import at all, so whole_import_fits doesn't apply; any
     // cached host-visible memory type will do, as there (a heap's reported size is only the driver's split: a ROG Ally
     // has 3305 MB for 3328, and the allocation works). Lazy chunks over it would never be imported: every shader access
     // a miss, and the render thread remaking the chunk set each frame (15 ms a frame on the Ally).
     const char *d = getenv("LARECOMP_VK_HEAP_DMABUF");
-    bool radv = strstr(g_vk.props.deviceName, "RADV") != NULL;
-    if ((d ? atoi(d) != 0 : radv) && (g_vk.dmabuf || g_vk.map_placed)) {
+    if ((d ? atoi(d) != 0 : g_vk.heap_dmabuf_default) && (g_vk.dmabuf || g_vk.map_placed)) {
         VkPhysicalDeviceMemoryProperties mp;
         vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
         const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
@@ -146,6 +148,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
 // LARECOMP_VK_VALIDATION_STOP=1: require that layer and its callback, and exit nonzero on the first error.
 static bool validating;  // the validation layer is on (validation_exit)
 static void create_instance(void) {
+#ifdef __ANDROID__
+    vk_android_load();  // (the player's driver package, or the system's: android_driver.c)
+#endif
     Uint32 n_sdl = 0;
     const char *const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&n_sdl);
     const char *ext[16];
@@ -175,6 +180,9 @@ static void create_instance(void) {
     }
     validating = validate;
     if (r != VK_SUCCESS) FATAL("vkCreateInstance: %d (is a Vulkan 1.3 driver installed?)\n", r);
+#ifdef __ANDROID__
+    volkLoadInstance(g_vk.inst);
+#endif
     if (validate) {
         PFN_vkCreateDebugUtilsMessengerEXT f =
             (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(g_vk.inst, "vkCreateDebugUtilsMessengerEXT");
@@ -336,12 +344,302 @@ static void *pipeline_cache_saver(void *a) {  // every 3 minutes, when it grew
     return NULL;
 }
 
+// ---- pipelines from our own stored binaries (VK_KHR_pipeline_binary, issue #509)
+// AMD's Windows driver keeps nothing of its own compile in our VkPipelineCache (vk_pipelines.bin stayed at 395 KB,
+// every launch compiled all pipelines again: 44-54 s). Where it's on (pb.on: AMD's drivers by default,
+// LARECOMP_VK_PIPELINE_BINARY=0 / =1 overrides), each pipeline's binaries are kept in cache/vk_binaries/<its key>.bin
+// and the next launch creates it from them. The file name is the driver's key for the pipeline's create info
+// (vkGetPipelineKeyKHR: shaders and state); the directory's tag adds this build, the translator, the GPU, the driver
+// and the driver's global key - another one empties it. Other drivers: VkPipelineCache only, as before.
+#define PBIN_DIR "cache/vk_binaries"
+#define PBIN_TAG "cache/vk_binaries.tag"
+#define PBIN_MAGIC 0x4250414cu  // "LAPB"
+#define PBIN_MAX 8              // binaries per pipeline (one per stage at most here)
+#ifdef VK_KHR_pipeline_binary
+static struct {
+    bool on;
+    PFN_vkGetPipelineKeyKHR get_key;
+    PFN_vkCreatePipelineBinariesKHR create;
+    PFN_vkDestroyPipelineBinaryKHR destroy;
+    PFN_vkGetPipelineBinaryDataKHR get_data;
+    PFN_vkReleaseCapturedPipelineDataKHR release;
+} pb;
+static _Atomic int pb_loaded, pb_saved, pb_failed;
+
+static void pb_path(char *out, size_t n, const VkPipelineBinaryKeyKHR *k) {
+    char hex[2 * VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR + 1] = "";
+    for (uint32_t i = 0; i < k->keySize && i < VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR; i++) snprintf(hex + 2 * i, 3, "%02x", k->key[i]);
+    snprintf(out, n, PBIN_DIR "/%s.bin", hex);
+}
+
+static void pb_clear_dir(void) {
+    DIR *d = opendir(PBIN_DIR);
+    if (!d) return;
+    struct dirent *e;
+    int n = 0;
+    char p[600];
+    while ((e = readdir(d))) {
+        size_t l = strlen(e->d_name);
+        if (l < 5 || strcmp(e->d_name + l - 4, ".bin")) continue;
+        snprintf(p, sizeof p, PBIN_DIR "/%s", e->d_name);
+        n += remove(p) == 0;
+    }
+    closedir(d);
+    if (n) LOG("[vk] pipeline binaries: removed %d from another build / GPU / driver\n", n);
+}
+
+// After the device: the functions, and the directory's tag (with the driver's global key)
+static void pb_setup(void) {
+#define PB_FN(f, name) (pb.f = (void *)vkGetDeviceProcAddr(g_vk.dev, name))
+    if (!PB_FN(get_key, "vkGetPipelineKeyKHR") || !PB_FN(create, "vkCreatePipelineBinariesKHR") ||
+        !PB_FN(destroy, "vkDestroyPipelineBinaryKHR") || !PB_FN(get_data, "vkGetPipelineBinaryDataKHR") ||
+        !PB_FN(release, "vkReleaseCapturedPipelineDataKHR")) {
+        LOG("[vk] pipeline binaries: functions missing; pipeline cache only\n");
+        pb.on = false;
+        return;
+    }
+#undef PB_FN
+    VkPipelineBinaryKeyKHR gk = {.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+    if (pb.get_key(g_vk.dev, NULL, &gk) != VK_SUCCESS) {
+        LOG("[vk] pipeline binaries: no global key; pipeline cache only\n");
+        pb.on = false;
+        return;
+    }
+    char tag[700], base[512], hex[2 * VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR + 1] = "";
+    for (uint32_t i = 0; i < gk.keySize && i < VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR; i++) snprintf(hex + 2 * i, 3, "%02x", gk.key[i]);
+    pipeline_cache_tag(base, sizeof base);
+    snprintf(tag, sizeof tag, "%s, binary key %s", base, hex);
+    mkdir("cache", 0755);
+    mkdir(PBIN_DIR, 0755);
+    if (!shader_cache_tag_ok(PBIN_TAG, tag)) {
+        pb_clear_dir();
+        shader_cache_tag_write(PBIN_TAG, tag);
+    }
+}
+
+typedef union { VkGraphicsPipelineCreateInfo g; VkComputePipelineCreateInfo c; } AnyPipeCI;
+static VkResult pb_create_pipeline(AnyPipeCI *ci, bool compute, VkPipelineCache cache, VkPipeline *out) {
+    return compute ? vkCreateComputePipelines(g_vk.dev, cache, 1, &ci->c, NULL, out)
+                   : vkCreateGraphicsPipelines(g_vk.dev, cache, 1, &ci->g, NULL, out);
+}
+
+// The stored binaries for key k as handles (false: none, or unusable)
+static bool pb_load(const VkPipelineBinaryKeyKHR *k, VkPipelineBinaryKHR *bins, uint32_t *nbins) {
+    char path[600];
+    pb_path(path, sizeof path, k);
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *buf = sz > 16 ? malloc((size_t)sz) : NULL;
+    bool ok = buf && fread(buf, 1, (size_t)sz, f) == (size_t)sz;
+    fclose(f);
+    // u32 magic, u32 key size, key, u32 count; per binary: u32 key size, key, u64 data size, data
+    size_t at = 0, end = ok ? (size_t)sz : 0;
+#define PB_TAKE(dst, n) (at + (n) <= end ? (memcpy((dst), buf + at, (n)), at += (n), true) : false)
+    uint32_t magic = 0, ks = 0, n = 0;
+    uint8_t key[VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR];
+    ok = ok && PB_TAKE(&magic, 4) && magic == PBIN_MAGIC && PB_TAKE(&ks, 4) && ks == k->keySize &&
+         ks <= sizeof key && PB_TAKE(key, ks) && !memcmp(key, k->key, ks) && PB_TAKE(&n, 4) && n && n <= PBIN_MAX;
+    VkPipelineBinaryKeyKHR keys[PBIN_MAX];
+    VkPipelineBinaryDataKHR data[PBIN_MAX];
+    for (uint32_t i = 0; ok && i < n; i++) {
+        keys[i] = (VkPipelineBinaryKeyKHR){.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+        uint64_t ds = 0;
+        ok = PB_TAKE(&keys[i].keySize, 4) && keys[i].keySize <= VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR &&
+             PB_TAKE(keys[i].key, keys[i].keySize) && PB_TAKE(&ds, 8) && ds && ds <= end - at;
+        if (ok) data[i] = (VkPipelineBinaryDataKHR){(size_t)ds, buf + at}, at += (size_t)ds;
+    }
+#undef PB_TAKE
+    if (ok) {
+        VkPipelineBinaryKeysAndDataKHR kd = {.binaryCount = n, .pPipelineBinaryKeys = keys, .pPipelineBinaryData = data};
+        VkPipelineBinaryCreateInfoKHR ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR, .pKeysAndDataInfo = &kd};
+        VkPipelineBinaryHandlesInfoKHR h = {.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_HANDLES_INFO_KHR,
+                                            .pipelineBinaryCount = n, .pPipelineBinaries = bins};
+        ok = pb.create(g_vk.dev, &ci, NULL, &h) == VK_SUCCESS;
+        *nbins = n;
+    }
+    free(buf);
+    if (!ok) remove(path);  // (damaged, or refused by the driver: captured again)
+    return ok;
+}
+
+// A pipeline created with CAPTURE_DATA: its binaries into the file for key k, then the captured data released
+static void pb_capture(VkPipeline p, const VkPipelineBinaryKeyKHR *k) {
+    VkPipelineBinaryCreateInfoKHR ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR, .pipeline = p};
+    VkPipelineBinaryHandlesInfoKHR h = {.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_HANDLES_INFO_KHR};
+    VkPipelineBinaryKHR bins[PBIN_MAX];
+    uint32_t n = 0;
+    bool ok = pb.create(g_vk.dev, &ci, NULL, &h) == VK_SUCCESS && h.pipelineBinaryCount && h.pipelineBinaryCount <= PBIN_MAX;
+    if (ok) {
+        h.pPipelineBinaries = bins;
+        ok = pb.create(g_vk.dev, &ci, NULL, &h) == VK_SUCCESS;
+        n = ok ? h.pipelineBinaryCount : 0;
+    }
+    size_t total = 12 + k->keySize, cap = 0;
+    uint8_t *buf = NULL;
+    for (uint32_t i = 0; ok && i < n; i++) {
+        VkPipelineBinaryDataInfoKHR di = {.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_DATA_INFO_KHR, .pipelineBinary = bins[i]};
+        VkPipelineBinaryKeyKHR bk = {.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+        size_t ds = 0;
+        ok = pb.get_data(g_vk.dev, &di, &bk, &ds, NULL) == VK_SUCCESS && ds;
+        if (!ok) break;
+        size_t need = total + 12 + bk.keySize + ds;
+        if (need > cap) {
+            cap = need * 2;
+            uint8_t *nb = realloc(buf, cap);
+            if (!nb) { ok = false; break; }
+            buf = nb;
+        }
+        uint8_t *w = buf + total;
+        uint64_t ds64 = ds;
+        memcpy(w, &bk.keySize, 4);
+        memcpy(w + 4, bk.key, bk.keySize);
+        memcpy(w + 4 + bk.keySize, &ds64, 8);
+        ok = pb.get_data(g_vk.dev, &di, &bk, &ds, w + 12 + bk.keySize) == VK_SUCCESS && ds == ds64;
+        total = need;
+    }
+    if (ok && n && buf) {
+        uint32_t magic = PBIN_MAGIC;
+        memcpy(buf, &magic, 4);
+        memcpy(buf + 4, &k->keySize, 4);
+        memcpy(buf + 8, k->key, k->keySize);
+        memcpy(buf + 8 + k->keySize, &n, 4);
+        char path[600];
+        pb_path(path, sizeof path, k);
+        if (shader_cache_write(path, buf, total)) atomic_fetch_add(&pb_saved, 1);
+    } else if (atomic_fetch_add(&pb_failed, 1) < 5) LOG("[vk] pipeline binaries: capture failed (%u binaries)\n", n);
+    free(buf);
+    for (uint32_t i = 0; i < n; i++) pb.destroy(g_vk.dev, bins[i], NULL);
+    VkReleaseCapturedPipelineDataInfoKHR ri = {.sType = VK_STRUCTURE_TYPE_RELEASE_CAPTURED_PIPELINE_DATA_INFO_KHR, .pipeline = p};
+    pb.release(g_vk.dev, &ri, NULL);
+}
+
+static VkResult pb_make(const void *info, bool compute, VkPipeline *out) {
+    AnyPipeCI ci;
+    if (compute) ci.c = *(const VkComputePipelineCreateInfo *)info;
+    else ci.g = *(const VkGraphicsPipelineCreateInfo *)info;
+    const void **pn = compute ? &ci.c.pNext : &ci.g.pNext;
+    VkPipelineCreateFlags flags = compute ? ci.c.flags : ci.g.flags;
+    const void *next = *pn;
+    VkPipelineCreateInfoKHR ki = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_INFO_KHR, .pNext = (void *)info};
+    VkPipelineBinaryKeyKHR k = {.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+    if (pb.get_key(g_vk.dev, &ki, &k) != VK_SUCCESS || !k.keySize) return pb_create_pipeline(&ci, compute, g_vk.pcache, out);
+    VkPipelineBinaryKHR bins[PBIN_MAX];
+    uint32_t n = 0;
+    if (pb_load(&k, bins, &n)) {  // (a pipeline from binaries is created without a pipeline cache)
+        VkPipelineBinaryInfoKHR bi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_INFO_KHR, .pNext = next,
+                                      .binaryCount = n, .pPipelineBinaries = bins};
+        *pn = &bi;
+        VkResult r = pb_create_pipeline(&ci, compute, VK_NULL_HANDLE, out);
+        for (uint32_t i = 0; i < n; i++) pb.destroy(g_vk.dev, bins[i], NULL);
+        if (r == VK_SUCCESS) { atomic_fetch_add(&pb_loaded, 1); return r; }
+        if (atomic_fetch_add(&pb_failed, 1) < 5) LOG("[vk] pipeline binaries: creating from stored ones failed (%d); compiling\n", r);
+        char path[600];
+        pb_path(path, sizeof path, &k);
+        remove(path);
+    }
+    VkPipelineCreateFlags2CreateInfoKHR fl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR, .pNext = next,
+                                              .flags = (VkPipelineCreateFlags2KHR)flags | VK_PIPELINE_CREATE_2_CAPTURE_DATA_BIT_KHR};
+    *pn = &fl;
+    VkResult r = pb_create_pipeline(&ci, compute, VK_NULL_HANDLE, out);
+    if (r == VK_SUCCESS) pb_capture(*out, &k);
+    else {  // (as before)
+        *pn = next;
+        r = pb_create_pipeline(&ci, compute, g_vk.pcache, out);
+    }
+    return r;
+}
+
+static void pb_log(void) {  // (vk_pipeline_cache_save: under its lock)
+    static int last[3] = {-1, -1, -1};
+    int l = atomic_load(&pb_loaded), s = atomic_load(&pb_saved), f = atomic_load(&pb_failed);
+    if (!pb.on || (l == last[0] && s == last[1] && f == last[2])) return;
+    last[0] = l, last[1] = s, last[2] = f;
+    LOG("[vk] pipeline binaries: %d pipelines from stored binaries, %d compiled and stored, %d failed\n", l, s, f);
+}
+#endif
+
+bool g_shader_stats;
+__thread char g_stats_label[128];  // (the caller's: which shaders the pipeline is made of)
+static void log_pipeline_stats(VkPipeline p) {
+    PFN_vkGetPipelineExecutablePropertiesKHR props = (PFN_vkGetPipelineExecutablePropertiesKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetPipelineExecutablePropertiesKHR");
+    PFN_vkGetPipelineExecutableStatisticsKHR stats = (PFN_vkGetPipelineExecutableStatisticsKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetPipelineExecutableStatisticsKHR");
+    if (!props || !stats) return;
+    VkPipelineInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = p};
+    VkPipelineExecutablePropertiesKHR ep[8];
+    uint32_t ne = 8;
+    for (uint32_t i = 0; i < ne; i++) ep[i] = (VkPipelineExecutablePropertiesKHR){.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR};
+    if (props(g_vk.dev, &pi, &ne, ep) < 0) return;
+    for (uint32_t e = 0; e < ne; e++) {
+        VkPipelineExecutableInfoKHR ei = {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR, .pipeline = p, .executableIndex = e};
+        VkPipelineExecutableStatisticKHR st[32];
+        uint32_t ns = 32;
+        for (uint32_t i = 0; i < ns; i++) st[i] = (VkPipelineExecutableStatisticKHR){.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR};
+        if (stats(g_vk.dev, &ei, &ns, st) < 0) continue;
+        char line[1024];
+        int l = snprintf(line, sizeof line, "[stats] %s | %s:", g_stats_label, ep[e].name);
+        for (uint32_t i = 0; i < ns && l < (int)sizeof line - 48; i++) {
+            switch (st[i].format) {
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR: l += snprintf(line + l, sizeof line - l, " %s=%u", st[i].name, st[i].value.b32); break;
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR: l += snprintf(line + l, sizeof line - l, " %s=%lld", st[i].name, (long long)st[i].value.i64); break;
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR: l += snprintf(line + l, sizeof line - l, " %s=%llu", st[i].name, (unsigned long long)st[i].value.u64); break;
+            default: l += snprintf(line + l, sizeof line - l, " %s=%.3f", st[i].name, st[i].value.f64);
+            }
+        }
+        LOG("%s\n", line);
+    }
+}
+
+static VkResult create_graphics_pipeline(const VkGraphicsPipelineCreateInfo *ci, VkPipeline *out) {
+    if (g_shader_stats) {
+        VkGraphicsPipelineCreateInfo c = *ci;
+        c.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+        VkResult r = vkCreateGraphicsPipelines(g_vk.dev, VK_NULL_HANDLE, 1, &c, NULL, out);
+        if (r == VK_SUCCESS) log_pipeline_stats(*out);
+        return r;
+    }
+#ifdef VK_KHR_pipeline_binary
+    if (pb.on) return pb_make(ci, false, out);
+#endif
+    return vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, ci, NULL, out);
+}
+
+static VkResult create_compute_pipeline(const VkComputePipelineCreateInfo *ci, VkPipeline *out) {
+    if (g_shader_stats) {
+        VkComputePipelineCreateInfo c = *ci;
+        c.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+        VkResult r = vkCreateComputePipelines(g_vk.dev, VK_NULL_HANDLE, 1, &c, NULL, out);
+        if (r == VK_SUCCESS) log_pipeline_stats(*out);
+        return r;
+    }
+#ifdef VK_KHR_pipeline_binary
+    if (pb.on) return pb_make(ci, true, out);
+#endif
+    return vkCreateComputePipelines(g_vk.dev, g_vk.pcache, 1, ci, NULL, out);
+}
+
+VkResult vk_create_graphics_pipeline(const VkGraphicsPipelineCreateInfo *ci, VkPipeline *out) {
+    pthread_rwlock_rdlock(&pcache_access);
+    VkResult r = create_graphics_pipeline(ci, out);
+    pthread_rwlock_unlock(&pcache_access);
+    return r;
+}
+
+VkResult vk_create_compute_pipeline(const VkComputePipelineCreateInfo *ci, VkPipeline *out) {
+    pthread_rwlock_rdlock(&pcache_access);
+    VkResult r = create_compute_pipeline(ci, out);
+    pthread_rwlock_unlock(&pcache_access);
+    return r;
+}
+
 static void create_device(void) {
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[16];
+    const char *ext[20];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
@@ -349,6 +647,7 @@ static void create_device(void) {
     g_vk.divisor = has_ext(ep, ne, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
     if (g_vk.divisor) ext[n_ext++] = VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME;
     g_vk.host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);  // guest heap as a GPU buffer (exec.c)
+    if (getenv("LARECOMP_VK_NO_HOST_IMPORT")) g_vk.host_import = false;  // (tests the copies, exec.c gmir_, on any GPU)
     if (g_vk.host_import) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     bool fault = has_ext(ep, ne, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);  // device-lost diagnostics (vk_device_fault_report)
     if (fault) ext[n_ext++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME;
@@ -364,6 +663,9 @@ static void create_device(void) {
 #ifdef VK_EXT_extended_dynamic_state3
     bool eds3_ext = has_ext(ep, ne, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
 #endif
+#ifdef VK_KHR_pipeline_binary
+    bool pbin_ext = has_ext(ep, ne, VK_KHR_PIPELINE_BINARY_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+#endif
 #ifdef __linux__
     // the guest heap as driver memory mapped at HEAP_BASE (exec.c backend_guest_heap_prepare)
     g_vk.dmabuf = has_ext(ep, ne, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
@@ -378,6 +680,9 @@ static void create_device(void) {
     bool placed_ext = has_ext(ep, ne, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
 #endif
 #endif
+    // LARECOMP_VK_SHADER_STATS=1: each pipeline's statistics from the driver (registers, spills, cycles: tuning shaders)
+    bool pexec_ext = getenv("LARECOMP_VK_SHADER_STATS") && atoi(getenv("LARECOMP_VK_SHADER_STATS")) &&
+                     has_ext(ep, ne, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
@@ -400,6 +705,11 @@ static void create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
     if (eds3_ext) have_eds3.pNext = have.pNext, have.pNext = &have_eds3;
 #endif
+#ifdef VK_KHR_pipeline_binary
+    VkPhysicalDevicePipelineBinaryFeaturesKHR have_pbin = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_BINARY_FEATURES_KHR};
+    VkPhysicalDeviceMaintenance5FeaturesKHR have_m5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR};
+    if (pbin_ext) have_pbin.pNext = &have_m5, have_m5.pNext = have.pNext, have.pNext = &have_pbin;
+#endif
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &have);
     {   // what the driver offers for building pipelines (one line, for #92 reports)
         VkPhysicalDeviceDriverProperties drv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
@@ -415,7 +725,21 @@ static void create_device(void) {
 #ifndef VK_EXT_extended_dynamic_state3
         snprintf(eds3, sizeof eds3, "not in this build's headers");
 #endif
+#ifdef VK_KHR_pipeline_binary
+        VkPhysicalDevicePipelineBinaryPropertiesKHR pbp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_BINARY_PROPERTIES_KHR};
+        if (pbin_ext) pbp.pNext = pr.pNext, pr.pNext = &pbp;
+#endif
         vkGetPhysicalDeviceProperties2(g_vk.phys, &pr);
+        // the heap as driver memory (exec.c guest_heap_dmabuf) by default: RADV, and PanVK (Mali-G610, Mesa 27.0-devel,
+        // issue #483: an 81-minute run without faults, the Field 15 -> 21 fps, ~85% fewer uploads). PanVK's device name
+        // is the GPU's ("Mali-G610 MC4"), hence the driver ID.
+        g_vk.heap_dmabuf_default = strstr(g_vk.props.deviceName, "RADV") != NULL || drv.driverID == VK_DRIVER_ID_MESA_PANVK;
+        // command buffers released before each begin (record.c begin_cb_run) by default on Arm's own driver: the implicit
+        // reset of vkBeginCommandBuffer keeps the memory vkCmdBeginRendering allocates (64 KB blocks of host memory), so
+        // the process grew by ~490 MB an hour, until it ran out of memory (libmali g29p1 on RK3588; PanVK and Turnip don't).
+        const char *cbr = getenv("LARECOMP_VK_CB_RELEASE");
+        g_vk.cb_release = cbr ? atoi(cbr) != 0 : drv.driverID == VK_DRIVER_ID_ARM_PROPRIETARY;
+        if (g_vk.cb_release) LOG("[vk] command buffers release their memory at each begin%s\n", cbr ? " (LARECOMP_VK_CB_RELEASE)" : ": Arm's driver");
 #ifdef VK_EXT_graphics_pipeline_library
         if (gpl_ext)
             snprintf(gpl, sizeof gpl, "%s (fast linking %s, independent interpolation decoration %s)",
@@ -433,6 +757,31 @@ static void create_device(void) {
         LOG("[vk] driver %s %s; graphics pipeline library: %s; vertex input dynamic state: %s; extended dynamic state 3: %s\n",
             drv.driverName, drv.driverInfo, gpl, vids_ext ? (have_vids.vertexInputDynamicState ? "yes" : "no") : "no extension",
             eds3);
+        // The Android emulator (gfxstream to MoltenVK) lists ASTC but textures sampled that way come out empty: the HUD's
+        // hearts and the file select's icons were missing (API 35 image on an M3 Max). LARECOMP_VK_CPU_ASTC=1 / =0 overrides.
+        const char *ca = getenv("LARECOMP_VK_CPU_ASTC");
+        g_vk.cpu_astc = ca ? atoi(ca) != 0 : strstr(drv.driverName, "MoltenVK") != NULL;
+        LOG("[vk] ASTC %s (%s)\n", g_vk.cpu_astc ? "decoded on the CPU" : "as the driver lists it", ca ? "LARECOMP_VK_CPU_ASTC" : "default for this GPU");
+#ifdef VK_KHR_pipeline_binary
+        // our own pipeline binaries (pb_make, #509): by default on AMD's drivers only, whose own cache kept nothing
+        // between launches; LARECOMP_VK_PIPELINE_BINARY=0 / =1 turns them off / on
+        const char *e = getenv("LARECOMP_VK_PIPELINE_BINARY");
+        bool amd = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY || drv.driverID == VK_DRIVER_ID_AMD_OPEN_SOURCE;
+        bool can = pbin_ext && have_pbin.pipelineBinaries && have_m5.maintenance5;
+        pb.on = can && (e && *e ? atoi(e) != 0 : amd);
+        if (pbin_ext)
+            LOG("[vk] pipeline binaries: feature %s, internal cache %d (control %d, prefers it %d, precompiled %d), "
+                "compressed %d -> %s\n", have_pbin.pipelineBinaries ? "yes" : "no", pbp.pipelineBinaryInternalCache,
+                pbp.pipelineBinaryInternalCacheControl, pbp.pipelineBinaryPrefersInternalCache,
+                pbp.pipelineBinaryPrecompiledInternalCache, pbp.pipelineBinaryCompressedData,
+                pb.on ? "stored by us (cache/vk_binaries)" : !can ? "pipeline cache (not supported)" :
+                e && *e ? "pipeline cache (LARECOMP_VK_PIPELINE_BINARY=0)" : "pipeline cache (not an AMD driver)");
+        else if (e && atoi(e)) LOG("[vk] pipeline binaries: no VK_KHR_pipeline_binary; pipeline cache\n");
+        if (pb.on) {
+            ext[n_ext++] = VK_KHR_MAINTENANCE_5_EXTENSION_NAME;
+            ext[n_ext++] = VK_KHR_PIPELINE_BINARY_EXTENSION_NAME;
+        }
+#endif
     }
     {   // dynamic vertex input (exec.c): fewer pipelines; LARECOMP_VK_DYN_VERTEX=0 keeps the layout in each pipeline
         const char *e = getenv("LARECOMP_VK_DYN_VERTEX");
@@ -490,9 +839,13 @@ static void create_device(void) {
                                             .maintenance4 = VK_TRUE,
                                             .pNext = g_vk.custom_border ? (void *)&cbc : g_vk.divisor ? (void *)&div : NULL};
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                            .timelineSemaphore = VK_TRUE, .shaderInt8 = VK_TRUE, .samplerMirrorClampToEdge = VK_TRUE,
-                                            .uniformAndStorageBuffer8BitAccess = VK_TRUE, .storageBuffer8BitAccess = VK_TRUE,
-                                            .scalarBlockLayout = VK_TRUE, .bufferDeviceAddress = g_vk.bda, .pNext = &f13};
+                                            // (as supported: Turnip on an Adreno 643 has no 8-bit storage, and asking for a
+                                            // missing feature fails the whole device; the translated shaders don't use it)
+                                            .timelineSemaphore = VK_TRUE, .shaderInt8 = have12.shaderInt8,
+                                            .samplerMirrorClampToEdge = have12.samplerMirrorClampToEdge,
+                                            .uniformAndStorageBuffer8BitAccess = have12.uniformAndStorageBuffer8BitAccess,
+                                            .storageBuffer8BitAccess = have12.storageBuffer8BitAccess,
+                                            .scalarBlockLayout = have12.scalarBlockLayout, .bufferDeviceAddress = g_vk.bda, .pNext = &f13};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .storageBuffer16BitAccess = VK_TRUE, .pNext = &f12};
     VkPhysicalDeviceFaultFeaturesEXT ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .deviceFault = VK_TRUE,
@@ -507,6 +860,13 @@ static void create_device(void) {
     VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT en_vids = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT, .vertexInputDynamicState = VK_TRUE};
     if (g_vk.vids) en_vids.pNext = f.pNext, f.pNext = &en_vids;
+#ifdef VK_KHR_pipeline_binary
+    VkPhysicalDeviceMaintenance5FeaturesKHR en_m5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR,
+                                                     .maintenance5 = VK_TRUE};
+    VkPhysicalDevicePipelineBinaryFeaturesKHR en_pbin = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_BINARY_FEATURES_KHR,
+                                                         .pipelineBinaries = VK_TRUE, .pNext = &en_m5};
+    if (pb.on) en_m5.pNext = f.pNext, f.pNext = &en_pbin;
+#endif
 #ifdef VK_EXT_graphics_pipeline_library
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT en_gpl = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT, .graphicsPipelineLibrary = VK_TRUE};
@@ -518,6 +878,9 @@ static void create_device(void) {
     b->fillModeNonSolid = h->fillModeNonSolid;
     b->samplerAnisotropy = h->samplerAnisotropy;
     b->textureCompressionBC = h->textureCompressionBC;
+#if PLAT_TOUCH
+    b->textureCompressionASTC_LDR = h->textureCompressionASTC_LDR;  // (phones: the game's UI icons are ASTC, sampled natively)
+#endif
     b->shaderInt64 = h->shaderInt64;
     b->depthBiasClamp = h->depthBiasClamp;
     b->depthClamp = h->depthClamp;
@@ -531,12 +894,23 @@ static void create_device(void) {
     g_vk.ssbo_chunks = h->fragmentStoresAndAtomics && h->vertexPipelineStoresAndAtomics && h->robustBufferAccess;
     b->shaderClipDistance = h->shaderClipDistance;
     if (!h->shaderInt64) LOG("[vk] warning: no shaderInt64 (64-bit address math in shaders)\n");
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR en_pexec = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR, .pipelineExecutableInfo = VK_TRUE};
+    if (pexec_ext) {
+        en_pexec.pNext = f.pNext, f.pNext = &en_pexec;
+        ext[n_ext++] = VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME;
+        g_shader_stats = true;
+        LOG("[vk] shader statistics on (LARECOMP_VK_SHADER_STATS): one [stats] line per pipeline stage, pipelines not cached\n");
+    }
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
                                   .queueCount = 1, .pQueuePriorities = &prio};
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+#ifdef __ANDROID__
+    volkLoadDevice(g_vk.dev);
+#endif
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     if (g_vk.vids) {
         g_vk.set_vertex_input = (PFN_vkCmdSetVertexInputEXT)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetVertexInputEXT");
@@ -548,6 +922,10 @@ static void create_device(void) {
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
                                  .vulkanApiVersion = VK_API_VERSION_1_3,
                                  .flags = budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
+#ifdef __ANDROID__
+    VmaVulkanFunctions vf = {.vkGetInstanceProcAddr = vkGetInstanceProcAddr, .vkGetDeviceProcAddr = vkGetDeviceProcAddr};
+    ai.pVulkanFunctions = &vf;  // (VMA_DYNAMIC_VULKAN_FUNCTIONS: from what volk loaded)
+#endif
     VK_CHECK(vmaCreateAllocator(&ai, &g_vk.vma));
     vk_log_memory("start");
 
@@ -565,8 +943,13 @@ static void create_device(void) {
     pipeline_cache_tag(tag, sizeof tag);
     size_t sz = 0;
     void *data = NULL;
-    FILE *fp = shader_cache_tag_ok(PCACHE_TAG, tag) ? fopen(PCACHE_FILE, "rb") : NULL;
-    if (!fp && !access(PCACHE_FILE, F_OK)) LOG("[vk] pipeline cache from another build / GPU / driver: starting a new one\n");
+    // LARECOMP_VK_PIPELINE_CACHE=0 (test): start with an empty one, saved over the old as usual. The Android emulator's
+    // gfxstream hangs in vkCreatePipelineCache given a large one (~300 MB after a session).
+    const char *pce = getenv("LARECOMP_VK_PIPELINE_CACHE");
+    bool pc_load = !(pce && !atoi(pce));
+    FILE *fp = pc_load && shader_cache_tag_ok(PCACHE_TAG, tag) ? fopen(PCACHE_FILE, "rb") : NULL;
+    if (!pc_load) LOG("[vk] pipeline cache: starting empty (LARECOMP_VK_PIPELINE_CACHE=0)\n");
+    else if (!fp && !access(PCACHE_FILE, F_OK)) LOG("[vk] pipeline cache from another build / GPU / driver: starting a new one\n");
     if (fp) {
         fseek(fp, 0, SEEK_END);
         sz = (size_t)ftell(fp);
@@ -584,6 +967,9 @@ static void create_device(void) {
     free(data);
     if (pc.initialDataSize) LOG("[vk] pipeline cache: loaded %zu bytes\n", pc.initialDataSize);
     pcache_saved = pc.initialDataSize;
+#ifdef VK_KHR_pipeline_binary
+    if (pb.on) pb_setup();
+#endif
     pthread_t t;  // (kept every few minutes while it grows, not only at a clean exit)
     pthread_create(&t, NULL, pipeline_cache_saver, NULL);
     pthread_detach(t);
@@ -613,16 +999,25 @@ void vk_pipeline_cache_save(void) {
         LOG("[vk] pipeline cache: saved %zu bytes\n", sz);
     }
     free(data);
+#ifdef VK_KHR_pipeline_binary
+    pb_log();
+#endif
     pthread_mutex_unlock(&lock);
 }
 
 // ================================================================== swapchain
+static bool sc_interp;  // (the swapchain was made for Frame Generation: FIFO; the menu's toggle makes a new one if the mode differs)
+static VkPresentModeKHR sc_mode;  // (the swapchain's present mode)
 static VkPresentModeKHR present_mode(void) {
     // MAILBOX by default: the game paces itself (vi.c's emulated 60 Hz vsync), and with FIFO every submission
     // queued behind the one waiting for a window image, so the game's fence waits followed the presentation engine:
     // a throttled / captured / busy compositor slowed the whole game (4-21 fps with the GPU mostly idle; mailbox:
     // 60). No tearing. LARECOMP_VK_PRESENT=fifo|immediate|mailbox to choose.
+    // Frame Generation (frame interpolation, backend_present_now) presents its in-betweens before the frame's image,
+    // one display refresh apart: FIFO, where they queue (mailbox would replace them before they were shown).
     const char *e = getenv("LARECOMP_VK_PRESENT");
+    sc_interp = interp_wanted() == INTERP_ON;
+    if (!e && sc_interp) e = "fifo";
     VkPresentModeKHR want = !e || !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
     uint32_t n = 0;
@@ -634,12 +1029,47 @@ static VkPresentModeKHR present_mode(void) {
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
+// Frame Generation's toggle needs a new swapchain only when the mode really changes. Where the driver offers no mailbox
+// (AMD on Windows) both settings are FIFO, and remaking the same swapchain left 60 fps stuttering on a 144 Hz display
+// until a restart (#602; 60 Hz was fine). present_mode updates sc_interp: asked once per toggle.
+static bool sc_mode_changed(void) {
+    return sc_interp != (interp_wanted() == INTERP_ON) && present_mode() != sc_mode;
+}
+
+#ifdef __ANDROID__
+static bool recreate_surface(void);
+#endif
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
+#ifdef __ANDROID__
+    {   // (the window can go while the swapchain is made - the app sent to the background at start: made again, or
+        // no swapchain until the window is back)
+        VkResult r = g_vk.surface ? vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps)
+                                  : VK_ERROR_SURFACE_LOST_KHR;
+        if (r == VK_ERROR_SURFACE_LOST_KHR) {
+            if (!recreate_surface()) return;
+            r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps);
+        }
+        if (r == VK_ERROR_SURFACE_LOST_KHR) return;
+        VK_CHECK(r);
+    }
+#else
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
+#endif
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
+#ifdef __ANDROID__
+    // The surface reports the panel's own (portrait) orientation; the activity is landscape: images of the window's
+    // size, turned by the compositor (rotating in the app instead, pre-rotation, would spare it that). From
+    // LASRecompAndroid by mamcjr (MIT).
+    VkExtent2D ext = {(uint32_t)w, (uint32_t)h};
+    VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    LOG("[vk] swapchain: surface %ux%u transform %#x, window %dx%d\n", caps.currentExtent.width, caps.currentExtent.height,
+        caps.currentTransform, w, h);
+#else
     VkExtent2D ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
+    VkSurfaceTransformFlagBitsKHR transform = caps.currentTransform;
+#endif
     if (!ext.width || !ext.height) return;  // minimised
     uint32_t nf = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(g_vk.phys, g_vk.surface, &nf, NULL);
@@ -652,16 +1082,38 @@ static void create_swapchain(void) {
         if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; break; }
     uint32_t count = caps.minImageCount + 1;
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
-    if (count > 8) count = 8;
+    if (count > VK_SC_MAX) count = VK_SC_MAX;
+#ifdef __ANDROID__
+    if (count < caps.minImageCount)
+        FATAL("Surface needs %u swapchain images; renderer supports at most %d.\n", caps.minImageCount, VK_SC_MAX);
+#endif
     VkSwapchainKHR old = g_vk.swapchain;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = caps.currentTransform,
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = transform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = present_mode(), .clipped = VK_TRUE,
         .oldSwapchain = old};
+    sc_mode = ci.presentMode;
+#ifdef __ANDROID__
+    {   // (the window went away after its surface was made - sent to the background right then: no swapchain now, the
+        // next frame makes the surface and swapchain again instead of stopping. From mamcjr's LASRecompAndroid, MIT,
+        // after BOTWRecompAndroid.)
+        VkResult r = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain);
+        if (r == VK_ERROR_SURFACE_LOST_KHR || r == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR) {
+            LOG("[vk] window surface lost while making the swapchain (%d): made again at the next frame\n", r);
+            for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+            g_vk.sc_count = 0;
+            if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
+            g_vk.swapchain = VK_NULL_HANDLE;
+            return;
+        }
+        VK_CHECK(r);
+    }
+#else
     VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
+#endif
     static const char *const modes[] = {"immediate", "mailbox", "fifo", "fifo-relaxed"};
     LOG("[vk] swapchain %ux%u, %u images, %s\n", ext.width, ext.height, count,
         ci.presentMode < 4 ? modes[ci.presentMode] : "other present mode");
@@ -669,8 +1121,15 @@ static void create_swapchain(void) {
     if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
     g_vk.sc_format = sf.format;
     g_vk.sc_extent = ext;
+#ifdef __ANDROID__
+    VK_CHECK(vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, NULL));
+    if (g_vk.sc_count > VK_SC_MAX)
+        FATAL("Driver created %u swapchain images; renderer supports at most %d.\n", g_vk.sc_count, VK_SC_MAX);
+    VK_CHECK(vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images));
+#else
     g_vk.sc_count = 8;
     vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images);
+#endif
     for (uint32_t i = 0; i < g_vk.sc_count; i++) {
         VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = g_vk.sc_images[i],
                                     .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = sf.format,
@@ -685,9 +1144,34 @@ static VkResult wait_device_idle(const char *operation) {
     return result;
 }
 
+#ifdef __ANDROID__
+// Android destroys the window's surface whenever another activity covers the app (the folder picker, the home screen)
+// and SDL makes a new one on return: the old VkSurfaceKHR is lost for good (VK_ERROR_SURFACE_LOST_KHR on every acquire,
+// a black screen). So each swapchain rebuild there makes the surface again from SDL's current window first; the old
+// swapchain belongs to the old window and can't be passed on. False: no window right now (in the background).
+static bool recreate_surface(void) {
+    for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+    g_vk.sc_count = 0;
+    if (g_vk.swapchain) vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
+    g_vk.swapchain = VK_NULL_HANDLE;
+    if (g_vk.surface) vkDestroySurfaceKHR(g_vk.inst, g_vk.surface, NULL);
+    g_vk.surface = VK_NULL_HANDLE;
+    if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) {
+        LOG("[vk] no window surface yet: %s\n", SDL_GetError());
+        g_vk.surface = VK_NULL_HANDLE;
+        return false;
+    }
+    LOG("[vk] window surface made again (the app was in the background)\n");
+    return true;
+}
+#endif
+
 static void recreate_swapchain(void) {
-    rec_drain();
+    rec_drain();  // (every queued present and submission made: the queue is idle for the wait)
     VK_CHECK(wait_device_idle("vkDeviceWaitIdle (resize)"));
+#ifdef __ANDROID__
+    if (!recreate_surface()) return;
+#endif
     create_swapchain();
 }
 
@@ -706,7 +1190,7 @@ uint64_t g_vk_frame_waits[4];
 // ================================================================== frames (start screen and game)
 // Acquire semaphores rotate per frame in flight; a slot is reused once the submission that waited on it is done.
 #define FRAMES 3
-static VkSemaphore acquire_sem[FRAMES], done_sem[8];
+static VkSemaphore acquire_sem[FRAMES], done_sem[VK_SC_MAX];
 static uint64_t slot_seq[FRAMES];
 static int slot;
 
@@ -758,7 +1242,8 @@ bool vk_frame_begin(const float clear[4]) {
     // on the same swapchain are not allowed at the same time - and it may have asked for a new swapchain
     WAITING(rec_wait_presents(rec_presents_queued()));
     if (rec_present_recreate()) recreate_swapchain();
-    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height) recreate_swapchain();
+    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height ||
+        sc_mode_changed()) recreate_swapchain();
     if (!g_vk.swapchain) return false;
     static int trace = -1;
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
@@ -767,9 +1252,18 @@ bool vk_frame_begin(const float clear[4]) {
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
     WAITING_AT(0, vk_wait_seq(slot_seq[slot]));
     VkResult r;
-    WAITING_AT(1, r = acquire_frame_image(acquire_sem[slot], &cur_frame.image));
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+#ifdef __ANDROID__
+    if (!g_vk.swapchain) {  // (no window last time: try again)
         recreate_swapchain();
+        if (!g_vk.swapchain) return false;
+    }
+#endif
+    WAITING_AT(1, r = acquire_frame_image(acquire_sem[slot], &cur_frame.image));
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR) {
+        recreate_swapchain();
+#ifdef __ANDROID__
+        if (!g_vk.swapchain) return false;
+#endif
         WAITING_AT(1, r = acquire_frame_image(acquire_sem[slot], &cur_frame.image));
     }
     if (r == VK_TIMEOUT || r == VK_NOT_READY) return false;
@@ -974,7 +1468,7 @@ static uint64_t frames, total_frames, g_frame_counter;
 uint64_t renderer_present_count(void) { return total_frames; }  // (the game thread's frame: the HLE hooks')
 // The frame whose work is being translated (rqueue.h rq_frame): "once per frame" state of the translation. Without the
 // render thread, total_frames.
-uint64_t renderer_exec_frame(void) { return rq_current_item() ? rq_frame() : total_frames; }
+uint64_t renderer_exec_frame(void) { return (rq_current_item() ? rq_frame() : total_frames) + interp_replay_salt(); }
 uint64_t vk_frame_counter(void) { return renderer_exec_frame(); }  // (the translation's: g_frame_counter == total_frames)
 static float g_shot_crop[4] = {0, 0, 1, 1};
 static double last_fps_time;
@@ -985,10 +1479,11 @@ const float *vk_shot_crop(void) { return g_shot_crop; }
 void backend_present(NvnTexture *t);
 void *backend_pool_push(void) { return NULL; }
 void backend_pool_pop(void *p) { (void)p; }
+static bool direct_repeat;  // (render thread off) backend_represent's present
 void backend_represent(void) {
     if (!g_last_presented) { SDL_Delay(16); return; }
     if (rq_on()) rq_present(g_last_presented, total_frames, false);
-    else backend_present_now(g_last_presented, total_frames);
+    else { direct_repeat = true; backend_present_now(g_last_presented, total_frames); direct_repeat = false; }
 }
 
 // (LARECOMP_VK_PROF) the present's time by part, per frame in the fps line ("present/frame"): submit = the frame's
@@ -1017,6 +1512,216 @@ static const char *pp_text(void) {
     return s;
 }
 
+// ---- frame interpolation's in-betweens (runtime/nvn/interp.c; Metal: metal.m ip_present, with a presenter thread)
+// Inline: before a game frame's image, its in-betweens (between the previous frame and this one) are made - each a
+// replay of the frame's lists with blended uniforms into the game's own targets - and presented, each with the
+// previous image's placement; FIFO (present_mode) shows each for one refresh. The frame's image is set aside first
+// (a copy) and put back before it is presented. In-betweens per frame: the refresh rate over the game's 60, less one
+// (120 Hz: 1, 240 Hz: 3), from 100 Hz.
+static struct { bool ok; float vx, vy, vw, vh, pv[12]; } ip_place;  // (the last image's placement in the window)
+static VkImage ip_held;
+static VmaAllocation ip_held_mem;
+static uint32_t ip_held_w, ip_held_h;
+static VkFormat ip_held_fmt;
+static bool ip_hold(TexBackend *b, bool restore) {  // false: no copy (no memory)
+    if (!restore && (!ip_held || ip_held_w != b->width || ip_held_h != b->height || ip_held_fmt != b->format)) {
+        if (ip_held) { rec_drain(); vkDeviceWaitIdle(g_vk.dev); vmaDestroyImage(g_vk.vma, ip_held, ip_held_mem); ip_held = VK_NULL_HANDLE; }
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = b->format,
+                                .extent = {b->width, b->height, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateImage(g_vk.vma, &ci, &ai, &ip_held, &ip_held_mem, NULL) != VK_SUCCESS) { ip_held = VK_NULL_HANDLE; return false; }
+        ip_held_w = b->width, ip_held_h = b->height, ip_held_fmt = b->format;
+        VkCommandBuffer cb = vk_cmd();
+        VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                    .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, .dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .image = ip_held,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+        rec_CmdPipelineBarrier2(cb, &di);
+    }
+    if (!ip_held) return false;
+    vk_end_pass();
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkImageCopy r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .extent = {b->width, b->height, 1}};
+    if (restore) rec_CmdCopyImage(cb, ip_held, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+    else rec_CmdCopyImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, ip_held, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+    vk_full_barrier(cb);
+    return true;
+}
+// Presents one refresh period apart (Frame Generation on): an in-between and its frame's image presented back to back
+// - within a millisecond - left their spacing to FIFO, and through the compositor (and Parsec on top) some were merged
+// or dropped: 120 presents a second showed as jerky motion. Each waits until a period after the one before
+// (LARECOMP_INTERP_SPACING=0: not, research).
+static double ip_hz;            // (ip_mids: the refresh rate the in-betweens are made for; 0: none being made)
+static double ip_rate;          // (stats: the refresh rate in use, learned or the display's - with in-betweens or not)
+static bool ip_restart;         // (Frame Generation was off: nothing learned or counted before counts)
+static bool ip_new_interval, ip_new_rate;  // (ip_mids, after a restart: the game's interval and the display's rate measured again)
+static uint64_t ip_log_last;
+static uint64_t ip_last_present;
+// (stats, ip_log: where the window's presents fell short of the refresh rate - gaps over 1.5 refresh periods, waits
+// that overslept by over half a period, and in-betweens not made, by reason)
+enum { IP_NOT_ALLOWED, IP_LOCKED, IP_NO_HOLD, IP_NOT_PREPARED, IP_CAPPED, IP_NO_BLEND, IP_NO_GPU, IP_NREASONS };
+static uint64_t ip_presents, ip_gaps, ip_overslept, ip_not_made[IP_NREASONS];
+static double ip_gap_max;
+static void ip_space(void) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_INTERP_SPACING") || atoi(getenv("LARECOMP_INTERP_SPACING"));
+    uint64_t now = plat_now_ns();
+    if (on && ip_hz > 0 && ip_last_present) {
+        uint64_t target = ip_last_present + (uint64_t)(0.97e9 / ip_hz);
+        if (now < target && target - now < 50000000ull) {
+            WAITING(SDL_DelayPrecise(target - now));
+            now = plat_now_ns();
+            ip_overslept += now > target && now - target > 0.5e9 / ip_hz;
+        }
+    }
+    if (ip_hz > 0 && ip_last_present && now > ip_last_present) {
+        double gap = (now - ip_last_present) / 1e6;
+        ip_gaps += gap > 1.5e3 / ip_hz;
+        ip_gap_max = fmax(ip_gap_max, gap);
+    }
+    ip_presents++;
+    ip_last_present = now;
+}
+static void ip_log(void) {
+    uint64_t now = plat_now_ns();
+    if (!ip_log_last) ip_log_last = now;
+    if (now - ip_log_last < 2000000000ull) return;
+    double dt = (now - ip_log_last) / 1e9;
+    static const char *why[IP_NREASONS] = {"cut", "busy", "no copy", "not prepared", "lower display rate", "no blend", "no GPU time"};
+    char nm[200] = "";
+    int o = 0;
+    for (int i = 0; i < IP_NREASONS; i++)
+        if (ip_not_made[i]) o += snprintf(nm + o, sizeof nm - (size_t)o, " %s %llu", why[i], (unsigned long long)ip_not_made[i]);
+    if (ip_rate > 0 || o)
+        LOG("[interp] presents %.1f/s for %.0f Hz, gaps over 1.5 refreshes %llu (longest %.1f ms), waits overslept %llu | frames without in-betweens:%s\n",
+            ip_presents / dt, ip_rate, (unsigned long long)ip_gaps, ip_gap_max, (unsigned long long)ip_overslept, o ? nm : " none");
+    ip_presents = ip_gaps = ip_overslept = 0, ip_gap_max = 0;
+    memset(ip_not_made, 0, sizeof ip_not_made);
+    ip_log_last = now;
+}
+static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's image), placed as the last image
+    static const float black[4] = {0, 0, 0, 1};
+    extern bool vk_ip_mid;  // (exec.c: its GPU time is the in-between's)
+    vk_ip_mid = true;
+    if (vk_frame_begin(black)) {
+        VkCommandBuffer cb = vk_cmd();
+        vk_present_draw(cb, b, ip_place.vx, ip_place.vy, ip_place.vw, ip_place.vh, ip_place.pv);
+        menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
+        ip_space();
+        vk_frame_end(NULL);
+    }
+    vk_ip_mid = false;
+}
+static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
+    static uint64_t prev_ns;
+    static double interval_ns;  // (smoothed: the game's frame interval)
+    static double win_sum, win_max;  // (the raw intervals of the current 30-frame check)
+    uint64_t now = plat_now_ns();
+    if (ip_new_interval) prev_ns = 0, interval_ns = 0, ip_new_interval = false;
+    if (prev_ns && now > prev_ns) {
+        double d = (double)(now - prev_ns);
+        interval_ns = interval_ns > 0 && d < 4 * interval_ns ? interval_ns + (d - interval_ns) * 0.1 : d;
+        win_sum += d, win_max = fmax(win_max, d);
+    }
+    prev_ns = now;
+    if (!ip_place.ok || interval_ns <= 0 || !b || !b->image || b->depth > 1 || b->layers > 1) return 0;
+    // The refresh rate the window's presents really get: the display's own (SDL), unless the frames with in-betweens
+    // showed fewer - a virtual display (Parsec: 120 Hz reported, presents paced at 60) held each image two refreshes
+    // and the game fell to its 30 fps mode. Learned from those frames, kept while the display reports the same rate.
+    // In-betweens only from 100 Hz: never at the cost of the game's own 60.
+    // (gameplay only, three 30-frame checks in a row, each steady - no frame over 1.5x the check's average: a movie's,
+    // a load's or a resolution change's hitches aren't the display. A cap is tried again after 10 s of the game at its
+    // 60 - 20 s, 40 s... up to 5 min each time it comes back: an 8x resolution scale's slow frames learned 61 Hz once,
+    // and nothing measured again.)
+    // LARECOMP_INTERP_HZ=<hz> (tests): that refresh rate, nothing learned.
+    static double hz_seen, hz_cap, hz_env = -1;
+    static int mids_last, settle, slow_checks, full_rate, retry_after = 600;
+    if (hz_env < 0) hz_env = getenv("LARECOMP_INTERP_HZ") ? atof(getenv("LARECOMP_INTERP_HZ")) : 0;
+    if (ip_new_rate) hz_seen = 0, mids_last = 0, ip_new_rate = false;  // (a learned rate starts over: logged and measured again)
+    SDL_DisplayID did = SDL_GetDisplayForWindow(window);
+    const SDL_DisplayMode *dm = did ? SDL_GetCurrentDisplayMode(did) : NULL;
+    double hz = dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60;
+    if (hz != hz_seen) {
+        LOG("[interp] display %u: %.2f Hz (SDL)%s\n", (unsigned)did, hz, hz_env > 0 ? " - LARECOMP_INTERP_HZ overrides it" : "");
+        hz_seen = hz, hz_cap = 0, settle = slow_checks = full_rate = 0, retry_after = 600;
+    }
+    if (hz_env > 0) hz = hz_env;
+    extern int game_in_play(void);      // hle/warp.c
+    extern bool world_on_screen(void);  // hle/mirror.c
+    bool playing = hz_env <= 0 && game_in_play() && world_on_screen();
+    if (playing && mids_last > 0 && ++settle >= 30) {  // (30 frames with in-betweens)
+        double expect = (mids_last + 1) * 1e9 / (hz_cap > 0 ? fmin(hz, hz_cap) : hz), mean = win_sum / settle;
+        bool steady = win_max < 1.5 * mean;
+        settle = 0;
+        slow_checks = steady && mean > 1.3 * expect ? slow_checks + 1 : 0;
+        if (slow_checks >= 3) {
+            hz_cap = (mids_last + 1) * 1e9 / mean;
+            slow_checks = full_rate = 0;
+            static int nlog;
+            if (nlog++ < 10) LOG("[interp] the display shows %.0f images a second, not %.0f: in-betweens for %.0f Hz\n", hz_cap, hz, hz_cap);
+        }
+    }
+    if (!playing || mids_last == 0 || settle == 0) win_sum = win_max = 0;  // (a check counts its own 30 frames)
+    if (hz_cap > 0 && hz_cap < hz) {  // (trying the display's rate again)
+        full_rate = playing && interval_ns < 1.1e9 / 60 ? full_rate + 1 : 0;
+        if (full_rate >= retry_after) {
+            LOG("[interp] trying %.0f Hz again (the game held 60 for %d s)\n", hz, retry_after / 60);
+            hz_cap = 0, full_rate = settle = slow_checks = 0;
+            retry_after = retry_after * 2 > 18000 ? 18000 : retry_after * 2;
+        }
+    }
+    if (hz_env <= 0 && hz_cap > 0 && hz_cap < hz) hz = hz_cap;
+    // (counted for the game's own 60, not the measured interval: a game slowed to its 30 fps mode got more in-betweens,
+    // which held it at 30)
+    int mids = hz >= 100 ? (int)lround(hz / 60.0) - 1 : 0;
+    if (mids > 3) mids = 3;
+    ip_rate = hz;
+    if (mids < 1) { ip_not_made[IP_CAPPED] += hz_cap > 0; mids_last = 0; ip_hz = 0; return 0; }
+    if (mids != mids_last) settle = slow_checks = 0;
+    mids_last = mids;
+    // The GPU's time goes to the game's frames first (as on Metal, metal.m): in-betweens only in what a game frame
+    // leaves of its interval - the game's own GPU time (pace.c; the in-betweens' submissions aren't counted there,
+    // exec.c) against an in-between's, replay and window image. Fewer than the refresh rate wants: evenly spaced, each
+    // shown longer. LARECOMP_INTERP_GPU_BUDGET=0: all made (research).
+    int allowed = mids;
+    {
+        static int budget_on = -1;
+        if (budget_on < 0) { const char *e = getenv("LARECOMP_INTERP_GPU_BUDGET"); budget_on = !e || atoi(e); }
+        extern double pace_gpu_frame_ms(void);
+        double game = pace_gpu_frame_ms(), img = interp_image_gpu_ms();
+        double D = fmin(fmax(interval_ns / 1e6, 16.667), 50);
+        if (budget_on && game >= 0 && img > 0) {
+            double left = 0.9 * D - game;
+            allowed = left > 0 ? (int)(left / img) : 0;
+            if (allowed > mids) allowed = mids;
+        }
+    }
+    for (int m = allowed; m < mids; m++) interp_note_no_gpu();
+    if (allowed < 1) { ip_not_made[IP_NO_GPU]++; ip_hz = 0; return 0; }
+    ip_hz = hz * (allowed + 1) / (mids + 1);  // (presents spaced for the images made)
+    if (!interp_replays_allowed(frame, total_frames, now)) { ip_not_made[IP_NOT_ALLOWED]++; return 0; }
+    if (!interp_replay_lock()) { ip_not_made[IP_LOCKED]++; return 0; }
+    int made = 0;
+    if (ip_hold(b, false)) {
+        extern void renderer_interp_replay(void);
+        for (int m = 1; m <= allowed; m++) {
+            if (!interp_prepare((float)m / (float)(allowed + 1))) break;
+            renderer_interp_replay();
+            ip_present_mid(b);
+            made++;
+        }
+        ip_hold(b, true);
+        if (!made) ip_not_made[IP_NOT_PREPARED]++;
+    } else ip_not_made[IP_NO_HOLD]++;
+    interp_replay_unlock();
+    return made;
+}
+
 // The GPU side of a present (the render thread when it's on, rqueue.c): the present pass, the overlay, shots.
 // frame: the number of this present (the game thread's frame when it was queued).
 void backend_present_now(NvnTexture *t, uint64_t frame) {
@@ -1030,6 +1735,28 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
     // Its GPU time is counted, and the window image's submission's from after its wait (exec.c gpu_timer_add)
     renderer_submit();
     pp_mark(PP_SUBMIT);
+    {   // frame interpolation (runtime/nvn/interp.c): the frame's draws matched with the previous frame's and logged,
+        // and with it on, its in-betweens presented (ip_mids)
+        bool repeat = rq_on() ? rq_present_is_repeat() : direct_repeat;
+        int want = interp_wanted();
+        if (!repeat) {
+            if (want == INTERP_ON && ip_restart) {  // (turned on again: the stats from now, and measured again)
+                ip_restart = false, ip_new_interval = ip_new_rate = true;
+                ip_last_present = ip_log_last = 0;
+                ip_presents = ip_gaps = ip_overslept = 0, ip_gap_max = 0;
+                memset(ip_not_made, 0, sizeof ip_not_made);
+            }
+            bool blend = interp_frame_end(want != INTERP_OFF);
+            if (want == INTERP_ON) {
+                if (blend) interp_note_images(ip_mids(b, frame));
+                else ip_not_made[IP_NO_BLEND]++, interp_note_images(0);
+            }
+            interp_frame_rotate();
+            if (want != INTERP_OFF) interp_log_stats();
+            if (want == INTERP_ON) ip_log();
+            else ip_restart = true, ip_hz = ip_rate = 0;  // (off: the next on starts fresh)
+        }
+    }
     static const float black[4] = {0, 0, 0, 1};
     uint64_t t0 = SDL_GetTicksNS();
     bool have = vk_frame_begin(black);
@@ -1089,6 +1816,8 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         float pv[12] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3], 1, 1, 0, 0};
         photo_mode_color(pv + 8);
         memcpy(g_shot_crop, crop, sizeof crop);
+        ip_place.ok = true, ip_place.vx = (float)vx, ip_place.vy = (float)vy, ip_place.vw = (float)vw, ip_place.vh = (float)vh;
+        memcpy(ip_place.pv, pv, sizeof ip_place.pv);
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
         pp_mark(PP_BLIT);
         static long menu_at = -1;
@@ -1104,6 +1833,7 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         extern bool research_exit_ready(void);
         bool shot = (win_shot && (long)frame + 1 == win_shot) || research_exit_ready();
         bool requested_shot = !photo_path && g_window_shot_request[0];
+        ip_space();
         vk_frame_end(photo_path ? photo_path : requested_shot ? g_window_shot_request :
                      shot ? (getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/window.png") : NULL);
         if (photo_path) photo_mode_capture_done();
@@ -1123,6 +1853,18 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         extern bool g_gpuprof_frame;
         extern void vk_gpuprof_report(void);
         if (g_gpuprof_frame) { g_gpuprof_frame = false; vk_gpuprof_report(); }
+        // LARECOMP_GPUPROF_FILE=<path>: on demand - when that file appears (checked once a second) it is removed and
+        // 10 frames half a second apart are profiled (an A/B at one spot: touch the file while standing still)
+        static const char *pf;
+        static int pf_init;
+        static uint64_t pf_next, pf_left;
+        if (!pf_init) { pf_init = 1; pf = getenv("LARECOMP_GPUPROF_FILE"); }
+        if (pf && !pf_left && frame % 60 == 0 && access(pf, F_OK) == 0) {
+            unlink(pf);
+            pf_left = 10, pf_next = frame + 1;
+            LOG("[gpuprof] on demand: 10 frames from %llu\n", (unsigned long long)pf_next);
+        }
+        if (pf_left && frame == pf_next) { g_gpuprof_frame = true; pf_left--; pf_next = frame + 30; }
         const char *e = getenv("LARECOMP_GPUPROF_AT");
         for (const char *p = e; p && *p;) {
             long at = strtol(p, (char **)&p, 10);
@@ -1316,7 +2058,11 @@ void ui_window_init(void) {
     input_load_user_mappings();
     int win_w = 1280, win_h = 720;
     if (getenv("LARECOMP_WINDOW")) sscanf(getenv("LARECOMP_WINDOW"), "%dx%d", &win_w, &win_h);
+    else rt_window_size(&win_w, &win_h);
     SDL_WindowFlags wflags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+#ifdef __ANDROID__
+    wflags |= SDL_WINDOW_FULLSCREEN;  // (the whole screen, system bars hidden)
+#endif
     if (getenv("LARECOMP_HIDDEN")) wflags |= SDL_WINDOW_HIDDEN;
     {   // scripted test runs (user input ignored: runtime/hle/input.c input_user_blocked) open without taking the
         // keyboard focus from whatever the player is doing
@@ -1326,10 +2072,26 @@ void ui_window_init(void) {
         if (scripted) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     }
     window = SDL_CreateWindow(title_profile_current()->key[0] ? title_profile_current()->name : "Multi", win_w, win_h, wflags);
+#ifdef __ANDROID__
+    // opened with the screen locked / off: no surface to make the window on yet; it comes once the activity shows.
+    // SDL_PumpEvents sleeps while the app is paused, so the 5 s count only time in the foreground, and a window that
+    // fails for another reason still shows the error below. (From mamcjr's LASRecompAndroid, MIT.)
+    for (int tries = 0; !window && tries < 20 * 5; tries++) {
+        if (tries == 0) LOG("[vk] waiting for the Android window (%s)\n", SDL_GetError());
+        SDL_PumpEvents();
+        SDL_Delay(50);
+        window = SDL_CreateWindow(title_profile_current()->key[0] ? title_profile_current()->name : "Multi", win_w, win_h, wflags);
+    }
+#endif
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);
+    rt_window_remember(window);
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
+#ifdef __ANDROID__
+    SDL_SetWindowFullscreen(window, true);  // (always: there is no window to go back to)
+#else
     if (g_settings.fullscreen && !getenv("LARECOMP_WINDOW") && !getenv("LARECOMP_HIDDEN")) SDL_SetWindowFullscreen(window, true);
+#endif
     create_instance();
     if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
     pick_device();
@@ -1375,6 +2137,14 @@ int ui_run(void) {
         SDL_Event e;
         while (SDL_WaitEventTimeout(&e, 16)) {
             input_rumble_poll();
+#ifdef __ANDROID__
+            // the app may not come back from the background (the system ends it there): keep the pipeline cache and
+            // the settings (options changed with the menu still open were lost). From LASRecomp-Android-Plus (MIT).
+            if (e.type == SDL_EVENT_WILL_ENTER_BACKGROUND && g_vk.dev) {
+                vk_pipeline_cache_save();
+                settings_save();
+            }
+#endif
             if (e.type == SDL_EVENT_QUIT) {
                 input_rumble_stop();
                 input_led_stop();
@@ -1392,5 +2162,6 @@ int ui_run(void) {
         menu_apply_window_requests(window);
         input_rumble_poll();
         input_led_poll();
+        input_pad_poll();
     }
 }

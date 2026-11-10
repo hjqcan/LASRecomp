@@ -24,6 +24,8 @@ bool coop_active(void){return active;}
 bool coop_requested(void){return active;}
 void coop_host_input(int32_t x,int32_t y,bool attack){second_x=x;second_y=y;second_attack=attack;}
 int16_t g_bind_key[BIND_KEY_COUNT],g_bind_pad[BIND_PAD_COUNT];
+int bind_pad_host(int slot){return g_bind_pad[slot];}
+uint64_t g_test_stick_until; int32_t g_test_lx,g_test_ly;
 // Unrelated UI/test helpers referenced by exported input.c functions on PE linkers.
 void performance_frame(uint64_t f){} void workshop_frame(uint64_t f){} void watch_arm(void){}
 int bind_pad_from_name(const char *s){return -1;} int bind_slot_from_name(const char *s){return -1;}

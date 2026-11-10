@@ -1,4 +1,5 @@
 // Data root and shipped resources (runtime/paths.h).
+#include "i18n_mark.h"
 #include <SDL3/SDL.h>
 #include <dirent.h>
 #include <errno.h>
@@ -130,6 +131,10 @@ static void default_home(char *root, size_t n) {
     if (t && *t) { snprintf(root, n, "%s", t); return; }
 #ifdef _WIN32
     exe_dir(root, n);
+#elif defined(__ANDROID__)
+    // the app's external files folder (Android/data/<package>/files): reachable over USB and from file managers
+    const char *ext = SDL_GetAndroidExternalStoragePath();
+    snprintf(root, n, "%s", ext ? ext : SDL_GetAndroidInternalStoragePath());
 #elif defined(__linux__)
     // (the AppImage is read-only): $XDG_DATA_HOME/lasrecomp, ~/.local/share/lasrecomp by default
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
@@ -461,8 +466,11 @@ unsigned long long rt_game_files_size(const char *game_dir) {
 // ---- choosing another data folder, moving the data there (the start screen: runtime/ui/launcher.mm)
 const char *rt_data_root_fixed(void) {
     const char *env = getenv("LARECOMP_DATA_ROOT");
-    if (env && *env) return "Set by LARECOMP_DATA_ROOT.";
-    if (g_dev) return "A source checkout uses its own folder.";
+    if (env && *env) return LN("Set by LARECOMP_DATA_ROOT.");
+    if (g_dev) return LN("A source checkout uses its own folder.");
+#ifdef __ANDROID__
+    return LN("On Android this is the app's own folder.");
+#endif
     return NULL;
 }
 
@@ -522,7 +530,7 @@ void rt_data_target(const char *picked, RtDataTarget *t) {
     char r[1100], root[1100], p[1100];
     snprintf(t->path, sizeof t->path, "%s", picked);
     if (!resolve(picked, r, sizeof r) || !is_dir(r) || !resolve(g_root, root, sizeof root)) {
-        snprintf(t->refuse, sizeof t->refuse, "That folder can't be opened.");
+        snprintf(t->refuse, sizeof t->refuse, LN("That folder can't be opened."));
         return;
     }
     // the folder itself when it's empty, LAS Recomp's data, or the platform's folder; otherwise a "LAS Recomp"
@@ -536,13 +544,13 @@ void rt_data_target(const char *picked, RtDataTarget *t) {
     struct stat a, b;
     bool same_fs = stat(root, &a) == 0 && stat(r, &b) == 0 && a.st_dev == b.st_dev;  // (hard links: no second copy)
     t->need = (same_fs ? 0 : t->bytes) + (64ull << 20);
-    if (path_eq(t->path, root)) snprintf(t->refuse, sizeof t->refuse, "That's the data folder already.");
-    else if (within(t->path, root)) snprintf(t->refuse, sizeof t->refuse, "That folder is inside the data folder.");
-    else if (within(root, t->path)) snprintf(t->refuse, sizeof t->refuse, "That folder holds the data folder.");
-    else if (in_app(r)) snprintf(t->refuse, sizeof t->refuse, "That folder is inside the app.");
-    else if (!writable(r)) snprintf(t->refuse, sizeof t->refuse, "LAS Recomp can't write to that folder.");
+    if (path_eq(t->path, root)) snprintf(t->refuse, sizeof t->refuse, LN("That's the data folder already."));
+    else if (within(t->path, root)) snprintf(t->refuse, sizeof t->refuse, LN("That folder is inside the data folder."));
+    else if (within(root, t->path)) snprintf(t->refuse, sizeof t->refuse, LN("That folder holds the data folder."));
+    else if (in_app(r)) snprintf(t->refuse, sizeof t->refuse, LN("That folder is inside the app."));
+    else if (!writable(r)) snprintf(t->refuse, sizeof t->refuse, LN("LAS Recomp can't write to that folder."));
     else if (!same_dir(t->path, g_home) && !usable_dir(t->path))
-        snprintf(t->refuse, sizeof t->refuse, "Choose an empty folder.");
+        snprintf(t->refuse, sizeof t->refuse, LN("Choose an empty folder."));
 }
 
 // ---- the move: copy, check the copy, switch over, then empty the old folder
@@ -702,7 +710,7 @@ static bool prepare_target(const char *to, char *err, size_t n) {
     char p[1100];
     mkdirs(to);
     if (!is_dir(to) || !writable(to)) {
-        snprintf(err, n, "LAS Recomp can't write to %s.", to);
+        snprintf(err, n, LN("LAS Recomp can't write to %s."), to);
         return false;
     }
     join(p, sizeof p, to, MARK_PARTIAL);
@@ -716,7 +724,7 @@ bool rt_data_use(const char *to, char *err, size_t n) {
     err[0] = 0;
     if (!prepare_target(to, err, n)) return false;
     if (!point_to(to)) {
-        snprintf(err, n, "Couldn't save the data folder's location in %s.", g_home);
+        snprintf(err, n, LN("Couldn't save the data folder's location in %s."), g_home);
         return false;
     }
     fprintf(stderr, "[paths] data folder: %s from the next start\n", to);
@@ -729,11 +737,11 @@ bool rt_data_move(const char *to, void (*progress)(int step, double frac), char 
     snprintf(from, sizeof from, "%s", g_root);
     if (!prepare_target(to, err, n)) return false;
     if (!resolve(to, abs_to, sizeof abs_to) || overlap(abs_to, from)) {
-        snprintf(err, n, "That folder is inside the data folder.");
+        snprintf(err, n, LN("That folder is inside the data folder."));
         return false;
     }
     if (has_entries(abs_to)) {
-        snprintf(err, n, "That folder already has LAS Recomp data.");
+        snprintf(err, n, LN("That folder already has LAS Recomp data."));
         return false;
     }
     Move m = {progress, 0, entries_size(from), 0, err, n, malloc(MOVE_BUF), malloc(MOVE_BUF)};
@@ -761,7 +769,7 @@ bool rt_data_move(const char *to, void (*progress)(int step, double frac), char 
         ok = write_line(q, from) && remove(p) == 0;
         if (!ok) move_fail(&m, "Couldn't write to", abs_to);
     }
-    if (ok && !point_to(abs_to)) ok = false, snprintf(err, n, "Couldn't save the data folder's location in %s.", g_home);
+    if (ok && !point_to(abs_to)) ok = false, snprintf(err, n, LN("Couldn't save the data folder's location in %s."), g_home);
     if (!ok) {
         fprintf(stderr, "[paths] move failed: %s\n", err);
         remove_partial(abs_to);

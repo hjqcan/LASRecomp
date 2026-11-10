@@ -9,7 +9,11 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#ifdef __ANDROID__
+#include <volk.h>  // (every Vulkan function through volk: Android's loader exports 1.1 only before API 33)
+#else
 #include <vulkan/vulkan.h>
+#endif
 #if __has_include(<vma/vk_mem_alloc.h>)
 #include <vma/vk_mem_alloc.h>
 #else
@@ -20,9 +24,19 @@
 #include "../maxwell/shader.h"
 
 void vk_device_fault_report(void);
+#ifdef __ANDROID__
+void vk_android_load(void);  // android_driver.c: the Vulkan driver (a custom one through libadrenotools, or the system's)
+#endif
 #define VK_CHECK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { if (r_ == VK_ERROR_DEVICE_LOST) vk_device_fault_report(); \
     FATAL("%s failed: %d (%s:%d)\n", #x, r_, __FILE__, __LINE__); } } while (0)
 
+// Swapchain images the renderer keeps (the driver decides how many it makes from the count asked: a Mali-G68 made 9
+// for 8 asked). From mamcjr's LASRecompAndroid (MIT).
+#ifdef __ANDROID__
+#define VK_SC_MAX 16
+#else
+#define VK_SC_MAX 8
+#endif
 typedef struct {
     VkInstance inst;
     VkPhysicalDevice phys;
@@ -32,6 +46,7 @@ typedef struct {
     uint32_t ts_bits;          // the queue's timestampValidBits (0: no timestamps)
     VmaAllocator vma;
     VkPhysicalDeviceProperties props;
+    bool cpu_astc;  // ASTC decoded on the CPU although the driver lists it (device.c)
     VkPipelineCache pcache;
     VkSemaphore timeline;      // value = last completed submission number
     VkCommandPool pool;        // render thread only
@@ -43,6 +58,8 @@ typedef struct {
     // LARECOMP_VK_GPL_PROBE=1 only (exec.c gpl_probe, measurement): VK_EXT_graphics_pipeline_library enabled
     bool gpl_probe;
     bool map_placed, unmap_reserve;  // VK_EXT_map_memory_placed: driver memory mapped at a given address (exec.c guest_heap_dmabuf)
+    bool heap_dmabuf_default;  // the heap as driver memory by default: RADV and Mesa's PanVK (device.c; LARECOMP_VK_HEAP_DMABUF overrides)
+    bool cb_release;  // command buffers reset with RELEASE_RESOURCES before each begin: Arm's driver (device.c; LARECOMP_VK_CB_RELEASE)
     bool ssbo_chunks;  // stores and atomics from fragment and vertex shaders (exec.c: the heap in chunks counts misses)
     bool lazy_heap, bda;  // the heap imported chunk by chunk (device.c lazy_heap_predicted), buffer device addresses enabled for it
     bool heap_probe;      // one import tried at the start, lazy chunks if it runs out of memory (exec.c whole_import_probe_oom)
@@ -57,8 +74,8 @@ typedef struct {
     VkFormat sc_format;
     VkExtent2D sc_extent;
     uint32_t sc_count;
-    VkImage sc_images[8];
-    VkImageView sc_views[8];
+    VkImage sc_images[VK_SC_MAX];
+    VkImageView sc_views[VK_SC_MAX];
 } VkG;
 void vk_log_memory(const char *why);  // (device.c: per-heap budget and use, at start and on allocation failures)
 extern VkG g_vk;
@@ -100,6 +117,7 @@ typedef struct TexBackend {
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
     uint32_t wgen;  // page write tracking generation at the last upload check (textures.c)
     bool scalable, presented;
+    bool ao;             // (scalable) the game's ambient occlusion: at its own scale (textures.c tex_ao)
     uint64_t touched_frame, frame_cleared;
     uint32_t level_gen;
     float sx, sy;        // the scale the contents were drawn at (scalable textures)
@@ -125,6 +143,9 @@ VkFormat vk_image_format(uint32_t nvn_format, VkImageAspectFlags *aspect);  // (
 void vk_pipeline_cache_save(void);
 VkResult vk_create_graphics_pipelines(uint32_t count, const VkGraphicsPipelineCreateInfo *info, VkPipeline *out);
 VkResult vk_create_compute_pipelines(uint32_t count, const VkComputePipelineCreateInfo *info, VkPipeline *out);
+// (device.c) pipelines as vkCreate*Pipelines with g_vk.pcache, or from / into our stored binaries (VK_KHR_pipeline_binary)
+VkResult vk_create_graphics_pipeline(const VkGraphicsPipelineCreateInfo *ci, VkPipeline *out);
+VkResult vk_create_compute_pipeline(const VkComputePipelineCreateInfo *ci, VkPipeline *out);
 bool vk_format_alpha_one(uint32_t nvn_format);
 // View of t (optionally through an NVN texture view) for rendering or sampling.
 VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool render, int want_textype);

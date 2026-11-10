@@ -19,6 +19,10 @@ bool menu_is_open(void);
 void menu_close(void);
 // Main thread: apply window requests (fullscreen) made from the menu.
 void menu_apply_window_requests(void *sdl_window);
+// Before the window is made: its opening size, the remembered one (Remember window size), else left as is.
+void rt_window_size(int *w, int *h);
+// The window made: its size is saved at exit (Remember window size).
+void rt_window_remember(void *sdl_window);
 
 #if defined(__APPLE__) && defined(__OBJC__)
 // Render thread: draw the overlay into the drawable after the game image (no-op while closed).

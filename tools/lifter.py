@@ -72,6 +72,22 @@ def hx(v):
     return f'0x{v:x}ull'
 
 
+# gen.py --dyn-base (Android): the guest window starts wherever the process has room instead of at CANON. Addresses the
+# code derives from its own pc (ADR / ADRP, literal loads, return addresses, branch and dispatch targets, svc / brk /
+# udf sites) are then emitted as GB + offset, GB being the window's actual start (a local of every function that uses
+# it, read from lasgame_gb). Without the flag the output is unchanged. From LASRecompAndroid by mamcjr (MIT).
+CANON = 0x7000000000    # GUEST_LO (runtime/rt.h)
+WINDOW = 0x320000000    # GUEST_HI - GUEST_LO
+DYN_BASE = False
+
+
+def gaddr(v):
+    """C for a guest address that comes from the code's own position (moves with the window under --dyn-base)."""
+    if DYN_BASE and CANON <= v < CANON + WINDOW:
+        return f'(GB + 0x{v - CANON:x}ull)'
+    return hx(v)
+
+
 # ---------------------------------------------------------------- register helpers
 
 def X(r):
@@ -191,7 +207,7 @@ class Lifter:
         if (op0 & 0b0111) == 0b0111:
             return self.fp_simd(w, pc)
         # padding, trap words (e7ffdefe), header data: trap if ever executed
-        return Insn('trap', f'rt_udf(c, {hx(pc)});')
+        return Insn('trap', f'rt_udf(c, {gaddr(pc)});')
 
     # ------------------------------------------------------------ data processing (imm)
 
@@ -205,7 +221,7 @@ class Lifter:
                 val = (pc & ~0xFFF) + (imm << 12)
             else:
                 val = pc + imm
-            return Insn('op', set_reg(1, rd, hx(val & ones(64))))
+            return Insn('op', set_reg(1, rd, gaddr(val & ones(64))))
         if op == 2:  # add/sub imm
             opc, S, sh = bits(w, 30, 1), bits(w, 29, 1), bits(w, 22, 1)
             imm = bits(w, 10, 12) << (12 if sh else 0)
@@ -306,9 +322,9 @@ class Lifter:
         if bits(w, 24, 8) == 0b11010100:  # exception generation
             opc, ll, imm = bits(w, 21, 3), bits(w, 0, 5), bits(w, 5, 16)
             if opc == 0 and ll == 1:
-                return Insn('op', f'rt_svc(c, {imm}, {hx(pc)});')
+                return Insn('op', f'rt_svc(c, {imm}, {gaddr(pc)});')
             if opc == 1 and ll == 0:
-                return Insn('trap', f'rt_brk(c, {imm}, {hx(pc)});')
+                return Insn('trap', f'rt_brk(c, {imm}, {gaddr(pc)});')
             raise Unsupported('exception')
         if bits(w, 22, 10) == 0b1101010100:
             return self.system(w, pc)
@@ -371,11 +387,11 @@ class Lifter:
             opc, rt = bits(w, 30, 2), bits(w, 0, 5)
             addr = pc + sext(bits(w, 5, 19), 19) * 4
             if opc == 0:
-                return Insn('op', set_reg(0, rt, f'LD32({hx(addr)})'))
+                return Insn('op', set_reg(0, rt, f'LD32({gaddr(addr)})'))
             if opc == 1:
-                return Insn('op', set_reg(1, rt, f'LD64({hx(addr)})'))
+                return Insn('op', set_reg(1, rt, f'LD64({gaddr(addr)})'))
             if opc == 2:
-                return Insn('op', set_reg(1, rt, f'(int64_t)(int32_t)LD32({hx(addr)})'))
+                return Insn('op', set_reg(1, rt, f'(int64_t)(int32_t)LD32({gaddr(addr)})'))
             return Insn('op', '/* prfm */')
         if bits(w, 27, 3) == 0b101:
             return self.ldst_pair(w)
@@ -721,7 +737,7 @@ def emit_asm_batch(batch):
         off = OFF_SP if g == 'sp' else OFF_X + 8 * g
         lines.append(f'ldr x{s}, [%0, #{off}]')
     for i, (s, val) in enumerate(consts):
-        ins.append(f'"r"({hx(val)})')
+        ins.append(f'"r"({gaddr(val)})')
         lines.append(f'mov x{s}, %{len(ins) - 1}')
     for v in sorted(vregs):
         lines.append(f'ldr q{v}, [%0, #{OFF_V + 16 * v}]')

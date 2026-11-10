@@ -14,6 +14,7 @@
 #include <string.h>
 #include <string>
 
+#include "i18n.h"
 #include "imgui_internal.h"
 #include "plastic.h"
 
@@ -31,9 +32,9 @@ const PlasticTheme &plastic_theme(void) {
         // khaki-gold inner edge; rows, buttons and tabs terracotta in a khaki-gold rim (cream text), the selection pale
         // gold in a lighter gold rim (dark brown text), Delete / warnings a muted red. The terracotta is a little
         // darker than the item screen's (#A57955) so cream text keeps 4.5:1.
-        t.panel = hex(0x433110, 0.98f);   // (the patches: panel <-> panel2, about #493812 on average)
-        t.panel2 = hex(0x4F4017, 0.98f);
-        t.inset = hex(0x3D3213, 0.96f);
+        t.panel = hex(0x433110, 0.78f);   // (the patches: panel <-> panel2, about #493812 on average)
+        t.panel2 = hex(0x4F4017, 0.78f);
+        t.inset = hex(0x3D3213, 0.72f);
         t.frame = hex(0x4F5231);
         t.frame_inner = hex(0xAA9B67);
         t.row = hex(0x836044);
@@ -60,7 +61,7 @@ const PlasticTheme &plastic_theme(void) {
         t.pill_gloss = 0.18f;  // (a soft sheen: a bright one washed out the cream text)
         t.edge = 0.08f;
         t.mottle = 150.0f;
-        t.dim = 0.62f;
+        t.dim = 0.45f;
         t.glare = 0.14f;
     }
     return t;
@@ -606,35 +607,58 @@ void plastic_well(ImDrawList *dl, ImVec2 a, ImVec2 b, float scale) {
     dl->PopClipRect();
 }
 
-bool plastic_close_button(float bx, float scale) {
+// the round button's piece and its icon: the X, or (reset) an arrow going round
+static bool round_button(const char *id, float bx, float scale, bool reset) {
     const PlasticTheme &t = plastic_theme();
     ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
-    bool close = ImGui::InvisibleButton("##close", ImVec2(bx, bx), ImGuiButtonFlags_EnableNav);
+    bool pressed = ImGui::InvisibleButton(id, ImVec2(bx, bx), ImGuiButtonFlags_EnableNav);
     ImGui::PopStyleColor();
     bool hot = ImGui::IsItemHovered() || (ImGui::IsItemFocused() && GImGui->NavCursorVisible);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     plastic_pill(dl, p, ImVec2(p.x + bx, p.y + bx), bx * 0.5f, hot ? t.row_sel : t.row, 6 * scale, 1.0f, scale, hot);
     ImU32 col = hot ? t.text_sel : t.text;
     float m = bx * 0.32f, th = (hot ? 3.0f : 2.6f) * scale * 1.5f, dy = -1 * scale;
-    dl->AddLine(ImVec2(p.x + m, p.y + m + dy), ImVec2(p.x + bx - m, p.y + bx - m + dy), col, th);
-    dl->AddLine(ImVec2(p.x + bx - m, p.y + m + dy), ImVec2(p.x + m, p.y + bx - m + dy), col, th);
-    return close;
+    if (!reset) {
+        dl->AddLine(ImVec2(p.x + m, p.y + m + dy), ImVec2(p.x + bx - m, p.y + bx - m + dy), col, th);
+        dl->AddLine(ImVec2(p.x + bx - m, p.y + m + dy), ImVec2(p.x + m, p.y + bx - m + dy), col, th);
+        return pressed;
+    }
+    // an open circle from the top, round anticlockwise to the top right, with the arrowhead at its start
+    ImVec2 c(p.x + bx * 0.5f, p.y + bx * 0.5f + dy);
+    float r = bx * 0.2f, a0 = -IM_PI * 0.5f, a1 = a0 - IM_PI * 1.55f;
+    dl->PathArcTo(c, r, a0, a1, 24);
+    dl->PathStroke(col, 0, th);
+    float h = th * 1.7f;  // the arrowhead at the top, pointing right (the way the circle turns back to it)
+    ImVec2 tip(c.x + h * 0.9f, c.y - r);
+    dl->AddTriangleFilled(tip, ImVec2(c.x - h * 0.2f, c.y - r - h), ImVec2(c.x - h * 0.2f, c.y - r + h), col);
+    return pressed;
 }
 
-bool plastic_close_corner(float bx, float scale) {
+bool plastic_close_button(float bx, float scale) { return round_button("##close", bx, scale, false); }
+
+// slot 0: the corner itself; each slot further one button (and a gap) to the left
+static bool corner_button(float bx, float scale, int slot, bool reset) {
     // in the window's top right corner, clear of the frame (its moulding ends 20 px in), and out of the layout: the
     // line it's on keeps its height
     ImGuiWindow *w = ImGui::GetCurrentWindow();
     ImGuiWindowTempData keep = w->DC;
     float m = 34 * scale;
-    ImGui::SetCursorScreenPos(ImVec2(w->Pos.x + w->Size.x - m - bx, w->Pos.y + m));
-    bool r = plastic_close_button(bx, scale);
+    ImGui::SetCursorScreenPos(ImVec2(w->Pos.x + w->Size.x - m - bx - slot * (bx + 12 * scale), w->Pos.y + m));
+    bool r = round_button(reset ? "##reset" : "##close", bx, scale, reset);
     w->DC.CursorPos = keep.CursorPos, w->DC.CursorPosPrevLine = keep.CursorPosPrevLine;
     w->DC.CursorMaxPos = keep.CursorMaxPos, w->DC.IdealMaxPos = keep.IdealMaxPos;
     w->DC.CurrLineSize = keep.CurrLineSize, w->DC.PrevLineSize = keep.PrevLineSize;
     w->DC.CurrLineTextBaseOffset = keep.CurrLineTextBaseOffset, w->DC.PrevLineTextBaseOffset = keep.PrevLineTextBaseOffset;
     w->DC.IsSameLine = keep.IsSameLine, w->DC.IsSetPos = keep.IsSetPos;
+    return r;
+}
+
+bool plastic_close_corner(float bx, float scale) { return corner_button(bx, scale, 0, false); }
+
+bool plastic_reset_corner(float bx, float scale) {
+    bool r = corner_button(bx, scale, 1, true);
+    if (ImGui::IsItemHovered() || (ImGui::IsItemFocused() && GImGui->NavCursorVisible)) ImGui::SetTooltip("%s", L("Reset to vanilla"));
     return r;
 }
 

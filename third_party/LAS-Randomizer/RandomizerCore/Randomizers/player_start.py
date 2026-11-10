@@ -119,15 +119,16 @@ def makeStartChanges(flowchart, settings):
         ])
 
     # Auto give dungeon items when entering the dungeon (We have to do that for the level to be identified properly)
-    dungeon_item_setting = settings['dungeon-items']
-    if dungeon_item_setting != 'none':
+    start = data.start_dungeon_items(settings)
+    if start:
         event_defs = []
 
-        if dungeon_item_setting in ['mc', 'mcb']:
+        if 'map' in start:
             event_defs += item_get.insertItemWithoutAnimation('DungeonMap', -1)
+        if 'compass' in start:
             event_defs += item_get.insertItemWithoutAnimation('Compass', -1)
 
-        if dungeon_item_setting in ['stone-beak', 'mcb']:
+        if 'stone-beak' in start:
             event_defs += item_get.insertItemWithoutAnimation('StoneBeak', -1)
 
         # Connect events to the DungeonIn and DefaultUpStairsOut entrypoints

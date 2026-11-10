@@ -19,6 +19,10 @@ source = r'''
 #undef HLE_FUNC
 #define HLE_FUNC(sym, fn) static void fn(Cpu *c)
 #include "nvn/nvn.h"
+#include "nvn/interp.h"
+static bool freeing;
+void interp_free_begin(int kind, uint64_t size) { assert(kind == INTERP_FREE_SAMPLER && !freeing); freeing = true; }
+void interp_free_end(void) { assert(freeing); freeing = false; }
 static TitleProfile profile;
 const TitleProfile *title_profile_current(void) { return &profile; }
 ''' + samplers + register + r'''
