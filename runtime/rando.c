@@ -150,6 +150,7 @@ void rando_boot(void) {
 // LARECOMP_RANDO_SEED (test runs).
 void rando_select(const char *seed) {
     strlcpy(g_settings.rando_seed, seed ? seed : "", sizeof g_settings.rando_seed);
+    if (seed && *seed) strlcpy(g_settings.rando_last, seed, sizeof g_settings.rando_last);
     settings_save();
     unsetenv("LARECOMP_RANDO_SEED");
 }
